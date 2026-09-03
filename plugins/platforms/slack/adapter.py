@@ -169,6 +169,19 @@ _SLACK_SPECIAL_MENTION_RE = re.compile(
 # in this chart?" posted as a reply under an image).
 _THREAD_ROOT_IMAGE_MAX = 4
 
+# Shared budget for Block Kit content nested inside a message's ``attachments``.
+# Slack allows up to 20 attachments per message and each may carry its own
+# blocks, so this is spent across the whole array rather than per attachment —
+# otherwise one alert could cost many times what the top-level ``blocks`` path
+# spends once (:func:`_serialize_slack_blocks_for_agent`, 6000 chars).
+_SLACK_ATTACHMENT_BLOCKS_MAX_CHARS = 6000
+
+# Below this, :func:`_serialize_slack_blocks_for_agent` can only return its
+# fixed frame (header + fenced code block, ~55 chars) plus the truncation
+# marker, with no readable block content inside. Callers spending a shared
+# budget skip the call rather than pay for an empty frame.
+_SLACK_BLOCKS_PAYLOAD_MIN_CHARS = 80
+
 
 def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     """Render a compact text marker for a Slack file attachment.
@@ -823,7 +836,9 @@ def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> st
         payload = repr(inspectable)
 
     if len(payload) > max_chars:
-        payload = payload[: max_chars - 18].rstrip() + "\n... [truncated]"
+        # ``max(…, 0)`` keeps a tiny budget from turning into a negative slice
+        # index, which would silently keep almost the whole payload.
+        payload = payload[: max(max_chars - 18, 0)].rstrip() + "\n... [truncated]"
 
     return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
 
@@ -6241,6 +6256,11 @@ class SlackAdapter(BasePlatformAdapter):
         slack_attachments = event.get("attachments") or []
         if slack_attachments:
             att_parts: list[str] = []
+            # Slack allows up to 20 attachments per message, and each one may
+            # carry its own Block Kit payload. Serializing them independently
+            # would let a single alert spend many times the budget the
+            # top-level path spends once, so the whole array shares one budget.
+            nested_budget = _SLACK_ATTACHMENT_BLOCKS_MAX_CHARS
             for att in slack_attachments:
                 att_title = att.get("title", "")
                 att_url = att.get("title_link", "") or att.get("from_url", "")
@@ -6253,6 +6273,35 @@ class SlackAdapter(BasePlatformAdapter):
                 if att.get("is_msg_unfurl"):
                     continue
 
+                # Alert apps (Alertmanager, Grafana, PagerDuty, CI bots,
+                # in-house webhooks) put the message body in Block Kit blocks
+                # nested inside the attachment, leaving ``text`` empty. Read
+                # them with the same two helpers this method already applies to
+                # the message's top-level ``blocks`` above, so an attachment's
+                # blocks are no less visible than a top-level one's.
+                att_blocks = att.get("blocks") or []
+                att_blocks_parts = []
+                if att_blocks and nested_budget > 0:
+                    nested_rich = _extract_text_from_slack_blocks(att_blocks).strip()
+                    if nested_rich:
+                        if len(nested_rich) > nested_budget:
+                            nested_rich = (
+                                nested_rich[:nested_budget].rstrip() + "\n... [truncated]"
+                            )
+                        att_blocks_parts.append(nested_rich)
+                        nested_budget -= len(nested_rich)
+                    # The serializer wraps its payload in a fixed frame; below
+                    # that, all it can return is the frame around an empty
+                    # body, which spends budget on nothing readable.
+                    if nested_budget > _SLACK_BLOCKS_PAYLOAD_MIN_CHARS:
+                        nested_payload = _serialize_slack_blocks_for_agent(
+                            att_blocks, max_chars=nested_budget
+                        )
+                        if nested_payload:
+                            att_blocks_parts.append(nested_payload)
+                            nested_budget -= len(nested_payload)
+                att_blocks_text = "\n\n".join(att_blocks_parts)
+
                 # Build a readable representation.
                 if att_title and att_url:
                     header = f"📎 [{att_title}]({att_url})"
@@ -6263,12 +6312,21 @@ class SlackAdapter(BasePlatformAdapter):
                 else:
                     header = None
 
-                # Prefer preview text, fall back to fallback description.
-                body = att_text or att_fallback or ""
+                # Prefer preview text; the nested blocks are structured content
+                # and outrank ``fallback``, which is a lossy summary of exactly
+                # what they carry. This mirrors the contract
+                # :func:`_extract_text_from_slack_attachments` already documents
+                # ("only use the fallback when nothing structured exists") —
+                # without it, an attachment whose body lives in blocks is
+                # represented by a fallback string that describes it, which the
+                # agent cannot distinguish from a real body.
+                body = att_text or (att_fallback if not att_blocks_text else "")
                 if body:
                     body = body.strip()
                     if len(body) > 500:
                         body = body[:497] + "..."
+                if att_blocks_text:
+                    body = f"{body}\n   {att_blocks_text}".strip() if body else att_blocks_text
 
                 if header and body:
                     section = f"{header}\n   {body}"

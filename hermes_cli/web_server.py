@@ -7992,8 +7992,58 @@ def _apply_model_assignment_sync(
                 # must never block saving the model assignment.
                 _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
 
-        save_config(cfg)
+        # Desktop selection owns only the model subtree. `load_config()` returns
+        # a normalized whole-document snapshot; feeding it to `save_config()`
+        # rewrites unrelated user keys and strips comments. Re-open the current
+        # YAML and mutate its existing model map in one atomic round-trip write.
+        from hermes_cli.config import _secure_file, get_config_path, is_managed, managed_error
+        from hermes_cli import managed_scope
+        from utils import atomic_roundtrip_yaml_mutate
 
+        managed_keys = managed_scope.managed_config_keys()
+
+        def _persist_model(root):
+            existing_model = root.get("model")
+            if not isinstance(existing_model, dict):
+                existing_model = {}
+                root["model"] = existing_model
+            _apply_main_model_assignment(existing_model, provider, model, base_url, api_key)
+            if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
+                existing_model["api_key"] = provider_entry["api_key"]
+            for key in ("provider", "default", "base_url", "api_key", "api", "api_mode"):
+                if f"model.{key}" in managed_keys:
+                    existing_model.pop(key, None)
+
+            # apply_nous_managed_defaults only changes these leaf settings.
+            # Apply the same leaves to the round-trip document rather than
+            # saving the normalized cfg snapshot, which would clobber user
+            # comments and unrelated configuration.
+            managed_gateway_keys = {
+                "web": ("backend",),
+                "tts": ("provider",),
+                "stt": ("provider",),
+                "browser": ("cloud_provider",),
+                "image_gen": ("use_gateway",),
+                "video_gen": ("provider", "use_gateway"),
+            }
+            for section in gateway_tools:
+                source = cfg.get(section)
+                if not isinstance(source, dict):
+                    continue
+                target = root.get(section)
+                if not isinstance(target, dict):
+                    target = {}
+                    root[section] = target
+                for key in managed_gateway_keys.get(section, ()):
+                    if key in source and f"{section}.{key}" not in managed_keys:
+                        target[key] = source[key]
+
+        config_path = get_config_path()
+        if is_managed():
+            managed_error("save configuration")
+        else:
+            atomic_roundtrip_yaml_mutate(config_path, _persist_model)
+            _secure_file(config_path)
         # Register a named ``custom_providers`` entry for a custom/local
         # endpoint, mirroring the ``hermes model`` custom flow
         # (_save_custom_provider). Without this the endpoint only lives in

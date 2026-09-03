@@ -9,7 +9,7 @@ import stat
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Callable, Union
 from urllib.parse import urlparse
 
 import yaml
@@ -619,6 +619,61 @@ def atomic_roundtrip_yaml_update(
         prefix=f".{path.stem}_",
         suffix=".tmp",
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml_rt.dump(config, f)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_roundtrip_yaml_mutate(path: Union[str, Path], mutate: Callable[[Any], None]) -> None:
+    """Atomically mutate a round-trip YAML document without replacing siblings.
+
+    The shared config lock covers the entire read-modify-write sequence, so a
+    concurrent ``save_config`` cannot overwrite a change between parsing the
+    existing document and atomically replacing it.
+    """
+    from hermes_cli.config import _CONFIG_LOCK
+
+    with _CONFIG_LOCK:
+        _atomic_roundtrip_yaml_mutate_unlocked(path, mutate)
+
+
+def _atomic_roundtrip_yaml_mutate_unlocked(path: Union[str, Path], mutate: Callable[[Any], None]) -> None:
+    """Implementation of :func:`atomic_roundtrip_yaml_mutate`; caller holds the config lock."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            config = yaml_rt.load(f) or CommentedMap()
+    else:
+        config = CommentedMap()
+    if not isinstance(config, CommentedMap):
+        config = CommentedMap(config)
+    mutate(config)
+
+    original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.stem}_", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml_rt.dump(config, f)

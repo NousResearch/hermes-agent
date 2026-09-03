@@ -1270,13 +1270,29 @@ def _get_disabled_set() -> set:
 
 
 def _save_disabled_set(disabled: set) -> None:
-    """Write the disabled plugins list to config.yaml."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
-    if "plugins" not in config:
-        config["plugins"] = {}
-    config["plugins"]["disabled"] = sorted(disabled)
-    save_config(config)
+    """Write the disabled plugins list to config.yaml, preserving comments.
+
+    See ``_save_enabled_set`` — same round-trip writer, same rationale.
+    """
+    from hermes_cli.config import is_managed, managed_error, get_config_path
+    from hermes_cli import managed_scope
+    from utils import atomic_roundtrip_yaml_update
+    if is_managed():
+        managed_error("save configuration")
+        return
+    if managed_scope.is_key_managed("plugins.disabled"):
+        print(
+            "Note: 1 managed setting(s) were not saved (managed by your "
+            "administrator): plugins.disabled",
+            file=sys.stderr,
+        )
+        return
+    config_path = get_config_path()
+    atomic_roundtrip_yaml_update(config_path, "plugins.disabled", sorted(disabled))
+    try:
+        os.chmod(config_path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
 
 
 _BASIC_AUTH_PLUGIN_KEYS = frozenset({"basic", "dashboard_auth/basic"})
@@ -1325,13 +1341,32 @@ def _get_enabled_set() -> set:
 
 
 def _save_enabled_set(enabled: set) -> None:
-    """Write the enabled plugins list to config.yaml."""
-    from hermes_cli.config import load_config, save_config
-    config = load_config()
-    if "plugins" not in config:
-        config["plugins"] = {}
-    config["plugins"]["enabled"] = sorted(enabled)
-    save_config(config)
+    """Write the enabled plugins list to config.yaml, preserving comments.
+
+    Routed through the same single-key round-trip writer as
+    ``save_config_value`` (cli.py) instead of ``save_config()``'s full
+    re-serialize, which drops every user comment and reinjects the default
+    security/fallback-model boilerplate on each write (#92554).
+    """
+    from hermes_cli.config import is_managed, managed_error, get_config_path
+    from hermes_cli import managed_scope
+    from utils import atomic_roundtrip_yaml_update
+    if is_managed():
+        managed_error("save configuration")
+        return
+    if managed_scope.is_key_managed("plugins.enabled"):
+        print(
+            "Note: 1 managed setting(s) were not saved (managed by your "
+            "administrator): plugins.enabled",
+            file=sys.stderr,
+        )
+        return
+    config_path = get_config_path()
+    atomic_roundtrip_yaml_update(config_path, "plugins.enabled", sorted(enabled))
+    try:
+        os.chmod(config_path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:

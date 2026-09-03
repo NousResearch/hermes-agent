@@ -684,6 +684,51 @@ class TestErrorResilience:
         assert stdout == ""
         assert not caplog.records
 
+    def test_gc_race_with_concurrent_gc_is_not_logged_as_error(
+        self, tmp_path, caplog,
+    ):
+        """A gc that loses the race to another concurrent gc (rc=128,
+        "gc is already running" — locale-dependent stderr) meets the
+        caller's goal anyway; it must log at debug, not error."""
+        work = tmp_path / "work"
+        work.mkdir()
+        for stderr in (
+            "fatal: gc is already running on machine 'x' pid 1 (use --force if not)",
+            "致命错误：已经有一个 gc 正运行在机器 'x' pid 1（如果不是，使用 --force）",
+        ):
+            completed = subprocess.CompletedProcess(
+                args=["git", "gc", "--prune=now", "--quiet"],
+                returncode=128, stdout="", stderr=stderr,
+            )
+            with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+                with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+                    ok, _, _ = _run_git(
+                        ["gc", "--prune=now", "--quiet"],
+                        tmp_path / "store", str(work),
+                    )
+            assert ok is False
+            assert not caplog.records
+            caplog.clear()
+
+    def test_gc_real_failure_still_logged_as_error(
+        self, tmp_path, caplog,
+    ):
+        """A gc failure that is NOT a concurrency race stays an error."""
+        work = tmp_path / "work"
+        work.mkdir()
+        completed = subprocess.CompletedProcess(
+            args=["git", "gc", "--prune=now", "--quiet"],
+            returncode=128, stdout="", stderr="fatal: not a git repository",
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+                ok, _, _ = _run_git(
+                    ["gc", "--prune=now", "--quiet"],
+                    tmp_path / "store", str(work),
+                )
+        assert ok is False
+        assert caplog.records
+
 
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
         def broken_run_git(*args, **kwargs):

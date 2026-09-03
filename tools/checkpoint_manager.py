@@ -352,6 +352,19 @@ def _repair_bare_repo_dirs(store: Path) -> None:
                 )
 
 
+def _is_benign_gc_race(args: List[str], stderr: str) -> bool:
+    """True when a ``git gc`` failed only because another gc is already
+    running on the same store.  Concurrent gateways/desktop sessions prune
+    the shared checkpoint store at the same moment regularly; the losing
+    gc exits 128 while the winner does the reclaiming — the goal is met
+    either way.  stderr is locale-dependent (English "gc is already
+    running", Chinese "已经有一个 gc 正运行"), so match both.
+    """
+    if not args or args[0] != "gc":
+        return False
+    return "already running" in stderr or "正运行" in stderr
+
+
 def _run_git(
     args: List[str],
     store: Path,
@@ -398,10 +411,17 @@ def _run_git(
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
         if not ok and result.returncode not in allowed_returncodes:
-            logger.error(
-                "Git command failed: %s (rc=%d) stderr=%s",
-                " ".join(cmd), result.returncode, stderr,
-            )
+            if _is_benign_gc_race(list(args), stderr):
+                # Another concurrent gc is reclaiming this store already —
+                # the caller's goal is met; don't log it as an error.
+                logger.debug(
+                    "git gc skipped: another gc already running (%s)", stderr,
+                )
+            else:
+                logger.error(
+                    "Git command failed: %s (rc=%d) stderr=%s",
+                    " ".join(cmd), result.returncode, stderr,
+                )
         return ok, stdout, stderr
     except subprocess.TimeoutExpired:
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"

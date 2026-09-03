@@ -77,15 +77,28 @@ def main():
         if "id" in msg and msg.get("method") == "initialize":
             if script == "slow":
                 time.sleep(1.0)
+            capabilities = {
+                "textDocumentSync": 1,  # Full
+            }
+            if script not in {"stale", "slow_push"}:
+                # LSP-spec advertisement for the pull endpoint — push-only
+                # scripts (stale/slow_push) omit it AND reject the pull
+                # request with -32601, so both capability-gate paths are
+                # exercisable.
+                capabilities["textDocument"] = {
+                    "diagnostic": {
+                        "provider": {
+                            "interFileDependencies": False,
+                            "workspaceDiagnostics": False,
+                        }
+                    }
+                }
             write_message(
                 {
                     "jsonrpc": "2.0",
                     "id": msg["id"],
                     "result": {
-                        "capabilities": {
-                            "textDocumentSync": 1,  # Full
-                            "diagnosticProvider": {"interFileDependencies": False, "workspaceDiagnostics": False},
-                        },
+                        "capabilities": capabilities,
                         "serverInfo": {"name": "mock-lsp", "version": "0.1"},
                     },
                 }

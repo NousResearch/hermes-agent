@@ -2161,15 +2161,18 @@ def test_release_stale_claims_applies_pending_own_worker_handoff(shims, conn):
     ).fetchone()["n"] == 0
 
 
-def test_release_stale_claims_own_worker_handoff_ceiling_applies_handoff(
+def test_release_stale_claims_own_worker_handoff_ceiling_escalates_when_scope_alive(
     shims, conn,
 ):
-    """Pass 9 (AF): a permanently wedged stop (killproof scope) must not
-    pin the row behind the marker forever. Once the handoff outlives the
-    drain ceiling the stale sweep APPLIES it — the worker itself already
-    exited when it deferred, so only descendants share the wedged cgroup
-    (the orphan audit reaps those) — rather than discarding the
-    transition to a generic reclaim."""
+    """Pass 10 (AJ): the drain ceiling must NEVER apply a handoff beside
+    a scope the cgroup proves alive. The old ceiling behaviour cleared
+    the claim/scope while the unit was active, making the row spawnable
+    — the same dispatch tick then spawned a duplicate worker beside the
+    live one, the exact duplication loop this branch exists to prevent.
+    At the ceiling with a live scope the sweep instead ESCALATES: the
+    queued verified stop keeps its SIGKILL escalation, one
+    ``handoff_stop_escalated`` event per run records it, and the claim +
+    marker survive for a later tick."""
     straggler = shims.stubborn_sleeper()
     unit = kb._kanban_worker_scope_unit("t_ceiling", 1)
     shims.write_unit(unit, [straggler])
@@ -2199,6 +2202,97 @@ def test_release_stale_claims_own_worker_handoff_ceiling_applies_handoff(
     )
     conn.commit()
 
+    assert kb.release_stale_claims(conn) == 0  # held, not applied/reclaimed
+    row = conn.execute(
+        "SELECT status, claim_lock, claim_expires, worker_scope "
+        "FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    # No spawnable write: the row stays a held running claim.
+    assert row["status"] == "running"
+    assert row["claim_lock"] == kb._claimer_id()
+    assert row["claim_expires"] > int(time.time())
+    assert row["worker_scope"] == unit
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind IN ('changes_requested', 'review_requested', "
+        "'reclaimed')", (tid,),
+    ).fetchone()["n"] == 0
+    # The teardown escalated through the verified stop's SIGKILL path.
+    actions = [s["action"] for s in shims.stops() if s["unit"] == unit]
+    assert "stop" in actions and "kill" in actions
+    # One escalation event per run — a second ceiling tick does not
+    # duplicate it and still does not apply anything.
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='handoff_stop_escalated'", (tid,),
+    ).fetchone()["n"] == 1
+    conn.execute(
+        "UPDATE tasks SET claim_expires=? WHERE id=?",
+        (int(time.time()) - 60, tid),
+    )
+    conn.commit()
+    assert kb.release_stale_claims(conn) == 0
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='handoff_stop_escalated'", (tid,),
+    ).fetchone()["n"] == 1
+    assert conn.execute(
+        "SELECT status FROM tasks WHERE id=?", (tid,),
+    ).fetchone()["status"] == "running"
+
+
+def test_release_stale_claims_own_worker_handoff_applies_once_scope_dead_after_ceiling(
+    shims, conn,
+):
+    """Pass 10 (AJ), the other half of the ceiling contract: the handoff
+    applies exactly once, on a later tick, once the scope CONFIRMS dead
+    — never before, no matter the marker's age."""
+    straggler = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_ceildone", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_killproof(unit)
+    tid = kb.create_task(conn, title="ceiling then drain", assignee="w")
+    _deferred_handoff_row(
+        shims, conn, unit,
+        handoff={
+            "handoff": "changes_requested", "implementer": "w",
+            "reviewer": "r", "reason": "redo the edges",
+        },
+        tid=tid,
+    )
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET worker_pid=NULL, worker_pid_started_at=NULL, "
+        "last_heartbeat_at=? WHERE id=?",
+        (now - 7200, tid),
+    )
+    conn.execute(
+        "UPDATE task_events SET created_at=? "
+        "WHERE task_id=? AND kind='own_worker_handoff'",
+        (now - kb._OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS - 1, tid),
+    )
+    conn.commit()
+
+    # Tick 1: ceiling with a live (killproof) scope — held, escalated.
+    assert kb.release_stale_claims(conn) == 0
+    assert conn.execute(
+        "SELECT status FROM tasks WHERE id=?", (tid,),
+    ).fetchone()["status"] == "running"
+
+    # The wedged stop clears server-side and the straggler dies: the
+    # cgroup is now verifiably empty.
+    shims.clear_killproof(unit)
+    os.kill(straggler, signal.SIGKILL)
+    assert shims.wait_for(lambda: not kb._pid_alive(straggler))
+    conn.execute(
+        "UPDATE tasks SET claim_expires=? WHERE id=?",
+        (int(time.time()) - 60, tid),
+    )
+    conn.commit()
+
+    # Tick 2: the scope confirms dead — the handoff applies ONCE, per
+    # the deferred payload, and the generic reclaim never saw the row.
     assert kb.release_stale_claims(conn) == 0  # applied, not reclaimed
     row = conn.execute(
         "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
@@ -2207,12 +2301,13 @@ def test_release_stale_claims_own_worker_handoff_ceiling_applies_handoff(
     assert row["status"] == "ready"  # changes_requested landed per payload
     assert row["claim_lock"] is None
     assert row["worker_scope"] is None
-    event = conn.execute(
+    events = conn.execute(
         "SELECT payload FROM task_events WHERE task_id=? "
-        "AND kind='changes_requested' ORDER BY id DESC",
+        "AND kind='changes_requested' ORDER BY id",
         (tid,),
-    ).fetchone()
-    payload = json.loads(event["payload"])
+    ).fetchall()
+    assert len(events) == 1
+    payload = json.loads(events[0]["payload"])
     assert payload["deferred_handoff"] is True
     assert payload["reason"] == "redo the edges"
     assert conn.execute(

@@ -393,10 +393,13 @@ RECLAIM_DEFER_GRACE_SECONDS = 120
 # crash detection — a drain outlasting the grace used to fall into the
 # generic stale reclaim, silently discarding the worker's requested
 # review/changes transition. Under this ceiling the sweep re-extends the
-# claim while the stop is in progress; at it the handoff is APPLIED (the
-# worker itself already exited when it deferred, so at most lingering
-# descendants share the draining cgroup, and the orphan audit reaps
-# those) instead of being dropped forever.
+# claim while the stop is in progress; AT it the stop is ESCALATED (the
+# worker asked to hand off and has not exited — it is wedged), not
+# applied: applying beside a scope the cgroup proves alive cleared the
+# claim and let the same tick spawn a duplicate from the freed row, the
+# exact loop this branch exists to prevent (pass 10, AJ). The handoff
+# applies only once the scope is confirmed empty, or on a definite
+# pid-semantics (``unsupported``) host once the pid is confirmed dead.
 _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS = RECLAIM_DEFER_GRACE_SECONDS * 5
 
 
@@ -10024,14 +10027,22 @@ def _handle_stale_own_worker_handoff(
     reclaim here, ending the run as ``reclaimed`` and silently dropping
     the worker's requested review/changes transition (pass 9, AF).
 
-    Contract per the deferred marker instead:
+    Contract per the deferred marker instead (pass 10, AJ):
 
-    * scope verified dead (or the marker outlived
-      ``_OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS``) — apply the handoff;
-      the row lands in its requested lane with the payload intact and
-      the generic reclaim never sees it;
-    * stop still in progress under the ceiling — re-extend the claim
-      like any live-worker hold, so the marker survives to a later tick.
+    * scope verified dead — apply the handoff; the row lands in its
+      requested lane with the payload intact and the generic reclaim
+      never sees it. On a DEFINITE pid-semantics host (cgroup
+      ``unsupported``), a confirmed-dead worker pid is the same proof;
+    * a scope that is or may be alive — NEVER apply, whatever the
+      marker's age: ``active`` is authoritative alive (a worker with a
+      stale heartbeat is still alive), and applying beside it cleared
+      the claim/scope and let the same tick spawn a duplicate from the
+      newly spawnable row. Under the drain ceiling the claim is
+      re-extended like any live-worker hold; AT the ceiling the
+      teardown is ESCALATED instead — the queued verified stop keeps
+      its SIGKILL escalation, one ``handoff_stop_escalated`` event per
+      run records it, and the handoff applies on a later tick once the
+      cgroup confirms empty.
 
     Returns True when the row was handled (apply or extension); False
     when there is no pending marker for this run or the handoff could
@@ -10054,45 +10065,91 @@ def _handle_stale_own_worker_handoff(
         scope, task_id=row["id"],
     )
     drain_age = now - int(marker["created_at"])
-    if not scope_dead and drain_age < _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS:
-        # Still draining inside the ceiling: hold the claim (the marker
-        # must outlive its single defer grace), exactly like a live
-        # worker would, and let a later tick re-check.
-        grace = now + RECLAIM_DEFER_GRACE_SECONDS
-        with write_txn(conn):
-            cur = conn.execute(
-                "UPDATE tasks SET claim_expires = ? "
-                "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ? AND claim_expires IS NOT NULL "
-                "  AND claim_expires < ?",
-                (grace, row["id"], row["claim_lock"], now),
-            )
-            if cur.rowcount != 1:
-                return False
-            current_run = _current_run_id(conn, row["id"])
-            if current_run is not None:
-                conn.execute(
-                    "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                    (grace, current_run),
-                )
-            _append_event(
-                conn, row["id"], "claim_extended",
-                {
-                    "reason": "own_worker_handoff_draining",
-                    "scope": scope,
-                    "claim_expires_was": int(row["claim_expires"]),
-                    "claim_expires_now": grace,
-                    "drain_age": drain_age,
-                },
-                run_id=current_run,
-            )
-        return True
     if not scope_dead:
-        _log.warning(
-            "kanban: applying deferred own-worker handoff for %s (run %s) "
-            "at the %ds drain ceiling — the scope stop never confirmed",
-            row["id"], run_id, _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS,
+        provably_empty = (
+            _kanban_scope_state(scope) == "unsupported"
+            and _worker_pid_identity_state(
+                row["worker_pid"], row["worker_pid_started_at"],
+            ) == "dead"
         )
+        if not provably_empty:
+            # The scope is alive, or its emptiness cannot be proven
+            # (``active`` / ``deactivating`` / ``unknown``, or an
+            # ``unsupported`` host with a live or unattributable pid).
+            # A handoff is NEVER applied in that state — the freed row
+            # is spawnable and the same tick would duplicate the run
+            # beside the live cgroup (pass 10, AJ).
+            if drain_age >= _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS:
+                # Ceiling reached with the scope still not provably
+                # empty: the worker asked to hand off and has not
+                # exited — it is wedged. Escalate the teardown rather
+                # than the transition: the verified stop queued above
+                # already escalates to SIGKILL on the service, the
+                # claim and marker survive, and a later tick applies
+                # the handoff once the cgroup confirms empty. One event
+                # per run keeps the escalation auditable.
+                with write_txn(conn):
+                    already = conn.execute(
+                        "SELECT 1 FROM task_events "
+                        "WHERE task_id = ? "
+                        "  AND kind = 'handoff_stop_escalated' "
+                        "  AND run_id IS ? LIMIT 1",
+                        (row["id"], int(run_id)),
+                    ).fetchone()
+                    if already is None:
+                        _append_event(
+                            conn, row["id"], "handoff_stop_escalated",
+                            {
+                                "scope": scope,
+                                "drain_age": drain_age,
+                                "drain_ceiling": (
+                                    _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS
+                                ),
+                            },
+                            run_id=run_id,
+                        )
+                _log.warning(
+                    "kanban: deferred own-worker handoff for %s (run %s) "
+                    "hit the %ds drain ceiling with the scope not "
+                    "provably empty — escalating the verified stop "
+                    "(SIGKILL) and holding the claim; the handoff "
+                    "applies once the scope confirms dead",
+                    row["id"], run_id,
+                    _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS,
+                )
+            # Hold the claim (the marker must outlive its single defer
+            # grace), exactly like a live worker would, and let a later
+            # tick re-check.
+            grace = now + RECLAIM_DEFER_GRACE_SECONDS
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ? "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND claim_lock IS ? AND claim_expires IS NOT NULL "
+                    "  AND claim_expires < ?",
+                    (grace, row["id"], row["claim_lock"], now),
+                )
+                if cur.rowcount != 1:
+                    return False
+                current_run = _current_run_id(conn, row["id"])
+                if current_run is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET claim_expires = ? "
+                        "WHERE id = ?",
+                        (grace, current_run),
+                    )
+                _append_event(
+                    conn, row["id"], "claim_extended",
+                    {
+                        "reason": "own_worker_handoff_draining",
+                        "scope": scope,
+                        "claim_expires_was": int(row["claim_expires"]),
+                        "claim_expires_now": grace,
+                        "drain_age": drain_age,
+                    },
+                    run_id=current_run,
+                )
+            return True
     return _apply_pending_own_worker_handoff(conn, row["id"], run_id)
 
 

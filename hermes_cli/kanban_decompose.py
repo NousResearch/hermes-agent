@@ -299,6 +299,7 @@ def decompose_task(
 
     try:
         from agent.auxiliary_client import call_llm  # type: ignore
+        from agent.auxiliary_client import extract_content_or_reasoning  # type: ignore
     except Exception as exc:
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
@@ -323,7 +324,7 @@ def decompose_task(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=4000,
+            max_tokens=8000,
             timeout=timeout or 180,
         )
     except Exception as exc:
@@ -333,9 +334,12 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, f"LLM error: {type(exc).__name__}")
 
     try:
-        raw = resp.choices[0].message.content or ""
+        raw = extract_content_or_reasoning(resp)
     except Exception:
-        raw = ""
+        try:
+            raw = resp.choices[0].message.content or ""
+        except Exception:
+            raw = ""
 
     parsed = _extract_json_blob(raw)
     if parsed is None:

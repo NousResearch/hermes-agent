@@ -1372,6 +1372,11 @@ def _handle_create(args: dict, **kw) -> str:
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
+    # Titles are free text too and MORE visible than bodies (board listings,
+    # dispatcher logs, notifications), so the same masking contract applies.
+    # Task dispatch/routing keys off the task id, not the title, so a masked
+    # title does not disturb matching heuristics (#92354 review follow-up).
+    title = redact_sensitive_text(str(title), force=True)
     assignee = args.get("assignee")
     if not assignee:
         return tool_error(
@@ -1379,6 +1384,13 @@ def _handle_create(args: dict, **kw) -> str:
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
     body = args.get("body")
+    if body:
+        # Same write-path contract as _handle_comment/_handle_complete/
+        # _handle_block: card bodies persist into the board's SQLite and
+        # board DBs are routinely snapshotted, so a credential pasted into
+        # a task body must be masked at the tool boundary (#92354).
+        # redact_sensitive_text passes secret-free text through unchanged.
+        body = redact_sensitive_text(str(body), force=True)
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under

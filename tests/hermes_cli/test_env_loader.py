@@ -176,6 +176,22 @@ def test_latin1_fallback_stream_honors_override(tmp_path, monkeypatch):
     assert os.getenv("OVERRIDE_PROBE") == "from-file"
     assert os.getenv("LATIN1_VALUE") == "café"
 
+def test_task_scoped_multica_token_survives_dotenv_override(tmp_path, monkeypatch):
+    """A daemon-provided ``mat_`` token must beat the workspace ``.env``."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_text("MULTICA_TOKEN=mul_workspace\n", encoding="utf-8")
+
+    monkeypatch.setenv("MULTICA_TOKEN", "mat_task_scoped")
+    monkeypatch.setenv("MULTICA_TASK_ID", "task-123")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.environ["MULTICA_TOKEN"] == "mat_task_scoped"
+
+
 def test_latin1_fallback_stream_preserves_interpolation(tmp_path, monkeypatch):
     """Stream/latin-1 path must still expand ${VAR} like the dotenv_path form."""
     home = tmp_path / "hermes"

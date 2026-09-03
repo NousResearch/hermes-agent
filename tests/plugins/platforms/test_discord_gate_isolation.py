@@ -434,3 +434,68 @@ class TestTelegramGateIsolation:
         assert extras is None or "allowed_chats" not in extras
         assert os.getenv("TELEGRAM_ALLOWED_CHATS") is None
         assert os.getenv("TELEGRAM_ALLOWED_USERS") is None
+
+    def test_telegram_guest_mode_and_siblings_skip_env_bridge_when_scoped(self, monkeypatch):
+        """guest_mode, require_mention, mention_patterns,
+        exclusive_bot_mentions, allow_bots, observe_unmentioned_group_messages,
+        reactions, and reply_to_mode were the ONLY _apply_yaml_config writes
+        missing the _skip_env_bridge guard every other Telegram gate already
+        has — a secondary profile's own values must not pollute shared env
+        (guest_mode is an authorization gate: non-allowlisted groups can
+        trigger the bot via direct @mention when enabled)."""
+        from agent import secret_scope
+        from plugins.platforms.telegram.adapter import _apply_yaml_config
+
+        env_vars = (
+            "TELEGRAM_GUEST_MODE",
+            "TELEGRAM_REQUIRE_MENTION",
+            "TELEGRAM_MENTION_PATTERNS",
+            "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
+            "TELEGRAM_ALLOW_BOTS",
+            "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
+            "TELEGRAM_REACTIONS",
+            "TELEGRAM_REPLY_TO_MODE",
+        )
+        for var in env_vars:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            seeded = _apply_yaml_config(
+                {},
+                {
+                    "guest_mode": True,
+                    "require_mention": False,
+                    "mention_patterns": ["^hey bot"],
+                    "exclusive_bot_mentions": True,
+                    "allow_bots": True,
+                    "observe_unmentioned_group_messages": True,
+                    "reactions": True,
+                    "reply_to_mode": "off",
+                },
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        for var in env_vars:
+            assert os.getenv(var) is None, f"{var} leaked into process env under scope"
+        # guest_mode/reactions still reach this profile's own extra.
+        assert seeded["guest_mode"] is True
+        assert seeded["reactions"] is True
+
+    def test_telegram_guest_mode_and_siblings_bridge_env_single_profile(self, monkeypatch):
+        """Unscoped (single-profile) behavior is unchanged: legacy env bridge
+        still fires."""
+        from agent import secret_scope
+        from plugins.platforms.telegram.adapter import _apply_yaml_config
+
+        env_vars = ("TELEGRAM_GUEST_MODE", "TELEGRAM_REACTIONS", "TELEGRAM_REPLY_TO_MODE")
+        for var in env_vars:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        _apply_yaml_config(
+            {}, {"guest_mode": True, "reactions": True, "reply_to_mode": "off"},
+        )
+        assert os.environ["TELEGRAM_GUEST_MODE"] == "true"
+        assert os.environ["TELEGRAM_REACTIONS"] == "true"
+        assert os.environ["TELEGRAM_REPLY_TO_MODE"] == "off"

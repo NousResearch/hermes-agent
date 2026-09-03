@@ -53,6 +53,25 @@ def test_reactions_enabled_when_set_true(monkeypatch):
     assert adapter._reactions_enabled() is True
 
 
+def test_reactions_extra_takes_precedence_over_env(monkeypatch):
+    """A secondary multiplex profile's own extra.reactions must not be
+    shadowed by the default profile's bridged TELEGRAM_REACTIONS (mirrors
+    _telegram_require_mention/_telegram_guest_mode's existing precedence)."""
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "false")
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(enabled=True, token="fake-token", extra={"reactions": True})
+    assert adapter._reactions_enabled() is True
+
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter2 = object.__new__(TelegramAdapter)
+    adapter2.platform = Platform.TELEGRAM
+    adapter2.config = PlatformConfig(enabled=True, token="fake-token", extra={"reactions": False})
+    assert adapter2._reactions_enabled() is False
+
+
 # ── _set_reaction ────────────────────────────────────────────────────
 
 

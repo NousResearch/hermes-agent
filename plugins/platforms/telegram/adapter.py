@@ -11030,7 +11030,15 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Message reactions (processing lifecycle) ──────────────────────────
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
+        """Check if message reactions are enabled via config/env.
+
+        Extra-first (mirrors ``_telegram_require_mention``/``_telegram_guest_mode``
+        etc.): a secondary multiplex profile's own ``extra.reactions`` must
+        not be shadowed by the default profile's bridged ``TELEGRAM_REACTIONS``.
+        """
+        configured = self.config.extra.get("reactions")
+        if configured is not None:
+            return str(configured).strip().lower() not in {"false", "0", "no"}
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
@@ -11253,17 +11261,17 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
 
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
-    if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
+    if _effective_rm is not None and not _skip_env_bridge and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
         os.environ["TELEGRAM_REQUIRE_MENTION"] = str(_effective_rm).lower()
-    if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
+    if "mention_patterns" in telegram_cfg and not _skip_env_bridge and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
         os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
-    if "exclusive_bot_mentions" in telegram_cfg and not os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
+    if "exclusive_bot_mentions" in telegram_cfg and not _skip_env_bridge and not os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
         os.environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] = str(telegram_cfg["exclusive_bot_mentions"]).lower()
-    if "allow_bots" in telegram_cfg and not os.getenv("TELEGRAM_ALLOW_BOTS"):
+    if "allow_bots" in telegram_cfg and not _skip_env_bridge and not os.getenv("TELEGRAM_ALLOW_BOTS"):
         os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
-    if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
+    if "guest_mode" in telegram_cfg and not _skip_env_bridge and not os.getenv("TELEGRAM_GUEST_MODE"):
         os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
-    if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+    if "observe_unmentioned_group_messages" in telegram_cfg and not _skip_env_bridge and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
         os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
     frc = telegram_cfg.get("free_response_chats")
     if frc is not None:
@@ -11301,8 +11309,15 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
             ignored_threads = ",".join(str(v) for v in ignored_threads)
         if not _skip_env_bridge and not os.getenv("TELEGRAM_IGNORED_THREADS"):
             os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
-    if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
-        os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+    if "reactions" in telegram_cfg:
+        extras.setdefault("reactions", telegram_cfg["reactions"])
+        if not _skip_env_bridge and not os.getenv("TELEGRAM_REACTIONS"):
+            os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
+    # proxy_url is deliberately NOT scoped here — resolve_proxy_url()
+    # (gateway/platforms/base.py, shared by Discord/Telegram/etc.) reads
+    # TELEGRAM_PROXY via raw os.environ regardless of this bridge; scoping
+    # only the write side would be an inconsistent partial fix. Left for a
+    # dedicated fix to that shared helper.
     if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
         os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
     _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
@@ -11310,7 +11325,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg
         else _telegram_extra.get("reply_to_mode")
     )
-    if _telegram_rtm is not None and not os.getenv("TELEGRAM_REPLY_TO_MODE"):
+    if _telegram_rtm is not None and not _skip_env_bridge and not os.getenv("TELEGRAM_REPLY_TO_MODE"):
         _rtm_str = "off" if _telegram_rtm is False else str(_telegram_rtm).lower()
         os.environ["TELEGRAM_REPLY_TO_MODE"] = _rtm_str
     allowed_users = telegram_cfg.get("allow_from")

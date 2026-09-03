@@ -348,17 +348,25 @@ describe('usePromptActions /title', () => {
 
     const refreshSessions = vi.fn(async () => undefined)
     const requestGateway = vi.fn(async () => ({ output: 'no pending writes' }) as never)
+    const seeds: Record<string, unknown>[] = []
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={refreshSessions}
+        requestGateway={requestGateway}
+      />
     )
 
     await handle!.submitText('/skills install my-skill')
     await handle!.submitText('/skills')
 
-    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'skills install my-skill' }))
-    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'skills' }))
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'slash.exec')).toBe(false)
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'command.dispatch')).toBe(false)
+    expect(renderedSeedTexts(seeds).some(text => text.includes('not available in the desktop app'))).toBe(true)
+    expect(renderedSeedTexts(seeds).some(text => text.includes('needs a subcommand here'))).toBe(true)
 
     await handle!.submitText('/skills pending')
 
@@ -411,18 +419,23 @@ describe('usePromptActions /skills desktop scope', () => {
     // spec is authoritative for the review-only slice.
     const refreshSessions = vi.fn(async () => undefined)
     const requestGateway = vi.fn(async () => ({ output: 'installed' }) as never)
+    const seeds: Record<string, unknown>[] = []
 
     let handle: HarnessHandle | null = null
     await actRender(
-      <Harness onReady={h => (handle = h)} refreshSessions={refreshSessions} requestGateway={requestGateway} />
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={refreshSessions}
+        requestGateway={requestGateway}
+      />
     )
 
     await handle!.submitText('/skills install my-skill')
 
-    expect(requestGateway).not.toHaveBeenCalledWith(
-      'slash.exec',
-      expect.objectContaining({ command: 'skills install my-skill' })
-    )
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'slash.exec')).toBe(false)
+    expect((requestGateway.mock.calls as unknown[][]).some(call => call[0] === 'command.dispatch')).toBe(false)
+    expect(renderedSeedTexts(seeds).some(text => text.includes('not available in the desktop app'))).toBe(true)
   })
 })
 

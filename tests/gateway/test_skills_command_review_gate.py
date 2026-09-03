@@ -8,10 +8,12 @@ desktop ``desktop_subcommands`` scope mirrors client-side (#98330 review).
 """
 
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
@@ -69,11 +71,17 @@ def _make_runner():
 
 @pytest.fixture
 def hermes_home(monkeypatch, tmp_path):
-    home = tmp_path / ".hermes"
-    home.mkdir()
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    home = tmp_path / "profile" / ".hermes"
+    home.mkdir(parents=True)
     (home / "config.yaml").write_text("skills:\n  write_approval: true\n")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("gateway.run._hermes_home", home)
+    assert Path.home() == fake_home
     return home
 
 
@@ -108,7 +116,17 @@ async def test_review_subcommands_answer_with_pending_state(hermes_home):
     assert approval is not None
     assert "skills.write_approval" in approval
     assert "Unknown /skills subcommand" not in approval
+
+    sandbox = hermes_home / "config.yaml"
+    sandbox.write_text("skills:\n  write_approval: false\n")
+    assert yaml.safe_load(sandbox.read_text())["skills"]["write_approval"] is False
+
     approval_on = await runner._handle_skills_command(_make_event("/skills approval on"))
     assert "set to 'on'" in approval_on
+    assert yaml.safe_load(sandbox.read_text())["skills"]["write_approval"] is True
+
     approval_off = await runner._handle_skills_command(_make_event("/skills approval off"))
     assert "set to 'off'" in approval_off
+    assert yaml.safe_load(sandbox.read_text())["skills"]["write_approval"] is False
+
+    assert not (Path.home() / ".hermes").exists()

@@ -1028,10 +1028,14 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         const task = bullet[2]!.match(TASK_RE)
         const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
 
+        // Marker in a fixed-width gutter so wrapped lines hang-indent under
+        // the item text instead of resetting to column 0 (Pi-style lists).
         nodes.push(
-          <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
-            <Text wrap="wrap-trim">
+          <Box key={key} flexDirection="row" paddingLeft={indentDepth(bullet[1]!) * 2}>
+            <Box flexShrink={0}>
               <Text color={t.color.muted}>{marker} </Text>
+            </Box>
+            <Text wrap="wrap-trim">
               <MdInline color={t.color.text} t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
           </Box>
@@ -1045,10 +1049,13 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
       if (numbered) {
         start('list')
+
         nodes.push(
-          <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
-            <Text wrap="wrap-trim">
+          <Box key={key} flexDirection="row" paddingLeft={indentDepth(numbered[1]!) * 2}>
+            <Box flexShrink={0}>
               <Text color={t.color.muted}>{numbered[2]}. </Text>
+            </Box>
+            <Text wrap="wrap-trim">
               <MdInline color={t.color.text} t={t} text={numbered[3]!} />
             </Text>
           </Box>

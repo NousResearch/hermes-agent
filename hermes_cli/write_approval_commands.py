@@ -39,7 +39,7 @@ def _fmt_pending_list(subsystem: str) -> str:
         origin = r.get("origin", "foreground")
         tag = " [auto]" if origin == "background_review" else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
-    where = "/{s} approve <id>".format(s=subsystem)
+    where = "/{s} approve <id...>".format(s=subsystem)
     lines.append("")
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
@@ -99,31 +99,56 @@ def handle_pending_subcommand(
     return None  # not ours — caller handles
 
 
-def _resolve_one(subsystem: str, rest: List[str]):
+def _resolve_targets(subsystem: str, rest: List[str]):
+    """Resolve the tokens after approve/reject into target ids.
+
+    One or more explicit ids are all honored; the literal keyword ``all``
+    expands to every pending id. Tokens after the first used to be silently
+    dropped (#99704), so ``approve id1 id2`` only applied ``id1``.
+    """
     if not rest:
-        return None, f"Usage: /{subsystem} approve|reject <id>  (or 'all')"
-    return rest[0], None
+        return None, f"Usage: /{subsystem} approve|reject <id...>  (or 'all')"
+    return rest, None
+
+
+def _expand_targets(subsystem: str, targets: List[str], records: List[dict]):
+    """Map id tokens (or 'all') to pending records, de-duplicated in order.
+
+    Unknown ids are collected separately so the caller can report them
+    per-id instead of silently skipping them.
+    """
+    resolved, unknown, seen = [], [], set()
+    for target in targets:
+        if target.lower() == "all":
+            candidates = records
+        else:
+            rec = wa.get_pending(subsystem, target)
+            if not rec:
+                unknown.append(target)
+                continue
+            candidates = [rec]
+        for rec in candidates:
+            if rec["id"] not in seen:
+                seen.add(rec["id"])
+                resolved.append(rec)
+    return resolved, unknown
 
 
 def _approve(subsystem: str, rest: List[str], memory_store) -> str:
-    target, err = _resolve_one(subsystem, rest)
-    if err or target is None:
-        return err or f"Usage: /{subsystem} approve <id>"
+    targets, err = _resolve_targets(subsystem, rest)
+    if err or not targets:
+        return err or f"Usage: /{subsystem} approve <id...>"
 
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
 
-    if target.lower() == "all":
-        targets = list(records)
-    else:
-        rec = wa.get_pending(subsystem, target)
-        if not rec:
-            return f"No pending {subsystem} write with id '{target}'."
-        targets = [rec]
+    resolved, unknown = _expand_targets(subsystem, targets, records)
 
-    applied, failed = 0, []
-    for rec in targets:
+    applied, failed = 0, [
+        f"{t}: no pending {subsystem} write with this id" for t in unknown
+    ]
+    for rec in resolved:
         ok, msg = _apply_one(subsystem, rec, memory_store)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
@@ -156,18 +181,31 @@ def _apply_one(subsystem: str, rec, memory_store):
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:
-    target, err = _resolve_one(subsystem, rest)
-    if err or target is None:
-        return err or f"Usage: /{subsystem} reject <id>"
-    if target.lower() == "all":
-        n = 0
-        for rec in wa.list_pending(subsystem):
-            if wa.discard_pending(subsystem, rec["id"]):
-                n += 1
-        return f"Rejected {n} pending {subsystem} write(s)."
-    if wa.discard_pending(subsystem, target):
-        return f"Rejected pending {subsystem} write '{target}'."
-    return f"No pending {subsystem} write with id '{target}'."
+    targets, err = _resolve_targets(subsystem, rest)
+    if err or not targets:
+        return err or f"Usage: /{subsystem} reject <id...>"
+
+    records = wa.list_pending(subsystem)
+    if not records:
+        return f"No pending {subsystem} writes."
+
+    resolved, unknown = _expand_targets(subsystem, targets, records)
+    rejected, failed = 0, [
+        f"{t}: no pending {subsystem} write with this id" for t in unknown
+    ]
+    for rec in resolved:
+        if wa.discard_pending(subsystem, rec["id"]):
+            rejected += 1
+        else:
+            failed.append(f"{rec['id']}: no longer pending")
+
+    if rejected == 1 and len(resolved) == 1 and not unknown:
+        return f"Rejected pending {subsystem} write '{resolved[0]['id']}'."
+    out = [f"Rejected {rejected} pending {subsystem} write(s)."]
+    if failed:
+        out.append("Failed:")
+        out.extend(f"  {f}" for f in failed)
+    return "\n".join(out)
 
 
 def _diff(rest: List[str]) -> str:

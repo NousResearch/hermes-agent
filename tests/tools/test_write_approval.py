@@ -177,6 +177,98 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def _stage_memory_writes(count):
+    """Stage ``count`` memory writes and return their pending ids in order."""
+    from tools import write_approval as wa
+    ids = []
+    for i in range(count):
+        rec = wa.stage_write(
+            "memory", {"action": "add", "target": "user", "content": f"m{i}"},
+            summary=f"m{i}", origin="foreground")
+        ids.append(rec["id"])
+    return ids
+
+
+def test_handle_approve_multiple_ids_all_applied(hermes_home):
+    """#99704: '/<subsystem> approve id1 id2' used to silently apply only the
+    first id (``_resolve_one`` took ``rest[0]`` and dropped the rest) while
+    reporting a bare success count. Every explicit id must be applied."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    id1, id2, id3 = _stage_memory_writes(3)
+
+    out = handle_pending_subcommand(
+        wa.MEMORY, ["approve", id1, id2, id3], memory_store=store)
+
+    assert "Approved 3" in out, out
+    assert "Failed" not in out
+    assert wa.pending_count("memory") == 0
+    assert len(store.user_entries) == 3
+
+
+def test_handle_approve_multiple_ids_reports_unknown_per_id(hermes_home):
+    """A mixed batch must not look like full success: unknown ids are listed
+    per-id under Failed while the known ids still apply."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    id1, _ = _stage_memory_writes(2)
+
+    out = handle_pending_subcommand(
+        wa.MEMORY, ["approve", id1, "deadbeef"], memory_store=store)
+
+    assert "Approved 1" in out, out
+    assert "deadbeef" in out, out
+    assert "Failed" in out, out
+    assert wa.pending_count("memory") == 1  # second write still pending
+    assert len(store.user_entries) == 1
+
+
+def test_handle_approve_duplicate_ids_applied_once(hermes_home):
+    """Repeating an id must not double-apply the same pending write."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    id1, = _stage_memory_writes(1)
+
+    out = handle_pending_subcommand(
+        wa.MEMORY, ["approve", id1, id1], memory_store=store)
+
+    assert "Approved 1" in out, out
+    assert wa.pending_count("memory") == 0
+    assert len(store.user_entries) == 1
+
+
+def test_handle_reject_multiple_ids_all_rejected(hermes_home):
+    """#99704 (reject side): reject shared the same first-token-only resolver,
+    so '/<subsystem> reject id1 id2' silently rejected only id1."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    id1, id2 = _stage_memory_writes(2)
+
+    out = handle_pending_subcommand(wa.MEMORY, ["reject", id1, id2])
+
+    assert "Rejected 2" in out, out
+    assert "Failed" not in out
+    assert wa.pending_count("memory") == 0
+
+
+def test_handle_reject_unknown_id_reports_failure(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    id1, = _stage_memory_writes(1)
+
+    out = handle_pending_subcommand(wa.MEMORY, ["reject", "deadbeef"])
+
+    assert "Rejected 0" in out, out
+    assert "deadbeef" in out, out
+    assert wa.pending_count("memory") == 1  # the real write stays pending
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

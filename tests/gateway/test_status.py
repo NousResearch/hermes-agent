@@ -12,6 +12,50 @@ import pytest
 from gateway import status
 
 
+class TestLooksLikeGatewayCommandLine:
+    """Contract for the shared, token-aware gateway command-line matcher.
+
+    Reused by the CLI process-table sweep and PID-file validation (see
+    ``hermes_cli.gateway._scan_gateway_pids`` and ``_looks_like_gateway_process``).
+    """
+
+    def test_matches_explicit_and_bare_runtime_invocations(self):
+        assert status.looks_like_gateway_command_line(
+            "python -m hermes_cli.main gateway run --replace"
+        )
+        # Bare ``hermes gateway`` defaults to the ``run`` subcommand.
+        assert status.looks_like_gateway_command_line("hermes gateway")
+        assert status.looks_like_gateway_command_line("hermes gateway run")
+        # A global flag between the entry point and the subcommand still matches.
+        assert status.looks_like_gateway_command_line(
+            "python -m hermes_cli.main --profile work gateway run"
+        )
+        # Standalone launcher and the run module.
+        assert status.looks_like_gateway_command_line(
+            "/usr/local/bin/hermes-gateway run"
+        )
+        assert status.looks_like_gateway_command_line(
+            "/venv/bin/python /opt/hermes/gateway/run.py"
+        )
+        # Windows-style paths (backslashes) normalise the same way.
+        assert status.looks_like_gateway_command_line(
+            r"C:\Hermes\venv\Scripts\python.exe -m hermes_cli.main gateway run --replace"
+        )
+
+    def test_rejects_helper_subcommands_and_unrelated_processes(self):
+        for command in (
+            "python -m hermes_cli.main gateway status",
+            "python -m hermes_cli.main gateway install",
+            "python -m hermes_cli.main gateway stop",
+            "python -m hermes_cli.main --profile work dashboard",
+            "python -m some_other_thing",
+            r'cmd.exe /c "C:\Users\me\.hermes\gateway-service\Hermes_Gateway.cmd"',
+            "",
+            None,
+        ):
+            assert not status.looks_like_gateway_command_line(command), command
+
+
 class TestGatewayPidState:
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

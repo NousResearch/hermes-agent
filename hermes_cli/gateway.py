@@ -2124,6 +2124,38 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_scope="launchd",
         )
 
+    if is_windows():
+        try:
+            from hermes_cli import gateway_windows
+
+            # ``is_installed()`` is also true for the Startup-folder fallback,
+            # so branch explicitly and give each persistence mode its own
+            # manager label and scope rather than labelling every Windows
+            # install as a Scheduled Task.
+            if gateway_windows.is_task_registered():
+                task_info = gateway_windows.query_task_status()
+                service_running = (
+                    task_info.get("status", "").strip().lower() == "running"
+                    or bool(gateway_pids)
+                )
+                return GatewayRuntimeSnapshot(
+                    manager="windows scheduled task",
+                    service_installed=True,
+                    service_running=service_running,
+                    gateway_pids=gateway_pids,
+                    service_scope="scheduled-task",
+                )
+            if gateway_windows.is_startup_entry_installed():
+                return GatewayRuntimeSnapshot(
+                    manager="windows startup item",
+                    service_installed=True,
+                    service_running=bool(gateway_pids),
+                    gateway_pids=gateway_pids,
+                    service_scope="startup-folder",
+                )
+        except Exception:
+            pass
+
     return GatewayRuntimeSnapshot(
         manager="manual process",
         gateway_pids=gateway_pids,

@@ -24,6 +24,24 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_cmd_create_rejects_unknown_explicit_project(kanban_home, capsys):
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(
+        ["kanban", "create", "orphaned task", "--project", "does-not-exist"]
+    )
+
+    rc = kc._cmd_create(args)
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "project 'does-not-exist' not found" in captured.err
+    assert "hermes project list" in captured.err
+    with kb.connect_closing() as conn:
+        assert kb.list_tasks(conn, limit=100) == []
+
+
 # ---------------------------------------------------------------------------
 # Workspace flag parsing
 # ---------------------------------------------------------------------------

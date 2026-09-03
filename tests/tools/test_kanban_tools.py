@@ -416,6 +416,31 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_rejects_unknown_explicit_project(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect_closing() as conn:
+        task_ids_before = {task.id for task in kb.list_tasks(conn, limit=100)}
+
+    result = json.loads(
+        kt._handle_create(
+            {
+                "title": "orphaned child",
+                "assignee": "peer",
+                "project": "does-not-exist",
+            }
+        )
+    )
+
+    assert result.get("error"), result
+    assert "project 'does-not-exist' not found" in result["error"]
+    assert "hermes project list" in result["error"]
+    with kb.connect_closing() as conn:
+        task_ids_after = {task.id for task in kb.list_tasks(conn, limit=100)}
+    assert task_ids_after == task_ids_before
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

@@ -60,3 +60,17 @@ test('quitPromptFor speaks singular for one chat', () => {
   assert.equal(prompt.message, 'Hermes is still working on 1 chat.')
   assert.ok(prompt.detail.includes('mid-turn'))
 })
+
+
+test('before-quit handler checks active-work guard before marking the app as quitting', () => {
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, 'main.ts'), 'utf8')
+  const handlerStart = source.indexOf("app.on('before-quit', event => {")
+
+  assert.notEqual(handlerStart, -1)
+
+  const guardIndex = source.indexOf('heldQuitForActiveWork(event)', handlerStart)
+  const quittingIndex = source.indexOf('isQuitting = true', handlerStart)
+
+  assert.ok(guardIndex > handlerStart)
+  assert.ok(quittingIndex > guardIndex)
+})

@@ -30,6 +30,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
+import { $dismissedAutoProjectIds, $sidebarProjectFilter, filterVisibleProjects } from '@/store/layout'
 import { notify, notifyError } from '@/store/notifications'
 import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
 import {
@@ -149,14 +150,26 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
 // nothing to move into.
+//
+// The sidebar's two view-state filters are applied here too, so the menu offers
+// exactly the projects the sidebar shows (dismissed auto-projects and the
+// persisted project filter). Without them a repo the user hid from the
+// overview still appears as a move target — the same set the user no longer
+// sees. The menu-only constraints (`projectRootCwd`, `!isNoProject`) stay: a
+// move destination must own a root folder.
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
   const tree = useStore($projectTree)
+  const dismissedAutoProjects = useStore($dismissedAutoProjectIds)
+  const projectFilter = useStore($sidebarProjectFilter)
   const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
-  const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  const targets = filterVisibleProjects(tree, dismissedAutoProjects)
+    .filter(node => !projectFilter.length || projectFilter.includes(node.id))
+    .filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
 
   if (targets.length === 0) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>

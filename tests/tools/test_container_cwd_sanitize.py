@@ -18,6 +18,29 @@ behaviour so neither path can regress.
 """
 
 import tools.terminal_tool as tt
+from agent import terminal_env_registry as reg
+from agent.terminal_env_provider import TerminalEnvironmentProvider
+
+
+class _RegistryBackedContainerProvider(TerminalEnvironmentProvider):
+    """Minimal registry-registered provider with ``is_container = True``.
+
+    Stands in for a plugin-registered container backend (e.g. a third-party
+    sandbox) so the cwd-guard regression can be pinned without depending on
+    any specific built-in backend.
+    """
+
+    name = "test_registry_container"
+    display_name = "Test Registry Container"
+    is_remote = True
+    is_container = True
+
+    def is_available(self):
+        return True
+
+    def create_environment(self, *, cwd, timeout, task_id="default",
+                            image=None, container_config=None, **kwargs):
+        raise NotImplementedError("not exercised: _create_environment is monkeypatched")
 
 
 class TestIsUnusableContainerCwd:
@@ -212,3 +235,34 @@ class TestFileOpsCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(
             monkeypatch, "/Users/me/workspace", env_type="modal")
         assert cwd == "/workspace"
+
+    def test_registry_container_host_override_does_not_reach_container(self, monkeypatch):
+        """A plugin backend registered with ``is_container = True`` is only
+        classified via ``_is_container_backend()`` (the registry-aware
+        classifier), never via the built-in ``_CONTAINER_BACKENDS``
+        frozenset. If this call site reads the frozenset directly, the guard
+        silently stops firing for every registry-registered backend and a
+        host cwd override reaches the container builder unsanitized."""
+        provider = _RegistryBackedContainerProvider()
+        previous = reg.snapshot_registration(provider.name)
+        reg.register_provider(provider)
+        try:
+            cwd = self._run_and_capture_cwd(
+                monkeypatch, "/Users/me/workspace", env_type=provider.name)
+        finally:
+            reg.restore_registration(provider.name, provider, previous)
+        assert cwd == "/workspace", (
+            f"Host-path cwd override leaked to the container builder: {cwd!r}. "
+            "It must be sanitized back to config['cwd']."
+        )
+
+    def test_registry_container_valid_override_is_preserved(self, monkeypatch):
+        provider = _RegistryBackedContainerProvider()
+        previous = reg.snapshot_registration(provider.name)
+        reg.register_provider(provider)
+        try:
+            cwd = self._run_and_capture_cwd(
+                monkeypatch, "/workspace/task42", env_type=provider.name)
+        finally:
+            reg.restore_registration(provider.name, provider, previous)
+        assert cwd == "/workspace/task42"

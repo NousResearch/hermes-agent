@@ -303,23 +303,27 @@ def add_reference_grade_leader_finish(asset_id, role, label_text, collection, ma
 
     for obj in collection.objects:
         component = str(obj.get("component", ""))
-        if component in {"single-piece-body-skin", "robe-cloth-skin", "retopology-source-wrap-skin"} or component.endswith("body_skin"):
+        if (
+            obj.get("asset_kind") == "character"
+            and component != "animation-wire-rig"
+            and not component.startswith("finished-")
+        ):
             obj["review_visibility"] = "hidden_in_preview_visible_as_retopology_source_in_blend"
             obj.hide_render = True
 
     coat_verts = [
-        (-0.36, -0.38, 1.25),
-        (0.36, -0.38, 1.25),
-        (0.48, -0.24, 0.42),
-        (0.22, -0.32, 0.12),
-        (-0.22, -0.32, 0.12),
-        (-0.48, -0.24, 0.42),
-        (-0.28, 0.12, 1.2),
-        (0.28, 0.12, 1.2),
-        (0.36, 0.18, 0.38),
-        (0.16, 0.1, 0.08),
-        (-0.16, 0.1, 0.08),
-        (-0.36, 0.18, 0.38),
+        (-0.46, -0.36, 1.22),
+        (0.46, -0.36, 1.22),
+        (0.36, -0.28, 0.42),
+        (0.2, -0.3, 0.12),
+        (-0.2, -0.3, 0.12),
+        (-0.36, -0.28, 0.42),
+        (-0.34, 0.1, 1.16),
+        (0.34, 0.1, 1.16),
+        (0.28, 0.16, 0.38),
+        (0.12, 0.08, 0.08),
+        (-0.12, 0.08, 0.08),
+        (-0.28, 0.16, 0.38),
     ]
     coat_faces = [
         (0, 1, 2, 3, 4, 5),
@@ -341,7 +345,8 @@ def add_reference_grade_leader_finish(asset_id, role, label_text, collection, ma
     set_master_metadata(coat, asset_id, "character", role, "finished-tailored-coat-skin")
     hero.polish_surface(coat, subdivision=1, bevel=0.025)
 
-    hero.chamfer(f"{asset_id}_finished_inner_vest_panel", (0, -0.43, 0.82), (0.18, 0.018, 0.36), mats["dark"], collection, asset_id, "character", role, "finished-inner-vest-panel")
+    hero.ellipsoid(f"{asset_id}_finished_visible_neck", (0, -0.12, 1.33), (0.13, 0.1, 0.18), skin_mat, collection, asset_id, "character", role, "finished-visible-neck", 24, 12)
+    hero.chamfer(f"{asset_id}_finished_inner_vest_panel", (0, -0.43, 0.82), (0.16, 0.018, 0.36), mats["dark"], collection, asset_id, "character", role, "finished-inner-vest-panel")
     for stripe in range(5):
         x = (stripe - 2) * 0.055
         seam = lunar.curve(f"{asset_id}_finished_cloak_gold_seam_{stripe}", [(x, -0.47, 1.12), (x * 0.7, -0.48, 0.72), (x * 0.35, -0.44, 0.28)], 0.01, mats["gold"], collection)
@@ -350,13 +355,13 @@ def add_reference_grade_leader_finish(asset_id, role, label_text, collection, ma
     # Face and posture are the first-read features in the reference. These
     # are deliberately large and frontal so the leader does not collapse into
     # a generic pawn when viewed at desktop game scale.
-    hero.ellipsoid(f"{asset_id}_finished_forward_head_mass", (0, -0.18, z), (0.34, 0.26, 0.3), skin_mat, collection, asset_id, "character", role, "finished-head-mass", 64, 28)
-    hero.ellipsoid(f"{asset_id}_finished_muzzle_volume", (0, -0.48, z - 0.08), (0.18, 0.08, 0.12), mats["fur_light"], collection, asset_id, "character", role, "finished-muzzle-volume", 36, 16)
+    hero.ellipsoid(f"{asset_id}_finished_forward_head_mass", (0, -0.2, z), (0.28, 0.22, 0.26), skin_mat, collection, asset_id, "character", role, "finished-head-mass", 64, 28)
+    hero.ellipsoid(f"{asset_id}_finished_muzzle_volume", (0, -0.49, z - 0.08), (0.15, 0.07, 0.1), mats["fur_light"], collection, asset_id, "character", role, "finished-muzzle-volume", 36, 16)
     for side in (-1, 1):
         hero.ellipsoid(f"{asset_id}_finished_eye_white_{side}", (side * 0.13, -0.53, z + 0.05), (0.07, 0.018, 0.052), mats["white"], collection, asset_id, "character", role, "finished-eye-white", 24, 12)
         hero.ellipsoid(f"{asset_id}_finished_eye_pupil_{side}", (side * 0.135, -0.548, z + 0.048), (0.03, 0.008, 0.026), mats["black"], collection, asset_id, "character", role, "finished-eye-pupil", 16, 8)
-        hero.ellipsoid(f"{asset_id}_finished_shoulder_pad_{side}", (side * 0.36, -0.06, 1.18), (0.22, 0.16, 0.1), accent_mat, collection, asset_id, "character", role, "finished-shoulder-pad", 32, 12)
-        hero.sculpted_limb(f"{asset_id}_finished_robed_sleeve_{side}", (side * 0.34, -0.05, 1.1), (side * 0.58, -0.34, 0.75), 0.085, 0.052, accent_mat, collection, asset_id, role, "finished-robed-sleeve", 18)
+        hero.ellipsoid(f"{asset_id}_finished_shoulder_pad_{side}", (side * 0.42, -0.08, 1.15), (0.2, 0.14, 0.085), accent_mat, collection, asset_id, "character", role, "finished-shoulder-pad", 32, 12)
+        hero.sculpted_limb(f"{asset_id}_finished_robed_sleeve_{side}", (side * 0.38, -0.06, 1.08), (side * 0.58, -0.34, 0.75), 0.075, 0.047, accent_mat, collection, asset_id, role, "finished-robed-sleeve", 18)
         hero.ellipsoid(f"{asset_id}_finished_hand_{side}", (side * 0.62, -0.38, 0.72), (0.075, 0.05, 0.055), mats["fur_light"], collection, asset_id, "character", role, "finished-hand", 20, 10)
 
     if "owl" in lower:

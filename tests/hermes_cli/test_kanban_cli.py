@@ -167,6 +167,48 @@ def test_run_slash_reclaim_running_task(kanban_home):
     assert "ready" in out2.lower()
 
 
+# ---------------------------------------------------------------------------
+# rejected state mutations must not leave a note/event behind (issue #93225)
+# ---------------------------------------------------------------------------
+
+
+def test_block_on_triage_task_leaves_no_comment_or_event(kanban_home):
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="triage task", triage=True)
+
+    out = kc.run_slash(f"block {tid} not actionable yet")
+    assert "cannot block" in out.lower(), out
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.list_comments(conn, tid) == []
+        assert all(e.kind != "commented" for e in kb.list_events(conn, tid))
+
+
+def test_schedule_on_triage_task_leaves_no_comment_or_event(kanban_home):
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="triage task", triage=True)
+
+    out = kc.run_slash(f"schedule {tid} wait for input")
+    assert "cannot schedule" in out.lower(), out
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.list_comments(conn, tid) == []
+        assert all(e.kind != "commented" for e in kb.list_events(conn, tid))
+
+
+def test_unblock_on_triage_task_leaves_no_comment_or_event(kanban_home):
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="triage task", triage=True)
+
+    out = kc.run_slash(f"unblock {tid} --reason 'nevermind'")
+    assert "cannot unblock" in out.lower(), out
+
+    with kb.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+        assert kb.list_comments(conn, tid) == []
+        assert all(e.kind != "commented" for e in kb.list_events(conn, tid))
 
 
 # ---------------------------------------------------------------------------

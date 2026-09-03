@@ -71,6 +71,26 @@ class TestApiModeAccepted:
         agent = _make_codex_agent()
         assert agent.api_mode == "codex_app_server"
 
+    def test_initialization_does_not_build_provider_client(self):
+        """The app-server subprocess owns auth and the upstream transport."""
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=AssertionError(
+                "codex_app_server must not build a Hermes provider client"
+            ),
+        ):
+            agent = run_agent.AIAgent(
+                model="gpt-5.4",
+                provider="openai",
+                api_mode="codex_app_server",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.client is None
+        assert agent._client_kwargs == {}
+
 
 class TestRunConversationCodexPath:
     def test_run_conversation_returns_codex_shape(self, fake_session):

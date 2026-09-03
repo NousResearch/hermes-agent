@@ -76,17 +76,22 @@ export function ImageLightbox({
   saving: boolean
   src: string
 }) {
+  const [showOriginal, setShowOriginal] = useState(false)
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
-        bodyClassName="block overflow-visible p-0"
-        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"
+        bodyClassName={showOriginal ? "block overflow-auto p-0 max-h-[calc(100vh-12rem)]" : "block overflow-visible p-0"}
+        className={showOriginal ? "w-auto border-0 bg-transparent shadow-none" : "w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent shadow-none"}
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
           <img
             alt={alt ?? ''}
-            className="block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] cursor-zoom-out select-auto rounded-lg object-contain shadow-2xl"
+            className={showOriginal
+              ? "block max-w-[calc(100vw-12rem)] cursor-zoom-out select-auto rounded-lg shadow-2xl"
+              : "block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] cursor-zoom-out select-auto rounded-lg object-contain shadow-2xl"
+            }
             onClick={() => onOpenChange(false)}
             src={src}
           />
@@ -96,6 +101,13 @@ export function ImageLightbox({
             onClick={onClick}
             saving={saving}
           />
+          <button
+            className="absolute bottom-3 right-3 rounded-md bg-black/70 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover/lightbox:opacity-100"
+            onClick={(e) => { e.stopPropagation(); setShowOriginal(prev => !prev) }}
+            type="button"
+          >
+            {showOriginal ? "Fit" : "Full Size"}
+          </button>
         </div>
       </DialogContent>
     </Dialog>

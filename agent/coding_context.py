@@ -56,6 +56,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -149,6 +150,17 @@ _JS_LOCKFILES = (
 _VERIFY_TARGETS = ("test", "tests", "lint", "typecheck", "check", "build", "fmt", "format")
 _MAX_VERIFY_COMMANDS = 8
 _MAX_FACT_FILE_BYTES = 256 * 1024
+
+# Project-fact detection is best-effort metadata sniffing.  Keep it off the
+# caller thread because some filesystems (notably macOS privacy-protected or
+# offline File Provider paths) can block indefinitely inside stat/open instead
+# of raising OSError.  A tiny global slot cap bounds abandoned daemon threads
+# when the underlying syscall cannot be cancelled.
+_PROJECT_FACTS_PROBE_TIMEOUT_SECONDS = 1.0
+_PROJECT_FACTS_MAX_INFLIGHT_PROBES = 2
+_PROJECT_FACTS_PROBE_SLOTS = threading.BoundedSemaphore(
+    value=_PROJECT_FACTS_MAX_INFLIGHT_PROBES
+)
 
 _GIT_TIMEOUT = 2.5
 
@@ -793,7 +805,16 @@ class ProjectFacts:
     context_files: list[str]
 
 
-def detect_project_facts(root: Path) -> ProjectFacts:
+def _empty_project_facts() -> ProjectFacts:
+    return ProjectFacts(
+        manifests=[],
+        package_managers=[],
+        verify_commands=[],
+        context_files=[],
+    )
+
+
+def _detect_project_facts_unbounded(root: Path) -> ProjectFacts:
     """Detect manifests, package manager(s), verify commands, and context files.
 
     Cheap: stat calls plus reads of a couple of small files. The single source
@@ -830,6 +851,68 @@ def detect_project_facts(root: Path) -> ProjectFacts:
         verify_commands=list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS],
         context_files=[c for c in _CONTEXT_FILES if (root / c).is_file()],
     )
+
+
+def detect_project_facts(root: Path) -> ProjectFacts:
+    """Return project facts without letting filesystem stalls wedge a caller.
+
+    The probe normally finishes in milliseconds.  If an OS-level stat/open
+    blocks, abandon that daemon worker after a short deadline and return empty
+    facts.  The semaphore prevents repeated calls from leaking an unbounded
+    number of blocked threads; once the stuck syscalls return, their slots are
+    released automatically.
+    """
+    root = Path(root)
+    slots = _PROJECT_FACTS_PROBE_SLOTS
+    if not slots.acquire(blocking=False):
+        logger.warning(
+            "Skipping project-facts probe for %s: %d earlier probe(s) are still blocked",
+            root,
+            _PROJECT_FACTS_MAX_INFLIGHT_PROBES,
+        )
+        return _empty_project_facts()
+
+    result: list[ProjectFacts] = []
+    errors: list[Exception] = []
+
+    def _probe() -> None:
+        try:
+            result.append(_detect_project_facts_unbounded(root))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            slots.release()
+
+    worker = threading.Thread(
+        target=_probe,
+        name="hermes-project-facts-probe",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception:
+        slots.release()
+        logger.debug("Failed to start project-facts probe for %s", root, exc_info=True)
+        return _empty_project_facts()
+
+    worker.join(timeout=_PROJECT_FACTS_PROBE_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            "Project-facts probe timed out after %.1fs for %s; continuing without metadata",
+            _PROJECT_FACTS_PROBE_TIMEOUT_SECONDS,
+            root,
+        )
+        return _empty_project_facts()
+    if errors:
+        error = errors[0]
+        logger.debug(
+            "Project-facts probe failed for %s: %s",
+            root,
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        return _empty_project_facts()
+    return result[0] if result else _empty_project_facts()
 
 
 def _project_facts(root: Path) -> list[str]:

@@ -34,8 +34,8 @@ import {
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from '@/app/chat/composer/inline-refs'
-import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
+import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
   composerPlainText,
   insertComposerContentsAtCaret,

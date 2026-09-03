@@ -715,7 +715,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         html = f'<div class="{msg_class}"{delay_style}>'
         html += f'  <div class="message-header">'
         html += f'    <div class="role-badge">{chevron_html} {role_icon} {safe_role}</div>'
-        html += f'    <div class="timestamp">{timestamp}</div>'
+        html += f'    <div class="timestamp">{_escape_html(timestamp)}</div>'
         html += '  </div>'
         html += '  <div class="message-body">'
         
@@ -787,7 +787,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
                 <div class="session-item-title">{_escape_html(title)}</div>
                 <div class="session-item-meta">
                     <span>{_escape_html(sid[:8])}</span>
-                    <span>{date}</span>
+                    <span>{_escape_html(date)}</span>
                 </div>
             </a>
             '''
@@ -849,7 +849,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
                 <div class="meta">
                     <div class="meta-item"><strong>ID:</strong> {escaped_sid}</div>
                     <div class="meta-item"><strong>Model:</strong> {_escape_html(model)}</div>
-                    <div class="meta-item"><strong>Started:</strong> {started_at}</div>
+                    <div class="meta-item"><strong>Started:</strong> {_escape_html(started_at)}</div>
                 </div>
                 {system_html}
             </header>

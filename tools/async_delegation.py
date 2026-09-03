@@ -616,6 +616,40 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
         return _executor
 
 
+def get_running_records(*, session_key: str) -> List[Dict[str, Any]]:
+    """Return live async delegation records owned by *session_key*.
+
+    Used by ``delegate_task(action='list')`` to reconcile the async-batch
+    registry (``_records``) with the synchronous subagent registry
+    (``_active_subagents`` in ``delegate_tool``), which are two separate
+    in-memory dicts.  Without this reconciliation a live background batch is
+    invisible to ``action=list`` — the caller sees ``{"count": 0}`` while
+    detached workers run with real side effects (#98713).
+
+    Matches on ``session_key`` (== the durable session-id the delivery path
+    uses) so the batch remains visible even after a parent-agent rebuild
+    (credential refresh, ``/model`` switch) that breaks the weakref chain.
+    """
+    if not session_key:
+        return []
+    live_statuses = {"running", "stalling", "finalizing"}
+    with _records_lock:
+        return [
+            {
+                "delegation_id": r.get("delegation_id"),
+                "goal": r.get("goal"),
+                "goals": r.get("goals"),
+                "model": r.get("model"),
+                "status": r.get("status"),
+                "is_batch": r.get("is_batch", False),
+                "dispatched_at": r.get("dispatched_at"),
+            }
+            for r in _records.values()
+            if r.get("status") in live_statuses
+            and str(r.get("session_key") or "") == session_key
+        ]
+
+
 def active_count() -> int:
     """Number of async delegation UNITS currently running.
 
@@ -1104,7 +1138,23 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    # Persist to durable storage.  A failure here (e.g. disk I/O error on a
+    # degraded state.db) must NOT abort the dispatch: the batch is already
+    # registered in the in-memory _records dict and the executor submission
+    # below is the point of no return.  Propagating the exception causes the
+    # tool to return a generic "Error executing tool" while workers continue
+    # running with real side effects — the split-brain in #98713.
+    #
+    # Fail open: log the error and continue.  The batch remains visible via
+    # get_running_records() / action=list for the life of this process.
+    try:
+        _persist_dispatch(record)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "async_delegation: failed to persist dispatch record for %s "
+            "(batch is live in memory — dispatch continues)",
+            delegation_id,
+        )
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:

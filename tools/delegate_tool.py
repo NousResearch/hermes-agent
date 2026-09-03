@@ -557,6 +557,57 @@ def _handle_control_action(
                     "live_transcript": getattr(agent, "_live_transcript_path", None),
                 }
             )
+
+        # Also surface background batch records from async_delegation._records
+        # that belong to this conversation.  These are registered in a SEPARATE
+        # in-memory dict (async_delegation._records) and are never added to
+        # _active_subagents, so without this reconciliation a live background
+        # batch is invisible to action=list — the split-brain that produced a
+        # verified production incident where the caller was told "count:0" while
+        # 10 detached workers were running with real side effects (#98713).
+        #
+        # Match on session_key (== parent agent session_id, the durable spine
+        # used by the delivery path) rather than object identity so the batch
+        # remains visible even after a parent-agent rebuild (credential refresh,
+        # /model switch) that breaks the weakref chain.
+        try:
+            from tools.async_delegation import (
+                get_running_records as _get_async_records,
+            )
+            parent_sid = str(getattr(parent_agent, "session_id", "") or "")
+            if parent_sid:
+                async_records = _get_async_records(session_key=parent_sid)
+                seen_deleg_ids = {r.get("delegation_id") for r in entries}
+                for ar in async_records:
+                    deleg_id = ar.get("delegation_id")
+                    if deleg_id in seen_deleg_ids:
+                        continue
+                    dispatched = ar.get("dispatched_at")
+                    entries.append(
+                        {
+                            "delegation_id": deleg_id,
+                            "goal": ar.get("goal"),
+                            "goals": ar.get("goals"),
+                            "model": ar.get("model"),
+                            "status": ar.get("status", "running"),
+                            "is_batch": True,
+                            "running_seconds": (
+                                round(time.time() - dispatched, 1)
+                                if isinstance(dispatched, (int, float))
+                                else None
+                            ),
+                            "accepting_steer": False,
+                            "note": (
+                                "Background batch — use action='stop' with "
+                                "delegation_id to interrupt."
+                            ),
+                        }
+                    )
+        except Exception:  # noqa: BLE001 — reconciliation is best-effort
+            logger.debug(
+                "action=list: async_delegation reconciliation failed", exc_info=True
+            )
+
         payload: Dict[str, Any] = {
             "action": "list",
             "count": len(entries),

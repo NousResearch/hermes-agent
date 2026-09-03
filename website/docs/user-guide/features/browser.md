@@ -79,6 +79,22 @@ The mode is a **driver** that composes with your configured browser backend: it 
 
 **Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state), and on cloud backends its own browser — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
+**Tabs:** on a shared local Chrome (or a `/browser connect` endpoint) every `browser_exec` session pins itself to a tab it created, so the agent never navigates away the tab you were reading. If the agent closes its pinned tab, the next call pins a fresh one. Tab helpers: `list_tabs()`, `current_tab()`, `switch_tab(targetId)`, `close_tab(targetId)`.
+
+**DevTools access:** the console and network panes are readable from `browser_exec` without any setup — the harness keeps Runtime and Network enabled on the attached tab and Hermes journals their events to `browser_events.jsonl` in the workspace so they survive across calls:
+
+```python
+js("(() => { console.warn('hi'); fetch('/api/items'); })()")
+wait(1)
+console_logs(contains="hi")       # [{level, text, url, line, ts}] incl. uncaught exceptions
+network_log(contains="/api/")     # [{url, method, status, mime, type, requestId}]
+console_logs(clear=True)          # empty the journal
+```
+
+Raw CDP is `cdp("Domain.method", **params)` — params are keyword arguments (`cdp("DOM.getDocument", depth=-1)`); the second *positional* argument is a CDP session id string, which you rarely need since the attached tab is the default.
+
+**macOS "Allow remote debugging?" sheet:** Chrome shows this sheet for every new DevTools connection, so it appears each time a harness daemon starts (first browser call, `browser-use --reload`, daemon restart after Chrome restarts). Click Allow in Chrome; Hermes never clicks it for you. To avoid the sheet entirely, launch a Chrome with `--remote-debugging-port` and point Hermes at it with `BROWSER_CDP_URL` or `/browser connect`.
+
 To opt out and force the built-in browser tools, use `/browser use off`, or:
 
 ```yaml

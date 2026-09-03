@@ -541,8 +541,15 @@ class TestOwnTabPreamble:
         # model code still present, after the preamble
         assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
 
-    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
+    def test_unnamed_session_on_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
+        """The default daemon attaches to the first page — often the user's
+        own tab — so it needs its own tab just as much as a named one."""
         result = self._run(tmp_path, monkeypatch, session="")
+        assert result["success"] is True
+        assert "_hermes_ensure_own_tab" in result["output"]
+
+    def test_unnamed_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
+        result = self._run(tmp_path, monkeypatch, session="", provider=True)
         assert result["success"] is True
         assert "_hermes_ensure_own_tab" not in result["output"]
 
@@ -572,6 +579,93 @@ class TestOwnTabPreamble:
         ast.parse(bu_cli._OWN_TAB_PREAMBLE)
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
+
+    def test_helpers_preamble_always_prepended(self, tmp_path, monkeypatch):
+        """console_logs()/network_log()/cdp guard ride along on every call,
+        named or not, and sit before the own-tab preamble and model code."""
+        for session in ("", "r7k2"):
+            result = self._run(tmp_path, monkeypatch, session=session)
+            out = result["output"]
+            assert out.index("def console_logs") < out.index("print('payload')")
+            if session:
+                assert out.index("def console_logs") < out.index("_hermes_ensure_own_tab")
+
+
+class TestHelpersPreamble:
+    """Exec the preamble against a stubbed harness: cdp() positional-dict
+    guard, and the console/network journal that survives across calls."""
+
+    EVENTS = [
+        {"method": "Runtime.consoleAPICalled", "params": {"type": "warning",
+         "args": [{"type": "string", "value": "HERMES-TEST-2"}], "timestamp": 1}},
+        {"method": "Runtime.exceptionThrown", "params": {"exceptionDetails": {
+         "exception": {"description": "Error: HERMES-TEST-3"}, "url": "u", "lineNumber": 3}}},
+        {"method": "Network.requestWillBeSent", "params": {"requestId": "r1",
+         "request": {"url": "https://x/get?probe=1", "method": "GET"}, "type": "Fetch"}},
+        {"method": "Network.responseReceived", "params": {"requestId": "r1",
+         "response": {"status": 200, "mimeType": "application/json"}}},
+    ]
+
+    def _exec(self, tmp_path, monkeypatch, events):
+        import ast
+
+        ast.parse(bu_cli._HELPERS_PREAMBLE + "print('x')")
+        monkeypatch.setenv("BH_AGENT_WORKSPACE", str(tmp_path))
+        calls = []
+        buf = list(events)
+
+        def cdp(method, session_id=None, **params):
+            calls.append((method, session_id, params))
+            return {}
+
+        def drain_events():
+            out = list(buf)
+            buf.clear()
+            return out
+
+        g = {
+            "cdp": cdp, "drain_events": drain_events,
+            "page_info": lambda: {"url": "u", "title": "\U0001F434 Real Title"},
+            "current_tab": lambda: {"targetId": "T1", "title": "\U0001F434 Real Title"},
+            "list_tabs": lambda: [{"targetId": "T1", "title": "\U0001F434 Real Title"}],
+        }
+        exec(bu_cli._HELPERS_PREAMBLE, g)
+        return g, calls
+
+    def test_horse_marker_hidden_from_titles(self, tmp_path, monkeypatch):
+        g, _ = self._exec(tmp_path, monkeypatch, [])
+        assert g["page_info"]()["title"] == "Real Title"
+        assert g["current_tab"]()["title"] == "Real Title"
+        assert g["list_tabs"]()[0]["title"] == "Real Title"
+
+    def test_any_drain_is_journaled(self, tmp_path, monkeypatch):
+        """wait_for_network_idle() drains the daemon buffer too; its reads
+        must land in the journal instead of vanishing."""
+        g, _ = self._exec(tmp_path, monkeypatch, self.EVENTS)
+        assert len(g["drain_events"]()) == 4  # raw consumer sees events...
+        assert len(g["console_logs"]()) == 2  # ...and so does the journal
+
+    def test_cdp_positional_dict_becomes_params(self, tmp_path, monkeypatch):
+        g, calls = self._exec(tmp_path, monkeypatch, [])
+        g["cdp"]("Network.enable", {"maxTotalBufferSize": 1}, maxResourceBufferSize=2)
+        assert calls == [("Network.enable", None, {"maxTotalBufferSize": 1, "maxResourceBufferSize": 2})]
+        g["cdp"]("DOM.getDocument", "SESSION1", depth=-1)
+        assert calls[-1] == ("DOM.getDocument", "SESSION1", {"depth": -1})
+        with pytest.raises(TypeError):
+            g["cdp"]("X.y", 5)
+
+    def test_console_and_network_journal(self, tmp_path, monkeypatch):
+        g, _ = self._exec(tmp_path, monkeypatch, self.EVENTS)
+        logs = g["console_logs"](contains="HERMES-TEST")
+        assert [(c["level"], c["text"]) for c in logs] == [
+            ("warning", "HERMES-TEST-2"), ("error", "Error: HERMES-TEST-3")]
+        assert g["network_log"]() == [{"url": "https://x/get?probe=1", "method": "GET",
+                                       "status": 200, "mime": "application/json",
+                                       "type": "Fetch", "requestId": "r1"}]
+        # journal persists on disk across "calls" (daemon buffer already drained)
+        g2, _ = self._exec(tmp_path, monkeypatch, [])
+        assert len(g2["console_logs"]()) == 2
+        assert g2["console_logs"](clear=True) and g2["console_logs"]() == []
 
 
 class TestProviderPickerIntegration:
@@ -857,7 +951,8 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec('print("hi")'))
         assert result["success"] is True
         assert result["exit_code"] == 0
-        assert 'got:print("hi")' in result["output"]
+        assert result["output"].startswith("got:")
+        assert result["output"].rstrip().endswith('print("hi")')  # model code last
         assert "session" not in result
 
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
@@ -1308,3 +1403,4 @@ class TestLightpandaStatusLine:
         out = self._status(monkeypatch, used=False, reason="cloud provider Browserbase is selected")
         assert "NOT in use" in out
         assert "Browserbase" in out
+

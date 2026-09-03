@@ -30,15 +30,16 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # subprocess launches — never exported to the CLI.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
-# Preamble prepended to the model's code for named sessions on SHARED
-# browsers (local Chrome / CDP override). The harness daemon attaches to the
-# first existing page at startup, so two fresh named daemons can land on the
-# SAME tab; steering this daemon onto a tab it created keeps concurrent named
-# sessions from clobbering each other before their first new_tab(). Runs
-# once per daemon (marker file keyed by BU_NAME under the harness runtime
-# state), costs one IPC round-trip on later calls.
+# Preamble prepended to the model's code on SHARED browsers (local Chrome /
+# CDP override). The harness daemon attaches to the first CDP target at
+# startup — for the default daemon that is whatever tab happens to be first
+# (often the user's), and two fresh named daemons can land on the SAME tab.
+# Pin every daemon to a tab it created, remember that tab's targetId in a
+# marker file keyed by daemon pid, and re-pin when the pinned tab is gone
+# (closed tab → the daemon silently fell back to the first shared page).
+# Costs one IPC round-trip per call after the first.
 _OWN_TAB_PREAMBLE = """\
-# hermes: pin this named session to its own tab (once per daemon process)
+# hermes: pin this session to its own tab (once per daemon process)
 def _hermes_ensure_own_tab():
     import os as _os, tempfile as _tf
     _name = _os.environ.get("BU_NAME", "default")
@@ -47,29 +48,229 @@ def _hermes_ensure_own_tab():
         # re-attaches to the first shared page) re-pins automatically,
         # while agent-driven tab switches mid-session are left alone.
         from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
+        _dpid = _bipc.pid_path(_name).read_text().strip()
     except Exception:
-        _dpid = "0"
+        _dpid = ""
+    if not _dpid:
+        try:
+            from browser_harness.helpers import _send as _bsend
+            _dpid = str(_bsend({"meta": "ping"}).get("pid") or "")
+        except Exception:
+            pass
+    if not _dpid:
+        return  # daemon unreachable: pinning would fail too
     _uid = _os.getuid() if hasattr(_os, "getuid") else 0
     _marker = _os.path.join(
         _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
     )
-    if _os.path.exists(_marker):
-        return
+    try:
+        _pinned = open(_marker).read().strip()
+    except OSError:
+        _pinned = None
+    if _pinned is not None:
+        try:
+            _pages = [t for t in cdp("Target.getTargets")["targetInfos"] if t.get("type") == "page"]
+            _live = {t["targetId"] for t in _pages}
+        except Exception:
+            return
+        if _pinned in _live:
+            return
+        # Pinned tab is gone. If the agent is on a tab it attached itself
+        # (harness marks those with the horse emoji), adopt it; otherwise
+        # the daemon fell back to a shared page — move off it.
+        try:
+            _cur = current_tab()
+            if _cur["targetId"] in _live and str(_cur.get("title", "")).startswith("\U0001F434"):
+                open(_marker, "w").write(_cur["targetId"])
+                return
+        except Exception:
+            pass
     try:
         # Force a fresh target: new_tab() would REUSE a blank current tab,
-        # which is exactly the tab a sibling daemon may also hold.
+        # which is exactly the tab a sibling daemon (or the user) may hold.
         _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
         if _tid:
             switch_tab(_tid)
     except Exception:
-        pass  # best-effort: worst case is pre-fix behavior
+        return  # best-effort: worst case is pre-fix behavior
     try:
-        open(_marker, "w").close()
+        open(_marker, "w").write(_tid or "")
     except OSError:
         pass
 _hermes_ensure_own_tab()
 del _hermes_ensure_own_tab
+"""
+
+# Preamble prepended to EVERY browser_exec call. The harness exposes only a
+# destructive drain_events() for CDP events and never tells the model about
+# it, so console/network reading was impossible; and cdp()'s second
+# positional is session_id, which the model reliably fills with a params
+# dict. Everything here is Hermes-side (browser_harness is a third-party
+# package): stdlib pre-imports, a cdp() guard, and an event journal in the
+# workspace that console_logs()/network_log() read from.
+_HELPERS_PREAMBLE = """\
+# hermes: stdlib pre-imports + console/network journal + cdp() guard
+import re, json, csv, os, sys, time, datetime, collections
+from pathlib import Path
+
+def _hermes_wrap_cdp(_raw):
+    def cdp(method, session_id=None, **params):
+        if isinstance(session_id, dict):  # cdp('X.y', {...}) -> params
+            params = {**session_id, **params}
+            session_id = None
+        elif session_id is not None and not isinstance(session_id, str):
+            raise TypeError(
+                "cdp(method, session_id=None, **params): session_id must be a "
+                "CDP session id string; pass CDP params as keyword arguments"
+            )
+        return _raw(method, session_id, **params)
+    cdp.__doc__ = _raw.__doc__
+    return cdp
+cdp = _hermes_wrap_cdp(cdp)
+del _hermes_wrap_cdp
+
+def _hermes_events_path():
+    import tempfile as _tf
+    ws = os.environ.get("BH_AGENT_WORKSPACE")
+    if ws:
+        return os.path.join(ws, "browser_events.jsonl")
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    name = os.environ.get("BU_NAME", "default")
+    return os.path.join(_tf.gettempdir(), "hermes-bu-events-%s-%s.jsonl" % (uid, name))
+
+def _hermes_journal(evs):
+    if not evs:
+        return
+    try:
+        with open(_hermes_events_path(), "a") as f:
+            for e in evs:
+                f.write(json.dumps(e, default=str) + "\\n")
+    except OSError:
+        pass
+
+def _hermes_wrap_drain(_raw):
+    # ponytail: the daemon buffer is a 500-event deque and every reader
+    # (incl. the harness's own wait_for_network_idle) drains it destructively;
+    # journal on the way out so nothing is lost across browser_exec calls.
+    def drain_events():
+        evs = _raw()
+        _hermes_journal(evs)
+        return evs
+    drain_events.__doc__ = _raw.__doc__
+    drain_events.__hermes_journaled__ = True
+    return drain_events
+try:
+    import browser_harness.helpers as _hh
+    if not getattr(_hh.drain_events, "__hermes_journaled__", False):
+        _hh.drain_events = _hermes_wrap_drain(_hh.drain_events)
+    drain_events = _hh.drain_events
+    del _hh
+except Exception:
+    drain_events = _hermes_wrap_drain(drain_events)
+del _hermes_wrap_drain
+
+def _hermes_flush_events():
+    try:
+        drain_events()
+    except Exception:
+        pass
+
+def _hermes_untitle(obj):
+    # The harness prefixes attached tabs' titles with a horse emoji so the
+    # user can spot the agent's tab; hide it from what the model reads.
+    if isinstance(obj, dict) and isinstance(obj.get("title"), str) and obj["title"].startswith("\U0001F434"):
+        obj["title"] = obj["title"][1:].lstrip()
+    return obj
+
+def _hermes_wrap_untitle(_raw):
+    def wrapped(*a, **kw):
+        r = _raw(*a, **kw)
+        if isinstance(r, list):
+            for t in r:
+                _hermes_untitle(t)
+        return _hermes_untitle(r)
+    wrapped.__doc__ = _raw.__doc__
+    wrapped.__name__ = getattr(_raw, "__name__", "wrapped")
+    return wrapped
+page_info = _hermes_wrap_untitle(page_info)
+current_tab = _hermes_wrap_untitle(current_tab)
+list_tabs = _hermes_wrap_untitle(list_tabs)
+del _hermes_wrap_untitle
+
+def _hermes_read_events(clear=False):
+    _hermes_flush_events()
+    path = _hermes_events_path()
+    out = []
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    pass
+        if clear:
+            open(path, "w").close()
+    except OSError:
+        pass
+    return out
+
+def _hermes_remote_text(obj):
+    if not isinstance(obj, dict):
+        return str(obj)
+    if "value" in obj:
+        return obj["value"] if isinstance(obj["value"], str) else json.dumps(obj["value"])
+    return obj.get("description") or obj.get("unserializableValue") or obj.get("type", "")
+
+def console_logs(clear=False, contains=None):
+    \"\"\"Console messages + uncaught exceptions captured so far, oldest first.
+    Returns [{level, text, url, line, ts}]. clear=True empties the journal.\"\"\"
+    out = []
+    for e in _hermes_read_events(clear):
+        m, p = e.get("method"), e.get("params", {})
+        if m == "Runtime.consoleAPICalled":
+            frame = (p.get("stackTrace") or {}).get("callFrames") or [{}]
+            out.append({
+                "level": p.get("type", "log"),
+                "text": " ".join(_hermes_remote_text(a) for a in p.get("args", [])),
+                "url": frame[0].get("url", ""), "line": frame[0].get("lineNumber"),
+                "ts": p.get("timestamp"),
+            })
+        elif m == "Runtime.exceptionThrown":
+            d = p.get("exceptionDetails", {})
+            out.append({
+                "level": "error",
+                "text": _hermes_remote_text(d.get("exception")) or d.get("text", ""),
+                "url": d.get("url", ""), "line": d.get("lineNumber"),
+                "ts": p.get("timestamp"),
+            })
+    if contains:
+        out = [c for c in out if contains in c["text"]]
+    return out
+
+def network_log(clear=False, contains=None):
+    \"\"\"Requests captured so far, oldest first: [{url, method, status, mime, type, requestId}].
+    clear=True empties the journal.\"\"\"
+    reqs = collections.OrderedDict()
+    for e in _hermes_read_events(clear):
+        m, p = e.get("method"), e.get("params", {})
+        rid = p.get("requestId")
+        if m == "Network.requestWillBeSent":
+            r = p.get("request", {})
+            reqs[rid] = {"url": r.get("url"), "method": r.get("method"), "status": None,
+                         "mime": None, "type": p.get("type"), "requestId": rid}
+        elif m == "Network.responseReceived" and rid in reqs:
+            r = p.get("response", {})
+            reqs[rid].update(status=r.get("status"), mime=r.get("mimeType"))
+        elif m == "Network.loadingFailed" and rid in reqs:
+            reqs[rid]["error"] = p.get("errorText")
+    out = list(reqs.values())
+    if contains:
+        out = [r for r in out if contains in (r["url"] or "")]
+    return out
+
+import atexit as _hermes_atexit
+_hermes_atexit.register(_hermes_flush_events)
+del _hermes_atexit
 """
 
 _DEFAULT_TIMEOUT_S = 300
@@ -641,11 +842,10 @@ def _resolve_backend_cdp(
             "the built-in browser tools for this provider."
         )
     env["BU_CDP_URL" if cdp.startswith(("http://", "https://")) else "BU_CDP_WS"] = cdp
-    # A provider browser keyed bu-named-<name> is exclusive to this session —
-    # the own-tab preamble is unnecessary there (it would just leak a blank
-    # tab into a browser nobody else touches).
-    if session_name:
-        env[_PRIVATE_BROWSER_SENTINEL] = "1"
+    # A provider browser (per-task, or keyed bu-named-<name>) is exclusive to
+    # this daemon — the own-tab preamble is unnecessary there (it would just
+    # leak a blank tab into a browser nobody else touches).
+    env[_PRIVATE_BROWSER_SENTINEL] = "1"
     return None
 
 
@@ -788,14 +988,15 @@ def browser_exec(
     if backend_err:
         return tool_error(backend_err)
 
-    # On a SHARED browser (local Chrome / CDP override) a fresh named daemon
-    # attaches to the first existing page — the same page a sibling daemon
-    # may hold. Pin each named session to a tab it created before running
-    # the model's code. Private per-name browsers (provider-keyed or BU
-    # cloud) skip this: no one to collide with, and the extra tab would leak.
+    # On a SHARED browser (local Chrome / CDP override) a fresh daemon
+    # attaches to the first existing page — the user's tab, or the same page
+    # a sibling daemon holds. Pin each session to a tab it created before
+    # running the model's code. Private browsers (provider-keyed, BU cloud,
+    # Lightpanda) skip this: no one to collide with, and the tab would leak.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
-    if session and not private_browser:
+    if not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    code = _HELPERS_PREAMBLE + code
 
     workspace = _workspace_dir(task_id)
     if workspace:
@@ -873,7 +1074,9 @@ def browser_exec(
 # The tool description is the CLI's skill, fetched from browser-use skill
 _HEADER_BASE = (
     "Drive a real web browser via the Browser Use CLI: `code` runs as full "
-    "Python (stdlib available) with pre-imported browser helpers; stdout "
+    "Python (re/json/csv/os/sys/time/datetime/collections/Path are "
+    "pre-imported; `import` any other stdlib module yourself) with "
+    "pre-imported browser helpers; stdout "
     "comes back in the result. Start `code` with a one-line comment "
     "describing the step for the user in plain language, max 60 chars "
     "(e.g. `# Searching Amazon for paper towels`) — the UI shows it as the "
@@ -973,7 +1176,17 @@ _HELPERS_DIGEST = (
     "a bare '() => {...}' returns the function itself, uncalled), "
     "fill_input(selector, text) types into inputs, click_at_xy(x, y) clicks "
     "viewport coordinates, capture_screenshot() saves and prints a "
-    "screenshot path, cdp('Domain.method', **kwargs) is raw CDP — "
+    "screenshot path. TABS: list_tabs() -> [{targetId,url,title}], "
+    "current_tab(), switch_tab(targetId) attaches to a tab, close_tab(targetId). "
+    "DEVTOOLS: console_logs(contains=None, clear=False) -> "
+    "[{level,text,url,line}] console messages and uncaught exceptions "
+    "captured since the last clear (Runtime is always enabled — no setup); "
+    "network_log(contains=None, clear=False) -> [{url,method,status,mime}] "
+    "requests captured so far (Network is always enabled); call wait(1) "
+    "after triggering activity before reading either. cdp(method, "
+    "session_id=None, **params) is raw CDP — params MUST be keyword args: "
+    "cdp('DOM.getDocument', depth=-1); the 2nd positional is a CDP "
+    "sessionId string (rarely needed; the attached tab is the default). "
     "cdp('Accessibility.getFullAXTree')['nodes'] lists every element's "
     "role/name/backendDOMNodeId (filter in Python before printing; it is "
     "thousands of nodes), then cdp('DOM.getBoxModel', backendNodeId=n) gives "
@@ -1035,7 +1248,7 @@ BROWSER_EXEC_SCHEMA = {
             },
             "session": {
                 "type": "string",
-                "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Reuse the same name on every related call; omit for the shared default session.",
+                "description": "Named isolated browser session — its own daemon and (on cloud backends) own browser, so concurrent tasks don't share tabs. Once you use a name, pass the SAME name on every later call of that task: omitting it lands on a different browser/tab (the shared default session).",
             },
             "timeout_s": {
                 "type": "integer",

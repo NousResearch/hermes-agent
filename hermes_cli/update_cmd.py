@@ -2402,7 +2402,22 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # above is already committed; defer only the dependency sync when this
     # process holds a native extension the sync must rewrite.
     _m()._abort_dependency_sync_if_self_locked()
-    print("→ Updating Python dependencies...")
+
+    # Lockfile-hash skip, mirroring the npm key in _update_node_dependencies:
+    # `uv pip install -e .[all]` can spend minutes recompiling native
+    # extensions on every update even when uv.lock + pyproject.toml are
+    # unchanged. A matching content digest means the reinstall cannot change
+    # anything, so skip it and rely on the cheap import/console-script
+    # verification instead (both verifiers self-heal into a real install if
+    # something is actually missing).
+    from hermes_constants import get_default_hermes_root
+
+    shared_hermes_root = get_default_hermes_root()
+    py_deps_current = not _m()._python_lockfile_changed(shared_hermes_root)
+    if py_deps_current:
+        print("→ Python dependencies unchanged — skipping reinstall")
+    else:
+        print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
@@ -2425,32 +2440,46 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        try:
-            _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        except _shim_quarantine_error_type() as _sqe:
-            # #87331: this runs inside the ZIP-fallback error handler, so the
-            # boundary except clause in cmd_update cannot catch it — refuse
-            # here with the same defer-via-marker contract.
-            _refuse_update_for_contended_shims(_sqe)
+        if not py_deps_current:
+            try:
+                _m()._install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+            except _shim_quarantine_error_type() as _sqe:
+                # #87331: this runs inside the ZIP-fallback error handler, so the
+                # boundary except clause in cmd_update cannot catch it — refuse
+                # here with the same defer-via-marker contract.
+                _refuse_update_for_contended_shims(_sqe)
+            _m()._record_python_lockfile_hash(shared_hermes_root)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
         # Some environments lose pip inside the venv; bootstrap it back with
         # ensurepip before trying the editable install.
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=_m().PROJECT_ROOT,
-                check=True,
-            )
-        _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
+        if not py_deps_current:
+            try:
+                subprocess.run(
+                    pip_cmd + ["--version"],
+                    cwd=_m().PROJECT_ROOT,
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError:
+                subprocess.run(
+                    [_m().sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    cwd=_m().PROJECT_ROOT,
+                    check=True,
+                )
+            _m()._install_python_dependencies_with_optional_fallback(pip_cmd)
+            _m()._record_python_lockfile_hash(shared_hermes_root)
+
+    if py_deps_current:
+        # The verification normally runs inside the install we just skipped.
+        # Run it here so a wrong skip self-heals into a real install (both
+        # verifiers reinstall what they find missing) instead of leaving a
+        # venv nobody checked.
+        install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
+        install_env = uv_env if uv_bin else None
+        _m()._verify_core_dependencies_installed(install_prefix, env=install_env)
+        _m()._verify_console_scripts_installed(install_prefix, env=install_env)
 
     install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
     install_env = uv_env if uv_bin else None
@@ -4313,6 +4342,77 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
         cache_file.write_text(digest, encoding="utf-8")
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
+
+
+def _python_manifest_paths() -> tuple[Path, ...]:
+    """Manifest files that define the uv-managed Python dependency set.
+
+    uv.lock is the lockfile; pyproject.toml is the manifest uv resolves
+    against. Both belong in the skip key: editing pyproject.toml without
+    running uv leaves the venv out of sync exactly like the npm analog
+    (package.json edit without npm install, #61580), and a uv.lock touch
+    always means the resolved set changed. Missing files are simply
+    omitted from the key (never skips more than the git path would).
+    """
+    paths = [_m().PROJECT_ROOT / "uv.lock", _m().PROJECT_ROOT / "pyproject.toml"]
+    return tuple(p for p in paths if p.is_file())
+
+
+def _python_manifests_digest() -> str | None:
+    """Combined sha256 over uv.lock + pyproject.toml.
+
+    Returns None when the lockfile is missing (never skip then).
+    """
+    if not (_m().PROJECT_ROOT / "uv.lock").exists():
+        return None
+    h = hashlib.sha256()
+    for p in _python_manifest_paths():
+        h.update(str(p.relative_to(_m().PROJECT_ROOT)).encode())
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _python_lockfile_changed(hermes_root: Path) -> bool:
+    """True when the uv-managed Python deps need a reinstall.
+
+    Mirrors ``_npm_lockfile_changed``: a matching content digest over
+    uv.lock + pyproject.toml means ``uv pip install -e .[all]`` cannot
+    change anything, so the multi-minute native-extension rebuild can be
+    skipped on the common ``hermes update`` path. Never skips when the
+    lockfile is missing or when the checkout's venv never landed (a
+    matching hash over a half-installed tree must still trigger a repair).
+    """
+    current = _python_manifests_digest()
+    if current is None:
+        return True
+    if not (_m().PROJECT_ROOT / "venv").is_dir():
+        return True
+    try:
+        # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
+        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".py_lock_hash_{cache_key}"
+        if not cache_file.exists():
+            return True
+        return cache_file.read_text(encoding="utf-8").strip() != current
+    except OSError:
+        return True
+
+
+def _record_python_lockfile_hash(hermes_root: Path) -> None:
+    """Record the uv.lock + pyproject.toml digest after a successful sync."""
+    digest = _python_manifests_digest()
+    if digest is None:
+        return
+    try:
+        cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".py_lock_hash_{cache_key}"
+        cache_file.write_text(digest, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not write python lockfile hash cache")
+
 
 def _repair_node_deps_on_current_checkout(
     print_completion,
@@ -9411,6 +9511,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         deps_current = _editable_install_is_current(
             git_cmd, _m().PROJECT_ROOT, pre_pull_sha
         )
+        # Lockfile-hash skip (mirrors _update_node_dependencies' npm key):
+        # when uv.lock + pyproject.toml are unchanged since the last
+        # successful sync, `uv pip install -e .[all]` cannot change anything
+        # — skip the multi-minute native-extension rebuild. This also covers
+        # the ZIP-swap / shallow cases where pre_pull_sha is unresolvable and
+        # _editable_install_is_current fails closed.
+        shared_hermes_root = get_default_hermes_root()
+        if not deps_current:
+            deps_current = not _m()._python_lockfile_changed(shared_hermes_root)
         if deps_current:
             print("→ Python dependencies unchanged — skipping reinstall")
         else:
@@ -9447,6 +9556,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _m()._install_python_dependencies_with_optional_fallback(
                     [uv_bin, "pip"], env=uv_env, group=install_group
                 )
+                _m()._record_python_lockfile_hash(shared_hermes_root)
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -9474,6 +9584,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                     _install_psutil_android_compat(pip_cmd)
                 _m()._install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+                _m()._record_python_lockfile_hash(shared_hermes_root)
 
         install_prefix = [uv_bin, "pip"] if uv_bin else pip_cmd
         lazy_env = uv_env if uv_bin else None
@@ -9487,6 +9598,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 install_prefix, env=lazy_env, group=install_group
             )
             _m()._verify_console_scripts_installed(install_prefix, env=lazy_env)
+            # Verification passed, so the venv matches uv.lock + pyproject.toml
+            # even though no install ran — record the digest so the lockfile
+            # skip stays armed for the next update (ZIP path included).
+            _m()._record_python_lockfile_hash(shared_hermes_root)
 
         # Core ``.[all]`` install finished. Clear the generic core breadcrumb
         # before the lazy-refresh phase — that phase uses its own marker so a

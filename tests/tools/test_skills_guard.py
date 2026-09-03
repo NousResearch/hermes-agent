@@ -192,6 +192,53 @@ class TestScanFile:
         assert any(fi.category == "injection" for fi in findings)
 
 
+    def test_zwj_in_emoji_sequence_allowed(self, tmp_path):
+        f = tmp_path / "good.md"
+        f.write_text(
+            "surfing \U0001F3C4\u200d\u2642\ufe0f and "
+            "family \U0001F468\u200d\U0001F469\u200d\U0001F467\u200d\U0001F466\n"
+        )
+        findings = scan_file(f, "good.md")
+        assert not any(fi.pattern_id == "invisible_unicode" for fi in findings)
+
+
+    def test_zwj_with_emoji_on_one_side_still_detected_in_skill(self, tmp_path):
+        f = tmp_path / "bad.md"
+        f.write_text("A\u200d\U0001F3C4\n")  # emoji on one side only — not a sequence
+        findings = scan_file(f, "bad.md")
+        assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
+
+
+    def test_zwj_skips_vs15_and_vs16_selectors_in_skill(self, tmp_path):
+        f = tmp_path / "good.md"
+        base = "\U0001F3C4"  # 🏄
+        f.write_text(f"{base}\ufe0e\u200d{base}\n")  # VS15 between base and ZWJ
+        findings = scan_file(f, "good.md")
+        assert not any(fi.pattern_id == "invisible_unicode" for fi in findings)
+
+
+    def test_zwj_malformed_selector_still_detected_in_skill(self, tmp_path):
+        f = tmp_path / "bad.md"
+        base = "\U0001F3C4"  # 🏄
+        f.write_text(f"A\ufe0f\u200d{base}\n")  # VS16 but ASCII on the left
+        findings = scan_file(f, "bad.md")
+        assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
+
+
+    def test_zwj_non_emoji_block_still_detected_in_skill(self, tmp_path):
+        f = tmp_path / "bad.md"
+        f.write_text("\u2192\u200d\u2192\n")  # arrows block is not emoji
+        findings = scan_file(f, "bad.md")
+        assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
+
+
+    def test_bare_zwj_still_detected_in_skill(self, tmp_path):
+        f = tmp_path / "bad.md"
+        f.write_text("normal text\u200d hidden\n")
+        findings = scan_file(f, "bad.md")
+        assert any(fi.pattern_id == "invisible_unicode" for fi in findings)
+
+
     def test_deduplication_per_pattern_per_line(self, tmp_path):
         f = tmp_path / "dup.sh"
         f.write_text("rm -rf / && rm -rf /home\n")

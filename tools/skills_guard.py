@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.threat_patterns import is_zwj_in_emoji_sequence
+
 
 SCANNER_VERSION = "skills-guard-v2"
 
@@ -806,18 +808,27 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     # Invisible unicode character detection
     for i, line in enumerate(lines, start=1):
         for char in INVISIBLE_CHARS:
-            if char in line:
-                char_name = _unicode_char_name(char)
-                findings.append(Finding(
-                    pattern_id="invisible_unicode",
-                    severity="high",
-                    category="injection",
-                    file=rel_path,
-                    line=i,
-                    match=f"U+{ord(char):04X} ({char_name})",
-                    description=f"invisible unicode character {char_name} (possible text hiding/injection)",
-                ))
-                break  # one finding per line for invisible chars
+            if char not in line:
+                continue
+            if char == "\u200d" and all(
+                is_zwj_in_emoji_sequence(line, j)
+                for j in range(len(line))
+                if line[j] == "\u200d"
+            ):
+                # Legitimate emoji ZWJ sequence (🏄♂️, 👨‍👩‍👧‍👦) — the joiner
+                # is part of the emoji, not hidden text.
+                continue
+            char_name = _unicode_char_name(char)
+            findings.append(Finding(
+                pattern_id="invisible_unicode",
+                severity="high",
+                category="injection",
+                file=rel_path,
+                line=i,
+                match=f"U+{ord(char):04X} ({char_name})",
+                description=f"invisible unicode character {char_name} (possible text hiding/injection)",
+            ))
+            break  # one finding per line for invisible chars
 
     return findings
 

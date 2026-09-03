@@ -142,38 +142,15 @@ _CRON_EXFIL_COMMAND_PATTERNS = [
 # attack tools and were missing from the cron-local set. Importing the canonical
 # set keeps the cron tripwire and the install scanner from drifting apart.
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
+from tools.threat_patterns import is_zwj_in_emoji_sequence
 
 # U+200D Zero-Width Joiner is also a legitimate, required part of many
 # Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).
 # We should still block ZWJ when it is hiding between plain text characters,
-# but not when it is clearly part of an emoji grapheme cluster.
-_EMOJI_NEIGHBOUR_CP_RANGES = (
-    (0x1F000, 0x1FFFF),
-    (0x2600, 0x27BF),
-    (0x2300, 0x23FF),
-    (0x1F1E6, 0x1F1FF),
-    (0x20E3, 0x20E3),
-)
-_VARIATION_SELECTOR_CP = 0xFE0F
-
-
-def _is_emoji_cp(cp: int) -> bool:
-    return any(lo <= cp <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES)
-
-
-def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
-    """Return True when the ZWJ at text[idx] appears inside an emoji sequence."""
-    left = idx - 1
-    while left >= 0 and ord(text[left]) == _VARIATION_SELECTOR_CP:
-        left -= 1
-    right = idx + 1
-    while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
-        right += 1
-    return (
-        left >= 0 and right < len(text)
-        and _is_emoji_cp(ord(text[left]))
-        and _is_emoji_cp(ord(text[right]))
-    )
+# but not when it is clearly part of an emoji grapheme cluster. The
+# two-sided emoji-sequence check lives in tools.threat_patterns
+# (is_zwj_in_emoji_sequence) so the cron tripwire and the install scanner
+# cannot drift apart.
 
 
 def _strip_legitimate_emoji_zwj(prompt: str) -> str:
@@ -181,7 +158,7 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
         return prompt
     cleaned: list[str] = []
     for idx, ch in enumerate(prompt):
-        if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+        if ch == '\u200d' and is_zwj_in_emoji_sequence(prompt, idx):
             continue
         cleaned.append(ch)
     return ''.join(cleaned)
@@ -248,7 +225,7 @@ def _strip_invisible_unicode(prompt: str) -> tuple[str, list[str]]:
     cleaned: list[str] = []
     for idx, ch in enumerate(prompt):
         if ch in _CRON_INVISIBLE_CHARS:
-            if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+            if ch == '\u200d' and is_zwj_in_emoji_sequence(prompt, idx):
                 cleaned.append(ch)  # legitimate emoji joiner — keep
                 continue
             removed.add(f"U+{ord(ch):04X}")

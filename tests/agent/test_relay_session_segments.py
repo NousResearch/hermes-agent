@@ -17,7 +17,11 @@ consumed at the next begin_turn before the turn scope pushes.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -27,6 +31,19 @@ from agent.relay_runtime import (
     RelayRuntime,
     RelaySessionCoordinator,
 )
+
+
+def _run_isolated(code: str) -> subprocess.CompletedProcess[str]:
+    """Run a Python snippet in the repo root (not tests/) in a fresh process."""
+    repo_root = Path(__file__).parent.parent.parent
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        timeout=30,
+    )
 
 
 class _ScopeHandle:
@@ -115,14 +132,17 @@ def _fast_scope_timeout(monkeypatch):
 def _default_config(monkeypatch):
     """No config on disk by default; tests override _segments_config directly."""
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config", lambda: {}, raising=False
+        "hermes_cli.config.read_raw_config", lambda: {}
     )
     relay_runtime._reset_segments_config_for_tests()
 
 
 def _set_segments(monkeypatch, *, on_compaction=False, max_turns=0):
+    # _segments_config() reads via read_raw_config() (+ managed overlay)
+    # instead of importing gateway.run (whose module top-level setenv
+    # pollutes the calling process's environment, see #87183).
     monkeypatch.setattr(
-        "gateway.run._load_gateway_config",
+        "hermes_cli.config.read_raw_config",
         lambda: {
             "gateway": {
                 "telemetry": {
@@ -133,7 +153,6 @@ def _set_segments(monkeypatch, *, on_compaction=False, max_turns=0):
                 }
             }
         },
-        raising=False,
     )
     relay_runtime._reset_segments_config_for_tests()
 
@@ -411,3 +430,41 @@ class TestRotationSafety:
         assert child_push["parent"] is new_handle, (
             "post-rotation children must parent to the new segment handle"
         )
+
+
+class TestGatewayRunStaysUnimported:
+    """Guard against re-importing gateway.run from a non-gateway host.
+
+    relay_runtime._segments_config() must NEVER trigger ``gateway.run`` —
+    its module top level sets _HERMES_GATEWAY / HERMES_QUIET / HERMES_EXEC_ASK,
+    which flips a CLI/TUI/desktop/cron process onto the gateway path and hangs
+    dangerous commands in pending_approval (#87183). A plain monkeypatch of
+    read_raw_config wouldn't catch a future refactor that adds the import, so
+    this runs the real path in a fresh subprocess and asserts gateway.run never
+    enters sys.modules.
+    """
+
+    def test_relay_runtime_never_imports_gateway_run(self) -> None:
+        result = _run_isolated(
+            """
+import sys
+
+import agent.relay_runtime as rr
+
+# _segments_config() is the only relay path that used to import gateway.run.
+rr._segments_config()
+rr._segments_config()  # cached path too
+
+if "gateway.run" in sys.modules:
+    print("FAIL: gateway.run was imported by a non-gateway host")
+    sys.exit(1)
+print("PASS: gateway.run stays out of sys.modules")
+sys.exit(0)
+"""
+        )
+        assert result.returncode == 0, (
+            f"relay_runtime imported gateway.run:\\n"
+            f"stdout: {result.stdout}\\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "PASS" in result.stdout

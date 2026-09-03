@@ -1481,6 +1481,18 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     # secure_parent_dir refuses to chmod /, top-level dirs, or the
     # hermes-agent install tree (#25821, #93050).
     secure_parent_dir(auth_file)
+    # An atomic replace carries the temp file's ownership. Capture the
+    # existing auth.json owner, or the target HERMES_HOME directory's owner
+    # on first creation, so a privileged writer cannot strand a 0o600 store
+    # behind its own uid/gid.
+    desired_owner: Optional[Tuple[int, int]] = None
+    if os.name == "posix":
+        try:
+            owner_source = auth_file.stat()
+        except FileNotFoundError:
+            owner_source = auth_file.parent.stat()
+        desired_owner = (owner_source.st_uid, owner_source.st_gid)
+
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(auth_store, indent=2) + "\n"
@@ -1496,6 +1508,21 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
             stat.S_IRUSR | stat.S_IWUSR,
         )
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            if desired_owner is not None and hasattr(os, "fchown"):
+                temp_stat = os.fstat(handle.fileno())
+                if (temp_stat.st_uid, temp_stat.st_gid) != desired_owner:
+                    # Preserve the target owner when the writer has permission.
+                    # An unprivileged writer may be able to replace a stale,
+                    # foreign-owned store without being allowed to chown the
+                    # temp file; keep that recovery path working.
+                    try:
+                        os.fchown(handle.fileno(), *desired_owner)
+                    except OSError:
+                        pass
+            if hasattr(os, "fchmod"):
+                # fchown may clear permission bits on some platforms. Reassert
+                # the credential-store mode before the file becomes visible.
+                os.fchmod(handle.fileno(), stat.S_IRUSR | stat.S_IWUSR)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())

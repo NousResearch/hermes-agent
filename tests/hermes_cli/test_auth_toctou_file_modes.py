@@ -45,6 +45,8 @@ def test_save_auth_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch):
     try:
         from hermes_cli import auth as auth_mod
 
+        parent_owner = (tmp_path.stat().st_uid, tmp_path.stat().st_gid)
+
         auth_store = {
             "version": auth_mod.AUTH_STORE_VERSION,
             "providers": {"openai-codex": {"tokens": {"access_token": "secret-x"}}},
@@ -63,10 +65,150 @@ def test_save_auth_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch):
     assert parent_mode == 0o700, (
         f"auth.json parent dir mode 0o{parent_mode:o} != 0o700 — siblings can traverse"
     )
+    auth_stat = auth_path.stat()
+    assert (auth_stat.st_uid, auth_stat.st_gid) == parent_owner, (
+        "a new auth.json must inherit its HERMES_HOME directory's owner"
+    )
 
     # Content survived the rewrite
     data = json.loads(auth_path.read_text())
     assert data["providers"]["openai-codex"]["tokens"]["access_token"] == "secret-x"
+
+
+@pytest.mark.parametrize(
+    ("existing", "expected_owner"),
+    [
+        (True, (1101, 1102)),
+        (False, (2201, 2202)),
+    ],
+    ids=("existing-auth-file", "new-auth-file"),
+)
+def test_save_auth_store_sets_owner_before_atomic_replace(
+    tmp_path, monkeypatch, existing, expected_owner
+):
+    """A mismatched writer must assign the target owner on the temp fd.
+
+    Fake stat values exercise the privileged-writer branch without requiring
+    root or changing real filesystem ownership.
+    """
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    auth_path = hermes_home / "auth.json"
+    if existing:
+        auth_path.write_text(
+            json.dumps(
+                {"version": auth_mod.AUTH_STORE_VERSION, "providers": {}}
+            )
+        )
+
+    real_stat = os.stat
+    real_fstat = os.fstat
+
+    class _StatWithOwner:
+        def __init__(self, wrapped, uid, gid):
+            self._wrapped = wrapped
+            self.st_uid = uid
+            self.st_gid = gid
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        candidate = os.fspath(path)
+        if existing and candidate == os.fspath(auth_path):
+            return _StatWithOwner(result, 1101, 1102)
+        if candidate == os.fspath(hermes_home):
+            return _StatWithOwner(result, 2201, 2202)
+        return result
+
+    def fake_fstat(fd):
+        return _StatWithOwner(real_fstat(fd), 9901, 9902)
+
+    fchown_calls = []
+    replace_observations = []
+    real_replace = auth_mod.atomic_replace
+
+    def fake_fchown(fd, uid, gid):
+        fchown_calls.append((uid, gid))
+        # Some POSIX systems clear permission bits after ownership changes.
+        # Make the replace-time assertion depend on the production fchmod.
+        os.fchmod(fd, 0o640)
+
+    def spying_replace(tmp, target):
+        replace_observations.append(
+            (list(fchown_calls), stat.S_IMODE(real_stat(tmp).st_mode))
+        )
+        return real_replace(tmp, target)
+
+    monkeypatch.setattr(auth_mod.os, "stat", fake_stat)
+    monkeypatch.setattr(auth_mod.os, "fstat", fake_fstat)
+    monkeypatch.setattr(auth_mod.os, "fchown", fake_fchown)
+    monkeypatch.setattr(auth_mod, "atomic_replace", spying_replace)
+
+    auth_mod._save_auth_store(
+        {"version": auth_mod.AUTH_STORE_VERSION, "providers": {}}
+    )
+
+    assert fchown_calls == [expected_owner]
+    assert replace_observations == [([expected_owner], 0o600)], (
+        "ownership and mode must be applied to the temp file before replace"
+    )
+    assert stat.S_IMODE(real_stat(auth_path).st_mode) == 0o600
+
+
+def test_save_auth_store_recovers_when_owner_cannot_be_preserved(
+    tmp_path, monkeypatch
+):
+    """A foreign-owned store remains replaceable by its directory owner."""
+    from hermes_cli import auth as auth_mod
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(
+        json.dumps({"version": auth_mod.AUTH_STORE_VERSION, "providers": {}})
+    )
+
+    real_stat = os.stat
+
+    class _StatWithOwner:
+        def __init__(self, wrapped):
+            self._wrapped = wrapped
+            self.st_uid = wrapped.st_uid + 1
+            self.st_gid = wrapped.st_gid + 1
+
+        def __getattr__(self, name):
+            return getattr(self._wrapped, name)
+
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if os.fspath(path) == os.fspath(auth_path):
+            return _StatWithOwner(result)
+        return result
+
+    def reject_fchown(_fd, _uid, _gid):
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(auth_mod.os, "stat", fake_stat)
+    monkeypatch.setattr(auth_mod.os, "fchown", reject_fchown)
+
+    saved = auth_mod._save_auth_store(
+        {
+            "version": auth_mod.AUTH_STORE_VERSION,
+            "providers": {"openai-codex": {"tokens": {"access_token": "new"}}},
+        }
+    )
+
+    assert saved == auth_path
+    assert json.loads(auth_path.read_text())["providers"]["openai-codex"]["tokens"][
+        "access_token"
+    ] == "new"
+    assert stat.S_IMODE(real_stat(auth_path).st_mode) == 0o600
 
 
 # ---------------------------------------------------------------------------

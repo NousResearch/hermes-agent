@@ -46,6 +46,11 @@ validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
+DEFAULT_SLOW_RESPONSE_THRESHOLD = _line.DEFAULT_SLOW_RESPONSE_THRESHOLD
+DEFAULT_PENDING_REPLY_TEXT = _line.DEFAULT_PENDING_REPLY_TEXT
+DEFAULT_BUTTON_LABEL = _line.DEFAULT_BUTTON_LABEL
+DEFAULT_DELIVERED_TEXT = _line.DEFAULT_DELIVERED_TEXT
+DEFAULT_INTERRUPTED_TEXT = _line.DEFAULT_INTERRUPTED_TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -510,4 +515,114 @@ class TestMediaPublicUrlGuard:
         result = asyncio.run(ad.send_image_file("Uchat", str(img)))
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# 12. Multiplex secondary-profile scope — postback/copy fields
+# ---------------------------------------------------------------------------
+#
+# slow_response_threshold/pending_text/button_label/delivered_text/
+# interrupted_text previously read raw os.getenv unconditionally, same as
+# the host/port/public_url/allowlist fields fixed separately (see #100609).
+# Under multiplex, os.environ holds the DEFAULT profile's YAML-to-env
+# bridge output — a secondary profile with its own (different or absent)
+# LINE config would silently inherit the default profile's postback button
+# copy/threshold instead of its own, or (with no config at all) fail
+# closed to the wrong DEFAULT_* constant only by accident of env-var
+# absence rather than by design.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_postback_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("LINE_SLOW_RESPONSE_THRESHOLD", "5")
+    monkeypatch.setenv("LINE_PENDING_TEXT", "default pending")
+    monkeypatch.setenv("LINE_BUTTON_LABEL", "default button")
+    monkeypatch.setenv("LINE_DELIVERED_TEXT", "default delivered")
+    monkeypatch.setenv("LINE_INTERRUPTED_TEXT", "default interrupted")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "default-token")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "default-secret")
+
+
+class TestMultiplexProfileScopePostback:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_postback_env
+    ):
+        """The secondary profile's own config is authoritative, not the
+        default profile's bridged threshold/copy."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "slow_response_threshold": 30,
+                "pending_text": "profile pending",
+                "button_label": "profile button",
+                "delivered_text": "profile delivered",
+                "interrupted_text": "profile interrupted",
+            },
+        )
+        adapter = LineAdapter(cfg)
+        assert adapter.slow_response_threshold == 30
+        assert adapter.pending_text == "profile pending"
+        assert adapter.button_label == "profile button"
+        assert adapter.delivered_text == "profile delivered"
+        assert adapter.interrupted_text == "profile interrupted"
+
+    def test_secondary_missing_keys_fall_back_to_defaults_not_leaked_env(
+        self, multiplex_scope, default_profile_postback_env
+    ):
+        """Keys absent from the profile's config must NOT borrow the
+        default profile's bridged env values — they should fall back to
+        the adapter's own DEFAULT_* constants instead."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter.slow_response_threshold == DEFAULT_SLOW_RESPONSE_THRESHOLD
+        assert adapter.pending_text == DEFAULT_PENDING_REPLY_TEXT
+        assert adapter.button_label == DEFAULT_BUTTON_LABEL
+        assert adapter.delivered_text == DEFAULT_DELIVERED_TEXT
+        assert adapter.interrupted_text == DEFAULT_INTERRUPTED_TEXT
+
+    def test_default_profile_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_postback_env
+    ):
+        """Multiplex ON but no scope (the DEFAULT profile constructs
+        unscoped): env is its own bridge output and still wins."""
+        from agent.secret_scope import set_multiplex_active
+        from gateway.config import PlatformConfig
+
+        set_multiplex_active(True)
+        try:
+            adapter = LineAdapter(PlatformConfig(enabled=True, extra={}))
+        finally:
+            set_multiplex_active(False)
+        assert adapter.slow_response_threshold == 5
+        assert adapter.pending_text == "default pending"
+        assert adapter.button_label == "default button"
+        assert adapter.delivered_text == "default delivered"
+        assert adapter.interrupted_text == "default interrupted"
 

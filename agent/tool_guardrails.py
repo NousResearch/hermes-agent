@@ -415,6 +415,18 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        # Cross-turn idempotent-call / identical-streak state. These persist
+        # across turns (unlike the per-turn failure counters below) so that a
+        # model repeating the same tool call with the same result across
+        # multiple turns is detected rather than having the streak reset every
+        # turn. They self-reset on any change in tool name, args, or result
+        # hash, so carrying them forward is safe.
+        self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._identical_streak_sig: ToolCallSignature | None = None
+        self._identical_streak_result_hash: str = ""
+        self._identical_streak_count: int = 0
+        self._identical_streak_first_call_id: str = ""
+        self._persisted_result_paths: dict[str, str] = {}
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
@@ -422,28 +434,7 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts: dict[str, int] = {}
         # signature -> a mutating call succeeded since its last failure
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
-        self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
-        # Identical-call loop-breaker state (agent.stall_guards): tracks the
-        # CONSECUTIVE streak of identical (tool, canonical args) calls whose
-        # results were also identical. Any different call — or a different
-        # result — resets the streak, so legitimate re-reads after edits and
-        # varied polling are never flagged. Per-turn, like everything else here.
-        # NOTE: open PR #85352 (patrykkopycinski) tracks no-progress loops
-        # ACROSS turns via a detection window — a different mechanism from
-        # this per-turn consecutive streak. Coordinate future work there.
-        self._identical_streak_sig: ToolCallSignature | None = None
-        self._identical_streak_result_hash: str = ""
-        self._identical_streak_count: int = 0
-        # tool_call_id of the FIRST call in the current streak, so a
-        # result-reference stub can point at the message that carries the
-        # full payload.
-        self._identical_streak_first_call_id: str = ""
-        # tool_call_id -> spillover file path for results that were persisted
-        # out of context (persisted-output preview). Lets a reference stub
-        # carry the file path so the reference can't dangle when the first
-        # occurrence entered context as a preview.
-        self._persisted_result_paths: dict[str, str] = {}
         # Per-turn runaway-loop cap counters. Reset every turn (this method
         # runs at the start of each run_conversation), so the caps bound a
         # single agent loop rather than accumulating across the session.

@@ -1,6 +1,7 @@
 import pytest
 
 from agent.errors import MoAPresetNotFoundError
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
@@ -46,6 +47,58 @@ def test_normalize_moa_config_uses_default_named_preset():
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
     assert cfg["reference_models"] == _enabled_refs(DEFAULT_MOA_REFERENCE_MODELS)
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
+
+
+def test_load_config_preserves_explicit_flat_moa_slots(tmp_path):
+    """Flat user slots must not be shadowed by the merged default preset."""
+    from hermes_cli import config as config_module
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "moa:\n"
+        "  reference_models:\n"
+        "    - provider: anthropic\n"
+        "      model: claude-fable-5\n"
+        "  aggregator:\n"
+        "    provider: openai-codex\n"
+        "    model: gpt-5.6-sol\n",
+        encoding="utf-8",
+    )
+
+    token = set_hermes_home_override(home)
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+    try:
+        loaded = config_module.load_config()
+        resolved = resolve_moa_preset(loaded["moa"])
+    finally:
+        config_module._LOAD_CONFIG_CACHE.clear()
+        config_module._RAW_CONFIG_CACHE.clear()
+        reset_hermes_home_override(token)
+
+    assert resolved["reference_models"] == [
+        {"provider": "anthropic", "model": "claude-fable-5", "enabled": True}
+    ]
+    assert resolved["aggregator"]["provider"] == "openai-codex"
+    assert resolved["aggregator"]["model"] == "gpt-5.6-sol"
+
+
+def test_partial_flat_moa_layer_does_not_discard_named_presets():
+    """A later scalar override is not enough evidence to replace named presets."""
+    from hermes_cli.config import _merge_config_layer
+
+    preset = {
+        "reference_models": [{"provider": "anthropic", "model": "claude-fable-5"}],
+        "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol"},
+    }
+    merged = _merge_config_layer(
+        {"moa": {"default_preset": "custom", "presets": {"custom": preset}}},
+        {"moa": {"max_tokens": 512}},
+    )
+
+    assert merged["moa"]["default_preset"] == "custom"
+    assert merged["moa"]["presets"] == {"custom": preset}
 
 
 

@@ -18,7 +18,12 @@ from gateway.platforms.base import (
 )
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_cli.plugins import (
+    InjectionDelivery,
+    PluginContext,
+    PluginManager,
+    PluginManifest,
+)
 
 
 def _entry(*, origin=True) -> SessionEntry:
@@ -160,7 +165,8 @@ async def test_dispatch_uses_stored_origin_and_adapter_message_path():
         plugin_id="notify-plugin",
     )
 
-    assert accepted is True
+    assert accepted.accepted is True
+    assert accepted.reason == "adopted"
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "check the deployment"
@@ -201,7 +207,7 @@ async def test_dispatch_rejects_unroutable_session(entry, with_adapter):
         plugin_id="notify-plugin",
     )
 
-    assert accepted is False
+    assert accepted.accepted is False
     adapter.handle_message.assert_not_awaited()
 
 
@@ -221,7 +227,7 @@ async def test_dispatch_rechecks_current_authorization(raises):
         plugin_id="notify-plugin",
     )
 
-    assert accepted is False
+    assert accepted.accepted is False
     adapter.handle_message.assert_not_awaited()
 
 
@@ -259,7 +265,7 @@ async def test_dispatch_rejects_stored_role_only_authorization(monkeypatch):
         plugin_id="notify-plugin",
     )
 
-    assert accepted is False
+    assert accepted.accepted is False
     adapter.handle_message.assert_not_awaited()
 
 
@@ -288,7 +294,7 @@ async def test_dispatch_stops_when_gateway_drains_during_lookup():
     runner._draining = True
     release_lookup.set()
 
-    assert await dispatch is False
+    assert (await dispatch).accepted is False
     adapter.handle_message.assert_not_awaited()
 
 
@@ -349,11 +355,14 @@ async def test_scheduler_submits_dispatch_on_live_gateway_loop():
     )
 
     await asyncio.sleep(0)
-    runner._dispatch_plugin_message_injection.assert_awaited_once_with(
-        session_key="agent:main:telegram:dm:42",
-        content="wake up",
-        plugin_id="notify-plugin",
-    )
+    runner._dispatch_plugin_message_injection.assert_awaited_once()
+    kwargs = runner._dispatch_plugin_message_injection.await_args.kwargs
+    assert kwargs["session_key"] == "agent:main:telegram:dm:42"
+    assert kwargs["content"] == "wake up"
+    assert kwargs["plugin_id"] == "notify-plugin"
+    assert kwargs["correlation_id"] is None
+    # The delivery arbiter travels with every dispatch, awaited or not.
+    assert isinstance(kwargs["delivery"], InjectionDelivery)
 
 
 @pytest.mark.asyncio
@@ -436,7 +445,7 @@ def test_scheduler_uses_threadsafe_bridge_outside_gateway_loop():
         future.set_result(True)
         return future
 
-    with patch("gateway.run.safe_schedule_threadsafe", side_effect=_submit) as submit:
+    with patch("gateway.plugin_injection.safe_schedule_threadsafe", side_effect=_submit) as submit:
         assert (
             runner._schedule_plugin_message_injection(
                 session_key="key",
@@ -462,8 +471,8 @@ def test_scheduler_ignores_threadsafe_future_cancellation():
         return future
 
     with (
-        patch("gateway.run.safe_schedule_threadsafe", side_effect=_submit),
-        patch("gateway.run.logger.warning") as warning,
+        patch("gateway.plugin_injection.safe_schedule_threadsafe", side_effect=_submit),
+        patch("gateway.plugin_injection.logger.warning") as warning,
     ):
         assert (
             runner._schedule_plugin_message_injection(
@@ -528,7 +537,7 @@ def test_scheduler_rejects_submission_failure():
         coro.close()
         return None
 
-    with patch("gateway.run.safe_schedule_threadsafe", side_effect=_reject):
+    with patch("gateway.plugin_injection.safe_schedule_threadsafe", side_effect=_reject):
         assert (
             runner._schedule_plugin_message_injection(
                 session_key="key",

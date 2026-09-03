@@ -112,6 +112,16 @@ def _glm_5_2_reasoning_effort(
 
     if _is_glm_5_3(model):
         efforts, overrides, floor = GLM53_EFFORTS, GLM53_OVERRIDES, "low"
+        # The flash SKU of GLM-5.3 rejects ``medium`` with HTTP 400 code
+        # 1210 ("This model always engages in thinking and cannot be
+        # disabled; please use low, high, or max") even though the base
+        # GLM-5.3 accepts the four-step graded scale. Map medium down to
+        # low (nearest-weaker, mirroring the China-endpoint precedent)
+        # rather than letting the request die at the wire (#96838).
+        m = (model or "").strip().lower()
+        if "flash" in m:
+            efforts = tuple(e for e in efforts if e != "medium")
+            overrides = {**overrides, "medium": "low"}
     else:
         efforts, overrides, floor = GLM52_EFFORTS, GLM52_OVERRIDES, "high"
 

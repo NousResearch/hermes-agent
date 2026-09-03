@@ -181,6 +181,36 @@ class TestZaiGLM53ReasoningEffort:
         )
         assert top_level == {"reasoning_effort": "high"}
 
+    @pytest.mark.parametrize(
+        ("effort", "expected"),
+        [
+            ("low", "low"),
+            # The flash SKU rejects ``medium`` with HTTP 400 code 1210 —
+            # its ladder is low/high/max only (#96838). medium maps to low
+            # (nearest-weaker, declared as an override).
+            ("medium", "low"),
+            ("high", "high"),
+            ("max", "max"),
+            ("xhigh", "max"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_glm_5_3_flash_drops_medium(self, zai_profile, effort, expected):
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="glm-5.3-flash",
+        )
+        assert top_level == {"reasoning_effort": expected}
+
+    def test_base_glm_5_3_still_accepts_medium(self, zai_profile):
+        """Only the flash SKU loses ``medium``; the base model keeps the
+        four-step graded scale verified live in #91789."""
+        _, top_level = zai_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="glm-5.3",
+        )
+        assert top_level == {"reasoning_effort": "medium"}
+
 
 class TestZaiModelGating:
     """GLM 4.5+ get thinking; earlier GLM models are left untouched."""

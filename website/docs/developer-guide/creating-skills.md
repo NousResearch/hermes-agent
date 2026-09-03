@@ -163,6 +163,16 @@ terminal:
 
 See `skills/apple/` for examples of macOS-only skills.
 
+## Sidecar host CLIs
+
+If your skill shells out to a local binary (rather than an HTTP API), install
+the binary or shim under `$HERMES_HOME/bin/` and document the bare command name
+in `SKILL.md`. Hermes puts that directory on PATH for the local terminal and
+auto-mounts/syncs it into docker, singularity, and remote sandboxes. Secrets
+stay under `$HERMES_HOME/secrets/` and are **not** auto-mounted — opt in with
+`terminal.docker_volumes` when needed. Full convention:
+[Sidecar CLI skills](/guides/sidecar-cli-skills).
+
 ## Secure Setup on Load
 
 Use `required_environment_variables` when a skill needs an API key or token. Missing values do **not** hide the skill from discovery. Instead, Hermes prompts for them securely when the skill is loaded in the local CLI.

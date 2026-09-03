@@ -212,13 +212,19 @@ class SingularityEnvironment(BaseEnvironment):
             cmd.append("--writable-tmpfs")
 
         try:
-            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
+            from tools.credential_files import (
+                get_bin_directory_mount,
+                get_credential_file_mounts,
+                get_skills_directory_mount,
+            )
             for mount_entry in get_credential_file_mounts():
                 cmd.extend(["--bind", f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"])
             for skills_mount in get_skills_directory_mount():
                 cmd.extend(["--bind", f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro"])
+            for bin_mount in get_bin_directory_mount():
+                cmd.extend(["--bind", f"{bin_mount['host_path']}:{bin_mount['container_path']}:ro"])
         except Exception as e:
-            logger.debug("Singularity: could not load credential/skills mounts: %s", e)
+            logger.debug("Singularity: could not load credential/skills/bin mounts: %s", e)
 
         if self._memory > 0:
             cmd.extend(["--memory", f"{self._memory}M"])

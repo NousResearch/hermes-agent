@@ -1535,6 +1535,9 @@ def _use_real_profile() -> bool:
 # tasks reuse the same copy-browser instead of each launching a rival Chromium
 # on the same copied user-data-dir.
 _REAL_PROFILE_SESSION = "hermes-real-profile"
+# Keep lock contention well inside the agent's 420-second outer tool deadline.
+# The holder may be an abandoned daemon worker that Python cannot terminate.
+_REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
@@ -1690,7 +1693,13 @@ def _real_profile_cdp() -> tuple:
         snapshot_real_profile,
     )
 
-    with _real_profile_cdp_lock:
+    if not _real_profile_cdp_lock.acquire(timeout=_REAL_PROFILE_CDP_LOCK_TIMEOUT_S):
+        return None, (
+            "browser.use_real_profile is on, but the real-profile browser is "
+            "already being prepared by another call that has not finished. "
+            "Retry after that call completes, or restart Hermes if it was abandoned."
+        )
+    try:
         # Reuse a live copy-browser from an earlier call this process made.
         cached = _real_profile_cdp_cache.get("cdp")
         if cached and _cdp_http_ready(cached):
@@ -1919,6 +1928,8 @@ def _real_profile_cdp() -> tuple:
         _real_profile_cdp_cache["cdp"] = cdp
         logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
+    finally:
+        _real_profile_cdp_lock.release()
 
 
 def _url_is_private(url: str) -> bool:

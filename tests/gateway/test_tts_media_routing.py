@@ -22,8 +22,8 @@ from gateway.session import SessionSource, build_session_key
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(PlatformConfig(enabled=True, token="test"), platform)
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -38,9 +38,9 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "dm"}
 
 
-def _event(thread_id=None):
+def _event(thread_id=None, platform=Platform.TELEGRAM):
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="chat-1",
         chat_type="dm",
         thread_id=thread_id,
@@ -87,14 +87,156 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
-def _fake_runner(thread_meta):
+@pytest.mark.asyncio
+async def test_base_qqbot_image_batch_forwards_reply_anchor(tmp_path):
+    adapter = _MediaRoutingAdapter(Platform.QQBOT)
+    image = tmp_path / "chart.png"
+    image.write_bytes(b"image")
+    adapter.send_image_file = AsyncMock(
+        return_value=SendResult(success=True, message_id="image")
+    )
+
+    await adapter._send_multiple_images_with_reply_anchor(
+        chat_id="chat-1",
+        images=[(f"file://{image}", "chart")],
+        reply_to="msg-1",
+    )
+
+    adapter.send_image_file.assert_awaited_once_with(
+        chat_id="chat-1",
+        image_path=str(image),
+        caption="chart",
+        reply_to="msg-1",
+        metadata=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_non_qq_image_batch_preserves_public_send_contract(tmp_path):
+    adapter = _MediaRoutingAdapter(Platform.TELEGRAM)
+    image = tmp_path / "chart.png"
+    image.write_bytes(b"image")
+    adapter.send_image_file = AsyncMock(
+        return_value=SendResult(success=True, message_id="image")
+    )
+
+    await adapter.send_multiple_images(
+        chat_id="chat-1",
+        images=[(f"file://{image}", "chart")],
+    )
+
+    adapter.send_image_file.assert_awaited_once_with(
+        chat_id="chat-1",
+        image_path=str(image),
+        caption="chart",
+        metadata=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_qqbot_media_delivery_forwards_reply_anchor(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter(Platform.QQBOT)
+    event = _event(platform=Platform.QQBOT)
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "speech.ogg")
+    adapter._message_handler = AsyncMock(
+        return_value=f"[[audio_as_voice]]\nMEDIA:{media_file}"
+    )
+    adapter.send_voice = AsyncMock(
+        return_value=SendResult(success=True, message_id="voice")
+    )
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.send_voice.assert_awaited_once_with(
+        chat_id="chat-1",
+        audio_path=str(media_file),
+        reply_to="msg-1",
+        metadata={"notify": True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_qqbot_auto_tts_forwards_reply_anchor(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter(Platform.QQBOT)
+    event = _event(platform=Platform.QQBOT)
+    event.message_type = MessageType.VOICE
+    tts_path = tmp_path / "speech.ogg"
+
+    adapter._message_handler = AsyncMock(return_value="Spoken reply")
+    adapter._should_auto_tts_for_chat = lambda chat_id: True
+    adapter.play_tts = AsyncMock(
+        return_value=SendResult(success=True, message_id="voice")
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.build_auto_tts_output_path",
+        lambda platform: str(tts_path),
+    )
+    monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+
+    def fake_tts(**kwargs):
+        tts_path.write_bytes(b"audio")
+        return f'{{"success": true, "file_path": "{tts_path}"}}'
+
+    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", fake_tts)
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    adapter.play_tts.assert_awaited_once_with(
+        chat_id="chat-1",
+        audio_path=str(tts_path),
+        caption=None,
+        reply_to="msg-1",
+        metadata={"notify": True},
+    )
+
+
+def _fake_runner(thread_meta, reply_anchor=None):
     """Build a fake GatewayRunner-like object with the helper methods needed by
     _deliver_media_from_response."""
     runner = SimpleNamespace(
         _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
-        _reply_anchor_for_event=lambda event: None,
+        _reply_anchor_for_event=lambda event: reply_anchor,
     )
     return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "directive", "method_name", "path_kwarg"),
+    [
+        ("speech.ogg", "[[audio_as_voice]]\n", "send_voice", "audio_path"),
+        ("clip.mp4", "", "send_video", "video_path"),
+        ("report.pdf", "", "send_document", "file_path"),
+    ],
+)
+async def test_streaming_media_delivery_forwards_reply_anchor(
+    tmp_path, monkeypatch, filename, directive, method_name, path_kwarg,
+):
+    event = _event(platform=Platform.QQBOT)
+    media_file = _allowed_media_path(tmp_path, monkeypatch, filename)
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        send_multiple_images=AsyncMock(return_value=None),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}, reply_anchor="msg-1"),
+        f"{directive}MEDIA:{media_file}",
+        event,
+        adapter,
+    )
+
+    getattr(adapter, method_name).assert_awaited_once_with(
+        chat_id="chat-1",
+        **{path_kwarg: str(media_file)},
+        reply_to="msg-1",
+        metadata={},
+    )
 
 
 @pytest.mark.asyncio
@@ -206,7 +348,7 @@ class _DiscordMediaFailureAdapter(BasePlatformAdapter):
 async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_image(
     tmp_path, monkeypatch,
 ):
-    event = _event(thread_id="topic-1")
+    event = _event(thread_id="topic-1", platform=Platform.QQBOT)
     media_file = _allowed_media_path(tmp_path, monkeypatch, "pricelist.png")
     runner = object.__new__(GatewayRunner)
     runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
@@ -218,7 +360,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
         extract_images=BasePlatformAdapter.extract_images,
         extract_local_files=BasePlatformAdapter.extract_local_files,
         send=AsyncMock(return_value=SendResult(success=True, message_id="text")),
-        send_multiple_images=AsyncMock(return_value=None),
+        _send_multiple_images_with_reply_anchor=AsyncMock(return_value=None),
         send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
         send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
         send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
@@ -238,9 +380,10 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
         "Quote here",
         metadata={"thread_id": "topic-1"},
     )
-    adapter.send_multiple_images.assert_awaited_once_with(
+    adapter._send_multiple_images_with_reply_anchor.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
+        reply_to="msg-1",
         metadata={"thread_id": "topic-1"},
     )
 
@@ -250,7 +393,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
     tmp_path, monkeypatch,
 ):
     """Queued text and media must stay on the same precomputed reply route."""
-    event = _event(thread_id="source-topic")
+    event = _event(thread_id="source-topic", platform=Platform.QQBOT)
     media_file = _allowed_media_path(tmp_path, monkeypatch, "threaded.png")
     runner = object.__new__(GatewayRunner)
     runner._thread_metadata_for_source = (
@@ -268,7 +411,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
         extract_images=BasePlatformAdapter.extract_images,
         extract_local_files=BasePlatformAdapter.extract_local_files,
         send=AsyncMock(return_value=SendResult(success=True, message_id="text")),
-        send_multiple_images=AsyncMock(return_value=None),
+        _send_multiple_images_with_reply_anchor=AsyncMock(return_value=None),
         send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
         send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
         send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
@@ -288,9 +431,10 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
         "Threaded image",
         metadata=routing_metadata,
     )
-    adapter.send_multiple_images.assert_awaited_once_with(
+    adapter._send_multiple_images_with_reply_anchor.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{media_file.as_posix()}", "")],
+        reply_to="msg-1",
         metadata=routing_metadata,
     )
 
@@ -457,7 +601,7 @@ class _QueuedMediaCaptureAdapter(BasePlatformAdapter):
     """Adapter that records text + native image delivery for queued-resend tests."""
 
     def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.QQBOT)
         self.sent = []
         self.images = []
 
@@ -472,15 +616,13 @@ class _QueuedMediaCaptureAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=f"text-{len(self.sent)}")
 
     async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, metadata=None, **kwargs):
-        self.images.append({"chat_id": chat_id, "image_path": image_path, "metadata": metadata})
+        self.images.append({
+            "chat_id": chat_id,
+            "image_path": image_path,
+            "metadata": metadata,
+            "reply_to": reply_to,
+        })
         return SendResult(success=True, message_id=f"img-{len(self.images)}")
-
-    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
-        for image_url, _alt in images:
-            path = image_url
-            if path.startswith("file://"):
-                path = path[len("file://"):]
-            self.images.append({"chat_id": chat_id, "image_path": path, "metadata": metadata})
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id, "type": "dm"}
@@ -550,7 +692,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=Platform.QQBOT,
         chat_id="chat-1",
         chat_type="dm",
         thread_id="topic-1",
@@ -570,6 +712,7 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
         source=source,
         session_id="sess-queued-media",
         session_key=session_key,
+        event_message_id="initial-1",
     )
 
     assert _QueuedMediaAgent.calls == 2
@@ -581,3 +724,5 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     assert any(str(media_file) in img["image_path"] for img in adapter.images), (
         f"expected native image delivery via queued resend, got: {adapter.images!r}"
     )
+    assert any(img["reply_to"] == "initial-1" for img in adapter.images)
+    assert all(img["reply_to"] != "queued-1" for img in adapter.images)

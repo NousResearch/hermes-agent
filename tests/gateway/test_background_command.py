@@ -162,6 +162,58 @@ class TestRunBackgroundTask:
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_media_delivery_reuses_triggering_message_as_reply_anchor(
+        self, tmp_path, monkeypatch,
+    ):
+        runner = _make_runner()
+        media_root = tmp_path / "media-cache"
+        media_root.mkdir()
+        report = media_root / "report.pdf"
+        report.write_bytes(b"report")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (media_root,),
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.extract_media = MagicMock(
+            return_value=([(str(report), False)], "")
+        )
+        mock_adapter.extract_images = MagicMock(return_value=([], ""))
+        mock_adapter.send_document = AsyncMock()
+        runner.adapters[Platform.QQBOT] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.QQBOT,
+            user_id="user-1",
+            chat_id="group-1",
+            chat_type="group",
+        )
+        mock_result = {"final_response": f"MEDIA:{report}", "messages": []}
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={"api_key": "test-key"},
+        ), patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = mock_result
+            mock_agent_cls.return_value = mock_agent
+
+            await runner._run_background_task(
+                "make report",
+                source,
+                "bg_media",
+                event_message_id="inbound-42",
+            )
+
+        mock_adapter.send_document.assert_awaited_once_with(
+            chat_id="group-1",
+            file_path=str(report),
+            reply_to="inbound-42",
+            metadata=None,
+        )
+
 
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands

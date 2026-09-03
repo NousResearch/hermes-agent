@@ -119,6 +119,26 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
 
 
+def _resolve_api_key() -> Optional[str]:
+    """Return the configured OpenAI API key, honoring key_env overrides."""
+    cfg = _load_openai_config()
+    openai_cfg = cfg.get("openai") if isinstance(cfg.get("openai"), dict) else {}
+    if isinstance(openai_cfg, dict):
+        for field in ("key_env", "api_key_env"):
+            env_name = openai_cfg.get(field)
+            if not isinstance(env_name, str):
+                continue
+            env_name = env_name.strip()
+            if not env_name:
+                continue
+            value = os.environ.get(env_name, "").strip()
+            if value:
+                return value
+
+    value = os.environ.get("OPENAI_API_KEY", "").strip()
+    return value or None
+
+
 # ---------------------------------------------------------------------------
 # Source-image loading (for image-to-image / edit)
 # ---------------------------------------------------------------------------
@@ -174,7 +194,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         return "OpenAI"
 
     def is_available(self) -> bool:
-        if not get_secret("OPENAI_API_KEY"):
+        if not _resolve_api_key():
             return False
         try:
             import openai  # noqa: F401
@@ -236,13 +256,12 @@ class OpenAIImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        api_key = get_secret("OPENAI_API_KEY")
+        api_key = _resolve_api_key()
         if not api_key:
             return error_response(
                 error=(
-                    "OPENAI_API_KEY not set. Run `hermes tools` → Image "
-                    "Generation → OpenAI to configure, or `hermes setup` "
-                    "to add the key."
+                    "OpenAI image API key not set. Configure "
+                    "`image_gen.openai.key_env` or set OPENAI_API_KEY."
                 ),
                 error_type="auth_required",
                 provider="openai",

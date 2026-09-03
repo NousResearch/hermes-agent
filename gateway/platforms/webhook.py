@@ -1155,6 +1155,25 @@ class WebhookAdapter(BasePlatformAdapter):
         if gl_token:
             return _hmac_str_equal(gl_token, secret)
 
+        # Sentry: sentry-hook-signature = <hex HMAC-SHA256 of the raw body,
+        # keyed with the Sentry App's client secret>.
+        #
+        # Sentry's integration-platform webhooks (issue alerts, metric alerts,
+        # issue/error resources) sign with this vendor-specific header name.
+        # The algorithm is identical to the generic V1 scheme below, but the
+        # header name differs and Sentry does not allow customising outbound
+        # header names — so without an explicit branch these deliveries fall
+        # through to the "no recognised signature header" reject at the end.
+        #
+        # Like V1 this is body-only (no timestamp), so it carries the same
+        # replay caveat; that is Sentry's wire format and is not ours to fix.
+        sentry_sig = request.headers.get("sentry-hook-signature", "")
+        if sentry_sig:
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return _hmac_str_equal(sentry_sig, expected)
+
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)
         # Checked independently of (and before) legacy V1 below — a sender

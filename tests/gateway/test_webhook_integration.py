@@ -338,3 +338,171 @@ class TestGitHubCommentDelivery:
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).
         assert chat_id in adapter._delivery_info
+
+
+# ===================================================================
+# Test 5: Sentry issue-alert signature validation
+# ===================================================================
+
+def _sentry_signature(body: bytes, secret: str) -> str:
+    """Compute sentry-hook-signature for *body* using *secret*.
+
+    Sentry signs the raw request body with HMAC-SHA256 keyed on the
+    Sentry App's client secret and sends the bare hex digest (no
+    ``sha256=`` prefix, unlike GitHub).
+    """
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+# A realistic Sentry issue-alert payload (trimmed)
+SENTRY_ALERT_PAYLOAD = {
+    "action": "triggered",
+    "data": {
+        "event": {
+            "title": "ReferenceError: heck is not defined",
+            "project_slug": "backend",
+            "level": "error",
+            "culprit": "/js/prod/runner.min.js",
+            "web_url": "https://sentry.io/organizations/test-org/issues/1/",
+        },
+        "triggered_rule": "Very Important Alert!",
+    },
+}
+
+
+class TestSentrySignature:
+    """Sentry's integration-platform webhooks use their own signature header.
+
+    Sentry does not allow customising outbound header names, so the adapter
+    must recognise ``sentry-hook-signature`` explicitly; otherwise these
+    deliveries fall through to the "no recognised signature header" reject
+    and every alert 401s.
+    """
+
+    @pytest.mark.asyncio
+    async def test_valid_sentry_signature_accepted(self):
+        secret = "sentry-client-secret"
+        routes = {
+            "sentry": {
+                "secret": secret,
+                "prompt": "SENTRY: {data.event.title} ({data.event.level})",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+
+        captured_events: list[MessageEvent] = []
+
+        async def _capture(event: MessageEvent):
+            captured_events.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        body = json.dumps(SENTRY_ALERT_PAYLOAD).encode()
+        sig = _sentry_signature(body, secret)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/sentry",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "sentry-hook-signature": sig,
+                    "sentry-hook-resource": "event_alert",
+                },
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+
+        assert len(captured_events) == 1
+        assert "ReferenceError" in captured_events[0].text
+
+    @pytest.mark.asyncio
+    async def test_tampered_body_rejected(self):
+        """A signature computed over different bytes must not validate."""
+        secret = "sentry-client-secret"
+        routes = {
+            "sentry": {
+                "secret": secret,
+                "prompt": "SENTRY: {data.event.title}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        app = _create_app(adapter)
+
+        body = json.dumps(SENTRY_ALERT_PAYLOAD).encode()
+        sig = _sentry_signature(body, secret)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/sentry",
+                data=body + b" ",  # signature no longer matches the body
+                headers={
+                    "Content-Type": "application/json",
+                    "sentry-hook-signature": sig,
+                },
+            )
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_wrong_secret_rejected(self):
+        """A well-formed signature keyed with the wrong secret must 401."""
+        routes = {
+            "sentry": {
+                "secret": "the-real-secret",
+                "prompt": "SENTRY: {data.event.title}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        app = _create_app(adapter)
+
+        body = json.dumps(SENTRY_ALERT_PAYLOAD).encode()
+        sig = _sentry_signature(body, "an-attacker-secret")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/sentry",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "sentry-hook-signature": sig,
+                },
+            )
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_github_signature_still_validates(self):
+        """Regression guard: adding Sentry must not shadow the GitHub path.
+
+        The Sentry branch sits ahead of the generic V1/V2 branches, so this
+        asserts the earlier vendor branches are still reached intact.
+        """
+        secret = "gh-secret"
+        routes = {
+            "github-pr": {
+                "secret": secret,
+                "prompt": "PR #{number}",
+                "deliver": "log",
+            }
+        }
+        adapter = _make_adapter(routes)
+        app = _create_app(adapter)
+
+        body = json.dumps(GITHUB_PR_PAYLOAD).encode()
+        sig = _github_signature(body, secret)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/github-pr",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-GitHub-Event": "pull_request",
+                    "X-Hub-Signature-256": sig,
+                },
+            )
+            assert resp.status == 202

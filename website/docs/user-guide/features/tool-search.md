@@ -196,14 +196,17 @@ laptop GPU). "Hit" = the tool the agent needed appears in the top-5:
 
 | Ranker | Hits / 12 queries | Per-query latency (warm cache) |
 | --- | --- | --- |
-| BM25 (default) | 4 | ~5 ms |
-| `rerank`, nomic-embed-text | 8 | ~55 ms |
-| `rrf` k=10, nomic-embed-text | 9 | ~55 ms |
+| BM25 (before this change) | 4 | ~5 ms |
+| BM25 + name-coverage bonus (new default) | 8 | ~5 ms |
+| + `rerank`, nomic-embed-text | 8 | ~55 ms |
+| + `rrf` k=10, nomic-embed-text | 9 | ~55 ms |
 
-One-time catalog embed for the 1,938 tools: ~9 s. Queries BM25 missed
-and the reranker recovered include `"list my accounts"` →
-`get_accounts`, `"zones"` → `get_zones`, `"deploy to pages"` →
-`post_accounts_pages_projects_deployments`. Neither ranker recovers
+One-time catalog embed for the 1,938 tools: ~9 s. The dependency-free
+name-coverage bonus (see *Implementation details*) recovers the
+short-name failures (`"accounts"` → `get_accounts`, `"zones"` →
+`get_zones`); the reranker additionally recovers intent phrasing with
+no name overlap (`"list my accounts"` → `get_accounts`, `"deploy to
+pages"` → `post_accounts_pages_projects_deployments`). Neither recovers
 `"cloudflare authentication whoami"` → `get_user`; that is a
 vocabulary gap in the tool description, not a ranking problem.
 
@@ -314,6 +317,14 @@ to any progressive-disclosure design, not specific to this implementation:
   enabled, the BM25 candidates are reordered by embedding similarity
   (or rank-fused with it); on any endpoint failure the BM25 order is
   returned unchanged.
+- **Name-coverage bonus.** BM25 rewards token co-occurrence in long
+  names, so on a flat REST-style catalog `"accounts"` ranks
+  `put_accounts_by_account_id` above `get_accounts`. Each positive BM25
+  score is multiplied by `1 + F1(query tokens, name tokens)`, so a short
+  name fully explained by the query outranks a long name that merely
+  contains those tokens. A zero score stays zero (the substring fallback
+  and empty-result behavior are untouched) and exact-name matches still
+  pin first.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

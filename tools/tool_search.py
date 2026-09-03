@@ -545,6 +545,9 @@ class CatalogEntry:
 
     # Pre-tokenized fields for BM25.
     _tokens: List[str] = field(default_factory=list)
+    # Stemmed tokens of the tool NAME only (mcp__ prefix stripped), used for
+    # the name-coverage bonus in search_catalog. Empty = no bonus.
+    _name_tokens: frozenset = frozenset()
     # Text embedded by the optional reranker (name + description; no
     # parameter noise). Built eagerly — it is a cheap string concat.
     _embed_text: str = ""
@@ -583,6 +586,13 @@ def _tokenize(text: str) -> List[str]:
     if not text:
         return []
     return [_stem(token.lower()) for token in _TOKEN_RE.findall(text)]
+
+
+def _name_words(name: str) -> str:
+    """Break a tool name into words: strip ``mcp__``, split on separators."""
+    if name.startswith("mcp__"):
+        name = name[len("mcp__"):]
+    return name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
 
 
 def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
@@ -675,6 +685,7 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
             source=source,
             source_name=source_name,
             _tokens=_tokenize(_entry_search_text(td, source_label)),
+            _name_tokens=frozenset(_tokenize(_name_words(name))),
             _embed_text=_entry_embed_text(td, source_label),
         )
         catalog.append(entry)
@@ -710,6 +721,37 @@ def _bm25_score(query_tokens: List[str], doc_tokens: List[str],
         norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / max(avg_dl, 1.0)))
         score += idf * norm
     return score
+
+
+# Weight of the name-coverage bonus: BM25 score is multiplied by
+# ``1 + _NAME_COVERAGE_WEIGHT * F1(query tokens, name tokens)``.
+_NAME_COVERAGE_WEIGHT = 1.0
+
+
+def _name_coverage_factor(query_set: set, name_tokens: frozenset) -> float:
+    """Multiplier that favors tools whose NAME is covered by the query.
+
+    BM25 alone rewards token co-occurrence in long names: for ``"accounts"``
+    on a flat REST catalog, ``put_accounts_by_account_id`` (``account``
+    twice) and ``get_accounts_builds_account_limits`` outscore the 2-token
+    ``get_accounts``. The factor is ``1 + w * F1`` where F1 is the harmonic
+    mean of (query tokens found in the name / query tokens) and (name tokens
+    found in the query / name tokens) — so a short name fully explained by
+    the query beats a long name that merely contains the same tokens.
+
+    Multiplicative on purpose: a zero BM25 score stays zero (the substring
+    fallback and empty-result semantics are unchanged), exact-name pins stay
+    ``inf``, and an entry with no name tokens gets factor 1.
+    """
+    if not name_tokens or not query_set:
+        return 1.0
+    overlap = len(query_set & name_tokens)
+    if overlap == 0:
+        return 1.0
+    recall = overlap / len(query_set)
+    precision = overlap / len(name_tokens)
+    f1 = 2 * precision * recall / (precision + recall)
+    return 1.0 + _NAME_COVERAGE_WEIGHT * f1
 
 
 _CorpusStats = Tuple[List[int], float, Dict[str, int], int]
@@ -764,6 +806,7 @@ def search_catalog(
 
     scored: List[Tuple[float, CatalogEntry]] = []
     exact_name = query.strip().lower()
+    query_set = set(query_tokens)
     for entry in catalog:
         if entry.name.lower() == exact_name:
             scored.append((float("inf"), entry))
@@ -771,7 +814,7 @@ def search_catalog(
         s = _bm25_score(query_tokens, entry._tokens, doc_lengths, avg_dl,
                         doc_freq, n_docs)
         if s > 0:
-            scored.append((s, entry))
+            scored.append((s * _name_coverage_factor(query_set, entry._name_tokens), entry))
 
     if reranker is not None:
         try:

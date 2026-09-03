@@ -143,7 +143,12 @@ def safe_extract_targz(
                 pass
 
 
-def archive_root_dirs(archive: Path, *, max_members: int | None = None) -> set[str]:
+def archive_root_dirs(
+    archive: Path,
+    *,
+    max_bytes: int | None = None,
+    max_members: int | None = None,
+) -> set[str]:
     """Return the archive's top-level directory names.
 
     Transfer archives carry exactly one root directory, which names the
@@ -152,10 +157,17 @@ def archive_root_dirs(archive: Path, *, max_members: int | None = None) -> set[s
     without first mutating a live tree.
     """
     roots: set[str] = set()
+    declared_bytes = 0
     with tarfile.open(archive, "r:gz") as tf:
         for member_count, member in enumerate(tf, start=1):
             if max_members is not None and member_count > max_members:
                 raise ValueError(f"Archive exceeds the {max_members} member limit.")
+            if member.isfile():
+                declared_bytes += member.size
+                if max_bytes is not None and declared_bytes > max_bytes:
+                    raise ValueError(
+                        f"Archive exceeds the {max_bytes} byte expanded-size limit."
+                    )
             parts = normalize_archive_parts(member.name)
             if len(parts) > 1 or member.isdir():
                 roots.add(parts[0])

@@ -187,7 +187,11 @@ def _validate_bot_archive(archive: Path) -> tuple[str, str]:
         raise ValueError(
             f"Bot clone exceeds the {MAX_BOT_CLONE_BYTES // 1_000_000} MB transfer limit."
         )
-    roots = archive_root_dirs(archive, max_members=MAX_BOT_CLONE_MEMBERS)
+    roots = archive_root_dirs(
+        archive,
+        max_bytes=MAX_BOT_CLONE_BYTES,
+        max_members=MAX_BOT_CLONE_MEMBERS,
+    )
     if len(roots) != 1:
         raise ValueError("Bot clone must contain exactly one top-level directory.")
     archive_root = next(iter(roots))

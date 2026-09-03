@@ -2444,7 +2444,11 @@ def import_profile(
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    top_dirs = archive_root_dirs(archive, max_members=max_archive_members)
+    top_dirs = archive_root_dirs(
+        archive,
+        max_bytes=max_extract_bytes,
+        max_members=max_archive_members,
+    )
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
     if not inferred_name:

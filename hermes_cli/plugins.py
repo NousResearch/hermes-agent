@@ -4262,18 +4262,21 @@ class PluginManager:
                 # first process sees plugin backends (tracking #64177).
                 self._refresh_secret_sources_after_discovery()
                 if force:
-                    # config.yaml shell hooks live in ``_hooks`` but are
-                    # config-owned, not plugin-owned — the ledger-driven
-                    # unload() above wiped them and cannot restore them.
-                    # Re-register so force-reload is symmetric (#60036;
-                    # tracking #64178 — salvaged from PR #64188).
-                    self._re_register_shell_hooks_after_force()
+                    # config.yaml shell hooks and outbound webhooks live in
+                    # ``_hooks`` but are config-owned, not plugin-owned —
+                    # the ledger-driven unload() above wiped them and
+                    # cannot restore them. Re-register so force-reload is
+                    # symmetric (#60036; tracking #64178 — salvaged from
+                    # PR #64188; outbound webhooks added per #92682 review).
+                    self._re_register_config_hooks_after_force()
             except BaseException:
                 self._discovered = False
                 raise
 
-    def _re_register_shell_hooks_after_force(self) -> None:
-        """Restore config.yaml shell hooks wiped by force-clear of ``_hooks``."""
+    def _re_register_config_hooks_after_force(self) -> None:
+        """Restore config.yaml shell hooks/outbound webhooks wiped by
+        force-clear of ``_hooks``. Each re-register call is independently
+        guarded so one failing does not skip the other."""
         try:
             from agent.shell_hooks import re_register_config_hooks
 
@@ -4281,6 +4284,14 @@ class PluginManager:
         except Exception as exc:
             # Import cycle / missing module must not abort force reload.
             logger.debug("force-reload shell-hook re-register skipped: %s", exc)
+        try:
+            from agent.outbound_webhooks import (
+                re_register_config_hooks as re_register_outbound_webhooks,
+            )
+
+            re_register_outbound_webhooks()
+        except Exception as exc:
+            logger.debug("force-reload outbound-webhook re-register skipped: %s", exc)
 
     def _refresh_secret_sources_after_discovery(self) -> None:
         """If any plugin secret source is enabled, reset cache and re-apply.

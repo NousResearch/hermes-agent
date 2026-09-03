@@ -19,12 +19,16 @@ outcome, so the agent knows whether the selector matched. This module is just
 schema + a thin dispatcher over the platform-injected callback.
 
 Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions.
+desktop-sourced sessions, and withdraws itself when the user has switched tours
+off (Settings → Appearance). A tour takes the whole screen, so "no thanks" has
+to mean the model is never told the tool exists — a switch that only made the
+call fail would leave Hermes offering walkthroughs it cannot give.
 """
 
 import json
 from typing import Callable, Optional
 
+from tools import desktop_ui
 from tools.registry import registry, tool_error
 
 ACTIONS = ("targets", "show", "start", "next", "prev", "stop")
@@ -125,7 +129,7 @@ _STEP_SCHEMA = {
 }
 
 TOUR_SCHEMA = {
-    "name": "tour",
+    "name": "gui_tour",
     # Dieted (#95681): targets-first flow + stable-selector preference kept
     # (pre-effect: skipping them means guessed selectors on re-rendering UI).
     "description": (
@@ -179,8 +183,13 @@ TOUR_SCHEMA = {
 }
 
 
+def check_tours_enabled() -> bool:
+    """The user's Settings → Appearance switch. On unless they turned it off."""
+    return desktop_ui.user_enabled("in_app_tours", default=True)
+
+
 registry.register(
-    name="tour",
+    name="gui_tour",
     toolset="desktop_ui",
     schema=TOUR_SCHEMA,
     handler=lambda args, **kw: tour_tool(
@@ -194,5 +203,6 @@ registry.register(
         step_index=args.get("step_index"),
         callback=kw.get("callback"),
     ),
+    check_fn=check_tours_enabled,
     emoji="🧭",
 )

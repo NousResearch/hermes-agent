@@ -23,6 +23,14 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
+class TranscriptReadError(RuntimeError):
+    """Raised when persisted history cannot be read safely."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"transcript read failed for session {session_id}")
+
+
 def _now() -> datetime:
     """Return the current local time."""
     return datetime.now()
@@ -1370,12 +1378,16 @@ class SessionStore:
         once it expires, one caller reopens while concurrent callers keep
         using the JSONL fallback.
         """
-        from hermes_state import SessionDB, _default_db_path
+        from hermes_state import SessionDB, _default_db_path, get_shared_session_db
 
         path = Path(db_path) if db_path is not None else Path(_default_db_path())
         def _open():
             try:
-                return SessionDB(db_path=path) if db_path is not None else SessionDB()
+                # Route through the process-wide shared registry (#90837):
+                # every long-lived in-process caller (store, runner, cron,
+                # mirror, slash commands, tools) shares ONE writer
+                # connection per path instead of each minting its own.
+                return get_shared_session_db(path)
             except RuntimeError as e:
                 if "live-system guard" in str(e):
                     # Test-isolation guard fired: a pytest-context process
@@ -1605,8 +1617,11 @@ class SessionStore:
         pinner owns its lifecycle.
         """
         def _close(db) -> None:
+            # Shared instances no-op on close() (the registry owns the
+            # lifecycle).  Release the refcount instead (#90837).
+            from hermes_state import release_or_close
             try:
-                db.close()
+                release_or_close(db)
             except Exception as exc:
                 logger.debug("SessionDB close error during handle sweep: %s", exc)
 
@@ -2194,10 +2209,15 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
-        if getattr(self.config, "multiplex_profiles", False):
-            return True
+        """Prevent a gateway from reviving another profile's row.
 
+        Single-profile: the recovered row's namespace must match the ACTIVE
+        profile. Multiplexed: several profiles serve traffic at once, so the
+        active profile is meaningless — the requested key carries the profile
+        the turn was routed to, and the recovered row must sit in the same
+        ``agent:<ns>:`` namespace (#74285). Rows with no key namespace stay
+        adoptable in both modes (legacy/keyless data owned by this store).
+        """
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
@@ -2205,6 +2225,10 @@ class SessionStore:
         recovered_profile = self._profile_from_session_key(recovered_key)
         if recovered_profile is None:
             return True
+
+        if getattr(self.config, "multiplex_profiles", False):
+            requested_profile = self._profile_from_session_key(requested_session_key)
+            return requested_profile is None or recovered_profile == requested_profile
 
         return recovered_profile == self._active_profile_name()
 
@@ -2412,8 +2436,7 @@ class SessionStore:
         ):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "the row belongs to a different profile",
                 recovered.get("session_key"),
                 session_key,
             )
@@ -2489,8 +2512,7 @@ class SessionStore:
         ):
             logger.warning(
                 "Gateway session DB recovery ignored %s for %s because "
-                "multiplex_profiles is disabled and the row belongs to a "
-                "different profile",
+                "the row belongs to a different profile",
                 recovered.get("session_key"),
                 session_key,
             )
@@ -3966,14 +3988,23 @@ class SessionStore:
             try:
                 self._append_transcript_message(session_id, msg)
             except Exception as exc:
-                from hermes_state import CompressionSessionClosedError, StateDbReplacedError
+                from hermes_state import (
+                    CompressionSessionClosedError,
+                    StateDbCorruptError,
+                    StateDbReplacedError,
+                )
 
-                if isinstance(exc, StateDbReplacedError):
+                if isinstance(exc, (StateDbReplacedError, StateDbCorruptError)):
+                    # Both classes mean "this handle must not touch the file
+                    # again": replaced generation (#89332) or structural
+                    # corruption (quarantine). Retrying cannot succeed, and
+                    # the FTS one-shot rebuild below must never run on a
+                    # damaged file. Divert instead.
                     logger.error(
-                        "Session DB was replaced underneath the gateway for %s; "
-                        "stopping SQLite writes and diverting pending "
+                        "Session DB refused further writes on this handle for "
+                        "%s (%s); stopping SQLite writes and diverting pending "
                         "transcripts to the on-disk fallback: %s",
-                        session_id, exc,
+                        session_id, type(exc).__name__, exc,
                     )
                     with self._transcript_retry_lock:
                         remaining = list(self._dirty_transcripts.get(queue_session_id, []))
@@ -4393,15 +4424,17 @@ class SessionStore:
                 session_id, repair_alternation=True
             )
         except Exception as e:
-            # A failed read must be distinguishable from an empty transcript:
-            # downstream guards treat [] as "nothing persisted" and may make
-            # routing decisions on it (#82616). WARNING, not DEBUG.
-            logger.warning(
-                "Transcript read failed for session %s (returning empty; "
-                "downstream must not treat this as data loss): %s",
-                session_id, e,
+            # Empty history is valid data; a failed canonical read is not.
+            # Preserve that distinction so live-replay callers can fail closed
+            # instead of starting the model with a plausible-looking [].
+            logger.error(
+                "Transcript read failed for session %s; refusing to treat the "
+                "conversation as empty: %s",
+                session_id,
+                e,
+                exc_info=True,
             )
-            return []
+            raise TranscriptReadError(session_id) from e
 
     def rewind_session(
         self,

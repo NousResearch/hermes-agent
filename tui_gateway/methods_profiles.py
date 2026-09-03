@@ -187,12 +187,14 @@ def _(rid, params: dict) -> dict:
 
             from pathlib import Path
 
-            wdb = SessionDB(db_path=Path(profile_path) / "state.db")
+            from hermes_state import get_shared_session_db
+            wdb = get_shared_session_db(Path(profile_path) / "state.db")
             try:
                 return bool(wdb.unarchive_recoverable_session(session_id))
             finally:
                 try:
-                    wdb.close()
+                    from hermes_state import release_or_close
+                    release_or_close(wdb)
                 except Exception:
                     pass
         except Exception:
@@ -464,6 +466,15 @@ def _(rid, params: dict) -> dict:
                 try:
                     os.chmod(str(dst_auth), 0o600)
                 except OSError:
+                    pass
+                # Mirroring must not fork single-use OAuth grants (Anthropic /
+                # Codex / xAI): the first profile to refresh strands every
+                # sibling (#100339). API keys stay; OAuth rows are dropped
+                # and read from the root grant via the pool fallback.
+                try:
+                    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+                    strip_cloned_single_use_oauth_grants(path)
+                except Exception:
                     pass
                 mirrored["auth"] = True
         except Exception:

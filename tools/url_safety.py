@@ -21,7 +21,7 @@ Limitations:
     connects to the validated IP while preserving Host/SNI semantics.
   - Redirect-based bypass is mitigated by httpx event hooks that re-validate
     each redirect target in vision_tools, gateway platform adapters, and
-    media cache helpers. Web tools use third-party SDKs (Firecrawl/Exa)
+    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
     where redirect handling is on their servers.
 """
 

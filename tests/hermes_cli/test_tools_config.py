@@ -245,6 +245,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "KEENABLE_API_KEY",
+        "TAVILY_API_KEY",
         "PARALLEL_API_KEY",
         "BROWSERBASE_API_KEY",
         "BROWSERBASE_PROJECT_ID",

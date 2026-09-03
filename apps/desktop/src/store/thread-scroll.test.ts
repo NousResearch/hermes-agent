@@ -32,7 +32,7 @@ describe('publishThreadAtBottom', () => {
     expect($threadScrolledUp.get()).toBe(false)
   })
 
-  it('keeps the visible pane\'s scrolled-up chrome when a hidden pane publishes', () => {
+  it("keeps the visible pane's scrolled-up chrome when a hidden pane publishes", () => {
     publishThreadAtBottom(false, { paneVisible: true })
 
     publishThreadAtBottom(true, { paneVisible: false })
@@ -77,7 +77,7 @@ describe('requestScrollToBottom', () => {
     stopB()
   })
 
-  it('does not let a late unmount clear a newer session\'s handler', () => {
+  it("does not let a late unmount clear a newer session's handler", () => {
     const first = vi.fn()
     const second = vi.fn()
     const stopFirst = onScrollToBottomRequest(first, 'session-a')

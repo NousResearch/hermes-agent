@@ -71,6 +71,7 @@ import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './ro
 import { startHideSweepScheduler } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, ID, setPluginCtx } from './shared'
 import type { GroupChat, RosterRow } from './types'
+import { loadBotSections } from './user-sections'
 
 // ── plugin ───────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,9 @@ export default {
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
+    // The user's own roster sections. Read once at register; every mutation
+    // writes through.
+    loadBotSections()
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
     startFaceClock()
@@ -551,10 +555,10 @@ export default {
                 return
               }
 
-              // A claim without a registry id is a fronted non-canonical tab
-              // (focusExistingBotTab / the draft fallback): re-resolving the
-              // canonical chat here would open the Bot Chat the user has
-              // closed. Its tile recovers on the next send like any tab.
+              // A claim without a registry id is the legacy newChat draft
+              // fallback: re-resolving the canonical chat here would replace
+              // a draft the user is typing into. Its tile recovers on the next
+              // send like any tab.
               if (!claim.openedRegistryId) {
                 return
               }

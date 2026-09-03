@@ -55,10 +55,7 @@ class FakeReviewAgent:
     def interrupt(self, message=None):
         pass
 
-    def shutdown_memory_provider(self):
-        pass
-
-    def close(self):
+    def release_clients(self):
         pass
 
 
@@ -185,7 +182,13 @@ def _install_relay_recorder(monkeypatch, review_run=None):
     return calls
 
 
-def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
+def test_background_review_releases_clients_without_closing_shared_session(monkeypatch):
+    """The review fork must not clean up resources owned by its parent session.
+
+    The fork uses the foreground session ID for prefix-cache parity.  Calling
+    ``close()`` would therefore kill that session's registered terminal
+    processes and tear down its environment when the review completes.
+    """
     events = []
 
     class FakeReviewAgent:
@@ -196,11 +199,11 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         def run_conversation(self, **kwargs):
             events.append(("run_conversation", kwargs))
 
-        def shutdown_memory_provider(self):
-            events.append(("shutdown_memory_provider", None))
-
         def close(self):
             events.append(("close", None))
+
+        def release_clients(self):
+            events.append(("release_clients", None))
 
     monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
     monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
@@ -216,8 +219,7 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     assert [name for name, _payload in events] == [
         "init",
         "run_conversation",
-        "shutdown_memory_provider",
-        "close",
+        "release_clients",
     ]
 
 
@@ -457,6 +459,27 @@ def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch
     assert agent._background_review_run is None
     assert agent._background_review_agent is None
     assert agent._active_children == []
+
+
+def test_background_review_snapshot_isolated_from_live_nested_messages():
+    """A review must not mutate the persisted/live transcript through aliases."""
+    original = [{
+        "role": "assistant",
+        "content": [{"type": "text", "text": "answer"}],
+        "tool_calls": [{
+            "id": "call-1",
+            "function": {"name": "read_file", "arguments": '{"path":"x"}'},
+        }],
+    }]
+
+    from agent.turn_finalizer import _clone_background_review_messages
+
+    snapshot = _clone_background_review_messages(original)
+    snapshot[0]["content"][0]["text"] = "review mutation"
+    snapshot[0]["tool_calls"][0]["function"]["arguments"] = "{}"
+
+    assert original[0]["content"][0]["text"] == "answer"
+    assert original[0]["tool_calls"][0]["function"]["arguments"] == '{"path":"x"}'
 
 
 def test_live_turn_waits_for_review_exit_before_relay_and_turn_context(monkeypatch):
@@ -725,7 +748,7 @@ def test_stale_review_cleanup_cannot_clear_or_signal_newer_review(monkeypatch):
             self.index = instance_count
             instance_count += 1
 
-        def shutdown_memory_provider(self):
+        def release_clients(self):
             if self.index == 0:
                 first_cleanup_entered.set()
                 assert allow_first_cleanup.wait(2.0)

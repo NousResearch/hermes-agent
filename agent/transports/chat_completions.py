@@ -378,6 +378,10 @@ class ChatCompletionsTransport(ProviderTransport):
           gateways (e.g. opencode-go, codex.nekos.me) reject with
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
+        - Provider-specific ordered replay sidecars --
+          ``anthropic_content_blocks`` and ``bedrock_content_blocks`` are
+          durable-history data for their native transports, not part of the
+          Chat Completions schema. They must not cross a provider boundary.
         """
         strip_extra_content = not _model_consumes_thought_signature(
             kwargs.get("model")
@@ -394,6 +398,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "timestamp" in msg  # #47868 — strict providers reject this
                 or "platform_message_id" in msg  # gateway dedup id (persistence-only)
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "anthropic_content_blocks" in msg
+                or "bedrock_content_blocks" in msg
             ):
                 needs_sanitize = True
                 break
@@ -466,6 +472,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 or "timestamp" in msg  # #47868 — leak into strict providers
                 or "platform_message_id" in msg  # gateway dedup id (persistence-only)
                 or "api_content" in msg  # persist-what-you-send sidecar
+                or "anthropic_content_blocks" in msg
+                or "bedrock_content_blocks" in msg
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
@@ -475,6 +483,8 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
                 out_msg.pop("platform_message_id", None)  # gateway dedup id
                 out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                out_msg.pop("anthropic_content_blocks", None)
+                out_msg.pop("bedrock_content_blocks", None)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
@@ -757,9 +767,18 @@ class ChatCompletionsTransport(ProviderTransport):
                     extra_body["reasoning"] = gh_reasoning
             else:
                 _effort = "medium"
+                _enabled = True
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _effort = reasoning_config.get("effort", "medium") or "medium"
-                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                    # Honor an explicit "thinking off" (agent.reasoning_effort:
+                    # none / the one-shot length-continuation override) the same
+                    # way the provider-profile path does — never re-enable it.
+                    if reasoning_config.get("enabled") is False or _effort == "none":
+                        _enabled = False
+                if _enabled:
+                    extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                else:
+                    extra_body["reasoning"] = {"enabled": False, "effort": "none"}
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

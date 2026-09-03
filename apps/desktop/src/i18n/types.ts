@@ -2816,6 +2816,7 @@ export interface Translations {
       annotateOn: string
       annotateNeedPage: string
       annotateFailed: string
+      annotateFlushUnavailable: string
       commenting: string
       addComments: (count: number) => string
       commentPlaceholder: string

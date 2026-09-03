@@ -45,6 +45,7 @@ import { translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+import { installAnnotateFlushReceiver } from '@/lib/preview-annotate'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
@@ -74,7 +75,7 @@ import { watchSessionPins } from '@/store/session-pin-sync'
 import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
-import { isBrowserWindow, isHudWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
@@ -463,6 +464,14 @@ if (!isBrowserWindow() && !isHudWindow()) {
   startUnrestoredTileTitleBackfill()
   watchRouteTiles()
   watchPreviewTiles()
+}
+
+// Pop-out annotate flushes land in the primary window's composer. Auxiliary
+// windows (secondary, HUD, and the pop-out itself) never install the receiver:
+// secondary windows own their own composers, and the pop-out has none —
+// installing it there would swallow its own flushes back into the void.
+if (!isAuxiliaryWindow()) {
+  installAnnotateFlushReceiver()
 }
 
 // Composer pop-out state is keyed by layout zone, so drop entries for zones the

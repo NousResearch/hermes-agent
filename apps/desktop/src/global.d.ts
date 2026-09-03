@@ -81,6 +81,20 @@ declare global {
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
       openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
       onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
+      // Pop-out annotate flush: post packaged comment pins for the primary
+      // window's composer (`hermes:annotate:flush`), and receive them there
+      // (`hermes:annotate:flushed`). Items carry the packed per-comment prompt
+      // plus the crop as a data URL; the receiver rebuilds `Comment_N.png`.
+      postAnnotateFlush: (envelope: {
+        id: string
+        items: { imageDataUrl?: string; note?: string; number: number; prompt: string }[]
+        pageUrl?: string
+      }) => Promise<{ error?: string; ok: boolean }>
+      onAnnotateFlushed: (callback: (envelope: {
+        id: string
+        items: { imageDataUrl?: string; note?: string; number: number; prompt: string }[]
+        pageUrl?: string
+      }) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.

@@ -12556,6 +12556,21 @@ def cmd_dashboard(args):
                 exc_info=True,
             )
 
+    # Declarative shell hooks: the dashboard/serve process builds agents
+    # in-process via tui_gateway.server._make_agent (desktop chat, in-browser
+    # Chat tab), so hooks must be registered here too —
+    # _prepare_agent_startup skips non-_AGENT_COMMANDS (serve is not one),
+    # and the separate `gateway run` process (which does register) never
+    # runs these sessions. Mirrors gateway/run.py's registration.
+    # Failures are logged but must never block startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.warning("shell-hook registration failed at dashboard startup", exc_info=True)
+
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no

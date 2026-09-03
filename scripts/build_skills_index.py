@@ -40,6 +40,7 @@ from tools.skills_hub import (
     ClawHubSource,
     LobeHubSource,
     BrowseShSource,
+    COMMUNITY_INDEX_TAPS,
     SkillMeta,
 )
 import httpx
@@ -253,7 +254,7 @@ def main():
     sources = {
         "official": OptionalSkillSource(),
         "well-known": WellKnownSkillSource(),
-        "github": GitHubSource(auth=auth),
+        "github": GitHubSource(auth=auth, extra_taps=COMMUNITY_INDEX_TAPS),
         "clawhub": ClawHubSource(),
         "lobehub": LobeHubSource(),
         "browse-sh": BrowseShSource(),

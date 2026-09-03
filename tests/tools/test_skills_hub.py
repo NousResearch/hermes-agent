@@ -29,6 +29,7 @@ from tools.skills_hub import (
     append_audit_log,
     quarantine_bundle,
     _referenced_support_paths,
+    COMMUNITY_INDEX_TAPS,
 )
 
 
@@ -113,6 +114,85 @@ class TestSkillsShGroupings:
         assert len(skills) == 1
         assert skills[0].extra["category"] == "Decision Optimization"
 
+
+class TestGitHubRootSkills:
+    def test_list_treats_configured_path_with_skill_md_as_one_skill(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = [
+            {"type": "file", "name": "SKILL.md"},
+            {"type": "dir", "name": "references"},
+        ]
+        meta = SkillMeta(
+            name="detect-deepfake",
+            description="Detect synthetic media.",
+            source="github",
+            identifier="resemble-ai/detect-skill",
+            trust_level="community",
+        )
+
+        with patch.object(src, "_read_cache", return_value=None), \
+             patch.object(src, "_write_cache") as write_cache, \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "_github_get", return_value=resp), \
+             patch.object(src, "inspect", return_value=meta) as inspect:
+            skills = src._list_skills_in_repo("resemble-ai/detect-skill", "")
+
+        assert skills == [meta]
+        inspect.assert_called_once_with("resemble-ai/detect-skill")
+        write_cache.assert_called_once()
+
+    def test_inspect_reads_repository_root_skill(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        skill_md = "---\nname: root-skill\ndescription: Root skill.\n---\n"
+
+        with patch.object(src, "_fetch_file_content", return_value=skill_md) as fetch:
+            meta = src.inspect("owner/root-skill")
+
+        fetch.assert_called_once_with("owner/root-skill", "SKILL.md")
+        assert meta is not None
+        assert meta.name == "root-skill"
+        assert meta.path == ""
+        assert meta.trust_level == "community"
+
+    def test_fetch_root_skill_does_not_bundle_unrelated_repo_files(self):
+        src = GitHubSource(auth=MagicMock(spec=GitHubAuth))
+        skill_md = (
+            "---\nname: root-skill\ndescription: Root skill.\n---\n"
+            "Read [the guide](references/guide.md).\n"
+        )
+        tree = (
+            "main",
+            [
+                {"type": "blob", "mode": "100644", "path": "SKILL.md"},
+                {"type": "blob", "mode": "100644", "path": "references/guide.md"},
+                {"type": "blob", "mode": "100644", "path": "src/unrelated.py"},
+            ],
+        )
+        src._tree_revisions["owner/root-skill"] = "abc123"
+
+        def fetch_file(_repo, path, ref=None):
+            assert ref == "abc123"
+            return {
+                "SKILL.md": skill_md.encode(),
+                "references/guide.md": b"# Guide\n",
+            }.get(path)
+
+        with patch.object(src, "_get_repo_tree", return_value=tree), \
+             patch.object(src, "_fetch_file_bytes", side_effect=fetch_file):
+            bundle = src.fetch("owner/root-skill")
+
+        assert bundle is not None
+        assert bundle.name == "root-skill"
+        assert bundle.files == {
+            "SKILL.md": skill_md,
+            "references/guide.md": b"# Guide\n",
+        }
+        assert bundle.metadata["source_revision"] == "abc123"
+        assert bundle.metadata["source_url"] == (
+            "https://github.com/owner/root-skill/tree/abc123"
+        )
+
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
@@ -146,6 +226,27 @@ class TestTrustLevelFor:
                 "from GitHubSource.DEFAULT_TAPS — its skills will not be "
                 "browsable via `hermes skills browse`."
             )
+
+    def test_linked_community_repositories_are_browseable_but_not_trusted(self):
+        expected = {
+            "mattpocock/skills",
+            "ZeroPointRepo/youtube-skills",
+            "composio-community/skills",
+            "addyosmani/agent-skills",
+            "resemble-ai/detect-skill",
+            "calesthio/OpenMontage",
+            "mukul975/Anthropic-Cybersecurity-Skills",
+            "jakubkrehel/make-interfaces-feel-better",
+            "Panniantong/Agent-Reach",
+        }
+        tap_repos = {tap["repo"] for tap in COMMUNITY_INDEX_TAPS}
+
+        assert expected <= tap_repos
+        src = self._source()
+        assert all(
+            src.trust_level_for(f"{repo}/example") == "community"
+            for repo in expected
+        )
 
 
 class TestGitHubSourceFileFetch:
@@ -754,6 +855,34 @@ class TestHermesIndexSearch:
         ids = [h.identifier for h in hits]
         assert "NVIDIA/skills/skills/accelerated-computing-cudf" in ids
         assert "clawhub/unrelated" not in ids
+
+    def test_fetch_repository_root_skill(self):
+        src = _make_index_source([
+            {
+                "name": "resemble-detect",
+                "description": "Detect synthetic media.",
+                "source": "github",
+                "identifier": "resemble-ai/detect-skill",
+                "repo": "resemble-ai/detect-skill",
+                "path": "",
+                "tags": [],
+            },
+        ])
+        github = MagicMock()
+        github.fetch.return_value = SkillBundle(
+            name="resemble-detect",
+            files={"SKILL.md": "body"},
+            source="github",
+            identifier="resemble-ai/detect-skill",
+            trust_level="community",
+        )
+        src._github = github
+
+        bundle = src.fetch("resemble-ai/detect-skill")
+
+        github.fetch.assert_called_once_with("resemble-ai/detect-skill")
+        assert bundle is not None
+        assert bundle.name == "resemble-detect"
 
 class TestProviderFilter:
     def test_filter_results_by_provider_narrows_exactly(self):

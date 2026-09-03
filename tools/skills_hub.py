@@ -43,6 +43,25 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 
+# Community repositories included in the centrally built skills index. They
+# are intentionally not live default taps: crawling the larger collections on
+# every interactive search would be slow and consume the user's GitHub quota.
+# Index results still install through GitHubSource and retain community trust.
+COMMUNITY_INDEX_TAPS = [
+    {"repo": "mattpocock/skills", "path": "skills/engineering/"},
+    {"repo": "mattpocock/skills", "path": "skills/misc/"},
+    {"repo": "mattpocock/skills", "path": "skills/productivity/"},
+    {"repo": "ZeroPointRepo/youtube-skills", "path": "skills/"},
+    {"repo": "composio-community/skills", "path": "skills/"},
+    {"repo": "addyosmani/agent-skills", "path": "skills/"},
+    {"repo": "resemble-ai/detect-skill", "path": ""},
+    {"repo": "calesthio/OpenMontage", "path": ".agents/skills/"},
+    {"repo": "mukul975/Anthropic-Cybersecurity-Skills", "path": "skills/"},
+    {"repo": "jakubkrehel/make-interfaces-feel-better", "path": "skills/"},
+    {"repo": "Panniantong/Agent-Reach", "path": "agent_reach/skill/"},
+]
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -754,14 +773,16 @@ class GitHubSource(SkillSource):
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """
         Download a skill from GitHub.
-        identifier format: "owner/repo/path/to/skill-dir"
+        identifier format: "owner/repo/path/to/skill-dir". A repository-root
+        skill may use "owner/repo".
         """
-        parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        parts = identifier.strip("/").split("/", 2)
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
-        skill_path = parts[2]
+        skill_path = parts[2].strip("/") if len(parts) == 3 else ""
+        skill_md_path = f"{skill_path}/SKILL.md" if skill_path else "SKILL.md"
 
         # Resolve the tree FIRST so every byte fetch in this install —
         # SKILL.md included — can be pinned to the same revision. Without the
@@ -774,7 +795,7 @@ class GitHubSource(SkillSource):
         tree = self._get_repo_tree(repo)
         pinned_ref = self._tree_revisions.get(repo)
         skill_md = self._fetch_file_content(
-            repo, f"{skill_path.rstrip('/')}/SKILL.md", ref=pinned_ref
+            repo, skill_md_path, ref=pinned_ref
         )
         if skill_md is None:
             return None
@@ -783,7 +804,7 @@ class GitHubSource(SkillSource):
             return None
 
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
-        if tree is not None:
+        if tree is not None and skill_path:
             # Download the FULL skill directory, not just SKILL.md-linked
             # paths. Link-driven fetching silently dropped every support file
             # a skill keeps under a non-canonical dir name (`reference/`,
@@ -842,16 +863,32 @@ class GitHubSource(SkillSource):
                     )
             revision = self._tree_revisions.get(repo) or branch
         else:
+            root_entries = {
+                item.get("path", ""): item
+                for item in tree[1]
+            } if tree is not None and not skill_path else {}
             for rel_path in referenced:
-                content = self._fetch_file_bytes(repo, f"{skill_path.rstrip('/')}/{rel_path}")
+                item_path = f"{skill_path}/{rel_path}" if skill_path else rel_path
+                item = root_entries.get(item_path)
+                if item is not None and (
+                    item.get("type") != "blob" or item.get("mode") == "120000"
+                ):
+                    logger.warning(
+                        "Rejected non-regular referenced file in skill bundle: %s",
+                        item_path,
+                    )
+                    return None
+                content = self._fetch_file_bytes(repo, item_path, ref=pinned_ref)
                 if content is None:
                     logger.warning("Failed to fetch referenced skill support "
                                    "file; continuing without it: %s", rel_path)
                     continue
                 files[rel_path] = content
-            revision = ""
+            revision = pinned_ref or ""
 
-        skill_name = skill_path.rstrip("/").split("/")[-1]
+        frontmatter = self._parse_frontmatter_quick(skill_md)
+        fallback_name = skill_path.rsplit("/", 1)[-1] if skill_path else parts[1]
+        skill_name = str(frontmatter.get("name") or fallback_name)
         trust = self.trust_level_for(identifier)
 
         return SkillBundle(
@@ -862,8 +899,8 @@ class GitHubSource(SkillSource):
             trust_level=trust,
             metadata={
                 "source_url": (
-                    f"https://github.com/{repo}/tree/{revision}/{skill_path}"
-                    if revision else f"https://github.com/{repo}/{skill_path}"
+                    f"https://github.com/{repo}/tree/{revision}/{skill_path}".rstrip("/")
+                    if revision else f"https://github.com/{repo}/{skill_path}".rstrip("/")
                 ),
                 "source_revision": revision,
             },
@@ -871,20 +908,21 @@ class GitHubSource(SkillSource):
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Fetch just the SKILL.md metadata for preview."""
-        parts = identifier.split("/", 2)
-        if len(parts) < 3:
+        parts = identifier.strip("/").split("/", 2)
+        if len(parts) < 2:
             return None
 
         repo = f"{parts[0]}/{parts[1]}"
-        skill_path = parts[2].rstrip("/")
-        skill_md_path = f"{skill_path}/SKILL.md"
+        skill_path = parts[2].strip("/") if len(parts) == 3 else ""
+        skill_md_path = f"{skill_path}/SKILL.md" if skill_path else "SKILL.md"
 
         content = self._fetch_file_content(repo, skill_md_path)
         if not content:
             return None
 
         fm = self._parse_frontmatter_quick(content)
-        skill_name = fm.get("name", skill_path.split("/")[-1])
+        fallback_name = skill_path.rsplit("/", 1)[-1] if skill_path else parts[1]
+        skill_name = fm.get("name", fallback_name)
         description = fm.get("description", "")
 
         tags = []
@@ -934,6 +972,21 @@ class GitHubSource(SkillSource):
 
         skills: List[SkillMeta] = []
         groupings = self._get_skillsh_groupings(repo)
+        # Some repositories publish one skill at the configured path instead
+        # of a directory of skills. Treat that path as the skill root and do
+        # not probe its support directories as sibling skills.
+        if any(
+            entry.get("type") == "file" and entry.get("name") == "SKILL.md"
+            for entry in entries
+        ):
+            prefix = path.strip("/")
+            skill_identifier = f"{repo}/{prefix}" if prefix else repo
+            meta = self.inspect(skill_identifier)
+            if meta:
+                skills.append(meta)
+            self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
+            return skills
+
         for entry in entries:
             if entry.get("type") != "dir":
                 continue
@@ -4723,8 +4776,8 @@ class HermesIndexSource(SkillSource):
         # Fall back to identifier-based fetch via repo/path
         repo = entry.get("repo", "")
         path = entry.get("path", "")
-        if repo and path:
-            github_id = f"{repo}/{path}"
+        if repo:
+            github_id = f"{repo}/{path}" if path else repo
             bundle = self._get_github().fetch(github_id)
             if bundle:
                 bundle.source = entry.get("source", "hermes-index")

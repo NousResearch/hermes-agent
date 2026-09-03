@@ -51,7 +51,9 @@ def _install_fake_sources(monkeypatch, *, github_count,
     monkeypatch.setattr(build_mod, "WellKnownSkillSource", lambda: _FakeSource("well-known", well_known_count))
     monkeypatch.setattr(
         build_mod, "GitHubSource",
-        lambda auth: _FakeSource("github", github_count, rate_limited=github_rate_limited),
+        lambda auth, extra_taps=None: _FakeSource(
+            "github", github_count, rate_limited=github_rate_limited
+        ),
     )
     monkeypatch.setattr(build_mod, "ClawHubSource", lambda: _FakeSource("clawhub", 69000))
     monkeypatch.setattr(build_mod, "LobeHubSource", lambda: _FakeSource("lobehub", 500))

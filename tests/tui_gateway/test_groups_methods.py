@@ -462,6 +462,79 @@ def test_create_list_send_and_log_roundtrip(home):
     }
 
 
+def test_groups_tasks_returns_the_admitted_task_for_the_targeted_member(home):
+    """Regression for issue #102196: groups.tasks exposes per-member driver
+    task rows (the real queued/running/settled/... status per task) that
+    groups.state's aggregate driver_status never surfaced."""
+    _create_room()
+
+    sent = _result(
+        srv._methods["groups.send"](
+            2,
+            {
+                "room_id": "room-1",
+                "event_id": "event-1",
+                "actor": {"kind": "user", "id": "desktop-user"},
+                "payload": {"text": "hello", "thread_id": "thread-1"},
+            },
+        )
+    )
+    assert sent["driver_started"] is True
+
+    tasks = _result(srv._methods["groups.tasks"](3, {"room_id": "room-1"}))["tasks"]
+
+    assert len(tasks) >= 1
+    assert all(task["identity"]["room_id"] == "room-1" for task in tasks)
+    assert all(
+        task["status"]
+        in {
+            "queued",
+            "running",
+            "settled",
+            "failed",
+            "cancelled",
+            "indeterminate",
+            "deferred",
+            "stopping",
+        }
+        for task in tasks
+    )
+
+
+def test_groups_tasks_status_filter_narrows_the_result(home):
+    _create_room()
+    _result(
+        srv._methods["groups.send"](
+            2,
+            {
+                "room_id": "room-1",
+                "event_id": "event-1",
+                "actor": {"kind": "user", "id": "desktop-user"},
+                "payload": {"text": "hello", "thread_id": "thread-1"},
+            },
+        )
+    )
+
+    unfiltered = _result(srv._methods["groups.tasks"](3, {"room_id": "room-1"}))["tasks"]
+    matching_status = unfiltered[0]["status"]
+
+    filtered = _result(
+        srv._methods["groups.tasks"](4, {"room_id": "room-1", "status": matching_status})
+    )["tasks"]
+
+    assert len(filtered) == len([t for t in unfiltered if t["status"] == matching_status])
+    assert all(task["status"] == matching_status for task in filtered)
+
+
+def test_groups_tasks_on_unknown_room_matches_groups_state_error_shape(home):
+    """A bad room_id must return the same room-lookup error groups.state
+    uses (4114) -- not a silently empty task list masking a typo."""
+    result = srv._methods["groups.tasks"](1, {"room_id": "does-not-exist"})
+
+    assert "error" in result
+    assert result["error"]["code"] == 4114
+
+
 def test_groups_list_returns_bounded_pages(home):
     _create_room()
     _result(

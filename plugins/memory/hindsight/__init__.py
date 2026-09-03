@@ -588,6 +588,29 @@ def _load_simple_env(path) -> dict[str, str]:
     return values
 
 
+# Every env key this plugin owns in the hindsight-embed profile `.env`.
+#
+# The file is shared: `hindsight_embed.ProfileManager.create_profile` re-renders
+# it from its own bundled template on every `ensure_running` — including the
+# "daemon already healthy, reuse it" path — and writes keys the plugin never
+# emits, notably `HINDSIGHT_API_PORT`. Scoping the config-drift check to these
+# keys keeps a foreign key from reading as a local config change. (#82943)
+#
+# Deliberately a fixed set rather than `expected.keys()`: two of these are
+# emitted conditionally, so *removing* `llm_base_url` (or `idle_timeout`) from
+# the config must still count as a change — a subset-of-expected compare would
+# silently miss that and leave the stale value live in the daemon.
+# `test_managed_keys_cover_every_built_key` pins this set to the builder below.
+_MANAGED_PROFILE_ENV_KEYS = frozenset({
+    "HINDSIGHT_API_LLM_PROVIDER",
+    "HINDSIGHT_API_LLM_API_KEY",
+    "HINDSIGHT_API_LLM_MODEL",
+    "HINDSIGHT_API_LOG_LEVEL",
+    "HINDSIGHT_API_LLM_BASE_URL",
+    "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT",
+})
+
+
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env file that standalone hindsight-embed consumes."""
     current_key = llm_api_key
@@ -624,6 +647,26 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
     return env_values
+
+
+def _embedded_profile_env_changed(saved: dict[str, str], expected: dict[str, str]) -> bool:
+    """Has a plugin-managed key in the saved profile env drifted from *expected*?
+
+    Only `_MANAGED_PROFILE_ENV_KEYS` are compared, so keys owned by
+    `hindsight_embed` itself (`HINDSIGHT_API_PORT`, and anything else its
+    template grows) never read as a local config change. Reading both sides
+    with `.get()` means an edited, added *or removed* managed key all register.
+
+    Missing and empty are treated as the same state: `_build_embedded_profile_env`
+    renders an unset value as `""` for the keys it always emits and omits the
+    conditional ones entirely, so `KEY=` and "no KEY" mean the same thing here.
+    Without that, a template that seeds a managed key as empty would reintroduce
+    exactly the permanent-restart loop this check exists to avoid. (#82943)
+    """
+    return any(
+        (saved.get(key) or "") != (expected.get(key) or "")
+        for key in _MANAGED_PROFILE_ENV_KEYS
+    )
 
 
 def _embedded_profile_env_path(config: dict[str, Any]):
@@ -1828,7 +1871,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     profile_env = _embedded_profile_env_path(self._config)
                     expected_env = _build_embedded_profile_env(self._config)
                     saved = _load_simple_env(profile_env)
-                    config_changed = saved != expected_env
+                    config_changed = _embedded_profile_env_changed(saved, expected_env)
 
                     if config_changed:
                         profile_env = _materialize_embedded_profile_env(self._config)

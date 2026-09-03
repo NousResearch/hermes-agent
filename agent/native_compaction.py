@@ -74,16 +74,29 @@ def resolve_native_compaction_capabilities(
     base_url: Optional[str],
     provider: Optional[str] = None,
     is_codex_backend: bool = False,
+    trusted_proxy: bool = False,
 ) -> Dict[str, bool]:
     """Resolve the native-compaction capability for a runtime destination.
 
     The result is deliberately explicit: a resolved ``False`` is different
     from an unresolved capability and must survive model switches unchanged.
+
+    ``trusted_proxy`` is the caller's already-resolved
+    ``agent.capabilities``/``openai_native_compaction`` trust decision for
+    this destination (a ``custom_providers`` entry can opt a proxy in
+    explicitly). It must be folded into ``eligible`` here: this dict becomes
+    ``agent.runtime_capabilities``, and
+    ``native_compaction_context_management``'s very first gate short-circuits
+    to "not eligible" on a resolved False before the trusted-proxy fallback
+    further down ever runs — a trusted proxy that isn't reflected here can
+    never actually engage native compaction, no matter what
+    ``agent.capabilities`` says.
     """
     normalized_provider = (provider or "").strip().lower()
     direct_default = normalized_provider == "openai" and not base_url
     eligible = is_native_compaction_model(model) and (
         direct_default
+        or bool(trusted_proxy)
         or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend)
     )
     return {"native_compaction": eligible}

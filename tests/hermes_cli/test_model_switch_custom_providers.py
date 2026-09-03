@@ -455,6 +455,101 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
     assert validation_headers == [None]
 
 
+def test_switch_model_preserves_trusted_proxy_native_compaction_capability(monkeypatch):
+    """A /model switch onto a custom_providers entry that declares
+    openai_native_compaction: true must carry that trust into
+    ModelSwitchResult.runtime_capabilities.
+
+    resolve_runtime_provider() already resolves this trust map correctly
+    (into the local ``runtime_capabilities`` variable), but it used to be
+    unconditionally overwritten a few lines later by
+    resolve_native_compaction_capabilities() — which has no other way to
+    learn about proxy trust — silently dropping it. Without this, a /model
+    switch onto a trusted proxy could never actually engage native
+    compaction: agent.switch_model() receives this result's
+    runtime_capabilities as its own ``capabilities=`` kwarg and assigns it
+    straight to agent.runtime_capabilities.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "proxy-key",
+            "base_url": "https://trusted-proxy.example/v1",
+            "api_mode": "chat_completions",
+            "capabilities": {"openai_native_compaction": True},
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None
+    )
+
+    result = switch_model(
+        raw_input="trusted-proxy/gpt-5.6",
+        current_provider="openai-api",
+        current_model="gpt-5.5",
+        current_base_url="https://api.openai.com/v1",
+        current_api_key="sk-test",
+        explicit_provider="custom:trusted-proxy",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "trusted-proxy",
+                "base_url": "https://trusted-proxy.example/v1",
+                "capabilities": {"openai_native_compaction": True},
+                "models": [{"id": "gpt-5.6", "name": "gpt-5.6"}],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.runtime_capabilities == {"native_compaction": True}
+
+
+def test_switch_model_untrusted_proxy_stays_ineligible(monkeypatch):
+    """Same shape as the trusted-proxy case, but the resolved runtime carries
+    no capabilities — confirms the fix doesn't make every custom-provider
+    switch eligible, only ones resolve_runtime_provider actually trusts."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "proxy-key",
+            "base_url": "https://untrusted-proxy.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None
+    )
+
+    result = switch_model(
+        raw_input="untrusted-proxy/gpt-5.6",
+        current_provider="openai-api",
+        current_model="gpt-5.5",
+        current_base_url="https://api.openai.com/v1",
+        current_api_key="sk-test",
+        explicit_provider="custom:untrusted-proxy",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "untrusted-proxy",
+                "base_url": "https://untrusted-proxy.example/v1",
+                "models": [{"id": "gpt-5.6", "name": "gpt-5.6"}],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.runtime_capabilities == {"native_compaction": False}
+
+
 
 def test_is_routing_aggregator_excludes_flat_namespace_resellers():
     """opencode-go / opencode-zen stay ``is_aggregator=True`` (model-switch

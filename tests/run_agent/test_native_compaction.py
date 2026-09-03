@@ -17,6 +17,7 @@ from agent.native_compaction import (
     is_native_compaction_rejection,
     native_compaction_context_management,
     resolve_compact_threshold,
+    resolve_native_compaction_capabilities,
 )
 
 
@@ -28,7 +29,10 @@ def _agent(
     threshold: object = DEFAULT_COMPACT_THRESHOLD,
     compressor=None,
     capabilities=None,
+    provider=None,
+    is_codex_backend=False,
 ):
+    capabilities = capabilities or {}
     return SimpleNamespace(
         model=model,
         base_url=base_url,
@@ -36,7 +40,20 @@ def _agent(
         compression_enabled=compression_enabled,
         codex_responses_compact_threshold=threshold,
         context_compressor=compressor,
-        capabilities=capabilities or {},
+        capabilities=capabilities,
+        # Computed the same way agent_init.py's init_agent() actually sets
+        # it on every real agent. A fixture that leaves this unset can't
+        # catch a bug in native_compaction_context_management's own
+        # runtime_capabilities gate — that gate short-circuits BEFORE the
+        # lower agent.capabilities/trusted_proxy check ever runs, and only a
+        # fixture that mirrors production hits it.
+        runtime_capabilities=resolve_native_compaction_capabilities(
+            model=model,
+            base_url=base_url,
+            provider=provider,
+            is_codex_backend=is_codex_backend,
+            trusted_proxy=bool(capabilities.get("openai_native_compaction", False)),
+        ),
     )
 
 
@@ -87,7 +104,10 @@ class TestRequestGate:
 
     def test_codex_backend_gets_payload(self):
         payload = native_compaction_context_management(
-            _agent(base_url="https://chatgpt.com/backend-api/codex"),
+            _agent(
+                base_url="https://chatgpt.com/backend-api/codex",
+                is_codex_backend=True,
+            ),
             is_codex_backend=True,
         )
         assert payload is not None
@@ -163,6 +183,54 @@ class TestRequestGate:
             _agent(threshold=None, compressor=compressor), is_codex_backend=False
         )
         assert payload == [{"type": "compaction", "compact_threshold": 756_808}]
+
+
+class TestResolveCapabilitiesTrustedProxy:
+    """resolve_native_compaction_capabilities's trusted_proxy parameter.
+
+    Regression coverage: this dict becomes agent.runtime_capabilities, and
+    native_compaction_context_management's very first gate short-circuits to
+    "not eligible" on a resolved False before the lower
+    agent.capabilities/openai_native_compaction check ever runs. Before this
+    fix, resolve_native_compaction_capabilities had no way to learn about a
+    trusted custom_providers proxy at all, so that lower check was dead code
+    for every non-api.openai.com destination — no matter what
+    agent.capabilities said.
+    """
+
+    def test_trusted_proxy_makes_non_direct_route_eligible(self):
+        assert resolve_native_compaction_capabilities(
+            model="gpt-5.6",
+            base_url="https://trusted-proxy.example/v1",
+            provider="custom:trusted-proxy",
+            trusted_proxy=True,
+        ) == {"native_compaction": True}
+
+    def test_untrusted_non_direct_route_stays_ineligible(self):
+        assert resolve_native_compaction_capabilities(
+            model="gpt-5.6",
+            base_url="https://untrusted-proxy.example/v1",
+            provider="custom:untrusted-proxy",
+            trusted_proxy=False,
+        ) == {"native_compaction": False}
+
+    def test_trusted_proxy_does_not_override_ineligible_model(self):
+        """Trust opts a route into the model gate, not around it."""
+        assert resolve_native_compaction_capabilities(
+            model="gpt-5.1",
+            base_url="https://trusted-proxy.example/v1",
+            provider="custom:trusted-proxy",
+            trusted_proxy=True,
+        ) == {"native_compaction": False}
+
+    def test_direct_openai_route_unaffected_by_trusted_proxy_default(self):
+        """The default (trusted_proxy omitted) matches the pre-fix behavior
+        for every route this parameter doesn't change."""
+        assert resolve_native_compaction_capabilities(
+            model="gpt-5.6",
+            base_url="https://api.openai.com/v1",
+            provider="openai",
+        ) == {"native_compaction": True}
 
 
 class TestThresholdClamp:
@@ -441,6 +509,29 @@ class TestAgentInitConfig:
         )
         assert agent.codex_responses_native_compaction is False
         assert agent.codex_responses_compact_threshold is None
+
+    def test_trusted_proxy_capability_survives_construction(self):
+        """A custom_providers entry's openai_native_compaction trust must
+        reach agent.runtime_capabilities at construction time, not just
+        agent.capabilities — otherwise native_compaction_context_management's
+        own runtime_capabilities gate denies the destination before ever
+        checking agent.capabilities (the bug this test guards against)."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://trusted-proxy.example/v1",
+            api_mode="chat_completions",
+            model="gpt-5.6",
+            provider="custom:trusted-proxy",
+            capabilities={"openai_native_compaction": True},
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            enabled_toolsets=[],
+        )
+        assert agent.capabilities == {"openai_native_compaction": True}
+        assert agent.runtime_capabilities == {"native_compaction": True}
 
     def test_public_config_default_selects_automatic_threshold(self):
         from hermes_cli.config import DEFAULT_CONFIG

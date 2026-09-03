@@ -2913,6 +2913,12 @@ def init_agent(
         base_url=agent.base_url,
         provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
+        # agent.capabilities (set above from the resolved custom_providers
+        # trust map) must reach this computation, not just the lower
+        # trusted_proxy check in native_compaction_context_management — that
+        # check is unreachable when this dict resolves native_compaction to
+        # False first.
+        trusted_proxy=bool(agent.capabilities.get("openai_native_compaction", False)),
     )
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (

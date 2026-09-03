@@ -2522,11 +2522,21 @@ def switch_model(
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model, allow_network=True)
     from agent.native_compaction import resolve_native_compaction_capabilities
+    # runtime_capabilities currently holds resolve_runtime_provider()'s
+    # openai_native_compaction trust decision for the destination resolved
+    # above (a matching custom_providers entry, if any) — capture it before
+    # it's unconditionally replaced below with the differently-shaped
+    # {"native_compaction": bool} dict. Without this, a /model switch onto a
+    # trusted custom proxy silently drops the trust: resolve_native_compaction_
+    # capabilities can't otherwise see it, and the resulting ModelSwitchResult.
+    # runtime_capabilities resolves native_compaction to False.
+    _trusted_proxy = bool(runtime_capabilities.get("openai_native_compaction", False))
     runtime_capabilities = resolve_native_compaction_capabilities(
         model=new_model,
         base_url=base_url,
         provider=target_provider,
         is_codex_backend=target_provider.strip().lower() == "openai-codex",
+        trusted_proxy=_trusted_proxy,
     )
 
     # --- Get full model info from models.dev ---

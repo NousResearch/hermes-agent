@@ -5429,6 +5429,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
     if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
         os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+    if "dm_auto_thread" in matrix_cfg and not os.getenv("MATRIX_DM_AUTO_THREAD"):
+        os.environ["MATRIX_DM_AUTO_THREAD"] = str(matrix_cfg["dm_auto_thread"]).lower()
     if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
     if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):

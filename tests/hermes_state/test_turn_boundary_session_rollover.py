@@ -6,6 +6,8 @@ from pathlib import Path
 
 from hermes_state import SessionDB
 from session_rollover import (
+    END_REASON,
+    RECOVERY_END_REASON,
     RolloverPolicy,
     TurnBoundaryRollover,
     allows_new_work,
@@ -14,6 +16,173 @@ from session_rollover import (
     mark_completed_turn,
 )
 from agent.session_lifecycle import LifecycleBudget, LifecycleState, evaluate_lifecycle
+
+
+# The exact production incident, session ``20260903_112822_b3a7b6``. These
+# numbers are the regression fixture for Stage 2A recovery: 12h wall clock,
+# 1,123 API calls, 142,130,176 cache-read tokens, 16 terminal compactions and
+# an exhausted iteration budget.
+OH_MY_FEED_INCIDENT = {
+    "elapsed_seconds": 12 * 3600,
+    "api_calls": 1_123,
+    "cache_read_tokens": 142_130_176,
+    "compactions": 16,
+    "max_iterations": 150,
+    "iterations_used": 150,
+}
+
+
+def test_oh_my_feed_incident_fixture_drains_on_iteration_closeout_reserve() -> None:
+    """The exact incident counters must drain via the relative budget only."""
+    incident = LifecycleBudget(
+        context_window_tokens=272_000,
+        # Context alone is still comfortable; the closeout reserve is what
+        # must stop new work, so the fixture cannot pass by accident.
+        prompt_tokens=120_000,
+        reserved_output_tokens=16_000,
+        reserved_tool_result_tokens=12_000,
+        reserved_checkpoint_tokens=8_000,
+        max_iterations=OH_MY_FEED_INCIDENT["max_iterations"],
+        iterations_used=OH_MY_FEED_INCIDENT["iterations_used"],
+        api_calls=OH_MY_FEED_INCIDENT["api_calls"],
+        cache_read_tokens=OH_MY_FEED_INCIDENT["cache_read_tokens"],
+        compactions=OH_MY_FEED_INCIDENT["compactions"],
+        in_flight_workers=2,
+        closeout_iterations=2,
+    )
+
+    decision = evaluate_lifecycle(incident)
+
+    assert decision.state is LifecycleState.DRAINING
+    assert decision.remaining_iterations == 0
+    assert decision.reserved_headroom_tokens == 36_000
+    # 142M cache-read and 16 compactions are evidence, never the rule: with a
+    # fresh iteration budget the very same counters stay healthy.
+    assert evaluate_lifecycle(replace(incident, iterations_used=1)).state is LifecycleState.HEALTHY
+
+
+def test_completed_turn_records_recovery_status_without_arming_a_rollover(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A healthy turn must still publish the fields doctor recovery reads."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("live", source="cli")
+
+    class Agent:
+        session_id = "live"
+        _session_db = db
+        _executing_tools = False
+        _active_children = ()
+        max_iterations = 150
+        context_compressor = type("Compressor", (), {
+            "context_length": 272_000,
+            "threshold_tokens": 250_000,
+            "last_prompt_tokens": 10_000,
+        })()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
+    assert mark_completed_turn(Agent(), {"completed": True, "api_calls": 3}) is False
+
+    config = json.loads(db.get_session("live")["model_config"] or "{}")
+    assert "_turn_boundary_rollover_pending" not in config
+    status = config["turn_boundary_lifecycle"]
+    assert status["state"] == "healthy"
+    assert status["reserved_headroom_tokens"] == 0
+    assert status["in_flight_workers"] == 0
+    assert status["active_tool_call"] is False
+    assert status["context_utilization"] == 10_000 / 272_000
+    assert status["last_progress_at"] >= status["state_entered_at"] > 0
+
+
+def test_stalled_turn_does_not_advance_last_meaningful_progress(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A completed turn that did no API work must not look like progress."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("live", source="cli")
+
+    class Agent:
+        session_id = "live"
+        _session_db = db
+        max_iterations = 150
+        context_compressor = type("Compressor", (), {
+            "context_length": 272_000,
+            "threshold_tokens": 250_000,
+            "last_prompt_tokens": 10_000,
+        })()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
+    agent = Agent()
+    mark_completed_turn(agent, {"completed": True, "api_calls": 4})
+    first = json.loads(db.get_session("live")["model_config"])["turn_boundary_lifecycle"]
+
+    mark_completed_turn(agent, {"completed": True, "api_calls": 0})
+    second = json.loads(db.get_session("live")["model_config"])["turn_boundary_lifecycle"]
+
+    assert second["last_progress_at"] == first["last_progress_at"]
+    assert second["updated_at"] >= first["updated_at"]
+
+
+def test_doctor_recovery_request_is_idempotent_and_ends_with_explicit_reason(
+    tmp_path: Path,
+) -> None:
+    """Exactly one rollover per idempotency key, with a doctor-specific reason."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("stalled", source="cli")
+    rollover = TurnBoundaryRollover(db)
+
+    assert rollover.request_recovery("stalled", idempotency_key="k1") == "armed"
+    assert rollover.request_recovery("stalled", idempotency_key="k1") == "already_armed"
+    assert rollover.request_recovery("stalled", idempotency_key="k2") == "already_armed"
+
+    child = rollover.adopt_at_turn_boundary("stalled", active_work=False)
+    assert child
+    old = db.get_session("stalled")
+    assert old["end_reason"] == RECOVERY_END_REASON
+    handoff = json.loads(db.get_session(child)["model_config"])["turn_boundary_handoff"]
+    assert handoff["previous_session_id"] == "stalled"
+    assert handoff["recovery_key"] == "k1"
+    # The consumed request cannot arm a second continuation.
+    assert rollover.adopt_at_turn_boundary("stalled", active_work=False) is None
+
+
+def test_recovery_request_preserves_runtime_config_and_refuses_ended_sessions(
+    tmp_path: Path,
+) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("live", source="cli", model_config={"provider": "openrouter"})
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.request_recovery("live", idempotency_key="k1") == "armed"
+    config = json.loads(db.get_session("live")["model_config"])
+    assert config["provider"] == "openrouter"
+    assert config["_turn_boundary_rollover_pending"]["recovery_key"] == "k1"
+
+    db.create_session("done", source="cli")
+    db.end_session("done", "user_exit")
+    assert rollover.request_recovery("done", idempotency_key="k1") is None
+    assert rollover.request_recovery("missing", idempotency_key="k1") is None
+
+
+def test_core_armed_rollover_keeps_the_plain_turn_boundary_end_reason(
+    tmp_path: Path,
+) -> None:
+    """Stage 1's own drain must stay distinguishable from doctor recovery."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("old", source="cli")
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.mark_pending("old", threshold_tokens=10)
+
+    child = rollover.adopt_at_turn_boundary("old", active_work=False)
+    assert child
+    assert db.get_session("old")["end_reason"] == END_REASON
+    handoff = json.loads(db.get_session(child)["model_config"])["turn_boundary_handoff"]
+    assert "recovery_key" not in handoff
 
 
 def test_oh_my_feed_runaway_fixture_drains_on_relative_budget_before_exhaustion() -> None:

@@ -44,6 +44,9 @@ class LifecycleDecision:
     accept_new_tools: bool
     accept_new_delegations: bool
     allow_in_flight_completion: bool = True
+    #: Tokens deliberately withheld from ordinary work so a checkpoint and a
+    #: final response always fit. Published for status/doctor observability.
+    reserved_headroom_tokens: int = 0
 
 
 def evaluate_lifecycle(budget: LifecycleBudget) -> LifecycleDecision:
@@ -84,4 +87,5 @@ def evaluate_lifecycle(budget: LifecycleBudget) -> LifecycleDecision:
         remaining_iterations=remaining_iterations,
         accept_new_tools=state is LifecycleState.HEALTHY,
         accept_new_delegations=state is LifecycleState.HEALTHY,
+        reserved_headroom_tokens=checkpoint_boundary,
     )

@@ -12,12 +12,16 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 
 END_REASON = "turn_boundary_rollover"
+#: Distinct from ``END_REASON`` so a read-back can tell a core-armed drain
+#: apart from a doctor-requested recovery of a stalled lifecycle.
+RECOVERY_END_REASON = "turn_boundary_rollover_recovered"
 RECOVERY_GUIDANCE = "Use session_search to recover earlier details if needed."
 _PENDING_KEY = "_turn_boundary_rollover_pending"
 _HANDOFF_KEY = "turn_boundary_handoff"
@@ -134,6 +138,38 @@ class TurnBoundaryRollover:
         patch(session_id, patch_data)
         return True
 
+    def request_recovery(
+        self, session_id: str, *, idempotency_key: str
+    ) -> Optional[str]:
+        """Arm exactly one doctor-driven rollover for a stalled session.
+
+        Returns ``"armed"`` for the request that actually armed the pending
+        marker, ``"already_armed"`` when any request (this key or another) is
+        already pending, and ``None`` when the session cannot be recovered.
+        The caller is responsible for having verified the safety conditions;
+        this method only guarantees at-most-one continuation per session.
+        """
+        if not session_id or not idempotency_key:
+            return None
+        row = self._db.get_session(session_id)
+        if not row or row.get("ended_at") is not None:
+            return None
+        if _model_config(row).get(_PENDING_KEY):
+            return "already_armed"
+        patch = getattr(self._db, "patch_session_model_config", None)
+        if not callable(patch):
+            return None
+        patch(session_id, {_PENDING_KEY: {
+            "threshold_tokens": 0,
+            "recovery_key": str(idempotency_key),
+            "requested_at": time.time(),
+        }})
+        # Re-read: a concurrent doctor/core arm resolves to exactly one owner.
+        pending = _model_config(self._db.get_session(session_id) or {}).get(_PENDING_KEY)
+        if not isinstance(pending, Mapping):
+            return None
+        return "armed" if pending.get("recovery_key") == str(idempotency_key) else "already_armed"
+
     def adopt_at_turn_boundary(
         self,
         session_id: str,
@@ -158,8 +194,13 @@ class TurnBoundaryRollover:
                 return None
             parent = dict(row)
             config = _model_config(parent)
-            if not config.pop(_PENDING_KEY, None):
+            pending = config.pop(_PENDING_KEY, None)
+            if not pending:
                 return None
+            recovery_key = (
+                str(pending.get("recovery_key") or "")
+                if isinstance(pending, Mapping) else ""
+            )
             # A child is a fresh runtime, not a fresh identity. Preserve every
             # parent runtime/model setting except the consumed rollover marker.
             child_config = dict(config)
@@ -167,6 +208,10 @@ class TurnBoundaryRollover:
                 "previous_session_id": session_id,
                 "recovery": RECOVERY_GUIDANCE,
             }
+            if recovery_key:
+                # Binds the continuation to the exact recovery request so a
+                # doctor read-back can prove which arm produced this child.
+                child_config[_HANDOFF_KEY]["recovery_key"] = recovery_key
             # Keep routing identity, source, cwd, profile, model and role
             # namespace intact.  The transcript is intentionally not copied.
             conn.execute(
@@ -196,7 +241,7 @@ class TurnBoundaryRollover:
             changed = conn.execute(
                 "UPDATE sessions SET ended_at = strftime('%s','now'), end_reason = ? "
                 "WHERE id = ? AND ended_at IS NULL",
-                (END_REASON, session_id),
+                (RECOVERY_END_REASON if recovery_key else END_REASON, session_id),
             ).rowcount
             if changed != 1:
                 raise RuntimeError("turn-boundary rollover parent changed during adoption")
@@ -272,6 +317,62 @@ def allows_new_delegation(agent: Any) -> bool:
     return allows_new_work(agent)
 
 
+def _publish_lifecycle_status(
+    db: Any, session_id: str, status: Mapping[str, Any]
+) -> None:
+    """Write the recovery-visible lifecycle fields without arming anything.
+
+    Doctor recovery decisions read these fields, so they must exist on every
+    completed turn — not only on the turn that happens to arm a rollover.
+    """
+    patch = getattr(db, "patch_session_model_config", None)
+    if callable(patch):
+        patch(session_id, {_LIFECYCLE_KEY: dict(status)})
+
+
+def _lifecycle_status(
+    db: Any, session_id: str, decision: Any, *, made_progress: bool,
+    in_flight_workers: int, active_tool_call: bool, api_calls: int,
+    cache_read_tokens: int, compactions: int, now: float,
+) -> dict[str, Any]:
+    """Merge a new decision with the session's persisted lifecycle history."""
+    try:
+        previous = _model_config(db.get_session(session_id) or {}).get(_LIFECYCLE_KEY)
+    except Exception:
+        previous = None
+    previous = dict(previous) if isinstance(previous, Mapping) else {}
+
+    state = decision.state.value
+    # A state's entry time only moves when the state itself changes; a stall
+    # is measured from when the session ENTERED the state, not from the last
+    # status write (which happens on every completed turn).
+    if previous.get("state") == state:
+        state_entered_at = float(previous.get("state_entered_at") or now)
+    else:
+        state_entered_at = now
+    # "Meaningful progress" is real model work this turn. A completed turn
+    # that made zero API calls must not refresh the stall clock.
+    last_progress_at = (
+        now if made_progress else float(previous.get("last_progress_at") or now)
+    )
+    return {
+        "state": state,
+        "state_entered_at": state_entered_at,
+        "last_progress_at": last_progress_at,
+        "updated_at": now,
+        "context_utilization": decision.context_utilization,
+        "remaining_context_tokens": decision.remaining_context_tokens,
+        "remaining_iterations": decision.remaining_iterations,
+        "reserved_headroom_tokens": decision.reserved_headroom_tokens,
+        "in_flight_workers": int(in_flight_workers),
+        "active_tool_call": bool(active_tool_call),
+        # Observability only — never a lifecycle decision input.
+        "api_calls": int(api_calls),
+        "cache_read_tokens": int(cache_read_tokens),
+        "compactions": int(compactions),
+    }
+
+
 def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
     """Re-read policy and live model budget after a durably completed response."""
     if not isinstance(result, Mapping) or result.get("failed") or result.get("interrupted"):
@@ -300,10 +401,13 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
             getattr(compressor, "threshold_tokens", 0),
         )
         used = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
-        if trigger is None:
-            return False
         from agent.session_lifecycle import LifecycleBudget, LifecycleState, evaluate_lifecycle
 
+        api_calls = int(result.get("api_calls", 0) or 0)
+        cache_read_tokens = int(result.get("cache_read_tokens", 0) or 0)
+        compactions = int(result.get("compactions", 0) or 0)
+        in_flight_workers = len(getattr(agent, "_active_children", ()) or ())
+        active_tool_call = bool(getattr(agent, "_executing_tools", False))
         decision = evaluate_lifecycle(LifecycleBudget(
             context_window_tokens=int(getattr(compressor, "context_length", 0) or 0),
             prompt_tokens=used,
@@ -311,26 +415,35 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
             reserved_tool_result_tokens=policy.reserved_tool_result_tokens,
             reserved_checkpoint_tokens=policy.reserved_checkpoint_tokens,
             max_iterations=int(getattr(agent, "max_iterations", sys.maxsize) or sys.maxsize),
-            iterations_used=int(result.get("api_calls", 0) or 0),
-            api_calls=int(result.get("api_calls", 0) or 0),
-            cache_read_tokens=int(result.get("cache_read_tokens", 0) or 0),
-            compactions=int(result.get("compactions", 0) or 0),
-            in_flight_workers=len(getattr(agent, "_active_children", ()) or ()),
+            iterations_used=api_calls,
+            api_calls=api_calls,
+            cache_read_tokens=cache_read_tokens,
+            compactions=compactions,
+            in_flight_workers=in_flight_workers,
             closeout_iterations=policy.closeout_iterations,
         ))
-        if decision.state is not LifecycleState.DRAINING and used < trigger:
+        lifecycle = _lifecycle_status(
+            db, session_id, decision,
+            made_progress=api_calls > 0,
+            in_flight_workers=in_flight_workers,
+            active_tool_call=active_tool_call,
+            api_calls=api_calls,
+            cache_read_tokens=cache_read_tokens,
+            compactions=compactions,
+            now=time.time(),
+        )
+        if trigger is None or (
+            decision.state is not LifecycleState.DRAINING and used < trigger
+        ):
+            # Status stays observable even when this turn arms nothing: doctor
+            # stall detection depends on it existing for healthy sessions too.
+            _publish_lifecycle_status(db, session_id, lifecycle)
             return False
-        lifecycle = {
-            "state": decision.state.value,
-            "context_utilization": decision.context_utilization,
-            "remaining_context_tokens": decision.remaining_context_tokens,
-            "remaining_iterations": decision.remaining_iterations,
-            "checkpoint": {
-                "goal": str(getattr(agent, "current_goal", "") or ""),
-                "cwd": str(getattr(agent, "cwd", "") or ""),
-                "api_calls": int(result.get("api_calls", 0) or 0),
-                "in_flight_workers": len(getattr(agent, "_active_children", ()) or ()),
-            },
+        lifecycle["checkpoint"] = {
+            "goal": str(getattr(agent, "current_goal", "") or ""),
+            "cwd": str(getattr(agent, "cwd", "") or ""),
+            "api_calls": api_calls,
+            "in_flight_workers": in_flight_workers,
         }
         return TurnBoundaryRollover(db).mark_pending(
             session_id, threshold_tokens=trigger, lifecycle=lifecycle,

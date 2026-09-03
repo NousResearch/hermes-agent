@@ -115,6 +115,10 @@ const relayRouteRetentions = new Map<string, () => void>()
 interface RelayConnection {
   id: string
   recoveryRelease?: () => void
+  /** Registry identity without a materialized renderer route. It may
+   *  contribute discovery rows but must never issue RPCs: the SDK's fallback
+   *  could otherwise route its `default` profile onto the local gateway. */
+  seedOnly?: boolean
   route: ProfileRoute & { connectionLabel?: string; label?: string }
 }
 
@@ -240,6 +244,7 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
 
       const seeded: RelayConnection = {
         id,
+        seedOnly: true,
         route: {
           connectionId: id,
           mode: kind === 'local' ? 'local' : 'remote',
@@ -512,7 +517,7 @@ async function syncRelayRosters() {
 
     await Promise.all(
       connections.map(async connection => {
-        const agents = await relayAgentsOn(connection)
+        const agents = connection.seedOnly ? null : await relayAgentsOn(connection)
 
         if (agents === null) {
           // Transient fetch failure: reuse the last good rows for this
@@ -558,6 +563,10 @@ async function syncRelayRosters() {
 
     await Promise.all(
       connections.map(async connection => {
+        if (connection.seedOnly) {
+          return
+        }
+
         const others: RelayAgentRow[] = []
 
         for (const [id, agents] of agentsByConnection) {

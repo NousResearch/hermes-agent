@@ -424,8 +424,11 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
       expect.objectContaining({ connectionId: 'm5', profile: 'default' })
     )
     expect(hostMock.warmAgent).toHaveBeenCalledWith('m5', 'default')
-    expect(calls).toContainEqual(
+    expect(calls).not.toContainEqual(
       expect.objectContaining({ connectionId: 'm5', method: 'profiles.list' })
+    )
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ connectionId: 'm5', method: 'bot_relay.roster.sync' })
     )
     const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
 

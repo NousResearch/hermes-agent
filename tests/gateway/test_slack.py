@@ -2284,6 +2284,148 @@ class TestMessageRouting:
         assert msg_event.message_id == "1234567890.000001"
 
 
+class TestHiddenThreadParentUpdates:
+    @staticmethod
+    def _event(*, current=None, previous=None):
+        parent = {
+            "type": "message",
+            "user": "U_USER",
+            "text": "old thread parent",
+            "ts": "1234567890.000001",
+            "reply_count": 2,
+            "latest_reply": "1234567899.000002",
+            "replies": [
+                {"user": "U_USER", "ts": "1234567899.000001"},
+                {"user": "U_USER", "ts": "1234567899.000002"},
+            ],
+        }
+        if current:
+            parent.update(current)
+        prior = {
+            "type": "message",
+            "user": "U_USER",
+            "text": "old thread parent",
+            "ts": "1234567890.000001",
+            "reply_count": 1,
+            "latest_reply": "1234567899.000001",
+            "replies": [{"user": "U_USER", "ts": "1234567899.000001"}],
+        }
+        if previous is not None:
+            prior = previous
+        return {
+            "type": "message",
+            "subtype": "message_changed",
+            "hidden": True,
+            "channel": "D123",
+            "channel_type": "im",
+            "team": "T123",
+            "ts": "1234567899.000003",
+            "event_ts": "1234567899.000003",
+            "message": parent,
+            "previous_message": prior,
+        }
+
+    @pytest.mark.asyncio
+    async def test_cold_restart_parent_update_cannot_route_store_or_interrupt(
+        self, adapter
+    ):
+        """A metadata-only parent update must stop before any gateway side effect."""
+        adapter._processed_message_ts.clear()
+        event = self._event(
+            current={
+                "text": "Following up on the thread: please post the test results here."
+            }
+        )
+        event["previous_message"]["text"] = event["message"]["text"]
+
+        session_store = MagicMock()
+        active_agent = MagicMock()
+        busy_ack = AsyncMock()
+
+        async def gateway_boundary(message_event):
+            session_store.append_message("active-slack-thread", "user", message_event.text)
+            active_agent.interrupt(message_event.text)
+            await busy_ack()
+
+        adapter.handle_message = AsyncMock(side_effect=gateway_boundary)
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_awaited()
+        session_store.append_message.assert_not_called()
+        active_agent.interrupt.assert_not_called()
+        busy_ack.assert_not_awaited()
+        assert adapter._processed_message_ts == {}
+
+    @pytest.mark.asyncio
+    async def test_hidden_thread_parent_update_with_text_edit_processed(self, adapter):
+        await adapter._handle_slack_message(
+            self._event(current={"text": "edited thread parent"})
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.await_args.args[0].text == "edited thread parent"
+
+    @pytest.mark.asyncio
+    async def test_hidden_thread_parent_update_with_new_mention_processed(self, adapter):
+        adapter.config.extra["require_mention"] = True
+        event = self._event(current={"text": "<@U_BOT> old thread parent"})
+        event["channel"] = "C123"
+        event["channel_type"] = "channel"
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.await_args.args[0].text == "old thread parent"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "visible_value"),
+        [
+            ("attachments", [{"text": "visible attachment"}]),
+            ("blocks", [{"type": "section", "text": {"type": "mrkdwn", "text": "visible block"}}]),
+            ("files", [{"id": "F_SANITIZED", "name": "visible.txt"}]),
+        ],
+    )
+    async def test_hidden_thread_parent_update_with_visible_payload_removal_processed(
+        self, adapter, field, visible_value
+    ):
+        event = self._event()
+        event["previous_message"][field] = visible_value
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "previous", ["malformed", {}, {"ts": "1234567890.000001"}]
+    )
+    async def test_hidden_thread_parent_update_with_malformed_snapshot_ignored(
+        self, adapter, previous
+    ):
+        await adapter._handle_slack_message(self._event(previous=previous))
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_hidden_thread_parent_update_with_explicit_edit_and_malformed_snapshot_processed(
+        self, adapter
+    ):
+        await adapter._handle_slack_message(
+            self._event(
+                current={
+                    "text": "edited thread parent",
+                    "edited": {"user": "U_USER", "ts": "1234567899.000003"},
+                },
+                previous="malformed",
+            )
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.await_args.args[0].text == "edited thread parent"
+
+
 # ---------------------------------------------------------------------------
 # TestSendTyping — assistant.threads.setStatus
 # ---------------------------------------------------------------------------

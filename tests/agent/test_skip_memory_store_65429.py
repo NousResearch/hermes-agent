@@ -132,3 +132,56 @@ def test_skip_memory_disabled_toolset_does_not_load_store(monkeypatch, tmp_path)
     blob = " ".join(str(v) for v in parts.values())
     assert secret not in blob
     assert "cron-should-never-see-this-profile" not in blob
+
+
+def test_global_policy_survives_disabled_personal_memory(monkeypatch, tmp_path):
+    home = tmp_path / "hm"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    policy = home / "memories" / "GLOBAL.md"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("Shared policy: verify every completed action.\n", encoding="utf-8")
+
+    agent = _make_agent(
+        monkeypatch,
+        enabled_toolsets=["file"],
+        disabled_toolsets=["memory"],
+        skip_memory=True,
+    )
+
+    assert agent._memory_store is None
+    from agent.system_prompt import build_system_prompt_parts
+
+    parts = build_system_prompt_parts(agent)
+    blob = " ".join(str(v) for v in parts.values())
+    assert "Shared policy: verify every completed action." in blob
+
+
+def test_child_constructor_can_use_parent_global_snapshot(monkeypatch, tmp_path):
+    home = tmp_path / "hm"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    policy = home / "memories" / "GLOBAL.md"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("Policy B on disk\n", encoding="utf-8")
+
+    agent = _make_agent(
+        monkeypatch,
+        enabled_toolsets=["file"],
+        disabled_toolsets=["memory"],
+        skip_memory=True,
+    )
+    from run_agent import AIAgent
+
+    child = AIAgent(
+        api_key="test-key",
+        base_url="http://test",
+        provider="openrouter",
+        api_mode="chat_completions",
+        max_iterations=1,
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        global_policy_snapshot="Policy A frozen by parent",
+        enabled_toolsets=["file"],
+    )
+    assert agent._global_policy_snapshot != "Policy A frozen by parent"
+    assert child._global_policy_snapshot == "Policy A frozen by parent"

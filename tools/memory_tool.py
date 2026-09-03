@@ -7,8 +7,10 @@ Provides bounded, file-backed memory that persists across sessions. Two stores:
     conventions, tool quirks, things learned)
   - USER.md: what the agent knows about the user (preferences, communication style,
     expectations, workflow habits)
+  - GLOBAL.md: one machine-wide, read-only policy source shared by all profiles
 
-Both are injected into the system prompt as a frozen snapshot at session start.
+All three are injected into the system prompt as a frozen snapshot at session start;
+GLOBAL.md is resolved from the Hermes root rather than the active profile home.
 Mid-session writes update files on disk immediately (durable) but do NOT change
 the system prompt -- this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
@@ -30,7 +32,7 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text, is_truthy_value
@@ -65,6 +67,17 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
+
+def get_global_policy_path() -> Path:
+    """Return the single machine-wide policy source for all profiles.
+
+    Named profiles live below ``<root>/profiles/<name>`` while the default
+    profile lives directly at ``<root>``.  ``get_default_hermes_root()``
+    normalizes both layouts to the same root, so a policy is never copied into
+    profile homes and cannot silently drift between profiles.
+    """
+    return get_default_hermes_root() / "memories" / "GLOBAL.md"
+
 # Stable header prefixes for the system-prompt memory blocks rendered by
 # MemoryStore._render_block. Exported so compression's prompt-retention check
 # (agent/conversation_compression.py) can detect a leftover block for a
@@ -73,6 +86,7 @@ def get_memory_dir() -> Path:
 MEMORY_BLOCK_HEADERS = {
     "memory": "MEMORY (your personal notes)",
     "user": "USER PROFILE (who the user is)",
+    "global_policy": "GLOBAL POLICY (shared across all Hermes profiles)",
 }
 
 ENTRY_DELIMITER = "\n§\n"
@@ -156,6 +170,19 @@ def _read_failed_error(path: "Path") -> Dict[str, Any]:
     }
 
 
+def load_global_policy_block() -> str:
+    """Load and sanitize the one canonical policy shared by every agent.
+
+    Main agents and focused delegated children both call this loader. Keeping
+    path resolution, deduplication, threat scanning, and rendering here avoids
+    profile-local policy copies and prevents the two prompt paths from drifting.
+    The body resolves ``MemoryStore`` at call time, after the class is defined.
+    """
+    entries = list(dict.fromkeys(MemoryStore._read_file(get_global_policy_path())))
+    sanitized = MemoryStore._sanitize_entries_for_snapshot(entries, "GLOBAL.md")
+    return MemoryStore()._render_block("global_policy", sanitized)
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -188,7 +215,9 @@ class MemoryStore:
         self.memory_enabled = memory_enabled
         self.user_profile_enabled = user_profile_enabled
         # Frozen snapshot for system prompt -- set once at load_from_disk()
-        self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._system_prompt_snapshot: Dict[str, str] = {
+            "memory": "", "user": "", "global_policy": ""
+        }
         # Per-turn counter of failed at-capacity consolidation attempts; reset
         # at each turn boundary by reset_consolidation_failures() (#42405).
         self._consolidation_failures = 0
@@ -244,12 +273,8 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
-
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.memory_entries = list(dict.fromkeys(self._read_file(mem_dir / "MEMORY.md")))
+        self.user_entries = list(dict.fromkeys(self._read_file(mem_dir / "USER.md")))
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -261,6 +286,7 @@ class MemoryStore:
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
+            "global_policy": load_global_policy_block(),
         }
 
     @staticmethod
@@ -757,18 +783,25 @@ class MemoryStore:
         if not entries:
             return ""
 
-        limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
-        current = len(content)
-        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
-
-        if target == "user":
+        if target == "global_policy":
+            # GLOBAL.md is a read-only machine policy, not a writable bounded
+            # memory store.  Do not present the personal-memory quota here.
+            header = MEMORY_BLOCK_HEADERS["global_policy"]
+        elif target == "user":
+            limit = self._char_limit(target)
+            current = len(content)
+            pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
             header = f"{MEMORY_BLOCK_HEADERS['user']} [{pct}% — {current:,}/{limit:,} chars]"
         else:
+            limit = self._char_limit(target)
+            current = len(content)
+            pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
             header = f"{MEMORY_BLOCK_HEADERS['memory']} [{pct}% — {current:,}/{limit:,} chars]"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
+
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:

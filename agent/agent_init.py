@@ -600,6 +600,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    global_policy_snapshot: str = None,
     skip_background_review: bool = False,
     session_db=None,
     parent_session_id: str = None,
@@ -1895,6 +1896,19 @@ def init_agent(
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.
     agent._aux_compression_context_length_config = None
+
+    # Machine-wide policy is independent of the writable personal-memory
+    # stores. Snapshot it for every agent, including skip_memory/minimal agents,
+    # so policy application is not accidentally controlled by memory settings.
+    agent._global_policy_snapshot = global_policy_snapshot
+    if agent._global_policy_snapshot is None:
+        agent._global_policy_snapshot = ""
+        try:
+            from tools.memory_tool import load_global_policy_block
+
+            agent._global_policy_snapshot = load_global_policy_block()
+        except Exception:
+            pass  # Optional GLOBAL.md must never break agent initialization
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None

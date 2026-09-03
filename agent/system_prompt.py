@@ -17,8 +17,8 @@ Three tiers are joined with ``\\n\\n``:
 * ``context``  — caller-supplied ``system_message`` plus context files
   (AGENTS.md / .cursorrules / etc.) discovered under ``TERMINAL_CWD``,
   plus the session's coding-workspace snapshot.
-* ``volatile`` — skills index, memory snapshot, USER.md profile, external
-  memory provider block, timestamp/session/model/provider line.
+* ``volatile`` — skills index, GLOBAL.md shared policy, memory snapshot,
+  USER.md profile, external memory provider block, timestamp/session/model/provider line.
 
 Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 """
@@ -924,6 +924,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # system message is one cache unit regardless of internal order.)
     if skills_prompt:
         volatile_parts.append(skills_prompt)
+
+    global_policy_block = getattr(agent, "_global_policy_snapshot", "")
+    if global_policy_block:
+        volatile_parts.append(global_policy_block)
 
     if agent._memory_store:
         if agent._memory_enabled:

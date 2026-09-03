@@ -1775,19 +1775,19 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     We try the requested config first (fast CUDA path when it works), and on
     any CUDA library load failure fall back to CPU + int8.
     """
-    force_cpu = _should_force_faster_whisper_cpu()
-    if force_cpu:
+    apple_silicon = _should_force_faster_whisper_cpu()
+    if apple_silicon:
         # Importing ctranslate2/faster-whisper itself can abort on some
         # Apple Silicon/Rosetta installs because multiple Intel OpenMP runtimes
-        # are already loaded.  Set this before importing faster_whisper so the
-        # gateway survives, then keep inference on CPU to avoid device probing.
+        # are already loaded. Set this before importing faster_whisper even
+        # when the user explicitly selected a safe CPU configuration.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
     from faster_whisper import WhisperModel
-    if force_cpu:
+    if apple_silicon and device == "auto":
         logger.info(
-            "Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
-            "(int8) to avoid native device autodetection crashes"
+            "Apple Silicon/Rosetta detected with device=auto — loading "
+            "faster-whisper on CPU (int8) to avoid native device autodetection crashes"
         )
         return WhisperModel(model_name, device="cpu", compute_type="int8")
 

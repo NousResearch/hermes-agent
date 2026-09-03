@@ -55,6 +55,23 @@ _MAX_DOMAIN_FILTERS = 5  # xAI hard cap on allowed_domains / excluded_domains
 # even when explicitly asked not to.
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 
+# xAI's internal citation render placeholder. Despite requesting
+# ``include: ["no_inline_citations"]``, some Grok web-search replies still
+# inject ``{render_inline_citation citation_id="17"}`` markers into the
+# message text and into the JSON fields the model emits — they carry no URL,
+# are not the documented ``[[N]](url)`` citation format, and leak verbatim
+# into the agent's answers when passed through (#88363).
+_INLINE_CITATION_MARKER_RE = re.compile(r"\s*\{render_inline_citation\b[^}]*\}")
+
+
+def _strip_inline_citation_markers(text: str) -> str:
+    """Remove xAI's internal ``{render_inline_citation ...}`` render markers."""
+    stripped = _INLINE_CITATION_MARKER_RE.sub(" ", text)
+    if stripped != text:
+        # Adjacent markers each contribute a replacement space — collapse them.
+        stripped = re.sub(r" {2,}", " ", stripped)
+    return stripped.strip()
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -329,6 +346,16 @@ class XAIWebSearchProvider(WebSearchProvider):
             return {"success": False, "error": f"xAI returned an error: {err_msg}"}
 
         web_results = self._extract_results(data, limit=limit)
+        # Defensively strip xAI's internal citation render markers from
+        # every text field we return — regardless of which extraction path
+        # produced the row (JSON, annotations, or the raw citations list)
+        # — so they can never leak into the agent's tool results and from
+        # there into its user-facing answer (#88363).
+        for row in web_results:
+            for field in ("title", "description"):
+                value = row.get(field)
+                if isinstance(value, str) and "render_inline_citation" in value:
+                    row[field] = _strip_inline_citation_markers(value)
         if not web_results:
             # Successful call, just no usable rows — return success with an
             # empty list so the model can decide whether to retry. Matches

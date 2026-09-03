@@ -174,6 +174,11 @@ class TestReasoningEchoFamily:
         ("DeepSeek", "whatever", "https://x", "deepseek"),
         ("openrouter", "deepseek/deepseek-v3", "https://openrouter.ai", "deepseek"),
         ("custom", None, "https://api.deepseek.com", "deepseek"),
+        # ollama-cloud serves deepseek-named models but does NOT enforce
+        # reasoning_content echo-back — excluded host must win over the
+        # model-name substring match.
+        ("ollama-cloud", "deepseek-v4-flash:0731", "https://ollama.com/v1", None),
+        ("ollama-cloud", "deepseek-v4-pro:0813", "https://ollama.com/v1", None),
         ("xiaomi", None, "https://x", "mimo"),
         ("custom", "MiMo-7B", "https://x", "mimo"),
         ("custom", None, "https://api.xiaomimimo.com/v1", "mimo"),

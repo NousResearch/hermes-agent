@@ -837,13 +837,13 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 
 _REASONING_ECHO_RULES: tuple = (
     # (family, exact providers (raw), exact providers (lowered),
-    #  model substrings (lowered), base_url hosts)
+    #  model substrings (lowered), base_url hosts, excluded base_url hosts)
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (),
-     ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
+     ("api.kimi.com", "moonshot.ai", "moonshot.cn"), ()),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",),
-     ("api.deepseek.com",)),
+     ("api.deepseek.com",), ("ollama.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",),
-     ("api.xiaomimimo.com", "xiaomimimo.com")),
+     ("api.xiaomimimo.com", "xiaomimimo.com"), ()),
 )
 
 
@@ -865,7 +865,12 @@ def matches_reasoning_echo_family(
     """
     from utils import base_url_host_matches
 
-    _, raw_providers, lowered_providers, model_subs, hosts = _family_rule(family)
+    _, raw_providers, lowered_providers, model_subs, hosts, excluded_hosts = _family_rule(family)
+    # Excluded hosts win: an endpoint that does not enforce echo-back
+    # (e.g. ollama.com serving a deepseek-named model) must never match,
+    # regardless of provider/model name.
+    if any(base_url_host_matches(base_url, host) for host in excluded_hosts):
+        return False
     provider_lower = (provider or "").lower()
     model_lower = (model or "").lower()
     if provider in raw_providers or provider_lower in lowered_providers:

@@ -594,7 +594,9 @@ class MemoryStore:
 
         Semantics: all-or-nothing. If any op is malformed, doesn't match, or
         the net result would exceed the char limit, NOTHING is written and an
-        error is returned describing the first failure plus the live state.
+        error is returned describing the first failure. Batch aborts do not
+        echo ``current_entries`` — the store did not change, and a failed
+        consolidation must not inflate the context it was meant to shrink.
         """
         if not operations:
             return {"success": False, "error": "operations list is empty."}
@@ -680,9 +682,8 @@ class MemoryStore:
                     "error": (
                         f"After applying all {len(operations)} operations, memory would be at "
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
+                        f"entries in the same batch, then retry."
                     ),
-                    "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
                 })
 
@@ -693,13 +694,19 @@ class MemoryStore:
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
-        """Build a batch-abort error that reports live (uncommitted) state."""
+        """Build a batch-abort error without echoing the store.
+
+        Single replace/remove failures still return ``current_entries`` so the
+        model can retry with exact text. A batch is all-or-nothing, so the
+        caller already has the live inventory from the previous response —
+        re-sending it on abort is what made consolidation retries grow the
+        context they were invoked to shrink.
+        """
         current = self._char_count(target)
         limit = self._char_limit(target)
         return self._consolidation_failure({
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
-            "current_entries": self._entries_for(target),
             "usage": f"{current:,}/{limit:,}",
         })
 

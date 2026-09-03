@@ -11,7 +11,7 @@ Invariants pinned here:
   ``_empty_terminal_sentinel`` marker (replay semantics unchanged).
 - Raw reasoning is NEVER promoted earlier in the ladder — a reasoning-only
   response still goes through prefill continuation first.
-- A truly empty exhaustion (no reasoning either) still returns "(empty)".
+- A truly empty exhaustion returns an actionable no-reply explanation.
 """
 
 from __future__ import annotations
@@ -109,11 +109,11 @@ def test_exhausted_reasoning_only_delivers_labeled_excerpt(tmp_path, monkeypatch
     )
 
 
-def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
-    """No reasoning anywhere → behavior unchanged from main: the '(empty)'
-    terminal (possibly rewritten by the downstream turn-completion explainer)
-    is delivered, and no reasoning excerpt appears."""
+def test_exhausted_truly_empty_delivers_no_reply_explanation(tmp_path, monkeypatch):
+    """No reasoning anywhere produces an honest terminal explanation even
+    when the downstream completion explainer is disabled."""
     agent = _build_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "_turn_completion_explainer_enabled", lambda: False)
     monkeypatch.setattr(
         agent, "_interruptible_api_call",
         lambda api_kwargs: _truly_empty_response(),
@@ -122,9 +122,7 @@ def test_exhausted_truly_empty_keeps_existing_behavior(tmp_path, monkeypatch):
     result = agent.run_conversation("hello?")
 
     final = result["final_response"]
-    # Either the raw sentinel (explainer off) or the explainer's rewrite —
-    # never the reasoning-excerpt frame, which requires reasoning to exist.
-    assert final == "(empty)" or final.startswith("⚠️ No reply:")
+    assert final.startswith("⚠️ No reply:")
     assert "only internal reasoning" not in final
 
 

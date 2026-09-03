@@ -41,6 +41,33 @@ class TestContentPolicyBlockedClassification:
         assert result.should_compress is False
         assert result.should_rotate_credential is False
 
+    def test_agentrouter_sensitive_words_http_500(self):
+        """new-api/AgentRouter wraps the word-filter as InternalServerError.
+
+        Without this classification, HTTP 500 + "sensitive words detected"
+        burns api_max_retries on a deterministic refusal and surfaces
+        "API failed after 3 retries" — the same #18028 retry-burn class.
+        """
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        class _Err(Exception):
+            def __init__(self, msg, status_code):
+                super().__init__(msg)
+                self.status_code = status_code
+
+        e = _Err(
+            "Error code: 500 - {'error': {'message': 'sensitive words detected "
+            "(request id: 2026090113461892951841vt5clFqVF33mI)', "
+            "'type': 'new_api_error', 'code': 'local:sensitive_words'}}",
+            status_code=500,
+        )
+        result = classify_api_error(e, provider="custom", model="glm-5.3")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+        assert result.should_rotate_credential is False
+
 
 
 class TestContentPolicyTriggersClientErrorAbort:

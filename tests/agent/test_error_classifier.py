@@ -642,6 +642,22 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.should_compress is False
 
+    def test_agentrouter_sensitive_words_500_is_content_policy_blocked(self):
+        # new-api / AgentRouter wrap a local word-filter refusal as HTTP 500
+        # "sensitive words detected". The generic 5xx rule would retry the
+        # identical payload three times; this must fail fast to fallback.
+        e = MockAPIError(
+            "HTTP 500: sensitive words detected "
+            "(request id: 20260901134627270862407sm2v4Hx5BiaTT)",
+            status_code=500,
+        )
+        result = classify_api_error(e, provider="custom", model="glm-5.3")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+        assert result.should_rotate_credential is False
+
 
 
 

@@ -597,6 +597,7 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
 #     "usage policies" disambiguating from billing's "exceeded ... policy")
 #   • Anthropic safety refusal ("prompt was flagged by ... safety system")
 #   • OpenAI Responses content filter
+#   • new-api / AgentRouter local word-filter ("sensitive words detected")
 _CONTENT_POLICY_BLOCKED_PATTERNS = [
     # OpenAI Codex (#18028) — message may arrive without an HTTP status
     "flagged for possible cybersecurity risk",
@@ -625,6 +626,15 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = [
     # filter name and is narrow enough that billing / format / auth error
     # strings will not collide. See #32421.
     "new_sensitive",
+    # new-api (QuantumNous) and gateways built on it — including
+    # AgentRouter ``https://agentrouter.org/v1`` — return HTTP 500 with
+    # the verbatim body "sensitive words detected" when their local
+    # word-filter rejects the request. Wrapped as InternalServerError,
+    # the generic 5xx rule retries the identical payload three times
+    # and surfaces "API failed after 3 retries". The phrase is the
+    # gateway's own error string and is narrow enough not to collide
+    # with billing / auth / format errors.
+    "sensitive words detected",
 ]
 
 # Auth patterns (non-status-code signals)

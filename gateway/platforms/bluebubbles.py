@@ -34,6 +34,7 @@ from gateway.platforms.base import (
 )
 from .media_cache import ext_for_mime
 from gateway.platforms.helpers import compile_mention_patterns, strip_markdown
+from gateway.principals import display_name_for, principal_channel_banner
 
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for
 # the shared dispatch in gateway.platforms.media_cache. Both maps are
@@ -1046,13 +1047,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             chat_name=chat_identifier or sender,
             chat_type="group" if is_group else "dm",
             user_id=sender,
-            user_name=sender,
+            user_name=display_name_for(sender, fallback=sender),
             chat_id_alt=chat_identifier,
         )
         event = MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
+            channel_prompt=principal_channel_banner(sender),
             raw_message=payload,
             message_id=self._value(
                 record.get("guid"),

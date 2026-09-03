@@ -985,6 +985,103 @@ class TestWebServerEndpoints:
         assert "secret-value" not in json.dumps(data)
 
 
+    def test_local_embedded_mode_exposes_and_persists_llm_fields(self):
+        """The generic conditional-field gate (``ProviderField.when``) lets
+        Hindsight's local_embedded LLM sub-form ship as pure declaration:
+        switching mode surfaces the sub-form, and its fields persist/read
+        back through the same declared-schema GET/PUT pair as everything
+        else — no bespoke Hindsight endpoint code."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_env
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={
+                "values": {
+                    "mode": "local_embedded",
+                    "llm_provider": "openai_compatible",
+                    "llm_base_url": "http://127.0.0.1:8317/v1",
+                    "llm_api_key": "hs-llm-key",
+                    "llm_model": "claude-sonnet-4-6",
+                    "idle_timeout": "0",
+                    "bank_id": "hermes",
+                    "recall_budget": "high",
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert load_env()["HINDSIGHT_LLM_API_KEY"] == "hs-llm-key"
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config["mode"] == "local_embedded"
+        assert provider_config["llm_provider"] == "openai_compatible"
+        assert provider_config["llm_base_url"] == "http://127.0.0.1:8317/v1"
+        assert provider_config["llm_model"] == "claude-sonnet-4-6"
+        assert provider_config["idle_timeout"] == 0
+        assert "llm_api_key" not in provider_config  # secret, never in the flat file
+
+        # GET surfaces the llm_* fields now that mode == local_embedded, with
+        # the secret readable only as an is_set flag.
+        resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
+        fields = self._provider_field_map(resp.json())
+        assert fields["llm_model"]["value"] == "claude-sonnet-4-6"
+        assert fields["llm_base_url"]["value"] == "http://127.0.0.1:8317/v1"
+        assert fields["llm_api_key"]["is_set"] is True
+        assert fields["llm_api_key"]["value"] == ""
+
+    def test_llm_fields_are_hidden_and_not_persisted_outside_local_embedded(self):
+        """A stray llm_* key submitted while mode is cloud/local_external must
+        not land in the provider config: those fields only exist once
+        local_embedded is selected."""
+        from hermes_constants import get_hermes_home
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={
+                "values": {
+                    "mode": "cloud",
+                    "api_url": "https://api.hindsight.vectorize.io",
+                    "llm_model": "should-not-be-saved",
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config["mode"] == "cloud"
+        assert "llm_model" not in provider_config
+
+        resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
+        assert "llm_model" not in self._provider_field_map(resp.json())
+
+    def test_local_embedded_llm_fields_persist_via_single_field_autosave(self):
+        """The desktop inline panel autosaves one field per PUT. A later
+        single-key PUT for an llm_* field must still see mode=local_embedded
+        already on disk from an earlier request and persist normally."""
+        from hermes_constants import get_hermes_home
+
+        self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={"values": {"mode": "local_embedded"}},
+        )
+
+        resp = self.client.put(
+            "/api/memory/providers/hindsight/config?surface=declared",
+            json={"values": {"llm_model": "claude-haiku-4-5"}},
+        )
+        assert resp.status_code == 200
+
+        config_path = get_hermes_home() / "hindsight" / "config.json"
+        provider_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert provider_config["mode"] == "local_embedded"
+        assert provider_config["llm_model"] == "claude-haiku-4-5"
+
+
 
 
     # ── Memory provider config (Honcho host-block backend) ──────────────

@@ -64,6 +64,14 @@ class ProviderField:
     earlier CLI/env setup without re-introducing per-provider code. ``inline``
     marks the curated subset shown in the compact panel; the rest surface only
     in the full-config modal. ``group`` buckets fields within that modal.
+
+    ``when`` gates visibility on other fields in the same schema: a mapping of
+    ``{other_field_key: required_string_value}`` that must ALL match the
+    current (in-progress, not-yet-saved) values for this field to render, be
+    read back, or be persisted. A field with no ``when`` is always visible.
+    This lets a provider grow a mode-specific sub-surface (e.g. Hindsight's
+    ``local_embedded`` LLM settings) as pure declaration, matching the
+    conditional-field semantics the CLI setup wizard already uses.
     """
 
     key: str
@@ -82,6 +90,8 @@ class ProviderField:
     info: str = ""
     # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
+    # Visibility gate; see the class docstring. Empty mapping = always visible.
+    when: tuple[tuple[str, str], ...] = ()
 
     @property
     def is_secret(self) -> bool:
@@ -89,6 +99,21 @@ class ProviderField:
 
     def allowed_values(self) -> set[str]:
         return {opt.value for opt in self.options}
+
+    def is_visible(self, values_by_key: dict) -> bool:
+        """Whether this field should render/persist given sibling ``values_by_key``.
+
+        Missing dependency values (a sibling not yet in the map) count as
+        not-matching rather than raising, so an incomplete draft simply hides
+        the dependent field instead of erroring. Values are compared as
+        strings so callers can pass either raw native values (bool/int from a
+        just-read config file) or the string form submitted over the API.
+        """
+        _MISSING = object()
+        return all(
+            str(values_by_key.get(dep_key, _MISSING)) == expected
+            for dep_key, expected in self.when
+        )
 
 
 @dataclass(frozen=True)

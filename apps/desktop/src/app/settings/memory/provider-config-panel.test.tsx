@@ -207,3 +207,69 @@ describe('ProviderConfigPanel', () => {
     expect(container.querySelector('section')).toBeNull()
   })
 })
+
+describe('ProviderConfigPanel — conditional fields (when)', () => {
+  function modeGatedSchema(): MemoryProviderConfig {
+    return {
+      name: 'hindsight',
+      label: 'Hindsight',
+      docs_url: '',
+      fields: [
+        {
+          key: 'mode',
+          label: 'Mode',
+          kind: 'select',
+          value: 'cloud',
+          description: '',
+          placeholder: '',
+          is_set: true,
+          inline: true,
+          group: '',
+          options: [
+            { value: 'cloud', label: 'Cloud', description: '' },
+            { value: 'local_embedded', label: 'Local Embedded', description: '' }
+          ]
+        },
+        {
+          key: 'llm_model',
+          label: 'LLM model',
+          kind: 'text',
+          value: 'gpt-4o-mini',
+          description: '',
+          placeholder: '',
+          is_set: false,
+          inline: true,
+          group: '',
+          options: [],
+          when: { mode: 'local_embedded' }
+        }
+      ]
+    }
+  }
+
+  beforeEach(() => {
+    getMemoryProviderConfig.mockResolvedValue(modeGatedSchema())
+  })
+
+  it('hides a when-gated field until its dependency matches', async () => {
+    await renderPanel('hindsight')
+
+    await screen.findByText('Cloud')
+    expect(screen.queryByText('LLM model')).toBeNull()
+  })
+
+  it('reveals a when-gated field the instant its dependency is picked, before autosave resolves', async () => {
+    // Radix's Select portal doesn't drive real option clicks under jsdom
+    // (missing scrollIntoView), so this exercises the same live-draft path
+    // through the underlying visibility check directly rather than through a
+    // simulated dropdown interaction.
+    const { isFieldVisible } = await import('./field-control')
+    const schema = modeGatedSchema()
+    const llmModel = schema.fields.find(f => f.key === 'llm_model')!
+
+    expect(isFieldVisible(llmModel, { mode: 'cloud' })).toBe(false)
+    // The instant mode is drafted to local_embedded — no save round-trip
+    // required — the dependent field's own gate already matches.
+    expect(isFieldVisible(llmModel, { mode: 'local_embedded' })).toBe(true)
+  })
+})

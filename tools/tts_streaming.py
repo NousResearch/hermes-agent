@@ -22,6 +22,7 @@ the dispatcher, config gate (`tts.<name>.streaming`), and resolver come free.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from abc import ABC, abstractmethod
@@ -250,6 +251,96 @@ class ElevenLabsStreamer(StreamingTTSProvider):
             model_id=model_id,
             output_format="pcm_24000",
         )
+
+
+@register("qwen3tts-mlx")
+class Qwen3TTSMLXStreamer(StreamingTTSProvider):
+    """Local MLX Qwen3-TTS streamer (Apple Silicon, voice clone).
+
+    Bridges to a dedicated MLX venv subprocess — the Hermes runtime venv must
+    NOT carry ``transformers 5.x`` (conflicts with ``qwen_tts``'s pinned
+    ``4.57.3``). Text is split on newlines in the worker; each segment is
+    synthesized and streamed as one int16 PCM frame as soon as it finishes
+    (measured TTFB ~4s per segment vs ~47s for whole-buffer synthesis).
+    """
+
+    sample_rate = 24000
+    channels = 1
+    sample_width = 2
+
+    _WORKER = os.path.expanduser("~/.hermes/tts/mlx_stream_worker.py")
+    _VENV = os.path.expanduser("~/work/mlx-tts-venv/bin/python3")
+
+    # Upper bound for a single PCM frame (24000 Hz × 2 bytes ≈ 48 KB/s, so 1
+    # MiB is ~21 s of audio). A corrupt/oversized length header must not make
+    # out.read(n) block indefinitely waiting for bytes the worker never sends.
+    _MAX_FRAME_BYTES = 1024 * 1024
+
+    @staticmethod
+    def available() -> bool:
+        return os.path.exists(Qwen3TTSMLXStreamer._VENV) and os.path.exists(
+            Qwen3TTSMLXStreamer._WORKER
+        )
+
+    def stream(self, text: str) -> Iterator[bytes]:
+        import struct
+        import subprocess
+
+        if not self.available():
+            raise RuntimeError(
+                "qwen3tts-mlx: MLX venv or stream worker not found "
+                "(see skills/productivity/local-tts-optimization)"
+            )
+        # Model / ref audio from the provider's config section, else defaults.
+        model_dir = self.section.get("model_dir", "")
+        ref_audio = self.section.get("ref_audio", "")
+        cmd = ["env", "-u", "PYTHONPATH", self._VENV, self._WORKER]
+        if model_dir:
+            cmd += ["--model", model_dir]
+        if ref_audio:
+            cmd += ["--ref", ref_audio]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,
+        )
+        try:
+            try:
+                proc.stdin.write(text.encode("utf-8"))
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            out = proc.stdout
+            while True:
+                head = out.read(4)
+                if not head or len(head) < 4:
+                    break
+                (n,) = struct.unpack("<I", head)
+                # A corrupt/oversized frame header must not make read(n) block
+                # forever; treat it as a worker error and stop consuming.
+                if n <= 0 or n > self._MAX_FRAME_BYTES:
+                    break
+                pcm = out.read(n)
+                if not pcm:
+                    break
+                yield pcm
+            try:
+                rc = proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("qwen3tts-mlx worker timed out")
+            if rc != 0:
+                err = proc.stderr.read().decode("utf-8", "replace")[-500:]
+                raise RuntimeError(f"qwen3tts-mlx worker exited {rc}: {err}")
+        finally:
+            # A caller that stops iterating early (break / exception / barge)
+            # must not leak the worker subprocess.
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
 
 
 def _openai_config_api_key() -> str:

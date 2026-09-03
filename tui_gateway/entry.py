@@ -10,6 +10,7 @@ import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 
+import errno
 import json
 import logging
 import signal
@@ -419,6 +420,23 @@ def ensure_mcp_discovery_started() -> None:
         )
 
 
+def _read_stdin_line() -> "str | None":
+    """Read one line from stdin. Returns None on EOF or EINVAL.
+
+    Orca ADE (and similar PTY-less launchers) raises EINVAL (22) on
+    sys.stdin.readline() — the gateway child was spawned with an unreadable
+    stdin handle. Only EINVAL maps to clean EOF; EIO (which some PTY stacks
+    raise on the master side when the slave closes) and other errnos
+    propagate to the caller.
+    """
+    try:
+        return sys.stdin.readline()
+    except OSError as e:
+        if e.errno == errno.EINVAL:
+            return None
+        raise
+
+
 def main():
     _install_sidecar_publisher()
 
@@ -484,7 +502,9 @@ def main():
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)
 
     while True:
-        raw = sys.stdin.readline()
+        raw = _read_stdin_line()
+        if raw is None:
+            break
         if not raw:
             # Stdin fell through — check if spurious (O_NONBLOCK flip by a
             # child on the shared open file description) or genuine EOF.

@@ -12422,11 +12422,35 @@ async def cancel_oauth_session(
 
 
 
+def _is_non_continuation_child(session: dict | None) -> bool:
+    """True when a session row is a delegate/branch child, not a continuation.
+
+    Delegate subagent runs (``model_config._delegate_from``) and explicit
+    branches (``model_config._branched_from``) share the ``parent_session_id``
+    edge with /model-continuation children, but opening them in place of the
+    requested parent shows the wrong transcript (see #101742). Fail-open:
+    unparseable/missing config means continuation.
+    """
+    if not isinstance(session, dict):
+        return False
+    cfg = session.get("model_config")
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg) if cfg.strip() else {}
+        except Exception:
+            return False
+    if not isinstance(cfg, dict):
+        return False
+    return bool(cfg.get("_delegate_from") or cfg.get("_branched_from"))
+
+
 def _session_latest_descendant(session_id: str, db):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
-    newest child instead of reopening the old parent.
+    newest child instead of reopening the old parent. Delegate subagent runs
+    and explicit branches are never followed — only continuations (see
+    _is_non_continuation_child and #101742).
     """
     def row_get(row, key, index):
         if isinstance(row, dict):
@@ -12460,6 +12484,8 @@ def _session_latest_descendant(session_id: str, db):
                 SELECT s.id, s.parent_session_id, s.started_at
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                WHERE json_extract(COALESCE(s.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
             )
             SELECT id, parent_session_id, started_at FROM descendants
             """,
@@ -12473,6 +12499,20 @@ def _session_latest_descendant(session_id: str, db):
             })
     else:
         rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
+        # Rich rows carry no model_config marker; drop delegate/branch
+        # children via a detail lookup. Only rows with a parent are checked,
+        # so this stays bounded by child count, not session count.
+        try:
+            kept = []
+            for row in rows:
+                rid = row.get("id") if isinstance(row, dict) else None
+                parent = row.get("parent_session_id") if isinstance(row, dict) else None
+                if rid and parent and _is_non_continuation_child(db.get_session(rid)):
+                    continue
+                kept.append(row)
+            rows = kept
+        except Exception:
+            pass
 
     children = {}
     for row in rows:

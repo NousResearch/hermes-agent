@@ -7932,6 +7932,34 @@ def _desktop_app_present(desktop_dir: Path) -> bool:
     )
 
 
+def _desktop_rebuild_warranted(desktop_dir: Path) -> bool:
+    """True when this machine has (or very recently had) a Desktop build.
+
+    Extends ``_desktop_app_present`` with the persistent build stamp in
+    ``$HERMES_HOME``. The on-disk check alone loses its answer across
+    update attempts: a failed git-path update can fall back to the ZIP
+    path, whose two-phase replace swaps the ``apps/desktop`` tree —
+    including the git-ignored ``release/`` artifact and ``dist/`` — while
+    the failed run never reaches the rebuild step. On the retry (a fresh
+    process) ``_desktop_app_present`` then reports False and the rebuild
+    is silently skipped, leaving a previously working Desktop unbuilt.
+
+    The stamp survives that swap (it lives outside the install tree,
+    under $HERMES_HOME) and is written only by a successful desktop
+    build; ``gui uninstall`` removes it, so it tracks "this machine had
+    a Desktop" rather than "some machine once built one". A stale stamp
+    after an intentional manual removal of ``release/`` costs one
+    redundant Electron build at most.
+    """
+    if _desktop_app_present(desktop_dir):
+        return True
+    try:
+        return _m()._desktop_stamp_path().exists()
+    except Exception:
+        # Stamp introspection must never block the update path.
+        return False
+
+
 def _rebuild_desktop_after_update(
     desktop_dir: Path, *, had_desktop_app_before_update: bool
 ) -> bool:
@@ -7946,7 +7974,9 @@ def _rebuild_desktop_after_update(
     # The release tree is ignored by git and can disappear during an update.
     # Its pre-update presence is enough to restore it; do not make people who
     # have never used Desktop pay for an Electron build.
-    has_desktop_app = had_desktop_app_before_update or _desktop_app_present(desktop_dir)
+    has_desktop_app = had_desktop_app_before_update or _desktop_rebuild_warranted(
+        desktop_dir
+    )
     if not (
         (desktop_dir / "package.json").exists()
         and _m()._resolve_node_runtime_npm()
@@ -8513,7 +8543,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Capture this after every fail-closed venv guard, but before either
     # update path can remove the ignored release tree.
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
-    had_desktop_app_before_update = _desktop_app_present(desktop_dir)
+    had_desktop_app_before_update = _desktop_rebuild_warranted(desktop_dir)
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)

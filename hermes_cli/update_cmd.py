@@ -8098,6 +8098,76 @@ def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
         return []
 
 
+def _repo_foreign_owned_paths(project_root, limit: int = 5) -> list:
+    """Bounded scan for repo-tree entries not owned by the current user (#102193).
+
+    A repo that was ever touched by ``sudo hermes`` / ``sudo git`` contains
+    root-owned files (classically under ``.git/objects``). A later normal
+    ``hermes update`` then dies at autostash (``insufficient permission``)
+    or mid-pull — after the venv gate below already passed, because that
+    gate only scans ``venv/``. Same refuse-before-mutate philosophy.
+
+    Bounded like :func:`_venv_foreign_owned_paths` (no full recursion):
+    the repo root's direct entries, ``.git`` top level, and the top level
+    of each ``.git/objects`` fan-out dir (where sudo-created objects land).
+    Caps stat calls at ~2000 and returned paths at ``limit``. POSIX-only
+    with the same never-raise, never-slow contract (reuses ``_path_uid``).
+    """
+    try:
+        if not hasattr(os, "geteuid"):
+            return []  # windows-footgun: ok — POSIX ownership concept only
+        euid = os.geteuid()  # windows-footgun: ok — guarded by hasattr above
+        if euid == 0:
+            return []  # root can rewrite anything; nothing to refuse
+
+        root = Path(project_root)
+        budget = 2000  # max stat() calls — hard bound on preflight cost
+        foreign: list = []
+
+        def _check(p) -> bool:
+            """stat one path; True while scan should continue."""
+            nonlocal budget
+            if budget <= 0 or len(foreign) >= limit:
+                return False
+            budget -= 1
+            uid = _path_uid(p)
+            if uid is not None and uid != euid:
+                foreign.append((str(p), uid))
+            return budget > 0 and len(foreign) < limit
+
+        try:
+            entries = list(os.scandir(root))
+        except OSError:
+            return []
+        for entry in entries:
+            if not _check(entry.path):
+                return foreign[:limit]
+            if entry.name == ".git" and entry.is_dir(follow_symlinks=False):
+                try:
+                    git_entries = list(os.scandir(entry.path))
+                except OSError:
+                    continue
+                for git_entry in git_entries:
+                    if not _check(git_entry.path):
+                        return foreign[:limit]
+                    if git_entry.name == "objects" and git_entry.is_dir(
+                        follow_symlinks=False
+                    ):
+                        try:
+                            fanout = list(os.scandir(git_entry.path))
+                        except OSError:
+                            continue
+                        for fan in fanout:
+                            if not _check(fan.path):
+                                return foreign[:limit]
+
+        return foreign[:limit]
+    except Exception:
+        # Preflight is advisory: any structural surprise means "no verdict",
+        # never a crashed or blocked update.
+        return []
+
+
 def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     """Refuse-before-mutate ownership gate for the dependency install (#83529).
 
@@ -8105,21 +8175,24 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     the first venv mutation. If the venv contains files owned by another
     uid, the ``uv pip install -e .`` below would die mid-mutation and brick
     the install — so refuse up front, with the exact recovery command,
-    while the venv is still fully intact. No subprocess calls here: update
-    tests mock ``subprocess.run`` with sequenced side effects.
+    while the venv is still fully intact. Also covers the repo tree itself
+    (``.git/objects`` etc.), where sudo-created files break autostash
+    before the venv is even reached (#102193). No subprocess calls here:
+    update tests mock ``subprocess.run`` with sequenced side effects.
     """
     foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    foreign = list(foreign) + _repo_foreign_owned_paths(project_root)
     if not foreign:
         return
-    print("\n✗ Update stopped: this install's venv contains files owned by another user.")
+    print("\n✗ Update stopped: this install contains files owned by another user.")
     print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
     print("  This usually happens after running hermes or pip with sudo. Offending paths:")
-    for p, uid in foreign:
+    for p, uid in foreign[:5]:
         print(f"    - {p} (owner uid {uid})")
     print("\n  Fix ownership, then re-run the update:")
     print(f"    sudo chown -R $(id -un): {project_root}")
     print("    hermes update")
-    print("\n  Nothing in the venv was modified.")
+    print("\n  Nothing was modified.")
     sys.exit(1)
 
 

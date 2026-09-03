@@ -28,6 +28,7 @@ def test_execution_owner_moves_to_external_worker_before_running(
     execution_ledger, monkeypatch
 ):
     record = execution_ledger.create_execution("job-1", source="builtin")
+    assert execution_ledger.mark_execution_handoff_pending(record["id"]) is not None
     monkeypatch.setattr(execution_ledger.os, "getpid", lambda: 4242)
     monkeypatch.setattr(execution_ledger, "_process_start_time", lambda pid: 9876)
 
@@ -41,10 +42,22 @@ def test_execution_owner_moves_to_external_worker_before_running(
     assert execution_ledger.mark_execution_running(record["id"]) is None
 
 
+def test_external_worker_cannot_adopt_execution_without_handoff_fence(
+    execution_ledger, monkeypatch
+):
+    record = execution_ledger.create_execution("job-unfenced", source="builtin")
+    monkeypatch.setattr(execution_ledger.os, "getpid", lambda: 4242)
+    monkeypatch.setattr(execution_ledger, "_process_start_time", lambda _pid: 9876)
+
+    assert execution_ledger.adopt_claimed_execution(record["id"]) is None
+    assert execution_ledger.get_execution(record["id"])["status"] == "claimed"
+
+
 def test_genuine_external_worker_crash_is_recovered_unknown(
     execution_ledger, monkeypatch
 ):
     record = execution_ledger.create_execution("job-crash", source="builtin")
+    assert execution_ledger.mark_execution_handoff_pending(record["id"]) is not None
     script = (
         "import os\n"
         "from pathlib import Path\n"
@@ -64,10 +77,10 @@ def test_genuine_external_worker_crash_is_recovered_unknown(
     assert "whether side effects ran is unknown" in recovered["error"]
 
 
+@pytest.mark.linux_only
 def test_restart_safe_gateway_child_fails_closed_without_scope(monkeypatch):
     import tools.process_registry as process_registry
 
-    monkeypatch.setattr(process_registry, "_IS_WINDOWS", False)
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
@@ -87,6 +100,22 @@ def test_restart_safe_gateway_child_is_unchanged_outside_managed_gateway(monkeyp
     assert process_registry.restart_safe_gateway_child_argv(
         command, unit_suffix="cron-job-1"
     ) is command
+
+
+def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
+    import tools.process_registry as process_registry
+
+    command = ["python", "worker.py"]
+    probe = Mock(side_effect=AssertionError("systemd probe ran off Linux"))
+    monkeypatch.setattr(process_registry, "_IS_LINUX", False)
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", probe)
+    monkeypatch.setenv("INVOCATION_ID", "managed-service")
+
+    assert process_registry.restart_safe_gateway_child_argv(
+        command, unit_suffix="cron-job-1"
+    ) is command
+    probe.assert_not_called()
 
 
 def test_external_worker_adopts_execution_and_runs_payload_once(

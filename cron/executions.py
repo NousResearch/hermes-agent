@@ -148,7 +148,7 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
-             ORDER BY claimed_at DESC, id DESC LIMIT -1 OFFSET ?
+             ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (limit,),
     )
@@ -211,7 +211,7 @@ def adopt_claimed_execution(execution_id: str) -> Optional[Dict[str, Any]]:
                SET process_id=?, pid=?, process_started_at=?,
                    status='running', started_at=?, handoff_pending=0,
                    handoff_started_at=NULL
-               WHERE id=? AND status='claimed'""",
+               WHERE id=? AND status='claimed' AND handoff_pending=1""",
             (_PROCESS_ID, pid, process_started_at, now, execution_id),
         )
         if cur.rowcount != 1:
@@ -231,8 +231,9 @@ def mark_execution_running(execution_id: str) -> Optional[Dict[str, Any]]:
             """UPDATE executions
                SET status='running', started_at=?, handoff_pending=0,
                    handoff_started_at=NULL
-               WHERE id=? AND status='claimed' AND handoff_pending=0""",
-            (now, execution_id),
+               WHERE id=? AND status='claimed' AND handoff_pending=0
+                 AND process_id=? AND pid=?""",
+            (now, execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None
@@ -256,8 +257,9 @@ def finish_execution(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
                    handoff_started_at=NULL
-               WHERE id=? AND status IN ('claimed','running')""",
-            (status, now, detail, execution_id),
+               WHERE id=? AND status IN ('claimed','running')
+                 AND process_id=? AND pid=?""",
+            (status, now, detail, execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None
@@ -276,7 +278,7 @@ def recover_interrupted_executions() -> int:
     recovered: List[Dict[str, Any]] = []
     with _transaction() as conn:
         rows = conn.execute(
-            """SELECT id, process_id, pid, process_started_at,
+            """SELECT id, status, process_id, pid, process_started_at,
                       handoff_pending, handoff_started_at
                FROM executions
                WHERE status IN ('claimed','running')"""
@@ -298,11 +300,14 @@ def recover_interrupted_executions() -> int:
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
                        handoff_pending=0, handoff_started_at=NULL
-                   WHERE id=? AND status IN ('claimed','running')""",
+                   WHERE id=? AND status=? AND process_id=? AND pid=?
+                     AND handoff_pending=?
+                     AND handoff_started_at IS ?""",
                 (now,
                  "Scheduler restarted after this execution's owner exited before a durable "
                  "terminal state; whether side effects ran is unknown.",
-                 row["id"]),
+                 row["id"], row["status"], row["process_id"], row["pid"],
+                 row["handoff_pending"], row["handoff_started_at"]),
             )
             changed += cur.rowcount
             if cur.rowcount:

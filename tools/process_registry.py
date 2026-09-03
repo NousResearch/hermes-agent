@@ -334,7 +334,7 @@ def restart_safe_gateway_child_argv(
     closed if it cannot be established.  Standalone processes, non-systemd
     supervisors, and non-Linux hosts retain the direct command.
     """
-    if _IS_WINDOWS:
+    if not _IS_LINUX:
         return command
     if not _is_supervised_gateway_process() or not os.environ.get("INVOCATION_ID"):
         return command

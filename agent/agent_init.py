@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse, urlunparse
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import ContextCompressor, parse_model_threshold_tokens
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.session_activity import ActivityProvenance
@@ -2323,6 +2323,15 @@ def init_agent(
                 compression_threshold_tokens = None
         except (TypeError, ValueError):
             compression_threshold_tokens = None
+    # Per-model absolute token caps (compression.threshold_tokens_by_model):
+    # {model-substring: token cap}, longest case-insensitive match wins, and
+    # the cap only ever LOWERS the post-floor threshold. Use case: keep a
+    # route under a provider price band (grok doubles every rate past 200K)
+    # without shrinking big-window models. Parsed/validated once here —
+    # the compressor itself never reads config on the apply path.
+    compression_model_threshold_tokens = parse_model_threshold_tokens(
+        _compression_cfg.get("threshold_tokens_by_model")
+    )
     compression_checkpoint_required = is_truthy_value(
         _compression_cfg.get("checkpoint_required"), default=False
     )
@@ -2865,6 +2874,7 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=_compressor_max_tokens,
             model_thresholds=compression_model_thresholds,
+            model_threshold_tokens=compression_model_threshold_tokens,
             threshold_tokens_cap=compression_threshold_tokens,
             proactive_prune_tokens=compression_proactive_prune_tokens,
             proactive_prune_min_result_chars=compression_proactive_prune_min_chars,

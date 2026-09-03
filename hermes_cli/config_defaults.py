@@ -880,6 +880,13 @@ DEFAULT_CONFIG = {
                                       # triggers at the lower of the ratio-based
                                       # threshold and this token count. Clamped to
                                       # the model's context length at apply-time.
+        "threshold_tokens_by_model": {},  # per-model overrides for the cap above,
+                                      # keyed by a substring of the model id
+                                      # (longest case-insensitive match wins).
+                                      # Unlike the ratio overrides, an absolute
+                                      # per-model cap survives the sub-512K
+                                      # floor. Empty = threshold_tokens applies
+                                      # to every model.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "tail_mode": "lean",          # tail retention policy (#87326):
                                       #   "lean"   — clamped 2.5%-of-window tail (default)
@@ -1063,9 +1070,10 @@ DEFAULT_CONFIG = {
                                       # Default True since 2107b86024; set False to
                                       # restore the legacy rotating-compaction path.
         "model_thresholds": {},       # Per-model threshold overrides. Keys are
-                                      # substring-matched against the model name
-                                      # (longest match wins); values replace the
-                                      # global `threshold` for that model, e.g.
+                                      # case-insensitively substring-matched
+                                      # against the model name (longest match
+                                      # wins); values replace the global
+                                      # `threshold` for that model, e.g.
                                       #   model_thresholds:
                                       #     "glm-5.2": 0.40
                                       #     "claude-sonnet": 0.35

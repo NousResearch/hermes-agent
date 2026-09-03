@@ -606,11 +606,13 @@ compression:
   # compaction doesn't fire with half the window still free; set above 0.75 to override.
   threshold: 0.50
 
-  # Per-model threshold overrides: keys are substring-matched against the model
-  # name (longest match wins). Useful when some models need different compaction
-  # points — e.g. a 1M-context model can compress later (0.30) while a 128K
-  # model needs to compress earlier (0.60). The small-context floor (75% for
-  # <512K models) still applies on top of per-model overrides.
+  # Per-model threshold overrides: keys are case-insensitive substrings of the
+  # model name (longest match wins). Useful when some models need different
+  # compaction points — e.g. a 1M-context model can compress later (0.30) while
+  # a 128K model needs to compress earlier (0.60). The small-context floor (75%
+  # for <512K models) still applies on top of per-model overrides.
+  # Note: matching used to be case-SENSITIVE here, so a mis-cased key (e.g.
+  # "GLM" against glm-5.2-1M) silently did nothing. It now applies.
   # model_thresholds:
   #   "glm-5.2": 0.40
   #   "claude-sonnet": 0.35
@@ -624,6 +626,20 @@ compression:
   # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
   # Survives model switches and fallback activations.
   # threshold_tokens: 200000
+
+  # Per-model absolute token caps (default: empty = disabled). Keys are
+  # case-insensitive substrings of the model name (longest match wins, same
+  # as model_thresholds above) and must be strings — quote a numeric-looking
+  # key ("4.6": …), or YAML hands over a float whose text matches every model
+  # containing those characters. Each value is an absolute token count that
+  # only ever LOWERS the trigger — it never compresses later than the
+  # ratio/floor result. Unlike model_thresholds fractions, an absolute cap
+  # survives the sub-512K floor, so you can keep a route under a provider
+  # price band (e.g. grok-4.6 doubles all rates past 200K of prompt) without
+  # shrinking the usable window of your long-context models.
+  # threshold_tokens_by_model:
+  #   "grok": 180000
+  #   "kimi": 190000
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.

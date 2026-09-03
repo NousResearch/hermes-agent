@@ -26,7 +26,7 @@ import sqlite3
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
@@ -2304,6 +2304,81 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
+def match_model_override(model: str, mapping: "Mapping[str, object] | None") -> str:
+    """Return the mapping key that best matches *model* (longest wins).
+
+    Keys match as case-insensitive substrings of the model name, so
+    ``grok`` matches ``x-ai/grok-4.6`` and ``GLM-5.2`` matches ``glm-5.2-1M``.
+    Empty/blank keys never match. Returns ``""`` when nothing matches.
+    Shared by every per-model compression override so they all speak the
+    same matching language.
+    """
+    if not mapping or not model:
+        return ""
+    needle = str(model).lower()
+    best_key = ""
+    best_len = 0
+    for key in mapping:
+        k = str(key).strip()
+        if k and k.lower() in needle and len(k) > best_len:
+            best_key, best_len = key, len(k)
+    return best_key
+
+
+def parse_model_threshold_tokens(raw: object) -> "dict[str, int]":
+    """Validate a ``compression.threshold_tokens_by_model`` config mapping.
+
+    Returns a ``{model-substring: absolute token cap}`` dict. Entries with
+    blank keys, non-string keys, or non-positive/non-integer values are
+    dropped with a warning so a malformed config can never silently zero a
+    threshold.
+
+    Non-string keys are rejected rather than stringified because YAML parses
+    a bare ``4.6:`` as a float, and ``str(4.6)`` is a two-digit substring that
+    matches every model carrying those characters — ``gpt-4.6-x``, ``kimi-4.6``
+    and anything else. That is far more likely an authoring slip than an
+    intended match, and the quoted form ``"4.6":`` still expresses it.
+    """
+    if not isinstance(raw, dict):
+        if raw:
+            logger.warning(
+                "compression.threshold_tokens_by_model must be a mapping, got %s — ignored",
+                type(raw).__name__,
+            )
+        return {}
+    out: dict[str, int] = {}
+    for key, val in raw.items():
+        if not isinstance(key, str):
+            logger.warning(
+                "compression.threshold_tokens_by_model[%r]: key must be a string "
+                "— dropped (quote it to match a literal substring)",
+                key,
+            )
+            continue
+        skey = key.strip()
+        try:
+            ival = int(val)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            logger.warning(
+                "compression.threshold_tokens_by_model[%r]: %r is not an int — dropped",
+                skey, val,
+            )
+            continue
+        if not skey:
+            logger.warning(
+                "compression.threshold_tokens_by_model: blank key — dropped",
+            )
+            continue
+        if ival <= 0:
+            logger.warning(
+                "compression.threshold_tokens_by_model[%r]: cap %r must be > 0 — dropped",
+                skey, val,
+            )
+            continue
+        out[skey] = ival
+    return out
+
+
 def resolve_model_threshold(
     model: str,
     model_thresholds: dict[str, float] | None,
@@ -2316,15 +2391,21 @@ def resolve_model_threshold(
     model is ``glm-5.2-1M``).  When no override matches, or when
     ``model_thresholds`` is empty/None, ``default`` is returned unchanged.
 
+    Matching is **case-insensitive**, via :func:`match_model_override`.  This
+    path used to compare with a plain ``key in model``, so a key whose case
+    did not match the runtime model name silently never applied — ``GLM``
+    against ``glm-5.2-1M`` did nothing.  Sharing one matcher with the per-model
+    token caps makes both speak the same language, and an existing
+    ``model_thresholds`` key that was mis-cased starts taking effect.  That is
+    the intended reading of what the operator wrote; it is called out here, and
+    locked by test, because it changes behavior for configs already on disk.
+
     This is a module-level helper so plugin context engines (e.g. LCM) can
     import and reuse the same resolution logic as the built-in compressor.
     """
     if not model_thresholds or not model:
         return default
-    best_key = ""
-    for key in model_thresholds:
-        if key in model and len(key) > len(best_key):
-            best_key = key
+    best_key = match_model_override(model, model_thresholds)
     if best_key:
         return float(model_thresholds[best_key])
     return default
@@ -3386,11 +3467,45 @@ class ContextCompressor(ContextEngine):
         than the user's preferred absolute token count. The cap itself
         is clamped to the current context length so a cap larger than
         the model's window is a no-op (the ratio-based threshold wins).
+
+        Then apply any per-model cap from ``model_threshold_tokens``
+        (config ``compression.threshold_tokens_by_model``; substring keys,
+        longest case-insensitive match wins — see :func:`match_model_override`).
+        Unlike ``model_thresholds`` fractions — which the sub-512K floor
+        (75%) raises back up — an absolute per-model cap survives the floor,
+        so a route can be kept under a provider price band (e.g. grok's 200K
+        long-context 2x tier) without touching other models' windows.
         """
         if self.threshold_tokens_cap is not None and self.threshold_tokens_cap > 0:
-            _effective_cap = min(self.threshold_tokens_cap, self.context_length)
+            _effective_cap = self._cap_within_context(self.threshold_tokens_cap)
             if _effective_cap < self.threshold_tokens:
                 self.threshold_tokens = _effective_cap
+        if self.model_threshold_tokens and self.model:
+            _key = match_model_override(self.model, self.model_threshold_tokens)
+            if _key:
+                _effective_cap = self.model_threshold_tokens[_key]
+                # Sign guard mirrors the global cap above: a non-positive
+                # cap (e.g. an unparsed caller) must never zero the trigger.
+                if _effective_cap <= 0:
+                    return
+                _effective_cap = self._cap_within_context(_effective_cap)
+                # Lower-only: a per-model cap never raises the threshold.
+                if _effective_cap < self.threshold_tokens:
+                    self.threshold_tokens = _effective_cap
+
+    def _cap_within_context(self, cap: int) -> int:
+        """Clamp an absolute cap to the model's window, if the window is known.
+
+        Both caps above go through here so the ordering is stated once: clamp
+        to the context length, then let the caller apply it lower-only.
+
+        ``context_length`` of 0 means the window is *unknown*, not that it is
+        empty. Clamping to it would drive the trigger to zero and compress on
+        every single turn — which is what the global cap did before these two
+        clamps were unified. Leave an unknown window alone: the cap is still
+        lower-only at the call site, so an oversized one is a no-op anyway.
+        """
+        return min(cap, self.context_length) if self.context_length else cap
 
     @staticmethod
     def _effective_threshold_percent(
@@ -3481,6 +3596,7 @@ class ContextCompressor(ContextEngine):
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
+        model_threshold_tokens: dict[str, int] | None = None,
         threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0,
         proactive_prune_min_result_chars: int = 8000,
@@ -3501,6 +3617,11 @@ class ContextCompressor(ContextEngine):
         # Stored as a plain dict; resolved in _resolve_threshold(), then the
         # small-context floor is applied on top.
         self.model_thresholds = model_thresholds or {}
+        # Per-model absolute token caps (same longest-match language as
+        # model_thresholds). Parsed once at construction from
+        # compression.threshold_tokens_by_model — no config reads on the
+        # apply path. Applied after the small-context floor, lower-only.
+        self.model_threshold_tokens = model_threshold_tokens or {}
         # _config_threshold_percent is the raw config value (before per-model
         # override or small-context floor). Used as the fallback when switching
         # to a model with no matching override.

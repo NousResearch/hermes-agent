@@ -290,7 +290,10 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    for _ in range(40):  # up to ~2s; returns as soon as the send lands
+    # CI Linux with SQLite 3.50.x journal_mode=DELETE can spend >2s on the
+    # first agent-path session open (WAL-reset workaround). Poll long enough
+    # that a real send is observed; return early as soon as it lands.
+    for _ in range(100):  # up to ~5s
         if adapter.send.called:
             break
         await asyncio.sleep(0.05)

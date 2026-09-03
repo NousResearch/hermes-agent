@@ -1887,6 +1887,51 @@ def _redecorate_prompt_cache_for_provider(
     return messages, prepared, planned_tools
 
 
+_VALID_CONTEXT_SELECTION_ROLES = frozenset(
+    {"system", "user", "assistant", "tool", "function", "developer"}
+)
+
+
+def _context_engine_selection_is_safe(
+    selected: List[Dict[str, Any]],
+    system_prefix: List[Dict[str, Any]],
+) -> bool:
+    """Return True when ``selected`` may safely replace the request.
+
+    Enforces the protected-system-prefix and role/tool-field contract for
+    ``ContextEngine.select_context()`` replacements
+    (SECURITY-CLASS-963645940f301b6e): an engine may reorder, drop, or add
+    *conversation* messages, but it must not inject a ``system``-role message
+    (an attacker-controlled policy) or replace the host's protected system
+    prefix, and it must emit structurally valid roles and tool fields.
+    """
+    if len(selected) < len(system_prefix):
+        return False
+    # The leading system messages must match the original prefix verbatim
+    # (role + content), so an engine cannot swap in its own system policy.
+    for idx, orig in enumerate(system_prefix):
+        sel = selected[idx]
+        if not isinstance(sel, dict):
+            return False
+        if sel.get("role") != "system" or sel.get("content") != orig.get("content"):
+            return False
+    # Every message after the preserved prefix must be a conversation/tool
+    # message with a valid role; a stray ``system`` message is an injection.
+    for msg in selected[len(system_prefix):]:
+        if not isinstance(msg, dict):
+            return False
+        role = msg.get("role")
+        if role not in _VALID_CONTEXT_SELECTION_ROLES:
+            return False
+        if role == "system":
+            return False
+        if role == "tool" and not msg.get("tool_call_id"):
+            return False
+        if role == "function" and not msg.get("name"):
+            return False
+    return True
+
+
 def _apply_context_engine_selection(
     agent: Any,
     api_messages: List[Dict[str, Any]],
@@ -1961,12 +2006,24 @@ def _apply_context_engine_selection(
     # a ``[]`` returned by a buggy/failing engine would replace a valid request
     # with an empty message list that the downstream sanitizers cannot restore,
     # reaching the provider as an invalid request instead of failing open.
-    if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        return selected
+    if isinstance(selected, list) and selected:
+        # Extract the leading system messages from the original request so an
+        # engine cannot inject or replace a ``system``-role policy message
+        # (SECURITY-CLASS-963645940f301b6e). Fail open to the original request
+        # on any structural or provenance violation.
+        _system_prefix = []
+        for _m in api_messages:
+            if isinstance(_m, dict) and _m.get("role") == "system":
+                _system_prefix.append(_m)
+            else:
+                break
+        if _context_engine_selection_is_safe(selected, _system_prefix):
+            return selected
 
     logger.warning(
-        "Context engine select_context returned an invalid value "
-        "(not a non-empty list of dicts); ignoring (session=%s)",
+        "Context engine select_context returned an invalid or unsafe value "
+        "(not a non-empty list of valid message dicts, or it injected/replaced "
+        "a system-role message); ignoring (session=%s)",
         session_label,
     )
     return api_messages

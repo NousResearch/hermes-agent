@@ -1,21 +1,15 @@
 'use client'
 
-import DOMPurify from 'dompurify'
 import { useMemo } from 'react'
+
+import { sanitizeSvgMarkup } from '@/lib/svg-sanitize'
 
 import type { RichFenceProps } from './types'
 
 // Lazy chunk (pulls in DOMPurify). Renders a ```svg fence as an image after
-// hard-sanitising it: the svg profile strips scripts, event handlers, and
-// foreignObject, so untrusted model output can't execute.
+// sanitizing markup and applying the stricter no-resource SVG policy.
 export default function SvgRenderer({ code }: RichFenceProps) {
-  const clean = useMemo(
-    () =>
-      DOMPurify.sanitize(code, {
-        USE_PROFILES: { svg: true, svgFilters: true }
-      }),
-    [code]
-  )
+  const clean = useMemo(() => sanitizeSvgMarkup(code), [code])
 
   if (!clean.trim()) {
     return null

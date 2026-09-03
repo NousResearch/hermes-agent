@@ -2,9 +2,14 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
+import {
+  collectBalancedFenceRanges,
+  collectFenceRanges,
+  collectIndentedCodeRanges,
+  fenceRawSvgBlocks
+} from '@/lib/markdown-inline-svg'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
-import { previewMarkdownHref } from '@/lib/preview-targets'
-import { stripPreviewTargets } from '@/lib/preview-targets'
+import { previewMarkdownHref, stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
@@ -96,15 +101,11 @@ function hasCloseFenceLine(body: string, marker: string): boolean {
 }
 
 function scrubBacktickNoise(text: string): string {
-  const balancedFenceRe = /(^|\n)([ \t]*)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n[ \t]*\3[ \t]*(?=\n|$)/g
-  const protectedRanges: { end: number; start: number }[] = []
+  // Share the SVG fencer's blockquote-depth-aware fence detector so a close
+  // at another quote depth cannot make this scrubber protect a different
+  // range than the SVG scanner does.
+  const protectedRanges = collectBalancedFenceRanges(text)
   let match: RegExpExecArray | null
-
-  while ((match = balancedFenceRe.exec(text)) !== null) {
-    const start = match.index + match[1].length
-
-    protectedRanges.push({ end: balancedFenceRe.lastIndex, start })
-  }
 
   const danglingCodeFenceRe = /(^|\n)[ \t]*(`{3,}|~{3,})([a-z0-9][a-z0-9+#-]{0,15})[ \t]*\n([\s\S]*)$/gi
 
@@ -148,6 +149,31 @@ function scrubBacktickNoise(text: string): string {
   }
 
   return out
+}
+
+function transformOutsideRanges(
+  text: string,
+  ranges: Array<{ end: number; start: number }>,
+  transform: (value: string) => string
+): string {
+  if (ranges.length === 0) {
+    return transform(text)
+  }
+
+  let out = ''
+  let cursor = 0
+
+  for (const range of ranges) {
+    out += transform(text.slice(cursor, range.start))
+    out += text.slice(range.start, range.end)
+    cursor = range.end
+  }
+
+  return out + transform(text.slice(cursor))
+}
+
+function transformOutsideIndentedCode(text: string, transform: (value: string) => string): string {
+  return transformOutsideRanges(text, collectIndentedCodeRanges(text), transform)
 }
 
 function stripEmptyFenceBlocks(text: string): string {
@@ -623,48 +649,51 @@ function normalizeFenceBlocks(text: string): string {
   return out.join('\n')
 }
 
-export function preprocessMarkdown(text: string): string {
-  const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
-  const scrubbed = scrubBacktickNoise(cleaned)
+function preprocessNonIndentedMarkdown(text: string): string {
+  const scrubbed = scrubBacktickNoise(text)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
 
-  return strippedEmptyFences
-    .split(CODE_FENCE_SPLIT_RE)
-    .map(part => {
-      // Fence blocks pass through untouched.
-      if (/^(?:```|~~~)/.test(part)) {
-        return part
-      }
+  return transformOutsideRanges(strippedEmptyFences, collectFenceRanges(strippedEmptyFences), part => {
+    // Whitespace-only segments (e.g. the `\n\n` between two adjacent
+    // fences) must NOT go through stripPreviewTargets — its internal
+    // .trim() would collapse them to '' and glue the surrounding
+    // fences together, producing things like ``````math which the
+    // markdown parser then reads as a single 6-backtick block.
+    if (!part.trim()) {
+      return part
+    }
 
-      // Whitespace-only segments (e.g. the `\n\n` between two adjacent
-      // fences) must NOT go through stripPreviewTargets — its internal
-      // .trim() would collapse them to '' and glue the surrounding
-      // fences together, producing things like ``````math which the
-      // markdown parser then reads as a single 6-backtick block.
-      if (!part.trim()) {
-        return part
-      }
+    // Preserve leading/trailing whitespace around the prose body so
+    // that fence-prose-fence sequences keep their blank-line gaps.
+    // stripPreviewTargets internally calls .trim() on its result for
+    // the benefit of its other (single-segment) callers; here we're
+    // operating on a SEGMENT of a larger document where outer
+    // whitespace is structural and must survive.
+    const leading = part.match(/^\s*/)?.[0] ?? ''
+    const trailing = part.match(/\s*$/)?.[0] ?? ''
 
-      // Preserve leading/trailing whitespace around the prose body so
-      // that fence-prose-fence sequences keep their blank-line gaps.
-      // stripPreviewTargets internally calls .trim() on its result for
-      // the benefit of its other (single-segment) callers; here we're
-      // operating on a SEGMENT of a larger document where outer
-      // whitespace is structural and must survive.
-      const leading = part.match(/^\s*/)?.[0] ?? ''
-      const trailing = part.match(/\s*$/)?.[0] ?? ''
+    // Run only on prose segments so `$5` literals and `\(` inside code
+    // blocks stay intact. The HTML-depth clamp belongs here for the same
+    // reason: a fenced block renders as code and never reaches rehype-raw,
+    // so escaping tags inside one would corrupt the listing for nothing.
+    const transformed = clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
 
-      // Run only on prose segments so `$5` literals and `\(` inside code
-      // blocks stay intact. The HTML-depth clamp belongs here for the same
-      // reason: a fenced block renders as code and never reaches rehype-raw,
-      // so escaping tags inside one would corrupt the listing for nothing.
-      const transformed = clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+    return (leading + transformed + trailing).replace(/[ \t]+\n/g, '\n')
+  })
+}
 
-      return leading + transformed + trailing
-    })
-    .join('')
-    .replace(/[ \t]+\n/g, '\n')
+export function preprocessMarkdown(text: string): string {
+  // Four-space and tab-indented blocks are code in CommonMark. Keep those
+  // source bytes outside every prose cleanup pass; in particular, an indented
+  // ``` line is code content rather than a fence for the noise scrubber.
+  const cleaned = transformOutsideIndentedCode(text, value =>
+    value.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
+  )
+
+  const svgFenced = fenceRawSvgBlocks(cleaned)
+
+  return transformOutsideIndentedCode(svgFenced, preprocessNonIndentedMarkdown)
 }
 
 /**

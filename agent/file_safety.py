@@ -470,17 +470,80 @@ def raise_if_read_blocked(path: str) -> None:
 PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
 
 
+def _profile_name_from_overlay_links(home: Path, root: Path) -> Optional[str]:
+    """Recover a profile name from a symlink-farm overlay HERMES_HOME (#93862).
+
+    Multi-agent orchestrators isolate sessions/logs in a per-task directory
+    while sharing a named profile's content via symlinks (SOUL.md,
+    plugins/, cron/, ... -> ``<root>/profiles/<name>/...``). Such a home is
+    neither the root nor ``<root>/profiles/<name>``, so path-prefix
+    derivation reports "default". Readlink the well-known members instead
+    and recover the ``profiles/<name>`` segment from their targets.
+
+    Candidates are anchored on both the resolved root and the
+    platform-native home: for an overlay HERMES_HOME,
+    ``get_default_hermes_root()`` returns the overlay itself, while the
+    link targets live under the native root's ``profiles/``.
+
+    Returns None when no member points into a named profile, or when members
+    disagree (a mixed farm names no single profile) — callers fall back to
+    "default". Never raises.
+    """
+    try:
+        from hermes_constants import _get_platform_default_hermes_home
+
+        native_home = _get_platform_default_hermes_home()
+    except Exception:
+        native_home = None
+    candidates: list[Path] = []
+    for base in (root, native_home):
+        if base is None:
+            continue
+        try:
+            profiles_dir = base.resolve() / "profiles"
+        except (OSError, RuntimeError):
+            continue
+        if profiles_dir not in candidates:
+            candidates.append(profiles_dir)
+    if not candidates:
+        return None
+    members = ("SOUL.md", "skills", "plugins", "cron", "hooks", "memories", "sessions")
+    names: list[str] = []
+    for member in members:
+        try:
+            target = home / member
+            if not target.is_symlink():
+                continue
+            resolved = target.resolve()
+        except (OSError, RuntimeError):
+            continue
+        for profiles_dir in candidates:
+            try:
+                rel = resolved.relative_to(profiles_dir)
+            except ValueError:
+                continue
+            if rel.parts:
+                names.append(rel.parts[0])
+            break
+    if names and len(set(names)) == 1:
+        return names[0]
+    return None
+
+
 def _resolve_active_profile_name() -> str:
     """Return the active profile name derived from HERMES_HOME.
 
     ``~/.hermes``              -> ``"default"``
     ``~/.hermes/profiles/X``  -> ``"X"``
+    overlay farm into profiles/X -> ``"X"`` (see
+    :func:`_profile_name_from_overlay_links`)
 
     Falls back to ``"default"`` on any resolution failure so the guard
     never raises into the tool path.
     """
     try:
-        home_real = _hermes_home_path().resolve()
+        home = _hermes_home_path()
+        home_real = home.resolve()
         root_real = _hermes_root_path().resolve()
     except (OSError, RuntimeError):
         return "default"
@@ -492,7 +555,7 @@ def _resolve_active_profile_name() -> str:
             return parts[0]
     except ValueError:
         pass
-    return "default"
+    return _profile_name_from_overlay_links(home, root_real) or "default"
 
 
 def classify_cross_profile_target(path: str) -> Optional[dict]:

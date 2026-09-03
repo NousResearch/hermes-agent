@@ -29,12 +29,10 @@ only the repair-connection durability half.)
 
 from __future__ import annotations
 
-import re
+import ast
 import sqlite3
 import sys
 from pathlib import Path
-
-import pytest
 
 import hermes_state
 from hermes_state import (
@@ -55,7 +53,7 @@ def _make_db(tmp_path: Path) -> Path:
     return db
 
 
-# ── Defect 1: repair-path write durability ──────────────────────────────
+# ── Repair-path write durability ────────────────────────────────────────
 
 
 def test_connect_repair_durable_sets_macos_barriers(tmp_path: Path) -> None:
@@ -104,23 +102,47 @@ def test_repair_path_has_no_bare_connects() -> None:
     Source-level guard: the bare form is exactly what regressed, and a unit
     test on the helper alone would not notice a sixth site being added.
     """
-    source = Path(hermes_state.__file__).read_text()
-    pattern = r"^\s*conn = sqlite3\.connect\(str\(db_path\), isolation_level=None\)"
+    source = Path(hermes_state.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(hermes_state.__file__))
 
-    # The one legitimate bare connect is inside the helper itself; everything
-    # after that definition must go through it.
-    helper = source.index("def _connect_repair_durable(")
-    body_end = source.index("\ndef ", helper + 1)
-    inside_helper = re.findall(pattern, source[helper:body_end], flags=re.MULTILINE)
-    assert len(inside_helper) == 1, (
-        "_connect_repair_durable no longer opens the connection itself"
+    def is_db_path_connect(node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        callee = node.func
+        if not (
+            isinstance(callee, ast.Attribute)
+            and isinstance(callee.value, ast.Name)
+            and callee.value.id == "sqlite3"
+            and callee.attr == "connect"
+        ):
+            return False
+        if not node.args:
+            return False
+        first = node.args[0]
+        return (
+            isinstance(first, ast.Call)
+            and isinstance(first.func, ast.Name)
+            and first.func.id == "str"
+            and len(first.args) == 1
+            and isinstance(first.args[0], ast.Name)
+            and first.args[0].id == "db_path"
+        )
+
+    helper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_connect_repair_durable"
+    )
+    helper_calls = [node for node in ast.walk(helper) if is_db_path_connect(node)]
+    assert len(helper_calls) == 1, (
+        "_connect_repair_durable must own exactly one sqlite3.connect(str(db_path), ...)"
     )
 
-    elsewhere = re.findall(
-        pattern, source[:helper] + source[body_end:], flags=re.MULTILINE
-    )
+    all_calls = [node for node in ast.walk(tree) if is_db_path_connect(node)]
+    elsewhere = [node for node in all_calls if node not in helper_calls]
     assert elsewhere == [], (
-        f"{len(elsewhere)} repair-path connection(s) still bypass "
+        f"{len(elsewhere)} repair/probe connection(s) still bypass "
         "_connect_repair_durable() and write state.db without the macOS "
         "fsync barriers"
     )

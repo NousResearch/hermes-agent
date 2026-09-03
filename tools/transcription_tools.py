@@ -1084,8 +1084,20 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "openai":
-            if _HAS_OPENAI and _has_openai_audio_backend():
-                return "openai"
+            if _HAS_OPENAI:
+                # Resolve directly instead of via the boolean probe: the
+                # probe flattens _resolve_openai_audio_client_config's
+                # selection-specific ValueError into False, so a managed
+                # openai-audio gateway outage would be logged as a generic
+                # "no API key" hint (#93045).
+                try:
+                    _resolve_openai_audio_client_config()
+                    return "openai"
+                except ValueError as exc:
+                    logger.warning(
+                        "STT provider 'openai' configured but unavailable: %s", exc
+                    )
+                    return "none"
             logger.warning(
                 "STT provider 'openai' configured but no API key available"
             )
@@ -3156,6 +3168,16 @@ def _dispatch_stt_provider(
         and provider_key != "none"
     ):
         return _unregistered_stt_provider_error(provider_key)
+
+    # An explicit openai selection flattened to "none" carries a
+    # selection-specific reason (e.g. the managed openai-audio gateway is
+    # unavailable). Surface it — with its `hermes tools` remediation —
+    # instead of the all-provider setup hint (#93045).
+    if provider_key == "none" and str(stt_config.get("provider") or "") == "openai" and _HAS_OPENAI:
+        try:
+            _resolve_openai_audio_client_config()
+        except ValueError as exc:
+            return {"success": False, "transcript": "", "error": str(exc)}
 
     # No provider available
     return {

@@ -399,6 +399,7 @@ def _run_agent(
     # the caller just asked for.
     effective_provider = (provider or "").strip() or None
     explicit_base_url_from_alias: Optional[str] = None
+    explicit_api_key_from_alias: Optional[str] = None
     if effective_provider is None and (model or env_model):
         # Only auto-detect when the model was explicitly requested via arg or
         # env var (not when it came from config — that's the "use my defaults"
@@ -417,6 +418,20 @@ def _run_agent(
             if direct is not None:
                 effective_model = direct.model
                 effective_provider = direct.provider
+                # Resolve the alias through the SAME owner the interactive
+                # `/model` path uses. Passing `direct.provider` alongside a
+                # URL-bearing alias would let a label like `anthropic` reach
+                # that provider's explicit-runtime branch, keep the alias's
+                # unrelated base_url, and fall back to the live vendor token —
+                # a bearer credential crossing an origin boundary. The helper
+                # forces bare `custom` for URL-bearing aliases (host-gated,
+                # #28660) and carries the alias's own key when it declares one.
+                try:
+                    effective_provider, explicit_api_key_from_alias = (
+                        _ms.direct_alias_runtime_request(direct)
+                    )
+                except Exception:
+                    explicit_api_key_from_alias = None
                 if direct.base_url:
                     explicit_base_url_from_alias = direct.base_url.rstrip("/")
             else:
@@ -436,6 +451,7 @@ def _run_agent(
         requested=effective_provider,
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
+        explicit_api_key=explicit_api_key_from_alias,
     )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
@@ -514,6 +530,18 @@ def _run_agent(
         # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
         # close the agent explicitly because the hard-exit path skips finalizers.
         if agent is not None:
+            # Linger (bounded) for background processes this turn spawned with
+            # notify_on_complete=true BEFORE agent.close(): close() calls
+            # process_registry.kill_all(task_id) and the dying parent owns the
+            # children's stdout pipes, so exiting now destroys in-flight
+            # deliveries — including Bot Mode handoff replies dispatched from
+            # a short-lived recipient (#90879).
+            try:
+                from tools.process_registry import process_registry
+
+                process_registry.wait_for_pending_completions(None)
+            except Exception:
+                logging.debug("oneshot background completion wait failed", exc_info=True)
             try:
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):

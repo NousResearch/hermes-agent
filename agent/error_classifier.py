@@ -57,6 +57,7 @@ class FailoverReason(enum.Enum):
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
+    image_corrupt = "image_corrupt"       # Provider says the image bytes are undecodable — shrinking won't help, strip and retry instead
 
     # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -67,6 +68,7 @@ class FailoverReason(enum.Enum):
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
+    reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -245,10 +247,15 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "retry",
     "resets at",
     "reset in",
+    "resets in",
+    "reset after",
+    "available in",
     "wait",
     "requests remaining",
     "periodic",
     "window",
+    "per minute",
+    "per second",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -278,8 +285,47 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image dimensions exceed",  # Anthropic: "image dimensions exceed max allowed size: 8000 pixels"
     "dimensions exceed max allowed size",  # Anthropic dimension-cap (wording variant)
     "max allowed size: 8000",  # Anthropic dimension-cap (explicit pixel ceiling)
+    # Vendors that reject the same oversized image without using the word
+    # "image".  MiniMax's Anthropic-compatible endpoint returns
+    # "media exceeds size limit: max 10485760 bytes (2013)" for a native
+    # image part above its 10 MB ceiling (#76039).  Matched on the "media"
+    # fragment to mirror "image exceeds" above and catch reworded variants.
+    # A non-image media rejection (audio/video) that lands here is safe: the
+    # shrink pass finds no image parts, returns False, and the caller
+    # surfaces the original error unchanged.
+    "media exceeds",
+    "media too large",
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
+]
+
+# Image-corruption patterns — distinct from _IMAGE_TOO_LARGE_PATTERNS above.
+# These fire when the provider can decode the request but not the image
+# bytes themselves (e.g. a re-serialized image part in replayed history that
+# lost data along the way). Re-encoding/shrinking corrupt bytes does not fix
+# corruption, so this list is routed to the strip-and-retry path
+# (FailoverReason.image_corrupt), never to the shrink path.
+#
+# xAI wording: {"code":"invalid-argument","error":"...Invalid PNG image."}
+# xAI has a second wording for the same failure class depending on where
+# the truncation lands: "Invalid PNG image." for aligned truncation,
+# "base64 string of provided image cannot be decoded" for unaligned
+# truncation (confirmed by the issue reporter — same root cause, two wire
+# messages).
+# A third xAI wording covers the URL-image path — the provider downloads
+# the image itself and rejects the fetched bytes:
+# {"code":"invalid-argument","error":"code: 'Client specified an invalid
+# argument', message: \"Downloaded response does not contain a valid JPG,
+# PNG, WebP, or ICO image.\""}
+# Matched as the full observed sentence on purpose — shorter fragments
+# ("downloaded response does not contain a valid") also match non-image
+# download failures and would misroute them into strip-and-retry.
+# See: https://github.com/NousResearch/hermes-agent/issues/69078
+_IMAGE_CORRUPT_PATTERNS = [
+    "invalid png image",
+    "invalid jpeg image",
+    "base64 string of provided image cannot be decoded",
+    "downloaded response does not contain a valid jpg, png, webp, or ico image",
 ]
 
 # Providers that follow the OpenAI spec strictly require tool message
@@ -458,6 +504,10 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unknown_parameter",
     "unsupported_parameter",
 ]
+
+# A reasoning-mandatory route answering ``reasoning: {enabled: false}``
+# (Nous Portal + OpenRouter wording; ``error_msg`` is lowercased upstream).
+_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
 # Request parameters that Hermes sends on SOME routes only, paired with the
 # providers/hosts where sending them is deliberate.
@@ -803,6 +853,7 @@ def classify_api_error(
         status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
+    response_headers = _extract_response_headers(error)
 
     # Build a comprehensive error message string for pattern matching.
     # str(error) alone may not include the body message (e.g. OpenAI SDK's
@@ -1047,6 +1098,7 @@ def classify_api_error(
             provider=provider_lower, model=model_lower,
             approx_tokens=approx_tokens, context_length=context_length,
             num_messages=num_messages,
+            response_headers=response_headers,
             result_fn=_result,
         )
         if classified is not None:
@@ -1204,6 +1256,7 @@ def _classify_by_status(
     approx_tokens: int,
     context_length: int,
     num_messages: int = 0,
+    response_headers=None,
     result_fn,
 ) -> Optional[ClassifiedError]:
     """Classify based on HTTP status code with message-aware refinement."""
@@ -1338,6 +1391,48 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # Account/subscription usage exhaustion is a quota wall, not a
+        # request-rate throttle. Anthropic returns this as 429, so the generic
+        # branch below used to retry it and Desktop rendered a provider error
+        # instead of the billing/quota recovery. Preserve periodic quotas when
+        # the response supplies an explicit reset/retry signal.
+        #
+        # The check covers the narrow #93419 core (Anthropic's
+        # ``usage_limit_reached``) plus the broader ``_USAGE_LIMIT_PATTERNS``
+        # ("quota", "limit exceeded", "key limit exceeded") so other providers'
+        # hard quota walls also route to billing — but ONLY when the message is
+        # not itself an explicit rate-limit phrase. Without that guard,
+        # "Rate limit exceeded" ("limit exceeded" substring) would wrongly
+        # promote to non-retryable billing. (broadening + guard credit #39441)
+        has_usage_limit = (
+            error_code.lower() == "usage_limit_reached"
+            or "usage_limit_reached" in error_msg
+            or any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        )
+        # Explicit billing phrases in a 429 body are a hard wall regardless of
+        # usage-limit wording — a provider that wraps "insufficient credits" in
+        # a 429 (rather than 402) was previously retried as a rate limit and
+        # burned the pool. (credit #39441)
+        has_billing = any(p in error_msg for p in _BILLING_PATTERNS)
+        has_explicit_rate_limit = any(
+            p in error_msg for p in _RATE_LIMIT_PATTERNS
+        )
+        has_transient_signal = _has_usage_limit_transient_signal(
+            error_msg,
+            body,
+            response_headers,
+        )
+        if (
+            (has_billing or has_usage_limit)
+            and not has_explicit_rate_limit
+            and not has_transient_signal
+        ):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,
@@ -1445,6 +1540,41 @@ def _classify_by_status(
     return None
 
 
+def _has_usage_limit_transient_signal(
+    error_msg: str,
+    body: dict,
+    response_headers,
+) -> bool:
+    """Return whether a usage-limit response identifies a reset window."""
+    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+        return True
+
+    payloads = [body]
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        payloads.append(body["error"])
+    reset_fields = ("resets_in_seconds", "resets_at", "reset_at", "retry_after")
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if any(
+            payload.get(field) is not None and payload.get(field) != ""
+            for field in reset_fields
+        ):
+            return True
+
+    if response_headers and hasattr(response_headers, "get"):
+        for header in (
+            "retry-after",
+            "Retry-After",
+            "x-ratelimit-reset",
+            "X-RateLimit-Reset",
+        ):
+            value = response_headers.get(header)
+            if value is not None and value != "":
+                return True
+    return False
+
+
 def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
     """Disambiguate 402: billing exhaustion vs transient usage limit.
 
@@ -1501,6 +1631,16 @@ def _classify_400(
             retryable=True,
         )
 
+    # Image-corruption from 400 (xAI's undecodable-image check fires this way).
+    # Must be checked BEFORE image_too_large: both are image-shaped 400s, but
+    # corrupt bytes need strip-and-retry, not shrink-and-retry — shrinking
+    # can't repair a truncated/malformed PNG.
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -1528,6 +1668,20 @@ def _classify_400(
         return result_fn(
             FailoverReason.invalid_encrypted_content,
             retryable=True,
+            should_fallback=False,
+        )
+
+    # Reasoning-mandatory route rejecting a disable (Nous Portal / OpenRouter
+    # for GLM-5.3 etc.: "Reasoning is mandatory for this endpoint and cannot
+    # be disabled").  Deterministic for the request shape, but the only bad
+    # field is ``reasoning: {enabled: false}`` — the conversation_loop drops
+    # the disable and retries once.  Must precede the request-validation
+    # branch, which would abort the turn as a format_error.
+    if _REASONING_MANDATORY_PATTERN in error_msg:
+        return result_fn(
+            FailoverReason.reasoning_mandatory,
+            retryable=True,
+            should_compress=False,
             should_fallback=False,
         )
 
@@ -1792,6 +1946,13 @@ def _classify_by_message(
             retryable=True,
         )
 
+    # Image-corruption patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_CORRUPT_PATTERNS):
+        return result_fn(
+            FailoverReason.image_corrupt,
+            retryable=True,
+        )
+
     # Image-too-large patterns (from message text when no status_code)
     if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
         return result_fn(
@@ -1958,6 +2119,21 @@ def _extract_error_body(error: Exception) -> dict:
                     return json_body
             except Exception:
                 pass
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is None or cause is current:
+            break
+        current = cause
+    return {}
+
+
+def _extract_response_headers(error: Exception):
+    """Walk the error and its cause chain to find response headers."""
+    current = error
+    for _ in range(5):
+        response = getattr(current, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers and hasattr(headers, "get"):
+            return headers
         cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if cause is None or cause is current:
             break

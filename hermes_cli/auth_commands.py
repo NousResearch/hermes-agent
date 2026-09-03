@@ -38,40 +38,73 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth"}
 
 
-def _get_custom_provider_names() -> list:
-    """Return list of (display_name, pool_key, provider_key) tuples."""
+def _get_custom_provider_entries() -> list[dict]:
+    """Return configured provider entries with legacy and canonical pool IDs."""
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
         config = load_config()
     except Exception:
         return []
-    result = []
+    result: list[dict] = []
     for entry in get_compatible_custom_providers(config):
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
-        pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
-        provider_key = str(entry.get("provider_key", "") or "").strip()
-        result.append((name.strip(), pool_key, provider_key))
+        normalized = dict(entry)
+        normalized["name"] = name.strip()
+        normalized["pool_key"] = (
+            f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
+        )
+        normalized["provider_key"] = str(
+            entry.get("provider_key", "") or ""
+        ).strip()
+        result.append(normalized)
     return result
 
 
+def _get_custom_provider_names() -> list:
+    """Return list of (display_name, pool_key, provider_key) tuples."""
+    return [
+        (entry["name"], entry["pool_key"], entry["provider_key"])
+        for entry in _get_custom_provider_entries()
+    ]
+
+
+def _configured_provider_entry(provider: str) -> dict | None:
+    """Resolve a canonical ``providers.<key>`` entry."""
+    normalized = (provider or "").strip().lower()
+    if not normalized or normalized.startswith(CUSTOM_POOL_PREFIX):
+        return None
+    for entry in _get_custom_provider_entries():
+        provider_key = str(entry.get("provider_key") or "").strip().lower()
+        if provider_key and provider_key == normalized:
+            return entry
+    return None
+
+
 def _resolve_custom_provider_input(raw: str) -> str | None:
-    """If raw input matches a custom_providers entry name (case-insensitive), return its pool key."""
+    """Resolve legacy names and keyed providers to their credential-pool ID."""
     normalized = (raw or "").strip().lower().replace(" ", "-")
     if not normalized:
         return None
     # Direct match on 'custom:name' format
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
-    for display_name, pool_key, provider_key in _get_custom_provider_names():
+    for entry in _get_custom_provider_entries():
+        display_name = entry["name"]
+        pool_key = entry["pool_key"]
+        provider_key = entry["provider_key"]
+        # ``providers:`` entries already have a durable runtime slug. Keep
+        # credentials under that slug instead of leaking the legacy
+        # ``custom:`` compatibility identity into auth.json and discovery.
+        normalized_provider_key = provider_key.strip().lower()
+        if normalized_provider_key and normalized_provider_key == normalized:
+            return normalized_provider_key
         if _normalize_custom_pool_name(display_name) == normalized:
-            return pool_key
-        if provider_key and provider_key.strip().lower() == normalized:
-            return pool_key
+            return normalized_provider_key or pool_key
     return None
 
 
@@ -88,6 +121,44 @@ def _normalize_provider(provider: str) -> str:
     return normalized
 
 
+def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
+    """Move a keyed provider's old ``custom:`` pool into its runtime slug."""
+    with auth_mod._auth_store_lock():
+        auth_store = auth_mod._load_auth_store()
+        credential_pool = auth_store.get("credential_pool")
+        if not isinstance(credential_pool, dict):
+            return
+        legacy_entries = credential_pool.get(legacy_key)
+        if not isinstance(legacy_entries, list) or not legacy_entries:
+            return
+
+        current_entries = credential_pool.get(provider)
+        merged = list(current_entries) if isinstance(current_entries, list) else []
+        known_ids = {
+            entry.get("id")
+            for entry in merged
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        for entry in legacy_entries:
+            entry_id = entry.get("id") if isinstance(entry, dict) else None
+            if entry_id and entry_id in known_ids:
+                continue
+            merged.append(entry)
+            if entry_id:
+                known_ids.add(entry_id)
+
+        credential_pool[provider] = merged
+        del credential_pool[legacy_key]
+        auth_mod._save_auth_store(auth_store)
+
+    try:
+        from hermes_cli.models import clear_provider_models_cache
+
+        clear_provider_models_cache(legacy_key)
+    except Exception:
+        pass
+
+
 def _provider_base_url(provider: str) -> str:
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
@@ -98,8 +169,20 @@ def _provider_base_url(provider: str) -> str:
         if cp_config:
             return str(cp_config.get("base_url") or "").strip()
         return ""
+    configured = _configured_provider_entry(provider)
+    if configured is not None:
+        return str(configured.get("base_url") or "").strip()
     pconfig = PROVIDER_REGISTRY.get(provider)
     return pconfig.inference_base_url if pconfig else ""
+
+
+def _is_known_provider(provider: str, configured_provider: dict | None) -> bool:
+    return (
+        provider in PROVIDER_REGISTRY
+        or provider == "openrouter"
+        or provider.startswith(CUSTOM_POOL_PREFIX)
+        or configured_provider is not None
+    )
 
 
 def _oauth_default_label(provider: str, count: int) -> str:
@@ -164,8 +247,11 @@ def _format_exhausted_status(entry) -> str:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    configured_provider = _configured_provider_entry(provider)
+    if not _is_known_provider(provider, configured_provider):
         raise SystemExit(f"Unknown provider: {provider}")
+    if configured_provider is not None:
+        _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
     if requested_type in {AUTH_TYPE_API_KEY, "api-key"}:
@@ -440,10 +526,21 @@ def auth_list_command(args) -> None:
     if provider_filter:
         providers = [provider_filter]
     else:
+        credential_pool = auth_mod._load_auth_store().get("credential_pool")
+        persisted_providers = (
+            credential_pool.keys() if isinstance(credential_pool, dict) else ()
+        )
+        configured_providers = (
+            entry["provider_key"]
+            for entry in _get_custom_provider_entries()
+            if entry["provider_key"]
+        )
         providers = sorted({
             *PROVIDER_REGISTRY.keys(),
             "openrouter",
             *list_custom_pool_providers(),
+            *configured_providers,
+            *persisted_providers,
         })
     for provider in providers:
         pool = load_pool(provider)
@@ -460,6 +557,13 @@ def auth_list_command(args) -> None:
             source = _display_source(entry.source)
             print(f"  #{idx}  {entry.label:<20} {entry.auth_type:<7} {source}{status} {marker}".rstrip())
         print()
+    _print_oauth_heal_notices()
+
+
+def _print_oauth_heal_notices() -> None:
+    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
+    for note in auth_mod.consume_oauth_heal_notices():
+        print(f"note: {note}")
 
 
 def auth_remove_command(args) -> None:
@@ -511,7 +615,12 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        # load_pool() runs the forked-grant heal (#100339); do it before the
+        # status read so the report reflects the consolidated grant.
+        load_pool(provider)
     status = auth_mod.get_auth_status(provider)
+    _print_oauth_heal_notices()
     if not status.get("logged_in"):
         reason = status.get("error")
         if reason:
@@ -672,7 +781,8 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    configured_provider = _configured_provider_entry(provider)
+    if not _is_known_provider(provider, configured_provider):
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type

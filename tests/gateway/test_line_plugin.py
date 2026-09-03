@@ -205,10 +205,14 @@ class TestInboundMedia:
         return adapter.handle_message.await_args.args[0]
 
     def test_image_message_uses_photo_type_and_image_mime(self, adapter):
-        with patch.object(_line, "cache_image_from_bytes", return_value="/cache/image.jpg") as cache:
+        with patch.object(
+            _line,
+            "cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/cache/image.jpg"),
+        ) as cache:
             asyncio.run(adapter._handle_message_event(self._event("image")))
 
-        cache.assert_called_once_with(b"line-bytes", ext=".jpg")
+        cache.assert_awaited_once_with(b"line-bytes", ext=".jpg")
         event = self._captured_event(adapter)
         assert event.message_type is _line.MessageType.PHOTO
         assert event.media_urls == ["/cache/image.jpg"]

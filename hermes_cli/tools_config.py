@@ -31,6 +31,10 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
+from hermes_cli.toolset_scope import (
+    _TOOLSET_PLATFORM_RESTRICTIONS,
+    toolset_allowed_for_platform as _toolset_allowed_for_platform,
+)
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
@@ -103,12 +107,11 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
-    ("bfl",             "🎬 BFL FLUX 3 Video",          "bfl_flux3_*"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
-    ("todo",            "📋 Task Planning",             "todo"),
+    ("todo",            "📋 Task Planning",             "todo_list"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
@@ -205,28 +208,6 @@ def _homeassistant_credentials_present() -> bool:
         return bool((get_secret("HASS_TOKEN", "") or "").strip())
     except Exception:
         return False
-
-# Platform-scoped toolsets: only appear in the `hermes tools` checklist for
-# these platforms, and only resolve/save for these platforms.  A toolset
-# absent from this map is available on every platform (current behaviour).
-#
-# Use this for tools whose APIs only make sense on one platform (Discord
-# server admin, Slack workspace admin, etc.).  Keeps every other platform's
-# checklist from filling up with irrelevant toggles.
-_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
-    "discord": {"discord"},
-    "discord_admin": {"discord"},
-}
-
-
-def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
-    """Return True if ``ts_key`` is configurable on ``platform``.
-
-    Toolsets without a restriction entry are allowed everywhere (the default).
-    """
-    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
-    return allowed is None or platform in allowed
-
 
 def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
     """Return the platform a platform-less configuration UI should target.
@@ -616,6 +597,10 @@ TOOL_CATEGORIES = {
         # fresh install — pressing Enter must land on the free, no-key local
         # backend, never on the paid Nous Subscription gateway row:
         #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
+        #   - "Lightpanda" — local too (cloud_provider: local) but with
+        #     browser.engine: lightpanda; Browser Use mode spawns
+        #     ``lightpanda serve`` itself, the built-in tools use
+        #     ``agent-browser --engine lightpanda``. No Chromium needed.
         #   - "Nous Subscription (Browser Use cloud)" — managed Browser Use
         #     billed via Nous subscription (requires_nous_auth +
         #     override_env_vars). Uses the browser-use plugin as the
@@ -630,7 +615,17 @@ TOOL_CATEGORIES = {
                 "tag": "Headless Chromium, no API key needed",
                 "env_vars": [],
                 "browser_provider": "local",
+                "browser_engine": "auto",
                 "post_setup": "agent_browser",
+            },
+            {
+                "name": "Lightpanda",
+                "badge": "free · local · no Chromium",
+                "tag": "Zig headless browser spawned by Hermes, text-only (no screenshots)",
+                "env_vars": [],
+                "browser_provider": "local",
+                "browser_engine": "lightpanda",
+                "post_setup": "lightpanda",
             },
             {
                 "name": "Nous Subscription (Browser Use cloud)",
@@ -1006,11 +1001,21 @@ def install_cua_driver(
     ``_CUA_INSTALLER_TIMEOUT`` and install.ps1's concurrency lock can add
     a further ~600s wait on Windows). ``hermes computer-use install
     --upgrade`` leaves it False — an explicit upgrade request should still
-    reinstall when the check is indeterminate.
+    reinstall when the check is indeterminate. On Windows this flag also
+    defers contract REPAIRS and fresh INSTALLS to the explicit command
+    (those paths can legitimately need a human: first-time autostart
+    elevation, SmartScreen). Routine confirmed upgrades DO run, in
+    unattended-safe mode: stdin closed, version pinned, lock/network
+    preflights, and the shorter background ceiling below.
 
     ``show_installer_progress`` controls the installer's own progress line.
     ``hermes update`` already prints a contextual line before its update
     check, so it disables this to avoid printing the refresh twice.
+
+    The confirmed-update path is also bounded by
+    ``_CUA_BACKGROUND_UPDATE_TIMEOUT``. It runs as an optional, quiet part of
+    ``hermes update`` and must not inherit the explicit install command's
+    11-minute ceiling when an upstream prompt or UAC dialog is unattended.
 
     Returns True iff cua-driver is installed (or successfully refreshed)
     when the function returns. Supported on macOS, Windows, and Linux
@@ -1124,6 +1129,16 @@ def install_cua_driver(
                 "the override and run: hermes computer-use install --upgrade"
             )
             return False
+        if is_windows and require_confirmed_update:
+            _print_info(
+                "    Automatic Windows updates cannot safely run cua-driver's "
+                "interactive repair installer."
+            )
+            _print_info(
+                "    Repair it from an interactive terminal with: "
+                "hermes computer-use install --upgrade"
+            )
+            return False
         _print_info("    Repairing it with the current upstream installer.")
 
     # upgrade=True path — refresh to the latest upstream release.
@@ -1178,6 +1193,15 @@ def install_cua_driver(
             )
             return True
         if _state is not None and _state.get("update_available"):
+            # Windows routine upgrades run UNATTENDED-SAFE rather than
+            # deferring: stdin is closed (a consent Read-Host can't block),
+            # the version is pinned, the ceiling is
+            # _CUA_BACKGROUND_UPDATE_TIMEOUT, and _run_cua_driver_installer's
+            # preflights skip in seconds when the install lock is held or
+            # GitHub is unreachable. Only contract repairs and fresh installs
+            # stay interactive-only (guards above/below) — those are the
+            # paths where upstream legitimately needs a human (first-time
+            # autostart elevation, SmartScreen).
             # Pin the installer to the release check-update just confirmed.
             # `latest_version` comes from the GitHub Releases API, so its
             # assets are published — unlike the installer script's baked
@@ -1190,6 +1214,22 @@ def install_cua_driver(
             _latest = str(_state.get("latest_version") or "").strip().lstrip("vV")
             if _re.fullmatch(r"\d+(\.\d+)*", _latest):
                 confirmed_version = _latest
+
+    if is_windows and require_confirmed_update and not binary:
+        # Missing-binary path (driver enabled in config but never installed,
+        # or wiped by a failed install). Same rule as the repair and
+        # confirmed-update branches above: an automatic Windows update must
+        # never launch install.ps1, which can demand console/UAC consent the
+        # hidden updater cannot provide (#87703).
+        _print_info(
+            "    cua-driver is not installed; automatic Windows updates "
+            "cannot safely run its interactive installer."
+        )
+        _print_info(
+            "    Install it from an interactive terminal with: "
+            "hermes computer-use install --upgrade"
+        )
+        return False
 
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
@@ -1209,6 +1249,11 @@ def install_cua_driver(
         verbose=False,
         pin_version=confirmed_version,
         show_progress=show_installer_progress,
+        installer_timeout=(
+            _CUA_BACKGROUND_UPDATE_TIMEOUT
+            if require_confirmed_update
+            else None
+        ),
     )
     if ok and repair_existing:
         repaired = _cua_driver_contract_status()
@@ -1244,6 +1289,22 @@ def install_cua_driver(
 # "always times out" wedge (issue #58762). 660s = 600s lock window + 60s
 # headroom for the actual download/swap.
 _CUA_INSTALLER_TIMEOUT = 660
+
+# Grace period for draining the installer's pipes after a timeout kill. The
+# kill is best-effort (see _reap_after_timeout), so this drain has to be
+# bounded: a descendant that survived the kill still holds the inherited
+# stdout handle, and an unbounded read waits on an EOF that never comes,
+# which turns the ceiling above into no ceiling at all (issue #87703). A
+# successful kill closes the pipe immediately, so this costs nothing in the
+# normal case; it only caps how long a failed one can stall the update.
+_CUA_INSTALLER_DRAIN_GRACE = 15
+
+# Optional refreshes launched by ``hermes update`` are quiet and unattended.
+# Keep their interruption bounded even when upstream waits on Read-Host or a
+# consent prompt. Explicit ``computer-use install --upgrade`` runs retain the
+# full installer ceiling above. (The lock/network preflights below make a
+# legitimate long wait impossible on this path, so a short ceiling is safe.)
+_CUA_BACKGROUND_UPDATE_TIMEOUT = 120
 
 # Upstream installer's stale-lock threshold (LOCK_STALE_AFTER_SECONDS in
 # _install-rust.sh). Used by the pre-clear below to avoid yanking a lock
@@ -1405,6 +1466,67 @@ def _clear_stale_cua_install_lock() -> None:
         logger.debug("stale cua install lock check failed: %s", e)
 
 
+def _cua_install_lock_held() -> bool:
+    """True when the upstream installer's lock is held by a LIVE process.
+
+    Called after ``_clear_stale_cua_install_lock()``: anything provably
+    stale is already gone, so a surviving lock artifact means a concurrent
+    (or orphaned-but-alive) install owns it. Upstream waits up to
+    ``LOCK_STALE_AFTER_SECONDS=600`` on a held lock before probing —
+    unattended refreshes must not eat that wait (the 11-minute hang class,
+    #87703): they skip instead. Best-effort: unreadable state reports
+    not-held so a probe failure can never block an install.
+    """
+    try:
+        if sys.platform == "win32":
+            lock_file = _cua_windows_install_lock_file()
+            if not lock_file.is_file():
+                return False
+            # install.ps1 holds the file open with FileShare::None — any
+            # open attempt fails with a sharing violation while it's held.
+            # _clear_stale_windows_cua_install_lock() already deleted it if
+            # it was unheld, so surviving = held; confirm with an open probe.
+            try:
+                with open(lock_file, "r+b"):
+                    return False  # opened fine → not held (racy leftover)
+            except PermissionError:
+                return True
+            except OSError:
+                return True
+        lock_dir = _cua_install_lock_dir()
+        return lock_dir.is_dir()
+    except Exception as e:
+        logger.debug("cua install lock probe failed: %s", e)
+        return False
+
+
+def _cua_release_endpoint_reachable(timeout: float = 5.0) -> bool:
+    """Fast probe: can we reach GitHub's release download host at all?
+
+    The upstream installers (install.ps1 / _install-rust.sh) download from
+    ``github.com/<repo>/releases/download/...``. When that host is
+    unreachable (outage, DNS, firewall), the installer dies slowly inside
+    its own retries while the unattended refresh eats the whole ceiling.
+    A 5s HEAD tells us in seconds. Only a *connection-level* failure counts
+    as unreachable — any HTTP response (including 4xx/5xx) proves the path
+    works and lets the installer make its own decisions.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(
+            "https://github.com/trycua/cua/releases", method="HEAD"
+        )
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True  # server answered → reachable
+    except Exception as e:
+        logger.debug("cua release endpoint probe failed: %s", e)
+        return False
+
+
 def _ps_single_quote(value: str) -> str:
     """Return a PowerShell single-quoted string literal."""
     return "'" + value.replace("'", "''") + "'"
@@ -1497,6 +1619,7 @@ def _run_cua_driver_installer(
     verbose: bool = True,
     pin_version: Optional[str] = None,
     show_progress: bool = True,
+    installer_timeout: Optional[float] = None,
 ) -> bool:
     """Run the upstream cua-driver installer for this platform.
 
@@ -1513,6 +1636,9 @@ def _run_cua_driver_installer(
     is bumped by Release Please *before* the release assets are published,
     so an unpinned run inside that window fails with a 404; pinning to the
     version ``check-update`` confirmed sidesteps the race entirely.
+
+    ``installer_timeout`` lets quiet callers use a shorter ceiling without
+    weakening the explicit install path's stale-lock recovery window.
     """
     import platform as _plat
     import shutil
@@ -1584,6 +1710,11 @@ def _run_cua_driver_installer(
         else:
             _print_info(f"→ {label} cua-driver (Computer Use)...")
     driver_cmd = _cua_driver_cmd()
+    timeout = (
+        _CUA_INSTALLER_TIMEOUT
+        if installer_timeout is None
+        else installer_timeout
+    )
 
     installer_env = _cua_driver_env()
     if pin_version:
@@ -1595,6 +1726,50 @@ def _run_cua_driver_installer(
     # concurrent-install lock behind; clear it when provably stale so the
     # refresh doesn't wedge waiting on a dead holder (issue #58762).
     _clear_stale_cua_install_lock()
+
+    # Unattended refreshes (installer_timeout set by `hermes update`) fail
+    # FAST on the two conditions that otherwise consume the whole ceiling:
+    #
+    # 1. Install lock held by a live process — upstream would poll it for up
+    #    to LOCK_STALE_AFTER_SECONDS=600 before probing the holder. That is
+    #    the 11-minute silent hang class (#87703; observed live 2026-08-25:
+    #    "cua-driver refreshing timed out after 660s"). Skip in ~0s instead.
+    # 2. Release host unreachable (outage/DNS/firewall) — the installer
+    #    would die slowly inside its own retries. A 5s HEAD answers now.
+    #
+    # Explicit `computer-use install --upgrade` runs keep upstream's full
+    # lock-recovery semantics — a human is watching and can wait or Ctrl-C.
+    if installer_timeout is not None:
+        if _cua_install_lock_held():
+            _print_info(
+                "    Another cua-driver install is in progress (upstream "
+                "install lock is held) — skipping this refresh."
+            )
+            _print_info(
+                "    If no install is really running, retry with: "
+                "hermes computer-use install --upgrade"
+            )
+            return False
+        if not _cua_release_endpoint_reachable():
+            _print_info(
+                "    github.com is unreachable — skipping cua-driver "
+                "refresh (will retry on the next update)."
+            )
+            return False
+        if is_windows:
+            # -NoAutoStart skips Register-CuaDriverAutostart entirely — the
+            # ONLY branch of install.ps1 that self-elevates (UAC). Cost: an
+            # existing cua-driver-serve task keeps pointing at the previous
+            # binary until the next interactive upgrade re-registers it.
+            # scriptblock invocation (instead of `| iex`) is what lets us
+            # pass the parameter to a piped script.
+            install_cmd = [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "$sc = irm https://raw.githubusercontent.com/trycua/cua/"
+                "main/libs/cua-driver/scripts/install.ps1; "
+                "& ([scriptblock]::Create($sc)) -NoAutoStart",
+            ]
 
     # POSIX: run the installer in its own process group so a timeout kill
     # takes out the whole `curl | bash` pipeline (and the exec'd
@@ -1655,6 +1830,54 @@ def _run_cua_driver_installer(
         except (OSError, ProcessLookupError):
             proc.kill()
 
+    def _reap_after_timeout(proc):
+        """Kill the installer tree, then drain its pipes under a deadline.
+
+        ``_kill_installer_tree`` is best-effort by construction: every
+        ``psutil.Error`` it can raise is logged at debug level and stepped
+        over, on the reasoning that a partly-killed tree beats none. The case
+        that matters is an ``install.ps1`` which self-elevated through
+        ``Start-Process -Verb RunAs``: that descendant runs at High integrity,
+        a medium-integrity kill gets ``AccessDenied``, and the survivor is
+        still holding the ``stdout=PIPE`` write handle it inherited.
+
+        Draining with no deadline then blocks on an EOF that only arrives when
+        someone kills that process by hand, so the ``_CUA_INSTALLER_TIMEOUT``
+        ceiling stops bounding anything and ``hermes update`` hangs past its
+        own timeout warning (#87703). Bound the drain instead: a kill that
+        landed closes the pipe at once, and one that did not costs
+        ``_CUA_INSTALLER_DRAIN_GRACE`` rather than forever. The caller
+        re-raises the original ``TimeoutExpired`` either way, so the manual
+        re-run hint still prints and the update unwinds. Losing the tail of a
+        timed-out installer's log is the cheaper half of that trade.
+        """
+        _kill_installer_tree(proc)
+        try:
+            drained_out, _ = proc.communicate(timeout=_CUA_INSTALLER_DRAIN_GRACE)
+            # Diagnosability (#87703 post-mortem): the partial output names
+            # WHERE the installer was stuck (lock wait, consent prompt,
+            # download) — before this, the answer died with the process and
+            # the timeout line was unactionable.
+            if drained_out:
+                logger.warning(
+                    "cua-driver installer timed out; last output before "
+                    "kill:\n%s",
+                    drained_out[-2000:],
+                )
+        except subprocess.TimeoutExpired:
+            # Deliberately not closing proc.stdout here. communicate()'s
+            # reader threads are still blocked on that handle and closing it
+            # underneath them races; they are daemon threads, so abandoning
+            # them does not keep the interpreter alive.
+            logger.debug(
+                "cua-driver installer pipes still open %ss after the kill — "
+                "abandoning the drain, a surviving descendant holds the "
+                "inherited handle",
+                _CUA_INSTALLER_DRAIN_GRACE,
+            )
+        except (OSError, ValueError) as e:
+            logger.debug("cua-driver installer drain failed: %s", e)
+
     try:
         # When not verbose (e.g. `hermes update`'s refresh), capture the
         # installer's chatty "Next steps" wall instead of dumping it to the
@@ -1668,10 +1891,9 @@ def _run_cua_driver_installer(
                 **popen_kwargs
             )
             try:
-                proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
+                proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                _kill_installer_tree(proc)
-                proc.communicate()
+                _reap_after_timeout(proc)
                 raise
             result = subprocess.CompletedProcess(
                 install_cmd, proc.returncode, stdout=None, stderr=None
@@ -1679,16 +1901,16 @@ def _run_cua_driver_installer(
         else:
             proc = subprocess.Popen(
                 install_cmd, shell=use_shell, env=installer_env,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
                 creationflags=_post_setup_no_window_flags(),
                 **popen_kwargs
             )
             try:
-                out, _ = proc.communicate(timeout=_CUA_INSTALLER_TIMEOUT)
+                out, _ = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                _kill_installer_tree(proc)
-                proc.communicate()
+                _reap_after_timeout(proc)
                 raise
             result = subprocess.CompletedProcess(
                 install_cmd, proc.returncode, stdout=out, stderr=None
@@ -1739,7 +1961,7 @@ def _run_cua_driver_installer(
     except subprocess.TimeoutExpired:
         _print_warning(
             f"    cua-driver {label.lower()} timed out after "
-            f"{_CUA_INSTALLER_TIMEOUT}s."
+            f"{timeout}s."
         )
         if not is_windows:
             _print_info(
@@ -1802,6 +2024,28 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     from hermes_constants import find_node_executable
+
+    if post_setup_key == "lightpanda":
+        # Browser Use mode drives Lightpanda directly (Hermes spawns
+        # ``lightpanda serve``); the built-in tools go through agent-browser.
+        # Neither needs a Chromium build.
+        _ensure_browser_use_cli()
+        from tools.browser_lightpanda import (
+            LIGHTPANDA_INSTALL_HINT,
+            find_lightpanda_binary,
+        )
+
+        lightpanda_bin = find_lightpanda_binary()
+        if lightpanda_bin:
+            _print_success(f"    Lightpanda found: {lightpanda_bin}")
+        else:
+            _print_warning(
+                "    lightpanda binary not found on PATH, ~/.lightpanda or ~/.local/bin"
+            )
+            _print_info(f"    {LIGHTPANDA_INSTALL_HINT}")
+            if os.name == "nt":
+                _print_info("    Lightpanda has no native Windows build; run Hermes under WSL2.")
+        return
 
     if post_setup_key in {"agent_browser", "browserbase"}:
         # Every non-Camofox browser backend drives through the Browser Use
@@ -2357,12 +2601,11 @@ def _exempt_explicit_platform_native(
 #: Landing late — or leaving an entry here for a second release — converts a
 #: back-fill into a stuck checkbox.
 #:
-#: Not gated on a Nous sign-in here: the six ``bfl_flux3_*`` tools carry
-#: ``check_fn=check_bfl_requirements``, so an enabled toolset still ships zero
-#: schemas to a user with no Nous credential — the same split Home Assistant
-#: uses. Probing the portal from this path would put a network call on every
-#: CLI start, gateway session and cron tick.
-_RECENTLY_SHIPPED_TOOLSETS = frozenset({"bfl"})
+#: A ``check_fn``-gated toolset costs nothing here for users who cannot call
+#: it: an enabled toolset still ships zero schemas when its check fails — the
+#: same split Home Assistant uses. Probing a remote service from this path
+#: would put a network call on every CLI start, gateway session and cron tick.
+_RECENTLY_SHIPPED_TOOLSETS: frozenset = frozenset()
 
 
 def _enable_recently_shipped_toolsets(
@@ -3088,8 +3331,8 @@ def _plugin_video_gen_providers() -> list[dict]:
 
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
-# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
-# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# "Web Search & Extract" picker. All bundled providers (brave-free, ddgs,
+# searxng, exa, parallel, tavily, firecrawl, keenable) live as plugins after
 # PR #25182 — this helper is the sole source of truth for the category's
 # provider rows. The hardcoded entries that used to drive the category
 # were deleted in the same PR; only the two non-provider UX rows
@@ -3105,8 +3348,8 @@ def _plugin_web_search_providers() -> list[dict]:
     marker) so the picker behaves identically whether a provider is
     hardcoded or plugin-registered.
 
-    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
-    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    After PR #25182, all bundled web providers (brave-free, ddgs, searxng,
+    exa, parallel, tavily, firecrawl, keenable) are plugins; this helper is the sole
     source of provider rows for the Web Search & Extract category.
     """
     try:
@@ -3522,8 +3765,19 @@ _POST_SETUP_READY: dict = {
     "agent_browser": lambda: _agent_browser_installed(),
     "browserbase": lambda: _cloud_agent_browser_installed(),
     "camofox": lambda: _camofox_installed(),
+    "lightpanda": lambda: _lightpanda_installed(),
     "cua_driver": lambda: _cua_driver_install_ready(),
 }
+
+
+def _lightpanda_installed() -> bool:
+    """True when a lightpanda binary is on PATH or in a known install dir."""
+    try:
+        from tools.browser_lightpanda import find_lightpanda_binary
+
+        return find_lightpanda_binary() is not None
+    except Exception:
+        return False
 
 
 def _cloud_agent_browser_installed() -> bool:
@@ -3934,7 +4188,15 @@ def _is_provider_active(
         # Browser Use mode composes with the provider (driver over the
         # provider's CDP endpoint) — don't deactivate the provider row.
         current = cfg_get(config, "browser", "cloud_provider")
-        return provider["browser_provider"] == current
+        if provider["browser_provider"] != current:
+            return False
+        # Two local rows differ only by engine ("Local Browser" vs
+        # "Lightpanda"): config.yaml is the picker's source of truth here,
+        # the AGENT_BROWSER_ENGINE env var is not consulted.
+        if provider.get("browser_engine"):
+            engine = str(cfg_get(config, "browser", "engine") or "auto").strip().lower()
+            return engine == provider["browser_engine"]
+        return True
     if provider.get("browser_backend"):
         backend = cfg_get(config, "browser", "backend")
         if backend is False:
@@ -4455,6 +4717,12 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         browser_cfg = config.setdefault("browser", {})
         browser_cfg["backend"] = provider["browser_backend"]
 
+    # Local engine rows ("Local Browser" resets to auto, "Lightpanda" sets
+    # lightpanda). Composes with browser.backend like the provider does.
+    if provider.get("browser_engine"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["engine"] = provider["browser_engine"]
+
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         _set_selection("web", "backend", provider["web_backend"])
@@ -4649,6 +4917,9 @@ def _configure_provider(
 
     if provider.get("browser_backend"):
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
+
+    if provider.get("browser_engine") and provider["browser_engine"] != "auto":
+        _print_success(f"  Browser engine set to: {provider['browser_engine']}")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -5187,6 +5458,12 @@ def _reconfigure_provider(
         browser_cfg["backend"] = provider["browser_backend"]
         _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
+    if provider.get("browser_engine"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["engine"] = provider["browser_engine"]
+        if provider["browser_engine"] != "auto":
+            _print_success(f"  Browser engine set to: {provider['browser_engine']}")
+
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         web_cfg = config.setdefault("web", {})
@@ -5345,6 +5622,43 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
+def _shared_metrics_state(config: dict) -> tuple[bool, bool]:
+    """Return (collection_enabled, send_enabled) from a config dict."""
+    telemetry = config.get("telemetry")
+    telemetry = telemetry if isinstance(telemetry, dict) else {}
+    shared = telemetry.get("shared_metrics")
+    shared = shared if isinstance(shared, dict) else {}
+    return shared.get("enabled") is True, shared.get("send") is True
+
+
+def _shared_metrics_menu_label(config: dict) -> str:
+    """Menu row for shared metrics, showing both consent states."""
+    enabled, send = _shared_metrics_state(config)
+    if not enabled:
+        state = "off"
+    elif send:
+        state = "collecting + sending to Nous"
+    else:
+        state = "collecting locally"
+    return f"Configure shared metrics  ({state})"
+
+
+def _configure_shared_metrics_interactive(config: dict) -> None:
+    """Toggle shared-metrics collection and sending from `hermes tools`.
+
+    Delegates to the setup wizard's prompt so the consent rules live in one
+    place: sending requires collection, and turning collection off also turns
+    sending off.
+    """
+    from hermes_cli.setup import setup_telemetry
+
+    before = _shared_metrics_state(config)
+    setup_telemetry(config)
+    after = _shared_metrics_state(config)
+    if before != after:
+        save_config(config)
+
+
 def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `hermes tools` and `hermes setup tools`.
 
@@ -5469,6 +5783,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     if len(platform_keys) > 1:
         platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
+    platform_choices.append(_shared_metrics_menu_label(config))
 
     # Show MCP option if any MCP servers are configured
     _has_mcp = bool(config.get("mcp_servers"))
@@ -5480,8 +5795,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
-    _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
-    _done_idx = _reconfig_idx + (2 if _has_mcp else 1)
+    _metrics_idx = _reconfig_idx + 1
+    _mcp_idx = (_metrics_idx + 1) if _has_mcp else -1
+    _done_idx = _metrics_idx + (2 if _has_mcp else 1)
 
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
@@ -5493,6 +5809,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         # "Reconfigure" selected
         if idx == _reconfig_idx:
             _reconfigure_tool(config, force_fresh=True)
+            print()
+            continue
+
+        # "Shared metrics" selected
+        if idx == _metrics_idx:
+            _configure_shared_metrics_interactive(config)
+            platform_choices[_metrics_idx] = _shared_metrics_menu_label(config)
             print()
             continue
 
@@ -5742,17 +6065,29 @@ def _configure_mcp_tools_interactive(config: dict):
             else:
                 labels.append(tool_name)
 
-        # Determine which tools are currently enabled
+        # Determine which tools are currently enabled. Use the SAME matching
+        # semantics as runtime registration (tools/mcp_tool.py): exact names
+        # or fnmatch globs — a literal `in` check renders glob excludes
+        # (e.g. "*team_member*" from catalog default_excluded manifests) as
+        # if nothing were excluded.
+        try:
+            from tools.mcp_tool import matches_name_filter as _match_filter
+        except ImportError:  # pragma: no cover — defensive fallback
+            def _match_filter(tool_name, patterns):
+                return tool_name in patterns
+
         pre_selected: Set[int] = set()
         tool_names = [t[0] for t in tools]
+        include_set = {str(p) for p in include_list} if include_list else None
+        exclude_set = {str(p) for p in exclude_list} if exclude_list else None
         for i, tool_name in enumerate(tool_names):
-            if include_list:
+            if include_set:
                 # Include mode: only included tools are selected
-                if tool_name in include_list:
+                if _match_filter(tool_name, include_set):
                     pre_selected.add(i)
-            elif exclude_list:
+            elif exclude_set:
                 # Exclude mode: everything except excluded
-                if tool_name not in exclude_list:
+                if not _match_filter(tool_name, exclude_set):
                     pre_selected.add(i)
             else:
                 # No filter: all enabled
@@ -5769,23 +6104,57 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        # Compute new include list (the chosen tools). We standardize on
-        # tools.include across the codebase (catalog installs, hermes mcp
-        # configure, and this UI) so a server\'s on-disk config shape doesn\'t
-        # depend on which UI the user touched last.
-        chosen_names = [tool_names[i] for i in sorted(chosen)]
-
         # Update config
         srv_cfg = mcp_servers.setdefault(server_name, {})
         tools_cfg = srv_cfg.setdefault("tools", {})
 
-        if len(chosen) == len(tools):
+        exclude_mode = bool(exclude_set) and not include_set
+
+        if len(chosen) == len(tools) and not exclude_mode:
             # All tools enabled — clear filters (cleanest config shape; the
             # server\'s native tool set is the active set, and any tools the
             # server adds later are auto-enabled).
             tools_cfg.pop("exclude", None)
             tools_cfg.pop("include", None)
+        elif exclude_mode:
+            # Exclude-mode server (catalog default_excluded / hand-written
+            # tools.exclude): stay in exclude mode — do NOT demote the
+            # dynamic filter to a frozen include list. Unchecked tools are
+            # added as literal excludes; re-checked literals are dropped;
+            # glob patterns are preserved (they intentionally keep matching
+            # tools the vendor ships later).
+            old_exclude = sorted(exclude_set or set())
+            glob_entries = [p for p in old_exclude
+                            if "*" in p or "?" in p or "[" in p]
+            literal_entries = {p for p in old_exclude if p not in glob_entries}
+            unchecked = {tool_names[i] for i in range(len(tools))
+                         if i not in chosen}
+            checked = {tool_names[i] for i in chosen}
+            new_literals = (literal_entries - checked) | {
+                tn for tn in unchecked
+                if not _match_filter(tn, set(old_exclude))
+            }
+            new_exclude = glob_entries + sorted(new_literals)
+            glob_shadowed = sorted(
+                tn for tn in checked
+                if glob_entries and _match_filter(tn, set(glob_entries))
+            )
+            if glob_shadowed:
+                _print_warning(
+                    f"  {server_name}: {len(glob_shadowed)} re-enabled "
+                    f"tool(s) still match glob exclude pattern(s) "
+                    f"{glob_entries} and stay excluded — edit "
+                    f"mcp_servers.{server_name}.tools.exclude in config.yaml "
+                    "to enable them."
+                )
+            if not new_exclude:
+                tools_cfg.pop("exclude", None)
+                tools_cfg.pop("include", None)
+            else:
+                tools_cfg["exclude"] = new_exclude
+                tools_cfg.pop("include", None)
         else:
+            chosen_names = [tool_names[i] for i in sorted(chosen)]
             tools_cfg["include"] = chosen_names
             # Drop any legacy exclude block — we\'re include-mode now.
             tools_cfg.pop("exclude", None)

@@ -78,8 +78,16 @@ class UpdatePlan:
         return payload
 
 
-def _detect_supervisor_for_pid(pid: int, service_pids: set) -> str:
+def _detect_supervisor_for_pid(
+    pid: int, service_pids: set, windows_service_pids: set | None = None
+) -> str:
     """Classify how a live gateway PID is supervised."""
+    if windows_service_pids and pid in windows_service_pids:
+        # SCM-supervised Windows gateway (WinSW/NSSM/sc.exe create): the
+        # update pause machinery stops the SERVICE via sc.exe instead of
+        # killing the child, so #91277 Phase 2 reconciliation must plan it
+        # under its own mechanism id, not "manual".
+        return "windows-service"
     if pid in service_pids:
         try:
             from hermes_cli.gateway import is_macos, supports_systemd_services
@@ -95,12 +103,39 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set) -> str:
 
 
 def _restart_mechanism(supervisor: str, profile: str) -> str:
+    """Machine-readable restart mechanism id for a runtime.
+
+    THE policy table (#91277 Phase 2): restart execution consumes these ids
+    via :func:`match_runtime_outcomes` / the update's restart phase, and the
+    receipt records per-runtime outcomes against them. Display strings are
+    derived by :func:`describe_restart_mechanism` — never the other way
+    around.
+    """
     if supervisor == "systemd":
-        return "systemctl restart (drain-first SIGUSR1 when supported)"
+        return "systemd"
     if supervisor == "launchd":
-        return "launchctl kickstart -k (drain-first, per-label domain)"
+        return "launchd"
     if supervisor == "desktop":
+        return "desktop"
+    if supervisor == "windows-service":
+        return "windows-service"
+    if supervisor == "manual-serve":
+        return "respawn-argv"
+    return "manual"
+
+
+def describe_restart_mechanism(mechanism: str, profile: str) -> str:
+    """Human-readable description of a restart mechanism id."""
+    if mechanism == "systemd":
+        return "systemctl restart (drain-first SIGUSR1 when supported)"
+    if mechanism == "launchd":
+        return "launchctl kickstart -k (drain-first, per-label domain)"
+    if mechanism == "desktop":
         return "Desktop app respawns its serve backend"
+    if mechanism == "windows-service":
+        return "sc.exe stop before venv mutation, sc.exe start after update"
+    if mechanism == "respawn-argv":
+        return "stop before code swap, relaunch with recorded launch args"
     if profile != "default":
         return f"hermes -p {profile} gateway restart"
     return "hermes gateway restart"
@@ -129,6 +164,21 @@ def collect_runtime_inventory() -> UpdatePlan:
         if managed:
             plan.install_method = managed
         plan.updatable_in_place = method in ("git", "unknown") and not managed
+        # Baked image provenance (#91277 Phase 3): when the image marker is
+        # present it is authoritative — a bind-mounted checkout inside a
+        # container can look like `git` to the heuristics while the running
+        # filesystem is actually an immutable image. Fail-closed: an invalid
+        # marker still flips the plan to not-updatable.
+        try:
+            from hermes_cli.image_provenance import read_image_provenance
+
+            provenance = read_image_provenance()
+            if provenance is not None:
+                plan.updatable_in_place = False
+                if provenance.valid and provenance.manager:
+                    plan.install_method = provenance.manager
+        except Exception as exc:
+            logger.debug("Image provenance probe failed: %s", exc)
         plan.update_mechanism = recommended_update_command_for_method(method)
     except Exception as exc:
         logger.debug("Install-method probe failed: %s", exc)
@@ -177,12 +227,72 @@ def collect_runtime_inventory() -> UpdatePlan:
     except Exception as exc:
         logger.debug("Service-PID probe failed: %s", exc)
 
+    # --- SCM-supervised gateway PIDs (Windows) ------------------------------
+    # find_windows_gateway_services() maps validated gateway PIDs through
+    # process ancestry to running SCM service PIDs (no-op off Windows). The
+    # update's pause phase stops these via `sc.exe stop` / restarts via
+    # `sc.exe start`, so the plan must carry the matching mechanism id for
+    # the #91277 Phase 2 reconciliation and the fleet check.
+    windows_service_pids: set = set()
+    try:
+        from hermes_cli.gateway import find_windows_gateway_services
+
+        windows_service_pids = {
+            int(service.gateway_pid)
+            for service in find_windows_gateway_services()
+        }
+    except Exception as exc:
+        logger.debug("Windows SCM service-ownership probe failed: %s", exc)
+
     # --- per-profile gateways (PID files + runtime status stamps) ----------
     seen_pids: set[int] = set()
     try:
         from gateway.status import _pid_exists, read_runtime_status
 
         for profile, home in profile_homes:
+            # Prefer the gateway-owned control socket (#92091): identity
+            # declared by the process itself, including its own supervisor
+            # provenance — no argv/PID inference. Scan fallback below.
+            identity = None
+            try:
+                from gateway.control_socket import identify_gateway
+
+                identity = identify_gateway(home)
+            except Exception:
+                identity = None
+            if identity:
+                try:
+                    sock_pid = int(identity.get("pid"))
+                except (TypeError, ValueError):
+                    sock_pid = None
+                if sock_pid is not None:
+                    if sock_pid in seen_pids:
+                        # One multiplex gateway can answer identify for
+                        # several profile homes — one runtime record per
+                        # process, not per home.
+                        continue
+                    seen_pids.add(sock_pid)
+                    declared = identity.get("supervisor")
+                    supervisor = (
+                        str(declared)
+                        if declared
+                        else _detect_supervisor_for_pid(
+                            sock_pid, service_pids, windows_service_pids
+                        )
+                    )
+                    sock_sha = identity.get("code_sha")
+                    plan.runtimes.append(
+                        RuntimeRecord(
+                            kind="gateway",
+                            profile=profile,
+                            pid=sock_pid,
+                            supervisor=supervisor,
+                            code_sha=str(sock_sha) if sock_sha else None,
+                            code_version=identity.get("code_version"),
+                            restart_via=_restart_mechanism(supervisor, profile),
+                        )
+                    )
+                    continue
             record = read_runtime_status(home / "gateway_state.json")
             pid: Optional[int] = None
             code_sha = code_version = None
@@ -196,7 +306,9 @@ def collect_runtime_inventory() -> UpdatePlan:
             if pid is None or not _pid_exists(pid):
                 continue
             seen_pids.add(pid)
-            supervisor = _detect_supervisor_for_pid(pid, service_pids)
+            supervisor = _detect_supervisor_for_pid(
+                pid, service_pids, windows_service_pids
+            )
             plan.runtimes.append(
                 RuntimeRecord(
                     kind="gateway",
@@ -219,7 +331,9 @@ def collect_runtime_inventory() -> UpdatePlan:
             if proc.pid in seen_pids:
                 continue
             seen_pids.add(proc.pid)
-            supervisor = _detect_supervisor_for_pid(proc.pid, service_pids)
+            supervisor = _detect_supervisor_for_pid(
+                proc.pid, service_pids, windows_service_pids
+            )
             plan.runtimes.append(
                 RuntimeRecord(
                     kind="gateway",
@@ -231,6 +345,51 @@ def collect_runtime_inventory() -> UpdatePlan:
             )
     except Exception as exc:
         logger.debug("PID-file gateway inventory failed: %s", exc)
+
+    # Serve/dashboard backends from the spawn ledger (#63206). These are the
+    # runtimes the gateway collectors above can never see: a manually
+    # launched `hermes serve --host <ip>` for a remote Desktop, or a
+    # long-lived `hermes dashboard`. Every serve/dashboard registers itself
+    # (with structured host/port/profile since #63206) at startup, and
+    # ledger_entries() live-verifies (pid, create_time) so PID reuse never
+    # fabricates a row. Desktop-supervised backends are classified by their
+    # recorded spawner still being alive — those restart via the Desktop's
+    # own respawn, not ours.
+    try:
+        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+
+        for entry in ledger_entries():
+            purpose = entry.get("purpose")
+            if purpose not in ("serve", "dashboard"):
+                continue
+            pid = entry.get("pid")
+            if not isinstance(pid, int) or pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            has_live_spawner = spawner_is_dead(entry) is False
+            supervisor = "desktop" if has_live_spawner else "manual-serve"
+            profile = str(entry.get("profile") or "default")
+            plan.runtimes.append(
+                RuntimeRecord(
+                    kind=str(purpose),
+                    profile=profile,
+                    pid=pid,
+                    supervisor=supervisor,
+                    restart_via=_restart_mechanism(supervisor, profile),
+                    detail={
+                        "argv": entry.get("argv") or "",
+                        "host": entry.get("host") or "",
+                        "port": entry.get("port"),
+                        # Process incarnation, not just the numeric PID: a
+                        # post-update survivor probe that compares PIDs alone
+                        # calls a NEW serve that reused the number a survivor
+                        # (#92145 review).
+                        "create_time": entry.get("create_time"),
+                    },
+                )
+            )
+    except Exception as exc:
+        logger.debug("Serve/dashboard ledger inventory failed: %s", exc)
 
     return plan
 
@@ -260,7 +419,197 @@ def print_update_plan(plan: UpdatePlan) -> None:
             f"    • {runtime.kind} [{runtime.profile}] pid {runtime.pid}"
             f" — {runtime.supervisor}{sha}"
         )
-        print(f"      restart: {runtime.restart_via}")
+        print(
+            "      restart: "
+            f"{describe_restart_mechanism(runtime.restart_via, runtime.profile)}"
+        )
+
+
+_SERVE_KINDS = ("serve", "dashboard")
+
+
+def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
+    """Does *unit* name a ``hermes-serve*``/``hermes-dashboard*`` unit for *profile*?
+
+    Serve/dashboard runtimes have their OWN unit vocabulary; the gateway's
+    ``hermes-gateway*`` names never cover them (#100479). Exact names only —
+    ``work`` must not claim ``hermes-serve-workbench`` — and a scope prefix
+    (``user/hermes-serve``) is tolerated because the restart phase records
+    scope-qualified identities in some lists.
+    """
+    name = str(unit).removesuffix(".service")
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    if profile == "default":
+        return name in {"hermes-serve", "hermes-dashboard"}
+    return name in {f"hermes-serve-{profile}", f"hermes-dashboard-{profile}"}
+
+
+def _serve_runtime_outcome(
+    r: RuntimeRecord,
+    *,
+    killed: set,
+    failed_set: set,
+    restarted_set: set,
+    stale_serves: "set | None",
+) -> str:
+    """Outcome for one serve/dashboard runtime — never the gateway's."""
+    if r.pid is not None and r.pid in killed:
+        return "stopped"
+    if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
+        return "failed"
+    if stale_serves is not None:
+        # Incarnation-verified: the pre-update process is gone (replaced by
+        # its unit / the dashboard cleanup respawn / the Desktop app) or it
+        # is still alive on pre-update code.
+        return "unaccounted" if r.pid in stale_serves else "restarted"
+    if any(_serve_unit_matches_profile(r.profile, s) for s in restarted_set):
+        return "restarted"
+    return "unaccounted"
+
+
+def match_runtime_outcomes(
+    plan: "UpdatePlan",
+    *,
+    restarted_services: list,
+    relaunched_profiles: list,
+    externally_supervised_profiles: list,
+    killed_pids: set,
+    failed_units: list,
+    stale_serve_pids: "set | None" = None,
+) -> list[dict[str, Any]]:
+    """Reconcile the plan's runtimes against what the restart phase DID.
+
+    #91277 Phase 2 (restart via declared mechanism): the platform restart
+    branches each re-discover their own targets, so a runtime the plan saw
+    can be missed entirely with no signal. This cross-checks every planned
+    runtime against the phase's bookkeeping and returns one outcome row per
+    runtime::
+
+        {"kind", "profile", "pid", "mechanism", "outcome"}
+
+    outcome: ``restarted`` (service restarted / profile relaunched /
+    handed to external supervisor), ``stopped`` (pid killed, watcher or
+    operator relaunches), ``failed`` (in the phase's failed/stale list) or
+    ``unaccounted`` — the plan saw it and NO bookkeeping mentions it: the
+    blind-spot tripwire (same philosophy as the fleet matrix's DOWN row).
+    Never raises; on any probe error returns what it has.
+
+    Serve/dashboard runtimes are reconciled in their OWN vocabulary
+    (#100479): a ``hermes-serve*``/``hermes-dashboard*`` unit, a killed
+    PID, or — when the caller passes ``stale_serve_pids`` (the
+    ``(pid, create_time)``-verified survivor probe,
+    :func:`hermes_cli.update_abort_recovery._surviving_pre_update_serve_runtimes`)
+    — liveness: a pre-update serve whose incarnation is gone was replaced
+    (unit restart, dashboard cleanup respawn, Desktop respawn) and counts as
+    ``restarted``; one still alive is ``unaccounted``. They never borrow the
+    gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
+    different process that shares the profile, nothing more. Without the
+    probe result, an untouched serve stays ``unaccounted`` (fail closed).
+    """
+    outcomes: list[dict[str, Any]] = []
+    try:
+        failed_set = {str(u) for u in (failed_units or [])}
+        restarted_set = {str(s) for s in (restarted_services or [])}
+        relaunched = set(relaunched_profiles or [])
+        external = set(externally_supervised_profiles or [])
+        killed = {int(p) for p in (killed_pids or set())}
+        stale_serves = (
+            {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
+        )
+
+        for runtime in plan.runtimes:
+            r = runtime if isinstance(runtime, RuntimeRecord) else None
+            if r is None:
+                continue
+            if r.kind in _SERVE_KINDS:
+                outcomes.append(
+                    {
+                        "kind": r.kind,
+                        "profile": r.profile,
+                        "pid": r.pid,
+                        "mechanism": r.restart_via,
+                        "outcome": _serve_runtime_outcome(
+                            r,
+                            killed=killed,
+                            failed_set=failed_set,
+                            restarted_set=restarted_set,
+                            stale_serves=stale_serves,
+                        ),
+                    }
+                )
+                continue
+            outcome = "unaccounted"
+            # The bare "hermes-gateway" unit name is gateway-specific: a
+            # serve/dashboard runtime that merely shares the default
+            # profile is a different process the gateway restart never
+            # touched, and must not borrow its outcome (#100479).
+            if r.profile in relaunched or r.profile in external:
+                outcome = "restarted"
+            elif r.pid is not None and r.pid in killed:
+                outcome = "stopped"
+            elif any(
+                r.profile in unit
+                or (
+                    r.kind == "gateway"
+                    and r.profile == "default"
+                    and "hermes-gateway" in unit
+                )
+                for unit in failed_set
+            ):
+                outcome = "failed"
+            elif any(
+                r.profile in svc
+                or (
+                    r.kind == "gateway"
+                    and r.profile == "default"
+                    and "hermes-gateway" in svc
+                )
+                for svc in restarted_set
+            ):
+                outcome = "restarted"
+            outcomes.append(
+                {
+                    "kind": r.kind,
+                    "profile": r.profile,
+                    "pid": r.pid,
+                    "mechanism": r.restart_via,
+                    "outcome": outcome,
+                }
+            )
+    except Exception as exc:
+        logger.debug("Runtime-outcome reconciliation failed: %s", exc)
+    return outcomes
+
+
+def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
+    """Print a loud warning for runtimes the restart phase never touched.
+
+    Returns True when at least one planned runtime is unaccounted — the
+    caller escalates exactly like a STALE/DOWN fleet row (exit 1): a runtime
+    the plan promised to restart, silently missed, is the class this phase
+    exists to kill.
+    """
+    missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
+    if not missed:
+        return False
+    print()
+    print("  ⚠ Planned runtimes the restart phase never touched:")
+    for o in missed:
+        print(
+            f"    ✗ {o['kind']} [{o['profile']}] pid {o['pid']}"
+            f" — planned mechanism: {o['mechanism']}"
+        )
+    print("    Restart them manually, then verify:")
+    if any(o.get("kind") not in _SERVE_KINDS for o in missed):
+        print("      hermes gateway restart                # active profile")
+        print("      hermes -p <profile> gateway restart   # named profile")
+    if any(o.get("kind") in _SERVE_KINDS for o in missed):
+        # A serve/dashboard is not reachable by any `gateway restart`
+        # command (#100479): name the process, not the wrong verb.
+        print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+        print("      relaunch `hermes serve` / `hermes dashboard` / the Desktop app")
+    return True
 
 
 def record_plan_in_receipt(plan: UpdatePlan) -> None:

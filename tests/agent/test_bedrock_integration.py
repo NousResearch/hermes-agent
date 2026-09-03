@@ -14,6 +14,33 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Snapshot/restore boto* sys.modules around every test.
+
+    Tests here plant fake botocore/boto3 modules; a fake that leaks (or a
+    real submodule first-imported inside a stub window) poisons later
+    imports of the real ``botocore.exceptions`` with
+    ``No module named 'botocore.vendored'`` (PR #92617 CI flake). This
+    fixture makes stub windows airtight regardless of test ordering.
+    """
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
+
+
 class TestProviderRegistry:
     """Verify Bedrock is registered in PROVIDER_REGISTRY."""
 

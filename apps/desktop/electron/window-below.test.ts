@@ -125,4 +125,23 @@ describe('enumerationFailureNote', () => {
       expect(note.length).toBeGreaterThan(0)
     }
   })
+
+  // The macOS/Windows note used to be one fixed sentence, so a real report came
+  // back saying only "could not enumerate windows on this system" — the module
+  // failing to load, the helper failing to spawn, and the OS answering with
+  // nothing are three different fixes and all three said that.
+  it('carries the enumerator\u2019s own reason where there is no environmental fork', () => {
+    for (const platform of ['darwin', 'win32']) {
+      expect(enumerationFailureNote(platform, {}, 'the helper failed: spawn EACCES')).toMatch(/spawn EACCES/)
+    }
+  })
+
+  // Linux's notes name the fix (change session type, install xprop); the raw
+  // exception underneath would only bury it.
+  it('keeps the actionable Linux advice instead of the raw reason', () => {
+    const note = enumerationFailureNote('linux', { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'ENOENT')
+
+    expect(note).toMatch(/xprop/)
+    expect(note).not.toMatch(/ENOENT/)
+  })
 })

@@ -1074,9 +1074,55 @@ def cmd_mcp_configure(args):
     config = load_config()
     server_entry = cfg_get(config, "mcp_servers", name, default={})
 
-    if len(chosen) == total:
+    exclude_mode = bool(exclude) and isinstance(exclude, list) and not include
+
+    if len(chosen) == total and not exclude_mode:
         # All selected → remove include/exclude (register all)
         server_entry.pop("tools", None)
+    elif exclude_mode:
+        # Exclude-mode entry (catalog default_excluded or hand-written
+        # tools.exclude): stay in exclude mode instead of demoting the
+        # user's dynamic filter to a frozen include list. Newly-unchecked
+        # tools are appended as literal excludes; re-checked tools have
+        # their literal entries dropped. Glob patterns are preserved —
+        # they keep excluding future vendor tools by design.
+        old_exclude = [str(p) for p in (exclude or [])]
+        glob_entries = [p for p in old_exclude
+                        if "*" in p or "?" in p or "[" in p]
+        literal_entries = {p for p in old_exclude if p not in glob_entries}
+        unchecked = {tool_names[i] for i in range(total) if i not in chosen}
+        checked = {tool_names[i] for i in chosen}
+
+        # Literal excludes: drop re-checked, add newly-unchecked.
+        new_literals = (literal_entries - checked) | {
+            tn for tn in unchecked
+            if not matches_name_filter(tn, set(old_exclude))
+        }
+        new_exclude = glob_entries + sorted(new_literals)
+
+        # A re-checked tool still matched by a kept glob can't be enabled
+        # without dropping the glob — surface that instead of silently
+        # ignoring the click or silently freezing the config.
+        glob_shadowed = sorted(
+            tn for tn in checked
+            if glob_entries and matches_name_filter(tn, set(glob_entries))
+        )
+        if glob_shadowed:
+            _warning(
+                f"{len(glob_shadowed)} re-enabled tool(s) still match glob "
+                f"exclude pattern(s) {glob_entries} and stay excluded: "
+                f"{', '.join(glob_shadowed[:5])}"
+                f"{' ...' if len(glob_shadowed) > 5 else ''}. Remove the "
+                f"pattern from mcp_servers.{name}.tools.exclude in "
+                "config.yaml to enable them."
+            )
+
+        if not new_exclude:
+            server_entry.pop("tools", None)
+        else:
+            server_entry.setdefault("tools", {})
+            server_entry["tools"]["exclude"] = new_exclude
+            server_entry["tools"].pop("include", None)
     else:
         chosen_names = [tool_names[i] for i in sorted(chosen)]
         server_entry.setdefault("tools", {})

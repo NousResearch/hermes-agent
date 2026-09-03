@@ -14,9 +14,52 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  stripPendingClarifyProjectionForCache,
   toChatMessages,
-  upsertToolPart
+  upsertToolPart,
+  withUniqueToolCallIdsWithinMessage
 } from './chat-messages'
+
+const toolCallPart = (toolCallId: string): ChatMessagePart =>
+  ({
+    type: 'tool-call' as const,
+    toolCallId,
+    toolName: 'read_file',
+    args: {} as never,
+    argsText: '{}'
+  }) as ChatMessagePart
+
+const assistantWith = (parts: ChatMessagePart[]): ChatMessage =>
+  ({ id: 'm1', role: 'assistant', parts, timestamp: 0 }) as unknown as ChatMessage
+
+describe('withUniqueToolCallIdsWithinMessage', () => {
+  it('renames a duplicate toolCallId within one message (#87857)', () => {
+    const message = assistantWith([toolCallPart('call_x'), toolCallPart('call_x')])
+
+    const result = withUniqueToolCallIdsWithinMessage(message)
+
+    const ids = result.parts
+      .filter((part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call')
+      .map(part => part.toolCallId)
+
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids[0]).toBe('call_x')
+    expect(ids[1]).not.toBe('call_x')
+  })
+
+  it('returns the same reference when there is no duplicate', () => {
+    const message = assistantWith([toolCallPart('call_a'), toolCallPart('call_b')])
+
+    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
+  })
+
+  it('does not touch parts without a toolCallId', () => {
+    const textPart = { type: 'text' as const, text: 'hi' } as ChatMessagePart
+    const message = assistantWith([textPart, toolCallPart('call_a')])
+
+    expect(withUniqueToolCallIdsWithinMessage(message)).toBe(message)
+  })
+})
 
 describe('toChatMessages', () => {
   it('rebuilds the full command from a gateway tool row carrying args', () => {
@@ -321,6 +364,28 @@ describe('toChatMessages', () => {
       expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
       expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
     }
+  })
+
+  it('projects persisted composite compaction carriers to their live user turn', () => {
+    const messages = toChatMessages([
+      {
+        id: 71,
+        role: 'user',
+        content: 'internal summary scaffold\n\nREAL ASK',
+        display_content: 'REAL ASK',
+        timestamp: 1
+      },
+      {
+        id: 72,
+        role: 'user',
+        content: 'prior live ask\n\ninternal summary scaffold',
+        display_content: 'prior live ask',
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual(['REAL ASK', 'prior live ask'])
+    expect(messages.map(message => message.rowId)).toEqual([71, 72])
   })
 
   it('projects durable timeline kinds without inspecting their text', () => {
@@ -1183,13 +1248,23 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
   })
 
-  it('handles empty final text', () => {
+  it('does not erase streamed text when the final completion is empty (#95514)', () => {
     const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 
     const result = mergeFinalAssistantText(parts, '')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'streamed' })
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
+  it('treats whitespace-only final text as non-authoritative (#95514)', () => {
+    const parts = [{ type: 'text' as const, text: 'already on screen' }]
+
+    const result = mergeFinalAssistantText(parts, '   \n\t')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'already on screen' })
   })
 })
 
@@ -1266,6 +1341,40 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+})
+
+describe('stripPendingClarifyProjectionForCache', () => {
+  const clarifyPart = (toolCallId: string): ChatMessagePart => ({
+    type: 'tool-call',
+    toolCallId,
+    toolName: 'clarify',
+    args: { choices: ['a'], question: 'Pick' },
+    argsText: '{"question":"Pick","choices":["a"]}'
+  })
+
+  it('drops a synthetic request-id-only clarify row from the durable cache', () => {
+    const messages: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'choose' }] },
+      { id: 'synthetic', role: 'assistant', parts: [clarifyPart('req-1')], pending: true }
+    ]
+
+    expect(stripPendingClarifyProjectionForCache(messages, 'req-1')).toEqual([messages[0]])
+  })
+
+  it('keeps a provider-authored clarify in position but strips its local running bit', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Choose.' }, clarifyPart('call-provider')],
+        pending: true
+      }
+    ]
+
+    const [cached] = stripPendingClarifyProjectionForCache(messages, 'req-1')
+    expect(cached.pending).toBe(false)
+    expect(cached.parts.map(part => part.type)).toEqual(['text', 'tool-call'])
   })
 })
 

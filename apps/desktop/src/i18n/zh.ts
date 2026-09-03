@@ -81,6 +81,8 @@ export const zh: Translations = {
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewayConnectionLost: '与网关的连接已断开',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要登录网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
@@ -100,6 +102,12 @@ export const zh: Translations = {
         `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
       signOutAndSignIn: '退出并重新登录',
       remoteFailureHint: '在“网关设置”中检查网关 URL 和登录，或切换到本地网关。',
+      cloudDownTitle: 'Nous Cloud 代理已宕机',
+      cloudDownDescription:
+        '此网关连接的 Nous 托管云代理正在返回服务器错误。无法在此处重启——请检查其状态、切换到本地网关或获取支持。',
+      cloudDownHint: '使用下方按钮打开 Nous Portal（查看实例状态与操作）或加入 Discord 获取支持。',
+      cloudDownCheckPortal: '查看 Portal 状态',
+      cloudDownDiscord: '在 Discord 获取帮助',
       hideRecentLogs: '隐藏最近日志',
       showRecentLogs: '显示最近日志',
       signedInTitle: '已登录',
@@ -148,7 +156,8 @@ export const zh: Translations = {
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
+      codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
     voice: {
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',
@@ -198,6 +207,29 @@ export const zh: Translations = {
     dismiss: '忽略'
   },
 
+  sendDiagnostics: {
+    title: '向 Nous 发送诊断信息',
+    privacyNotice:
+      '这会将调试包上传到 Nous 内部存储（并非公开粘贴板）。内容包括系统信息（操作系统、版本、服务商、已配置的 API 密钥种类 — 绝不包含密钥本身）以及完整的 agent、gateway 和桌面端日志（每个最多 512 KB，很可能包含对话内容、工具输出与文件路径）。上传前会先脱敏。仅 Nous 员工与获准的 Discord 版主可查看，14 天后自动删除。',
+    upload: '上传',
+    uploading: '上传中…',
+    cancel: '取消',
+    close: '关闭',
+    copyLink: '复制链接',
+    uploadIdFallback: id => `未返回查看链接 — 请向支持人员提供上传 ID ${id}`,
+    doneTitle: '诊断信息已发送',
+    doneDescription: '调试包已私密上传。在您的支持会话中分享以下链接，团队即可查看您的日志。',
+    failedTitle: '上传失败',
+    failedHint:
+      '您也可以在终端运行 `hermes debug share --nous`，或运行 `hermes debug share --local` 在不上传的情况下查看报告。',
+    handoffLead: '在以下位置继续讨论:',
+    links: {
+      github: 'GitHub Issues',
+      portal: 'Nous Portal 支持',
+      discord: 'Discord'
+    }
+  },
+
   titlebar: {
     hideSidebar: '隐藏侧边栏',
     showSidebar: '显示侧边栏',
@@ -213,6 +245,7 @@ export const zh: Translations = {
     openStarmap: '打开记忆图谱',
     enterHud: 'HUD 模式',
     exitHud: '退出 HUD 模式',
+    resetHudLayout: '重置 HUD 大小和位置',
     layoutEditor: '布局编辑器',
     layoutEditorTitle: mod => `布局编辑器 — ${mod} 点击重置布局`
   },
@@ -275,7 +308,7 @@ export const zh: Translations = {
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
-      'view.terminalSelection': '将终端选区发送到输入框',
+      'view.selectionToComposer': '将选区发送到输入框',
       'view.terminalCopy': '复制终端选区',
       'view.terminalPaste': '粘贴到终端',
       'view.closeTab': '关闭标签',
@@ -349,6 +382,7 @@ export const zh: Translations = {
       providerAccounts: '账号',
       providerApiKeys: 'API 密钥',
       providerCustomEndpoints: '自定义端点',
+      providerLocalModels: '本地模型',
       gateway: '网关',
       apiKeys: '工具与密钥',
       keybinds: '键盘快捷键',
@@ -542,8 +576,15 @@ export const zh: Translations = {
       introSplashDesc: '空白对话中显示的字标和提示语。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
+      tipsTitle: '应用内提示',
+      tipsDesc: '指向应用某处的小气泡：空闲时偶尔出现，需要时 Hermes 也会给你一条。关掉一条就不再出现。',
+      tipsReset: (count: number) => `恢复 ${count} 条已关闭的提示`,
+      toursTitle: '引导导览',
+      toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
+      vibeHeartsTitle: '心情爱心',
+      vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
@@ -551,6 +592,8 @@ export const zh: Translations = {
       embedsAlways: '总是',
       embedsOff: '关闭',
       embedsReset: (count: number) => `重置 ${count} 个已允许的服务`,
+      resumeLastSessionTitle: '启动时恢复上次会话',
+      resumeLastSessionDesc: '开启后，应用冷启动时重新打开最近的聊天。关闭则始终从空白新会话开始。',
       product: '产品',
       productDesc: '易读的工具活动与简洁摘要。',
       technical: '技术',
@@ -837,6 +880,9 @@ export const zh: Translations = {
       bundleOutOfSyncDesc:
         'Hermes 运行时已更新,但桌面应用本身仍是旧构建——在应用更新之前,新的界面功能(如 Bot Mode)不会显示。请运行下方的更新以重新构建应用。如果此警告仍未消除,请从最新的桌面安装程序重新安装。',
       bundleOutOfSyncAction: '获取安装程序',
+      bundleSwapPending: '重启以完成更新',
+      bundleSwapPendingDesc: '更新后的应用已安装完成，只需重启 Hermes 即可加载新版本。聊天记录和设置不会受到影响。',
+      bundleSwapPendingAction: '重启 Hermes',
       updates: '更新',
       checkNow: '立即检查',
       checking: '检查中…',
@@ -979,6 +1025,24 @@ export const zh: Translations = {
       cancel: '取消',
       empty: '尚未注册任何连接。'
     },
+    managedUpdates: {
+      title: '托管更新',
+      intro:
+        '以事务方式更新由桌面端托管的 SSH 安装：先排空会话，再更新远端检出，最后恢复每个 profile，并生成关联回执。',
+      sshConnection: '桌面端托管的 SSH 安装',
+      update: '更新',
+      updating: '更新中…',
+      progress: '正在排空会话、更新远端安装并恢复 profile…',
+      updated: '已更新',
+      partial: '已更新 — 恢复失败',
+      refused: '已拒绝',
+      failed: '更新失败',
+      alreadyRunning: '更新已在进行中',
+      receipt: (id: string, outcome: string) => `回执 ${id} · ${outcome}`,
+      receiptVersions: (pre: string, post: string) => `${pre} → ${post}`,
+      scopesRestored: (profiles: string) => `已恢复的 profile：${profiles}`,
+      scopeNotRestored: (profile: string, error: string) => `Profile“${profile}”未恢复：${error}`
+    },
     gateway: {
       loading: '正在加载网关设置...',
       unavailableTitle: '网关设置不可用',
@@ -1051,6 +1115,10 @@ export const zh: Translations = {
       plainTextStoredTitle: 'Token 以明文存储',
       plainTextStoredDesc:
         '安全存储不可用，因此已保存的 token 以未加密方式存储在此设备上应用的连接设置文件中。请安装或启用 GNOME Keyring 或 KWallet 以对其加密。',
+      keychainEncryptionTitle: '使用系统钥匙串加密已保存的机密',
+      keychainEncryptionDesc:
+        '默认关闭。开启后，网关 token 和登录凭据将使用系统钥匙串（Keychain Access、GNOME Keyring 或 Windows DPAPI）加密——系统可能会请求授权或密码。关闭时，它们以仅当前用户可读的普通文件形式存储。',
+      keychainEncryptionFailed: '无法更改机密加密设置',
       testRemote: '测试远程',
       saveForRestart: '保存到下次重启',
       saveAndReconnect: '保存并重连',
@@ -1223,6 +1291,11 @@ export const zh: Translations = {
       reasoning: '推理',
       reasoningOff: '关闭',
       defaultsFailed: '保存模型默认值失败',
+      loadFailed: '无法加载模型',
+      restartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。',
+      restartBackend: '重启后端',
+      restartingBackend: '正在重启后端...',
+      restartFailed: '无法重启后端',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
@@ -1235,14 +1308,120 @@ export const zh: Translations = {
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
-        web_extract: { label: '网页提取', hint: '页面总结' },
         compression: { label: '压缩', hint: '上下文压缩' },
         skills_hub: { label: '技能中心', hint: '技能搜索' },
         approval: { label: '审批', hint: '智能自动批准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
+        review: { label: '评审', hint: '/review 评审子智能体' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
+    },
+    localModels: {
+      title: '本地模型',
+      runtimeTitle: '本地运行时',
+      runtimeReady: backend => `就绪 · ${backend}`,
+      serverRunning: '运行中',
+      runtimeInstalled: '已安装 llama.cpp 运行时',
+      runtimeInstalledDetail: (tag, backend) => `构建 ${tag}，${backend} 后端。Hermes 会为您启动并管理服务器。`,
+      installTitle: '安装本地运行时',
+      installDetail: '下载 llama.cpp 推理引擎（几百 MB）。下载的模型完全在本机运行——无需账号，数据不会离开您的电脑。',
+      installAction: '安装运行时',
+      installing: '正在安装运行时…',
+      installFailed: '运行时安装失败',
+      quickstartTitle: '在本机运行模型',
+      quickstartDetail: (model, size) =>
+        `一键完成所有设置：本地引擎、${model}（需下载 ${size}），并设为新会话的默认模型。数据不会离开这台电脑。`,
+      quickstartDetailReady: model => `一键将 ${model} 设为新会话的默认模型。所有内容都在本机运行。`,
+      quickstartAction: '为我设置',
+      quickstartConfigure: '自定义…',
+      quickstartDoneToast: model => `${model} 已就绪——新会话将在本机运行。`,
+      quickstartFailed: '本地模型设置失败',
+      quickstartStageEngine: '引擎',
+      quickstartStageModel: '模型',
+      quickstartStageFinish: '完成',
+      hardwareTitle: '本机配置',
+      hardwareLoading: '正在检测硬件…',
+      vram: label => `${label} 显存`,
+      ram: label => `${label} 内存`,
+      unifiedMemory: '统一内存',
+      modelsTitle: '模型',
+      recommended: '推荐',
+      recommendedReason: {
+        'best-quality-resident': '在完全驻留 GPU 且保持全速的模型中质量最高。推荐会在质量与该硬件的预计速度之间权衡。',
+        'speed-gated-quality': '有更高质量的模型可以装入这台机器，但受内存带宽限制响应会太慢——这是保持流畅的最佳模型。',
+        'fastest-resident': '没有模型能在该硬件上达到全速；这是完全驻留 GPU 内存中最快的一个。',
+        'least-painful-spilled': '没有模型能完全装入 GPU 内存——这是从系统内存运行表现最好的一个。'
+      } as Record<string, string>,
+      downloaded: '已下载',
+      downloadAction: size => `下载 · ${size}`,
+      downloadProgress: (done, total) => `正在下载 ${done} / ${total}`,
+      downloadDoneToast: model => `${model} 已就绪。`,
+      installDoneToast: '本地运行时已安装就绪。',
+      useAction: '使用',
+      activePill: '默认',
+      updateTitle: '引擎有可用更新',
+      updateDetail: (next, current) =>
+        `新的 llama.cpp 构建（${next}）可以安装——当前为 ${current}。下载期间模型仍可正常使用。`,
+      updateAction: '更新引擎',
+      updating: '正在更新引擎…',
+      upToDateTitle: '引擎已是最新',
+      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新构建。`,
+      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`,
+      activeDetail: '新对话使用此模型——发送首条消息时加载',
+      activeNotLoaded: '首条消息时加载',
+      loadedPill: '已加载',
+      placementResident: '全部在 GPU',
+      placementSpilled: '部分在内存',
+      placementResidentTip: '完全在 GPU 显存中以此上下文窗口运行——全速。',
+      placementSpilledTip: '模型的一部分从系统内存运行——可用但较慢。更紧凑的版本或更小的上下文可以完全放入显存。',
+      loadingPill: '加载中…',
+      ejectTip: '释放显存（需要时重新加载）',
+      ejected: '模型已卸载——显存已释放。',
+      ejectFailed: '无法卸载模型',
+      stopServer: '关闭',
+      startServer: '开启',
+      runtimeRunningDetail: '本地服务器正在运行。关闭后将释放全部显存，新对话将不再使用本地模型，直到您重新开启。',
+      serverStopped: '本地服务器已停止——显存已释放。',
+      serverStarted: '本地服务器运行中。',
+      serverStopFailed: '无法停止本地服务器',
+      serverStartFailed: '无法启动本地服务器',
+      activating: '启动中…',
+      activateFailed: model => `无法切换到 ${model}`,
+      activateDoneToast: model => `新对话将使用 ${model}。`,
+      downloadFailed: model => `${model} 下载失败`,
+      pillFitsGpu: '完全在 GPU 上运行',
+      pillUsesRam: '使用系统内存',
+      pillTooBig: '超出本机内存',
+      browseTitle: '发现更多模型',
+      browseHint: '搜索整个 Hugging Face。在这里下载的模型会自动适配你的机器，但未经我们测试。',
+      browsePlaceholder: '按名称或作者搜索模型…',
+      browseSearching: '正在搜索 Hugging Face',
+      browseListing: '正在读取模型文件',
+      browseShowFiles: '查看文件',
+      browseRefresh: '刷新',
+      browseDownloads: '次下载',
+      browseLikes: '个赞',
+      browseGated: '需要登录 Hugging Face',
+      browseNoGguf: '未找到兼容的模型文件。',
+      browseFitUnknown: '适配情况未知',
+      browseAlreadyDownloaded: '已下载。',
+      addedByYou: '由你添加',
+      browseDownloadStarted: '正在下载 {name}',
+      browseDownloadAria: '下载 {name}',
+      sideloadButton: '添加模型文件',
+      sideloadTitle: '选择 GGUF 模型文件',
+      sideloadDone: '已添加 {name}。',
+      sideloadAlreadyPresent: '已在你的库中。',
+      pillFullContext: max => `完整 ${max} 上下文`,
+      pillFullContextTip: '从一开始就以模型的完整上下文窗口运行',
+      pillUpTo: max => `最高 ${max} 上下文`,
+      pillGrowsTip: '随着对话需要更多空间自动增长',
+      pillVision: '识图',
+      deleteAction: '删除模型',
+      deleteConfirm: model => `从磁盘删除 ${model}？`,
+      deleted: model => `已删除 ${model}。`,
+      deleteFailed: '删除失败'
     },
     providers: {
       connectAccount: '连接账号',
@@ -1377,6 +1556,26 @@ export const zh: Translations = {
         selectedMessage: backend => `终端命令现在通过 ${backend} 运行。将应用于新会话。`,
         failedSelect: backend => `选择 ${backend} 失败`,
         needsSetupHint: '现在即可选择此后端——但在完成设置前命令将会失败。'
+      },
+      browserRealProfile: {
+        label: '使用我的真实浏览器配置文件',
+        description:
+          '将默认浏览器的登录信息和 Cookie 复制到托管快照中，代理使用该快照进行浏览。绝不会直接打开你的真实配置文件。将应用于新会话。',
+        enabledTitle: '真实配置文件浏览：已开启',
+        enabledMessage: '新会话将使用默认浏览器配置文件的快照进行浏览。',
+        disabledTitle: '真实配置文件浏览：已关闭',
+        disabledMessage: '配置文件快照将被删除；新会话使用干净的浏览器。',
+        failedSave: '无法保存真实配置文件设置',
+        prompt: {
+          title: '让网站保持登录状态',
+          body: '让 Hermes 使用默认浏览器配置文件的快照进行浏览，网站打开时即已登录。',
+          bulletSnapshot: 'Cookie 和登录信息会复制到托管快照中。',
+          bulletLiveProfile: '绝不会直接打开你的真实浏览器配置文件。',
+          bulletLocal: '所有数据都不会离开这台电脑。',
+          dontShowAgain: '不再显示',
+          notNow: '暂不',
+          enable: '使用我的配置文件'
+        }
       }
     }
   },
@@ -1436,6 +1635,8 @@ export const zh: Translations = {
     archive: '归档',
     skillArchivedTitle: '技能已归档',
     skillArchivedMessage: '可通过 hermes curator restore 恢复。',
+    officialCatalog: '可安装',
+    officialPill: '官方',
     hub: {
       searchPlaceholder: '搜索技能中心',
       search: '搜索',
@@ -1972,6 +2173,44 @@ export const zh: Translations = {
     switchConnectionFailed: name => `无法连接到 ${name}`,
     manageProfiles: '管理配置档案…',
     connectGateway: '管理网关…',
+    fleet: {
+      allOnGateway: '此网关上的全部配置档案',
+      gateway: gateway => `${gateway} 上的配置档案`,
+      gatewayUnreachable: gateway => `${gateway} · 无法连接`,
+      onGateway: (name, gateway) => `${name} · ${gateway}`,
+      switchTo: (name, gateway) => `切换到 ${gateway} 上的 ${name}`,
+      deleteOn: gateway => `（位于 ${gateway}）`
+    },
+    remoteOverride: {
+      menuItem: '连接到远程主机…',
+      badge: (host: string) => `运行于 ${host}`,
+      title: (profile: string) => `将 ${profile} 连接到远程主机`,
+      description: '此配置档案中的会话将在你指定的远程 Hermes 上运行，而不是这台电脑。',
+      urlLabel: '远程地址',
+      urlPlaceholder: 'https://hermes.example.com',
+      urlInvalid: '请输入以 http:// 或 https:// 开头的完整地址',
+      tokenLabel: '访问令牌',
+      tokenPlaceholder: '粘贴远程会话令牌',
+      tokenSavedHint: '已保存令牌。留空以保留现有令牌。',
+      plainTextOptIn: '这台电脑没有安全密钥存储，令牌将以未加密方式保存到磁盘。仍然保存。',
+      collisionWarning: (label: string) => `设置中已存在名为“${label}”的网关。此配置档案连接是独立的，不会更改它。`,
+      confirmTitle: '将此配置档案连接到远程主机？',
+      confirmNote: (profile: string, host: string) =>
+        `${profile} 中的新对话将在 ${host} 上运行。命令和文件读取都发生在那台电脑上，而不是这台。请只连接你信任的主机。`,
+      confirmBack: '返回',
+      connect: '连接',
+      connecting: '连接中…',
+      disconnect: '移除远程连接',
+      savedTitle: '配置档案已连接',
+      savedMessage: (profile: string, host: string) => `${profile} 现在运行于 ${host}`,
+      removedTitle: '已移除远程连接',
+      removedMessage: (profile: string) => `${profile} 现在在这台电脑上运行`,
+      removeFailed: '无法移除远程连接',
+      authFailedTitle: '远程主机拒绝了已保存的令牌',
+      authFailedMessage: (profile: string, host: string) =>
+        `${host} 拒绝了为 ${profile} 保存的令牌。它可能已在远程端被更改。`,
+      updateToken: '输入新令牌…'
+    },
     actions: '操作',
     color: '颜色…',
     colorFor: '颜色',
@@ -1987,6 +2226,7 @@ export const zh: Translations = {
     defaultBadge: '默认',
     rename: '重命名',
     renameMenu: '重命名…',
+    exportMenu: '导出…',
     editSoul: '编辑 SOUL.md…',
     copySetup: '复制安装命令',
     copying: '复制中…',
@@ -2050,7 +2290,11 @@ export const zh: Translations = {
       message: count => `在您检查模型设置之前，${count} 个定时任务将被跳过。`,
       detailMore: (names, remaining) => `${names}，以及另外 ${remaining} 个`,
       review: '检查定时任务',
-      saveFailed: 'Hermes 未保存该模型更改。'
+      saveFailed: 'Hermes 未保存该模型更改。',
+      confirmTitle: '模型选择警告',
+      confirmDetail: '仅在你接受此权衡时确认。',
+      confirmAction: '确认',
+      declined: '已取消模型更改 — 你拒绝了数据训练层级警告。'
     },
     search: '搜索定时任务…',
     loading: '正在加载定时任务…',
@@ -2287,7 +2531,7 @@ export const zh: Translations = {
       removeFolder: '移除',
       create: '创建',
       menu: '操作',
-      menuRename: '重命名',
+      menuRename: '重命名…',
       menuAppearance: '外观',
       noColor: '无颜色',
       menuAddFolder: '添加文件夹',
@@ -2354,7 +2598,7 @@ export const zh: Translations = {
       copyId: '复制 ID',
       export: '导出',
       branchFrom: '分支',
-      rename: '重命名',
+      rename: '重命名…',
       archive: '归档',
       newWindow: '新窗口',
       openInTerminal: '在终端中打开',
@@ -2801,6 +3045,8 @@ export const zh: Translations = {
     connected: '已连接',
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
     fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
+    localModelsTitle: '本地运行模型',
+    localModelsPitch: '无需账号——下载模型，在本机运行',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
       fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
@@ -2831,6 +3077,8 @@ export const zh: Translations = {
     connectedProvider: provider => `${provider} 已连接`,
     connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
     signInFailed: '登录失败，请重试。',
+    signInExpired:
+      '等待授权超时。通常是因为登录页面在打开的标签页中卡住（服务端问题）——请在该页面完成登录后重试。若仍失败，请改用 API 密钥或 CLI 方式。',
     pickDifferentProvider: '选择其他提供方',
     signInWith: provider => `使用 ${provider} 登录`,
     openedBrowser: provider => `已在浏览器中打开 ${provider}。`,
@@ -2864,6 +3112,9 @@ export const zh: Translations = {
     noModels: '未找到模型。',
     addProvider: '添加提供方',
     loadFailed: '无法加载模型',
+    loadingIntoMemory: '正在载入内存',
+    downloading: '下载中',
+    localDownloadsHeading: '本地',
     noAuthenticatedProviders: '没有已认证的提供方。',
     pro: 'Pro',
     proNeedsSubscription: 'Pro 模型需要付费 Nous 订阅。',
@@ -2958,6 +3209,7 @@ export const zh: Translations = {
       gateway: '网关',
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',
+      gatewayUnavailable: '推理不可用',
       gatewayChecking: '检查中',
       gatewayConnecting: '连接中',
       gatewayOffline: '离线',
@@ -2968,13 +3220,17 @@ export const zh: Translations = {
       resetStatusbar: '恢复默认设置',
       toggleApprovalMode: '审批',
       toggleBackendVersion: '后端版本',
+      toggleCacheHitRate: '缓存命中率',
       toggleCommandCenter: '命令中心',
       toggleContextUsage: '上下文用量',
       toggleRunningTimer: '回合计时',
       toggleSessionTimer: '会话计时',
       toggleTerminal: '终端',
+      toggleTokensPerSecond: '每秒 token 数',
       toggleVersion: '版本与更新',
       toggleWorkspace: '工作区',
+      cacheHitRateTitle: '本会话的提示缓存命中率 — 缓存 token 更便宜，越高越省',
+      tokensPerSecondTitle: '每秒输出 token 数，取最近 10 次模型调用的平均值',
       agents: '代理',
       closeAgents: '关闭代理',
       openAgents: '打开代理',
@@ -2989,6 +3245,15 @@ export const zh: Translations = {
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
       contextUsage: '上下文用量',
+      systemResources: {
+        title: '系统资源',
+        loading: '资源…',
+        gpuUtilization: 'GPU 利用率',
+        gpuMemory: '显存',
+        ram: '内存',
+        unifiedNote: '统一内存——GPU 与系统共享此内存池。',
+        toggle: '系统资源'
+      },
       contextUsagePanel: {
         categories: {
           conversation: '对话',
@@ -3065,6 +3330,9 @@ export const zh: Translations = {
     hide: '隐藏',
     openPreview: '打开预览',
     openInBrowser: '在浏览器中打开',
+    openInExternal: '在外部打开',
+    popIn: '弹回',
+    popOut: '弹出',
     linkHint: '⌘/Ctrl+点击在预览面板打开',
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
     source: '源码',
@@ -3148,7 +3416,17 @@ export const zh: Translations = {
       loadFailedConsole: (code, message) => `加载失败${code ? ` (${code})` : ''}: ${message}`,
       unreachableDescription: '无法访问预览页面。',
       openTarget: url => `打开 ${url}`,
-      fallbackTitle: '预览'
+      fallbackTitle: '预览',
+      annotate: '标注',
+      annotateOn: '停止标注',
+      annotateNeedPage: '请先在内置浏览器中打开页面。',
+      annotateFailed: '无法开始标注',
+      commenting: '标注中',
+      addComments: count => (count === 1 ? '添加 1 条批注' : `添加 ${count} 条批注`),
+      commentPlaceholder: '添加批注…',
+      commentTitle: n => `批注 ${n}`,
+      saveComment: '保存',
+      cancelComment: '取消批注'
     }
   },
 
@@ -3170,6 +3448,7 @@ export const zh: Translations = {
     closeToRight: '关闭右侧',
     closeAll: '全部关闭',
     newSessionTab: '新建会话标签',
+    newTab: '新建标签页',
     pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
     pluginDisabledBody: '在 设置 → 插件 中重新启用即可恢复面板。',
     missingPane: paneId => `缺少面板：${paneId}`,
@@ -3228,6 +3507,8 @@ export const zh: Translations = {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
+      loadingLocalModel: model => `正在将 ${model} 载入内存`,
+      processingPrompt: '正在处理提示词',
       resumeWhenBackgroundDone: count =>
         count === 1 ? '后台任务完成后将自动继续' : `${count} 个后台任务完成后将自动继续`,
       thinking: '思考中',
@@ -3260,6 +3541,7 @@ export const zh: Translations = {
       errorOpenLogsFailed: '无法打开日志文件夹',
       errorOpenDesktopLogs: '打开桌面端日志',
       errorCopyDiagnostics: '复制错误详情',
+      errorSendDiagnostics: '发送诊断信息',
       filesChanged: count => `${count} 个文件已更改`,
       reviewChanges: '查看',
       readAloudFailed: '朗读失败',
@@ -3449,6 +3731,10 @@ export const zh: Translations = {
     editFailed: '编辑失败',
     editTurnUnavailable: '此回合已不在服务器历史中（可能已被压缩移除）。',
     resumeFailed: '恢复失败',
+    readOnlyTranscriptTitle: '已以只读方式打开',
+    readOnlyTranscriptBody:
+      '尚无已连接的后端认领这个较早的会话，因此它以只读记录方式打开。历史记录完好；在有后端认领之前无法发送消息。',
+    readOnlyTranscriptSendBlocked: '该会话目前以只读记录方式打开——发送已禁用。',
     resumeStrandedTitle: '无法加载此会话',
     resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
     resumeRetry: '重试',
@@ -3466,6 +3752,7 @@ export const zh: Translations = {
     cwdStagedTitle: '工作目录已暂存',
     cwdStagedMessage: '重启桌面后端后，工作目录更改才会应用到当前活跃会话。',
     modelSwitchFailed: '模型切换失败',
+    hydrationSyncing: (profile: string) => `正在同步 ${profile}\u2026`,
     sessionExported: '会话已导出',
     sessionExportFailed: '无法导出会话',
     imageSaved: '图片已保存',
@@ -3491,6 +3778,53 @@ export const zh: Translations = {
       systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
       failed: error => `移交失败：${error}`,
       timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
+    }
+  },
+
+  tips: {
+    close: '不再显示这条提示',
+    items: {
+      'new-session': {
+        title: '从头开始',
+        text: '新对话拥有独立的上下文、终端和工作目录。'
+      },
+      skills: {
+        title: '教一次就够',
+        text: '技能是一组说明文件，Hermes 会在需要时自行加载。'
+      },
+      messaging: {
+        title: '离开电脑也能用',
+        text: '接入 Telegram、Discord、Slack 等 — 同一个智能体，同一份记忆。'
+      },
+      artifacts: {
+        title: 'Hermes 做过的一切',
+        text: '所有会话里的图片、文件和链接，都汇总在这里。'
+      },
+      cron: {
+        title: '会自己运行的任务',
+        text: '让一条提示按小时、按夜间，或按 cron 表达式定时执行。'
+      },
+      'command-palette': {
+        title: '一个输入框搞定一切',
+        text: '会话、设置、技能和命令都能从命令面板找到。'
+      },
+      profiles: {
+        title: '配置文件彼此独立',
+        text: '每个都是独立的 Hermes — 自己的密钥、记忆和会话。'
+      },
+      'composer-mentions': {
+        title: '附件与命令',
+        text: '输入 @ 把文件带入对话，输入 / 运行命令。'
+      },
+      'local-setup': {
+        title: '这台电脑可以本地运行模型',
+        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
+        action: '立即设置'
+      },
+      'right-pane': {
+        title: '工作面板',
+        text: '文件、终端、审阅和内置浏览器都在侧边面板里。'
+      }
     }
   },
 

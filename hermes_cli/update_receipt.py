@@ -99,8 +99,9 @@ class UpdateReceipt:
         failed_units: list | None = None,
         incomplete: bool = False,
         phase_error: str = "",
+        fresh_recovery: dict[str, Any] | None = None,
     ) -> None:
-        self.data["gateway_restart"] = {
+        result: dict[str, Any] = {
             "restarted_services": list(restarted_services or []),
             "relaunched_profiles": list(relaunched_profiles or []),
             "externally_supervised_profiles": list(
@@ -111,6 +112,49 @@ class UpdateReceipt:
             "incomplete": bool(incomplete),
             "phase_error": phase_error,
         }
+        if fresh_recovery is not None:
+            # Conservative outcome vocabulary: "verified" is the only bucket
+            # allowed to claim supervisor coverage; "relaunch_attempted" means
+            # the relaunch exited 0 without independent supervisor
+            # observation. "skipped" preserves runtimes (manual gateways,
+            # serve/dashboard entries) the pass deliberately did not touch.
+            persisted: dict[str, Any] = {
+                key: [str(profile) for profile in fresh_recovery.get(key, [])]
+                for key in ("requested", "verified", "relaunch_attempted", "failed")
+            }
+            persisted["skipped"] = [
+                {
+                    "profile": str(entry.get("profile", "")),
+                    "kind": str(entry.get("kind", "")),
+                    "supervisor": str(entry.get("supervisor", "")),
+                    "reason": str(entry.get("reason", "")),
+                }
+                for entry in fresh_recovery.get("skipped", [])
+                if isinstance(entry, dict)
+            ]
+            # Serve/dashboard coverage (#92145). ``hermes serve`` hosts
+            # tui_gateway and is not a gateway profile, so neither the
+            # per-profile buckets above nor the fleet-version matrix can
+            # describe it. Persist its unit outcomes and any process that
+            # survived on the pre-update generation, or the receipt keeps
+            # claiming a clean recovery the operator's box contradicts.
+            serve_units = fresh_recovery.get("serve_units") or {}
+            persisted["serve_units"] = {
+                key: [str(unit) for unit in (serve_units.get(key) or [])]
+                for key in ("verified", "failed")
+            }
+            persisted["stale_runtimes"] = [
+                {
+                    "pid": int(entry.get("pid", 0) or 0),
+                    "kind": str(entry.get("kind", "")),
+                    "profile": str(entry.get("profile", "")),
+                    "supervisor": str(entry.get("supervisor", "")),
+                }
+                for entry in fresh_recovery.get("stale_runtimes", [])
+                if isinstance(entry, dict)
+            ]
+            result["fresh_recovery"] = persisted
+        self.data["gateway_restart"] = result
 
     def finalize(self, outcome: str) -> None:
         self.data["outcome"] = outcome
@@ -277,21 +321,40 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
 # Fleet version verification
 # ---------------------------------------------------------------------------
 
-def collect_fleet_versions() -> list[dict[str, Any]]:
+def collect_fleet_versions(
+    *, pre_restart_pids: Optional[list[int]] = None
+) -> list[dict[str, Any]]:
     """Snapshot every profile's gateway code identity vs. the current tree.
 
     Returns one entry per profile home that has a ``gateway_state.json``
-    with a live PID::
+    describing a gateway that is live — or that SHOULD be live::
 
         {"profile": str, "pid": int, "code_sha": str|None,
-         "code_version": str|None, "state": "current"|"stale"|"unknown"}
+         "code_version": str|None, "state": "current"|"stale"|"unknown"|"down"}
 
     ``stale``   — gateway stamped a code_sha that differs from the updated
                   checkout's HEAD (it is still serving pre-update modules).
     ``unknown`` — gateway predates the code-identity stamp (started before
                   this feature landed) or identity could not be resolved.
+    ``down``    — the gateway was ALIVE when this update started
+                  (``pre_restart_pids``), its runtime status still says
+                  running, but the PID is dead and no successor rewrote the
+                  record: the restart phase stopped it and nothing came
+                  back. Without this row a killed-and-never-replaced gateway
+                  produced NO entry at all and the matrix passed silently
+                  (Phase-1 verification gap, #88848/#74973 class).
+
+    Rollout safety: ``down`` requires membership in ``pre_restart_pids`` —
+    a stale state file from a long-dead gateway (machine reboot, manual
+    kill weeks ago) must NOT fail every future update. Callers that don't
+    have a pre-restart snapshot (``None``/empty) get the historical
+    behavior: dead PIDs are skipped.
     Never raises; a probe failure yields an empty list.
     """
+    # Runtime-status states that mean "this record does not describe a
+    # gateway that should be running now" — no down row for these.
+    _NOT_EXPECTED_STATES = {"stopped", "startup_failed"}
+    _pre_restart = {int(p) for p in (pre_restart_pids or []) if isinstance(p, int)}
     results: list[dict[str, Any]] = []
     try:
         from hermes_cli.build_info import get_code_identity
@@ -301,7 +364,7 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
         expected_sha = None
 
     try:
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
         from hermes_cli.profiles import (
             _get_default_hermes_home,
             _get_profiles_root,
@@ -319,6 +382,41 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
                     homes.append((entry.name, entry))
 
         for profile, home in homes:
+            # Prefer the gateway-owned control socket (#92091): a live
+            # `identify` answer is authoritative — no PID-reuse or stale-file
+            # heuristics. Fall back to gateway_state.json for gateways that
+            # predate the socket or whose socket didn't bind.
+            identity = None
+            try:
+                from gateway.control_socket import identify_gateway
+
+                identity = identify_gateway(home)
+            except Exception:
+                identity = None
+            if identity:
+                try:
+                    pid = int(identity.get("pid"))
+                except (TypeError, ValueError):
+                    pid = None
+                if pid is not None:
+                    code_sha = identity.get("code_sha")
+                    if not code_sha or not expected_sha:
+                        state = "unknown"
+                    elif str(code_sha) == str(expected_sha):
+                        state = "current"
+                    else:
+                        state = "stale"
+                    results.append(
+                        {
+                            "profile": profile,
+                            "pid": pid,
+                            "code_sha": str(code_sha) if code_sha else None,
+                            "code_version": identity.get("code_version"),
+                            "state": state,
+                            "source": "socket",
+                        }
+                    )
+                    continue
             status_path = home / "gateway_state.json"
             record = read_runtime_status(status_path)
             if not record:
@@ -328,7 +426,37 @@ def collect_fleet_versions() -> list[dict[str, Any]]:
                 pid = int(pid)
             except (TypeError, ValueError):
                 continue
-            if not _pid_exists(pid):
+            if not runtime_status_pid_is_live(record):
+                # Dead PID (or a live PID recycled by an unrelated process
+                # during the update's own churn — #93258): a DOWN row only
+                # when this exact pid was alive at update start AND the
+                # record still claims a running state — "the restart phase
+                # stopped it and nothing came back." Everything else (clean
+                # stop, startup failure, stale record from a long-dead
+                # gateway) keeps the historical no-row behavior so the
+                # feature's rollout can't false-positive.
+                #
+                # ``_pre_restart`` is a bare set of PIDs, not (pid, start_time)
+                # pairs, so a recycled PID from gateway A landing in B's stale
+                # record could still mislabel B as down if A's PID happened to
+                # be in the pre-restart snapshot — inherent to the snapshot's
+                # data model, not something this guard can fix on its own.
+                gw_state = record.get("gateway_state")
+                if (
+                    pid in _pre_restart
+                    and isinstance(gw_state, str)
+                    and gw_state
+                    and gw_state not in _NOT_EXPECTED_STATES
+                ):
+                    results.append(
+                        {
+                            "profile": profile,
+                            "pid": pid,
+                            "code_sha": None,
+                            "code_version": record.get("code_version"),
+                            "state": "down",
+                        }
+                    )
                 continue
             code_sha = record.get("code_sha")
             if not code_sha or not expected_sha:
@@ -355,15 +483,17 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
     """Print the post-update fleet version matrix.
 
     Returns True when at least one gateway is provably stale (still
-    serving pre-update code), so the caller can escalate. ``unknown``
-    entries are reported but do NOT fail the update: gateways started
-    before the code-identity stamp existed have no sha to compare, and
-    failing on them would turn this feature's own rollout into a
+    serving pre-update code) OR provably down (was running, killed by the
+    restart phase, nothing came back), so the caller can escalate.
+    ``unknown`` entries are reported but do NOT fail the update: gateways
+    started before the code-identity stamp existed have no sha to compare,
+    and failing on them would turn this feature's own rollout into a
     false-positive storm.
     """
     if not fleet:
         return False
     any_stale = False
+    any_down = False
     print()
     print("Fleet version check:")
     for entry in fleet:
@@ -377,14 +507,23 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
         elif state == "stale":
             any_stale = True
             print(f"  ✗ {profile} (pid {pid}) @ {short} — STALE (pre-update code)")
+        elif state == "down":
+            any_down = True
+            print(
+                f"  ✗ {profile} — DOWN (gateway was running before the "
+                f"update; pid {pid} is gone and nothing replaced it)"
+            )
         else:
             print(
                 f"  ? {profile} (pid {pid}) — version unknown "
                 "(gateway predates version stamping; restart to enable)"
             )
-    if any_stale:
+    if any_stale or any_down:
         print()
-        print("  ⚠ Stale gateways keep serving pre-update code until restarted:")
+        if any_stale:
+            print("  ⚠ Stale gateways keep serving pre-update code until restarted:")
+        if any_down:
+            print("  ⚠ Down gateways stopped serving messaging entirely — restart them:")
         print("      hermes gateway restart                # active profile")
         print("      hermes -p <profile> gateway restart   # named profile")
-    return any_stale
+    return any_stale or any_down

@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Dict, Optional
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -299,6 +299,129 @@ def test_always_approve_covers_foreground():
         # Foreground now sails through without another prompt.
         cu._request_approval("click", {"delivery_mode": "foreground"}, "run-C")
         assert len(calls) == 1
+    finally:
+        cu.set_approval_callback(None)
+
+
+def test_cli_yolo_real_state_bypasses_foreground_approval(monkeypatch):
+    from tools import approval
+    from tools.computer_use import tool as cu
+
+    calls = []
+
+    def cb(action, args, summary):
+        calls.append(action)
+        return "timeout"
+
+    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
+    cu.set_approval_callback(cb)
+    try:
+        assert cu._request_approval(
+            "type", {"delivery_mode": "foreground"}, "cli-yolo"
+        ) is None
+        assert calls == []
+    finally:
+        cu.set_approval_callback(None)
+
+
+def test_gateway_yolo_bypasses_request_with_different_db_session_id():
+    from tools import approval
+    from tools.computer_use import tool as cu
+
+    gateway_key = "agent:main:telegram:private:12345"
+    db_session_id = "db-sid-xyz"
+    token = approval.set_current_session_key(gateway_key)
+    calls = []
+
+    def cb(action, args, summary):
+        calls.append(action)
+        return "timeout"
+
+    cu.set_approval_callback(cb)
+    try:
+        approval.enable_session_yolo(gateway_key)
+        assert cu._request_approval(
+            "type", {"delivery_mode": "foreground"}, db_session_id
+        ) is None
+        assert calls == []
+    finally:
+        approval.disable_session_yolo(gateway_key)
+        approval.reset_current_session_key(token)
+        cu.set_approval_callback(None)
+
+
+def test_gateway_yolo_isolation_does_not_leak_between_sessions():
+    from tools import approval
+    from tools.computer_use import tool as cu
+
+    calls = []
+
+    def cb(action, args, summary):
+        calls.append(action)
+        return "deny"
+
+    cu.set_approval_callback(cb)
+    key_a = "agent:main:telegram:private:A"
+    key_b = "agent:main:telegram:private:B"
+    token_a = approval.set_current_session_key(key_a)
+    try:
+        approval.enable_session_yolo(key_a)
+        assert cu._request_approval(
+            "type", {"delivery_mode": "foreground"}, "db-A"
+        ) is None
+        token_b = approval.set_current_session_key(key_b)
+        try:
+            assert cu._request_approval(
+                "type", {"delivery_mode": "foreground"}, "db-B"
+            ) is not None
+            assert calls == ["type"]
+        finally:
+            approval.reset_current_session_key(token_b)
+    finally:
+        approval.disable_session_yolo(key_a)
+        approval.reset_current_session_key(token_a)
+        cu.set_approval_callback(None)
+
+
+def test_approvals_mode_off_bypasses_computer_use_request(monkeypatch):
+    from tools.computer_use import tool as cu
+
+    calls = []
+
+    def cb(action, args, summary):
+        calls.append(action)
+        return "timeout"
+
+    monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "off")
+    cu.set_approval_callback(cb)
+    try:
+        assert cu._request_approval(
+            "type", {"delivery_mode": "foreground"}, "mode-off"
+        ) is None
+        assert calls == []
+    finally:
+        cu.set_approval_callback(None)
+
+
+def test_bypass_resolution_error_uses_normal_approval_callback(monkeypatch):
+    from tools.computer_use import tool as cu
+
+    calls = []
+
+    def cb(action, args, summary):
+        calls.append(action)
+        return "deny"
+
+    monkeypatch.setattr(
+        "tools.approval.is_approval_bypass_active_for_session",
+        Mock(side_effect=RuntimeError("approval state unavailable")),
+    )
+    cu.set_approval_callback(cb)
+    try:
+        assert cu._request_approval(
+            "type", {"delivery_mode": "foreground"}, "resolution-error"
+        ) is not None
+        assert calls == ["type"]
     finally:
         cu.set_approval_callback(None)
 

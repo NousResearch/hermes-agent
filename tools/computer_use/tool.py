@@ -234,6 +234,30 @@ def _warn_bypass_escalation(session_id: str) -> None:
     )
 
 
+def _computer_use_approval_bypass_active(session_id: str) -> bool:
+    """Resolve canonical approval bypass across Hermes session identities.
+
+    Tool dispatch receives the DB session id, while gateway ``/yolo`` state is
+    keyed by the context-local gateway session key. Either exact identity may
+    represent the current logical run. Resolution failures return False so
+    callers fall back to their existing approval path.
+    """
+    try:
+        from tools.approval import (
+            get_current_session_key,
+            is_approval_bypass_active_for_session,
+        )
+
+        if is_approval_bypass_active_for_session(session_id):
+            return True
+        current_key = get_current_session_key(default="")
+        return bool(
+            current_key and is_approval_bypass_active_for_session(current_key)
+        )
+    except Exception:
+        return False
+
+
 def _cua_permission_mode(session_id: str) -> str:
     """Map Hermes's explicit approval bypass onto Cua's immutable mode.
 
@@ -247,22 +271,9 @@ def _cua_permission_mode(session_id: str) -> str:
     bypass in either means the user explicitly opted out of approvals for
     this run. Fails closed on any resolution error.
     """
-    try:
-        from tools.approval import (
-            get_current_session_key,
-            is_approval_bypass_active_for_session,
-        )
-
-        if is_approval_bypass_active_for_session(session_id):
-            _warn_bypass_escalation(session_id)
-            return "unrestricted"
-        current_key = get_current_session_key(default="")
-        if current_key and is_approval_bypass_active_for_session(current_key):
-            _warn_bypass_escalation(session_id)
-            return "unrestricted"
-    except Exception:
-        # Approval state must fail closed if it cannot be resolved.
-        pass
+    if _computer_use_approval_bypass_active(session_id):
+        _warn_bypass_escalation(session_id)
+        return "unrestricted"
     try:
         # Without YOLO, honor the configured mode (standard | bounded).
         # bounded requires computer_use.capability_manifest; the backend
@@ -608,6 +619,9 @@ def _request_approval(action: str, args: Dict[str, Any],
             return None
         if scope_key in _always_allow.get(session_id, set()):
             return None
+    if _computer_use_approval_bypass_active(session_id):
+        _warn_bypass_escalation(session_id)
+        return None
     cb = _approval_callback
     if cb is None:
         # No CLI approval wired — default allow. Gateway approval is handled

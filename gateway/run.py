@@ -20793,21 +20793,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
-            else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
+            # The reply-to prefix now lives in _prepare_inbound_message_text
+            # (moved for #101866) so the queued/steered follow-up path gets
+            # the same pointer as this idle path — see the comment there.
+            pass
 
         if "@" in message_text:
             try:
@@ -20917,6 +20907,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.warning("@ context reference expansion failed: %s", exc)
                 logger.debug("@ context reference expansion failure detail", exc_info=True)
+
+        if getattr(event, "reply_to_text", None) and getattr(event, "reply_to_message_id", None):
+            # Always inject the reply-to pointer — even when the quoted text
+            # already appears in history. The prefix isn't deduplication, it's
+            # disambiguation: it tells the agent *which* prior message the user
+            # is referencing. History can contain the same or similar text
+            # multiple times, and without an explicit pointer the agent has to
+            # guess (or answer for both subjects). Token overhead is minimal.
+            #
+            # Lives in _prepare_inbound_message_text — NOT in the idle-path
+            # caller — so queued/steered follow-ups get the same pointer.
+            # A Telegram message arriving mid-turn used to reach the agent
+            # bare: the queued path builds next_message from the pending
+            # event but never injected the prefix, so "yes, send the same"
+            # reply-quoted at draft A resolved to the newest draft B and
+            # went to the wrong recipient — the exact disambiguation
+            # failure the prefix exists for (#101866).
+            reply_snippet = event.reply_to_text[:500]
+            if getattr(event, "reply_to_is_own_message", False):
+                message_text = (
+                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+                    f"{message_text}"
+                )
+            else:
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         return message_text
 
@@ -32820,6 +32835,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
+                # Queued follow-ups used to skip the inbound log line entirely
+                # (#101866): an operator tracing "did the mid-turn message
+                # arrive, and with what reply context?" saw nothing for
+                # exactly the messages whose context mattered most. Log the
+                # same shape as the idle path's :21226 line, marked queued.
+                _q_reply_id = getattr(pending_event, "reply_to_message_id", None) if pending_event else None
+                _q_reply_txt = (
+                    (getattr(pending_event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+                    if pending_event else ""
+                )
+                logger.info(
+                    "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r queued=%s",
+                    getattr(source, "platform", None),
+                    getattr(source, "user_id", None),
+                    getattr(source, "chat_id", None),
+                    (next_message or "")[:80],
+                    _q_reply_id,
+                    _q_reply_txt,
+                    True,
+                )
 
                 # Clear the completed streaming marker from the prior logical
                 # turn so the recursive turn's streaming TTS is not suppressed

@@ -236,6 +236,13 @@ _OVERLOADED_PATTERNS = [
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
 _USAGE_LIMIT_PATTERNS = [
     "usage limit",
+    # Subscription-backed providers name the wall by its window rather than
+    # by the literal "usage limit": "You've hit your session limit · resets
+    # 2:20pm", "You've hit your weekly limit ...". Without these the error
+    # classified as `unknown` — no adaptive backoff, no Retry-After — or as a
+    # permanent billing failure.
+    "session limit",
+    "weekly limit",
     "quota",
     "limit exceeded",
     "key limit exceeded",
@@ -249,6 +256,9 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "reset in",
     "resets in",
     "reset after",
+    # Bare form with the time glued on: "resets 2:20pm" — matches neither
+    # "resets at" nor "resets in", so the wall read as permanent (billing).
+    "resets ",
     "available in",
     "wait",
     "requests remaining",
@@ -888,6 +898,11 @@ def classify_api_error(
                         pass
         if not _body_msg:
             _body_msg = str(body.get("message") or "").lower()
+        # FastAPI/Starlette proxies: {"detail": "..."}. Usually also present
+        # in str(error), but not every SDK (or wrapped re-raise) carries the
+        # body into the string form — pattern matching must not depend on it.
+        if not _body_msg:
+            _body_msg = _detail_message(body).lower()
     # Combine all message sources for pattern matching
     parts = [_raw_msg]
     if _body_msg and _body_msg not in _raw_msg:
@@ -1835,6 +1850,13 @@ def _classify_400(
             _args = body.get("errorArgs")
             if isinstance(_args, dict):
                 err_body_msg = str(_args.get("reason") or "").strip().lower()
+        # FastAPI/Starlette proxies (Open WebUI, LiteLLM, most self-hosted
+        # gateways) report as {"detail": "..."}.  Same failure mode as the
+        # litellm/Bedrock shape above: without this key a descriptive
+        # upstream rejection reads as blank and a healthy session is routed
+        # into the compression loop until it is auto-reset.
+        if not err_body_msg:
+            err_body_msg = _detail_message(body).lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
@@ -2191,6 +2213,63 @@ def _extract_error_code(body: dict) -> str:
     return ""
 
 
+def _detail_message(body: Any) -> str:
+    """Extract a FastAPI-style ``detail`` payload as flat text.
+
+    Starlette/FastAPI proxies — Open WebUI, LiteLLM, and most self-hosted
+    gateways in front of an OpenAI-compatible upstream — report errors as
+    ``{"detail": "..."}``.  None of the keys the rest of this module knows
+    (``error.message``, ``message``, ``errorMessage``, ``errorArgs.reason``)
+    are present, so a long, perfectly descriptive rejection looked *blank*
+    and tripped the "generic 400 on a large session = context overflow"
+    heuristic — pushing a healthy session into the compression loop until
+    it was auto-reset.  Read the carrier so the message length and content
+    are judged on what the proxy actually said.
+
+    Three shapes occur in the wild:
+      - ``str``  — the common case;
+      - ``dict`` — proxies nesting an OpenAI-ish object under ``detail``;
+      - ``list`` — FastAPI's own request-validation errors (``[{"msg": …}]``).
+    """
+    if not isinstance(body, dict):
+        return ""
+    detail = body.get("detail")
+    if isinstance(detail, str):
+        return detail.strip()
+    if isinstance(detail, dict):
+        for key in ("message", "msg", "detail", "reason", "error"):
+            value = detail.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+    if isinstance(detail, list):
+        parts = []
+        for item in detail:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, dict):
+                value = item.get("msg") or item.get("message") or ""
+                if not (isinstance(value, str) and value.strip()):
+                    continue
+                # Keep ``loc`` and ``type``: on their own FastAPI's messages
+                # ("field required") are short enough to read as a bare error
+                # downstream, while the field path and the validator name are
+                # exactly what makes the rejection actionable.
+                loc = item.get("loc")
+                where = ""
+                if isinstance(loc, (list, tuple)):
+                    where = ".".join(str(p) for p in loc if p is not None)
+                elif isinstance(loc, str):
+                    where = loc
+                kind = item.get("type")
+                text = f"{where}: {value.strip()}" if where else value.strip()
+                if isinstance(kind, str) and kind.strip():
+                    text = f"{text} ({kind.strip()})"
+                parts.append(text)
+        return "; ".join(parts)
+    return ""
+
+
 def _extract_message(error: Exception, body: dict) -> str:
     """Extract the most informative error message."""
     # Try structured body first
@@ -2213,6 +2292,10 @@ def _extract_message(error: Exception, body: dict) -> str:
             reason = args.get("reason", "")
             if isinstance(reason, str) and reason.strip():
                 return reason.strip()[:500]
+        # FastAPI/Starlette proxies (Open WebUI, LiteLLM): {"detail": "..."}
+        detail = _detail_message(body)
+        if detail:
+            return detail[:500]
     # Fallback to str(error)
     return str(error)[:500]
 

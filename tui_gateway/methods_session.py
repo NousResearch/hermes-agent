@@ -27,11 +27,19 @@ def _(rid, params: dict) -> dict:
     # workspace (see _ensure_session_db_row); otherwise it lands in "No
     # workspace" instead of whatever folder the desktop launched in.
     raw_cwd = str(params.get("cwd") or "").strip()
-    try:
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
-    except Exception:
-        explicit_cwd = False
-    resolved_cwd = _completion_cwd(params)
+    if raw_cwd and _effective_terminal_backend() != "local":
+        # A non-local backend's cwd (SSH, Docker, ...) lives on the backend's
+        # filesystem, not this host's — os.path.isdir() would always be False
+        # and silently discard a valid client-chosen workspace, falling back
+        # to the gateway's own launch dir (#83515).
+        explicit_cwd = True
+        resolved_cwd = raw_cwd
+    else:
+        try:
+            explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+        except Exception:
+            explicit_cwd = False
+        resolved_cwd = _completion_cwd(params)
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     _enable_gateway_prompts()
 

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from tools.budget_config import DEFAULT_MULTIMODAL_RESULT_SIZE_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -1518,6 +1519,104 @@ def _sanitize_consumer_codex_request(
     return sanitized
 
 
+def _bound_codex_tool_image_payloads(
+    request: dict[str, Any],
+    limit_chars: int = DEFAULT_MULTIMODAL_RESULT_SIZE_CHARS,
+) -> dict[str, Any]:
+    """Bound combined replayed tool images without mutating session history.
+
+    The per-result guard prevents any new multimodal tool result from crossing
+    ``limit_chars``. Several ordinary screenshots can still exceed that same
+    ceiling after the Responses adapter combines prior tool outputs into one
+    request, and old sessions may already contain a pathological screenshot.
+
+    Keep the newest tool-result images that fit the aggregate budget and
+    replace the rest in this request only. User-attached images are outside
+    ``function_call_output`` and are deliberately untouched.
+    """
+    if limit_chars <= 0:
+        return request
+
+    extra_body = request.get("extra_body")
+    if isinstance(extra_body, dict) and isinstance(extra_body.get("input"), list):
+        input_items = extra_body["input"]
+        input_location = "extra_body"
+    else:
+        input_items = request.get("input")
+        input_location = "top_level"
+    if not isinstance(input_items, list):
+        return request
+
+    images: list[tuple[int, int, int]] = []
+    for item_index, item in enumerate(input_items):
+        if not isinstance(item, dict) or item.get("type") != "function_call_output":
+            continue
+        output = item.get("output")
+        if not isinstance(output, list):
+            continue
+        for part_index, part in enumerate(output):
+            if not isinstance(part, dict) or part.get("type") != "input_image":
+                continue
+            image_url = part.get("image_url")
+            if isinstance(image_url, str):
+                images.append((item_index, part_index, len(image_url)))
+
+    total_chars = sum(size for _, _, size in images)
+    if total_chars <= limit_chars:
+        return request
+
+    remaining = limit_chars
+    stripped: set[tuple[int, int]] = set()
+    stripped_chars = 0
+    for item_index, part_index, size in reversed(images):
+        if size <= remaining:
+            remaining -= size
+        else:
+            stripped.add((item_index, part_index))
+            stripped_chars += size
+
+    bounded_input = list(input_items)
+    for item_index in {index for index, _ in stripped}:
+        item = input_items[item_index]
+        output = item["output"]
+        bounded_output: list[Any] = []
+        for part_index, part in enumerate(output):
+            if (item_index, part_index) in stripped:
+                bounded_output.append(
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "[Screenshot omitted from replay because combined tool "
+                            f"images exceeded the {limit_chars:,}-character safety limit.]"
+                        ),
+                    }
+                )
+            else:
+                bounded_output.append(part)
+        bounded_item = dict(item)
+        bounded_item["output"] = bounded_output
+        bounded_input[item_index] = bounded_item
+
+    bounded_request = dict(request)
+    if input_location == "extra_body":
+        bounded_extra_body = dict(extra_body)
+        bounded_extra_body["input"] = bounded_input
+        bounded_request["extra_body"] = bounded_extra_body
+    else:
+        bounded_request["input"] = bounded_input
+
+    logger.warning(
+        "Bound combined Codex tool-image replay: images=%d stripped=%d "
+        "inline_chars_before=%d stripped_chars=%d limit=%d",
+        len(images),
+        len(stripped),
+        total_chars,
+        stripped_chars,
+        limit_chars,
+    )
+    return bounded_request
+
+
 # Bulk request fields that carry the conversation payload. Everything else in
 # the request is scalar configuration the SDK transform handles in microseconds.
 _SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
@@ -1657,6 +1756,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 agent,
                 next_api_kwargs,
             )
+            stream_kwargs = _bound_codex_tool_image_payloads(stream_kwargs)
             stream_kwargs["stream"] = True
             stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
             return active_client.responses.create(**stream_kwargs)

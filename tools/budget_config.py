@@ -17,6 +17,10 @@ PINNED_THRESHOLDS: Dict[str, float] = {
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
+# Native screenshot results carry base64 image data and are intentionally
+# larger than text results. Keep the usual resized screenshot (~350K chars)
+# inline, but spill pathological/raw captures before they enter hot context.
+DEFAULT_MULTIMODAL_RESULT_SIZE_CHARS: int = 500_000
 
 # Tighter default per-result threshold for MCP tools (name prefix ``mcp_``).
 #

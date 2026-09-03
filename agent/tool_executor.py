@@ -47,6 +47,7 @@ from tools.terminal_tool import (
 )
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
+    maybe_persist_multimodal_tool_result,
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
@@ -1820,13 +1821,22 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tool_call_id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        if _is_multimodal_tool_result(function_result):
+            function_result = maybe_persist_multimodal_tool_result(
+                content=function_result,
+                tool_name=name,
+                tool_use_id=tool_call_id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
+        else:
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=name,
+                tool_use_id=tool_call_id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
@@ -2749,13 +2759,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call_id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        if _is_multimodal_tool_result(function_result):
+            function_result = maybe_persist_multimodal_tool_result(
+                content=function_result,
+                tool_name=function_name,
+                tool_use_id=tool_call_id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
+        else:
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=function_name,
+                tool_use_id=tool_call_id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
         _record_persisted_path_for_stub(agent, tool_call_id, function_result)
 
         # Discover subdirectory context files from tool arguments

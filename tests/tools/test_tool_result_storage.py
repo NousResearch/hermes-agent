@@ -1,5 +1,7 @@
 """Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
+import json
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +24,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     generate_preview,
     get_spillover_dir,
+    maybe_persist_multimodal_tool_result,
     maybe_persist_tool_result,
 )
 
@@ -262,6 +265,60 @@ class TestMaybePersistToolResult:
         )
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
+
+
+class TestMaybePersistMultimodalToolResult:
+    def test_oversized_browser_envelope_is_persisted_and_recoverable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "browser state\n" + ("A" * 760_000)},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,AAAA",
+                    },
+                },
+            ],
+            "text_summary": "browser state",
+            "meta": {"action": "cua_browser_state"},
+        }
+
+        bounded = maybe_persist_multimodal_tool_result(
+            content=result,
+            tool_name="computer_use",
+            tool_use_id="call_browser_large",
+            env=None,
+        )
+
+        assert isinstance(bounded, str)
+        assert PERSISTED_OUTPUT_TAG in bounded
+        assert len(bounded) < 10_000
+        spill_file = get_spillover_dir() / "call_browser_large.txt"
+        assert json.loads(spill_file.read_text(encoding="utf-8")) == result
+
+    def test_normal_multimodal_result_is_unchanged(self):
+        result = {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "browser state"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+            "text_summary": "browser state",
+        }
+
+        assert maybe_persist_multimodal_tool_result(
+            content=result,
+            tool_name="computer_use",
+            tool_use_id="call_browser_small",
+            env=None,
+        ) is result
 
 
 # ── enforce_turn_budget ───────────────────────────────────────────────

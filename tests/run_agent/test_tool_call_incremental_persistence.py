@@ -381,6 +381,51 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+@pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
+def test_multimodal_tool_result_is_bounded_before_hot_context(executor_mode):
+    agent = _make_agent()
+    tool_call = _mock_tool_call(name="browser_exec", call_id="large-browser")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    messages: list = []
+    raw_result = {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": "x" * 760_000},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ],
+        "text_summary": "browser result",
+    }
+    dispatch_patch = (
+        patch("run_agent.handle_function_call", return_value=raw_result)
+        if executor_mode == "sequential"
+        else patch.object(agent, "_invoke_tool", return_value=raw_result)
+    )
+
+    with (
+        dispatch_patch,
+        patch(
+            "agent.tool_executor.maybe_persist_multimodal_tool_result",
+            return_value="<persisted-output>bounded</persisted-output>",
+        ) as persist,
+    ):
+        if executor_mode == "sequential":
+            agent._execute_tool_calls_sequential(
+                assistant_message, messages, "task-1"
+            )
+        else:
+            agent._execute_tool_calls_concurrent(
+                assistant_message, messages, "task-1"
+            )
+
+    persist.assert_called_once()
+    assert persist.call_args.kwargs["content"] is raw_result
+    assert "<persisted-output>bounded</persisted-output>" in messages[-1]["content"]
+    assert len(messages[-1]["content"]) < 1_000
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 

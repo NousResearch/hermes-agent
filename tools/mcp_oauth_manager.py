@@ -525,6 +525,38 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
+            # Workaround #99984: Cloudflare's mcp.cloudflare.com AS metadata
+            # advertises authorization_response_iss_parameter_supported: true
+            # but never sends `iss` in practice. mcp 2.0.0's RFC 9207 validator
+            # rejects missing iss when advertised — correct per spec, but makes
+            # the built-in Cloudflare connector DOA. Strip the flag transiently
+            # so validate_authorization_response_iss allows the callback.
+            _saved_iss_flag = None
+            if (
+                self.context.oauth_metadata
+                and getattr(self.context.oauth_metadata, 'issuer', None)
+                and getattr(
+                    self.context.oauth_metadata,
+                    'authorization_response_iss_parameter_supported',
+                    False,
+                )
+            ):
+                issuer = str(self.context.oauth_metadata.issuer)
+                known_broken = ["https://mcp.cloudflare.com"]
+                if any(issuer.startswith(k) for k in known_broken):
+                    logger.debug(
+                        "MCP OAuth '%s': issuer %s advertises iss support "
+                        "but omits it in practice; suppressing flag "
+                        "transiently for #99984.",
+                        self._hermes_server_name, issuer,
+                    )
+                    _saved_iss_flag = (
+                        self.context.oauth_metadata
+                        .authorization_response_iss_parameter_supported
+                    )
+                    self.context.oauth_metadata \
+                        .authorization_response_iss_parameter_supported = False
+
             # Manually bridge the bidirectional generator protocol. httpx's
             # auth_flow driver (httpx._client._send_handling_auth) calls
             # ``auth_flow.asend(response)`` to feed HTTP responses back into
@@ -587,6 +619,20 @@ def _make_hermes_provider_class() -> Optional[type]:
                 self._persist_oauth_metadata_if_changed()
                 return
             finally:
+                # Restore the original flag so persisted metadata stays
+                # accurate.
+                if (
+                    _saved_iss_flag is not None
+                    and self.context.oauth_metadata is not None
+                    and hasattr(
+                        self.context.oauth_metadata,
+                        'authorization_response_iss_parameter_supported',
+                    )
+                ):
+                    self.context.oauth_metadata \
+                        .authorization_response_iss_parameter_supported = (
+                            _saved_iss_flag
+                        )
                 if resource_lock_released:
                     # Balance the SDK's surrounding ``async with`` even when
                     # HTTPX cancels or closes the flow while the resource

@@ -210,6 +210,64 @@ class TestTelegramClarifyCallback:
         assert adapter._clarify_state["cidC"] == "sk-auth"
 
 
+class TestTelegramUnknownCallback:
+    """Unknown and data-less callbacks must stop Telegram's spinner."""
+
+    @pytest.mark.asyncio
+    async def test_data_less_callback_is_acknowledged(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = None
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_unknown_callback_is_acknowledged(self):
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "stale_button"
+        query.message = MagicMock()
+        query.from_user = MagicMock()
+        query.answer = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_unknown_callback_plugin_dispatch_consumes_skips_ack(self):
+        """When a plugin dispatch claims the callback (returns True),
+        the adapter must NOT call query.answer() a second time. The
+        plugin handler is responsible for answering the callback itself
+        (forward-compatible with #78619)."""
+        adapter = _make_adapter()
+        query = AsyncMock()
+        query.data = "plugin:claimed"
+        query.message = MagicMock()
+        query.from_user = MagicMock()
+        query.answer = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        async def _fake_dispatch(q, d):
+            # Simulate plugin handler consuming the callback.
+            await q.answer()
+            return True
+
+        adapter._dispatch_plugin_callback_handlers = _fake_dispatch
+
+        await adapter._handle_callback_query(update, MagicMock())
+
+        # query.answer() called exactly once — by the plugin handler.
+        assert query.answer.await_count == 1
+
+
 # ===========================================================================
 # Base adapter fallback render — text numbered list
 # ===========================================================================

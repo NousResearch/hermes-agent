@@ -7475,7 +7475,10 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> None:
         """Handle inline keyboard button clicks."""
         query = update.callback_query
-        if not query or not query.data:
+        if not query:
+            return
+        if not query.data:
+            await query.answer()
             return
         data = query.data
         query_message = getattr(query, "message", None)
@@ -7814,6 +7817,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
+            # Forward-compatible with #78619: if a plugin dispatch path is
+            # present, gate the ack on its result so plugin handlers that
+            # already call query.answer() do not see a second answerCallbackQuery.
+            dispatch = getattr(self, "_dispatch_plugin_callback_handlers", None)
+            if dispatch is None:
+                await query.answer()
+            else:
+                if not await dispatch(query, data):
+                    await query.answer()
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))

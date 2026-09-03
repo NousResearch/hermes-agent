@@ -39,6 +39,49 @@ def _relative_time(ts):
     return _m()._relative_time(ts)
 
 
+def _live_session_db_holders() -> list[str]:
+    """Names of long-lived processes that keep state.db handles open.
+
+    VACUUM rewrites the DB inode; a live gateway/dashboard keeps stale
+    WAL/SHM descriptors and later returns disk I/O / malformed DB errors
+    until that process restarts (#84525).
+    """
+    holders: list[str] = []
+    try:
+        from gateway.status import is_gateway_running
+
+        if is_gateway_running(cleanup_stale=False):
+            holders.append("gateway")
+    except Exception:
+        pass
+    try:
+        from hermes_cli.dashboard_procs import _scan_dashboard_processes
+
+        if _scan_dashboard_processes():
+            holders.append("dashboard/serve")
+    except Exception:
+        pass
+    return holders
+
+
+def _refuse_vacuum_if_live_holders() -> bool:
+    """Print an error and return True when VACUUM must not run."""
+    holders = _live_session_db_holders()
+    if not holders:
+        return False
+    names = " and ".join(holders)
+    print(
+        f"Error: refusing VACUUM while {names} is running.\n"
+        "  VACUUM rewrites state.db; live services keep stale WAL/SHM handles\n"
+        "  and the desktop sidebar can go empty until those services restart.\n"
+        "  Stop them first, then re-run:\n"
+        "    hermes gateway stop\n"
+        "    # stop any `hermes dashboard` / `hermes serve` processes\n"
+        "    hermes sessions optimize"
+    )
+    return True
+
+
 def _session_browse_picker(sessions, session_db=None):
     return _m()._session_browse_picker(sessions, session_db=session_db)
 
@@ -1235,6 +1278,9 @@ def cmd_sessions(args, sessions_parser=None):
         return  # won't reach here after execvp
 
     elif action == "optimize":
+        if _refuse_vacuum_if_live_holders():
+            db.close()
+            return
         db_path = db.db_path
         before_mb = (
             os.path.getsize(db_path) / (1024 * 1024)
@@ -1303,6 +1349,9 @@ def cmd_sessions(args, sessions_parser=None):
         # torn down, and the final VACUUM needs a full second copy of the
         # file. Require headroom ≈ current file size to finish cleanly.
         do_vacuum = not getattr(args, "no_vacuum", False)
+        if do_vacuum and _refuse_vacuum_if_live_holders():
+            db.close()
+            return
         try:
             import shutil as _shutil
             free_bytes = _shutil.disk_usage(db_path.parent).free

@@ -3745,8 +3745,23 @@ def _record_output_history(text: str) -> None:
         _record_output_history_entry(line)
 
 
+def _visible_terminal_rows() -> int:
+    """Return the terminal's current visible row count (fallback 24)."""
+    try:
+        return shutil.get_terminal_size((80, 24)).lines
+    except Exception:
+        return 24
+
+
 def _replay_output_history() -> None:
-    """Repaint recent output above the prompt after a full screen clear."""
+    """Repaint recent output above the prompt after a full screen clear.
+
+    The pre-replay clear only wipes the *visible* viewport (CSI 2J), not the
+    scrollback, so re-printing the full ``_OUTPUT_HISTORY`` buffer on every
+    resize/redraw would append a duplicate copy of the history to scrollback
+    (#95375). Bound the replay to the visible terminal height so a redraw
+    restores the visible transcript without stacking duplicate blocks.
+    """
     global _OUTPUT_HISTORY_REPLAYING
     if not _OUTPUT_HISTORY_ENABLED or not _OUTPUT_HISTORY:
         return
@@ -3765,6 +3780,14 @@ def _replay_output_history() -> None:
                 lines = [entry]
             rendered_lines.extend(str(line) for line in lines)
         if rendered_lines:
+            # Only re-print what fits on the visible screen. The clear that
+            # precedes this replay wipes the viewport (CSI 2J) but not the
+            # scrollback, so re-printing the whole buffer would append a
+            # duplicate block to scrollback on every resize/redraw. Bounding
+            # the replay to the visible row count keeps the transcript intact
+            # without stacking duplicates.
+            visible_rows = max(1, _visible_terminal_rows())
+            rendered_lines = rendered_lines[-visible_rows:]
             # Replay after resize can contain hundreds of history lines. A
             # per-line prompt_toolkit print forces one synchronous terminal I/O
             # and redraw cycle per line, which users perceive as a waterfall of

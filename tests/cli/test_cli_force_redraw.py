@@ -391,6 +391,85 @@ class TestFirstSigwinchBaseline:
         assert getattr(bare_cli, "_last_resize_width", None) is None
 
 
+class TestReplayBoundedToVisibleHeight:
+    """Bug #95375: persistent_output replay must not append a duplicate block
+    to scrollback on resize/redraw.
+
+    The pre-replay clear only wipes the visible viewport (CSI 2J), not the
+    scrollback, so re-printing the full ``_OUTPUT_HISTORY`` buffer on every
+    resize/redraw stacked a fresh copy of the history below the old content.
+    The replay must be bounded to the terminal's visible row count.
+    """
+
+    def test_replay_emits_at_most_visible_rows(self, monkeypatch):
+        """With 200 history lines and a 10-row terminal, replay emits ~10 lines,
+        not all 200."""
+        cli_mod._configure_output_history(True, 200)
+        for i in range(200):
+            cli_mod._record_output_history(f"history line {i}")
+
+        printed = []
+        monkeypatch.setattr(cli_mod, "_pt_print", lambda x: printed.append(x))
+        monkeypatch.setattr(cli_mod, "_PT_ANSI", lambda t: t)
+        monkeypatch.setattr(
+            cli_mod.shutil,
+            "get_terminal_size",
+            lambda *a, **k: __import__("os").terminal_size((80, 10)),
+        )
+
+        cli_mod._replay_output_history()
+
+        assert len(printed) == 1, "replay must emit a single ANSI payload"
+        replayed = printed[0].split("\n")
+        assert len(replayed) <= 10, (
+            f"replay emitted {len(replayed)} lines, expected at most 10 "
+            "(visible terminal height) — full 200-line buffer was re-printed"
+        )
+        # The LAST visible lines are replayed, not the first.
+        assert replayed == [f"history line {i}" for i in range(190, 200)]
+
+    def test_replay_keeps_full_history_buffer(self, monkeypatch):
+        """Bounding the replay must NOT truncate _OUTPUT_HISTORY itself — the
+        deque keeps the full history for other consumers."""
+        cli_mod._configure_output_history(True, 200)
+        for i in range(200):
+            cli_mod._record_output_history(f"history line {i}")
+
+        monkeypatch.setattr(cli_mod, "_pt_print", lambda x: None)
+        monkeypatch.setattr(cli_mod, "_PT_ANSI", lambda t: t)
+        monkeypatch.setattr(
+            cli_mod.shutil,
+            "get_terminal_size",
+            lambda *a, **k: __import__("os").terminal_size((80, 10)),
+        )
+
+        cli_mod._replay_output_history()
+
+        assert len(cli_mod._OUTPUT_HISTORY) == 200, (
+            "_OUTPUT_HISTORY must keep the full buffer after a bounded replay"
+        )
+
+    def test_replay_emits_all_when_history_fits(self, monkeypatch):
+        """When the history is shorter than the visible height, everything is
+        replayed (no regression for small transcripts)."""
+        cli_mod._configure_output_history(True, 200)
+        for i in range(5):
+            cli_mod._record_output_history(f"line {i}")
+
+        printed = []
+        monkeypatch.setattr(cli_mod, "_pt_print", lambda x: printed.append(x))
+        monkeypatch.setattr(cli_mod, "_PT_ANSI", lambda t: t)
+        monkeypatch.setattr(
+            cli_mod.shutil,
+            "get_terminal_size",
+            lambda *a, **k: __import__("os").terminal_size((80, 10)),
+        )
+
+        cli_mod._replay_output_history()
+
+        assert printed[0].split("\n") == [f"line {i}" for i in range(5)]
+
+
 class TestFocusRegainRedraw:
     """Focus-in (CSI I) routes through the same recovery as Ctrl+L, rate-limited.
 

@@ -497,6 +497,8 @@ _GATE_ENV_KEYS = (
     "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS",
     "GATEWAY_ALLOWED_USERS",
+    "DISCORD_REACTIONS",
+    "DISCORD_AUTO_THREAD",
 )
 
 
@@ -578,7 +580,7 @@ def check_discord_requirements() -> bool:
     return True
 
 
-def _build_allowed_mentions():
+def _build_allowed_mentions(extra: Optional[dict] = None):
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
     Discord bots default to parsing ``@everyone``, ``@here``, role pings, and
@@ -595,21 +597,35 @@ def _build_allowed_mentions():
         DISCORD_ALLOW_MENTION_ROLES         default false  — @role pings
         DISCORD_ALLOW_MENTION_USERS         default true   — @user pings
         DISCORD_ALLOW_MENTION_REPLIED_USER  default true   — reply-ping author
+
+    Scope-aware via ``_scoped_gate_env`` (issue #72348's mechanism): a
+    secondary multiplex profile's own scope/``extra.allow_mentions`` is
+    authoritative, so it can't borrow the default profile's bridged
+    ``DISCORD_ALLOW_MENTION_*`` env — including a permissive
+    ``everyone=true`` that would otherwise let every profile's bot ping a
+    whole server.
     """
     if not DISCORD_AVAILABLE:
         return None
 
-    def _b(name: str, default: bool) -> bool:
-        raw = os.getenv(name, "").strip().lower()
-        if not raw:
-            return default
-        return raw in {"true", "1", "yes", "on"}
+    allow_mentions_extra = (extra or {}).get("allow_mentions")
+    if not isinstance(allow_mentions_extra, dict):
+        allow_mentions_extra = {}
+
+    def _b(name: str, extra_key: str, default: bool) -> bool:
+        raw = _scoped_gate_env(name, "").strip().lower()
+        if raw:
+            return raw in {"true", "1", "yes", "on"}
+        extra_raw = allow_mentions_extra.get(extra_key)
+        if extra_raw is not None:
+            return str(extra_raw).strip().lower() in {"true", "1", "yes", "on"}
+        return default
 
     return discord.AllowedMentions(
-        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", False),
-        roles=_b("DISCORD_ALLOW_MENTION_ROLES", False),
-        users=_b("DISCORD_ALLOW_MENTION_USERS", True),
-        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
+        everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),
+        roles=_b("DISCORD_ALLOW_MENTION_ROLES", "roles", False),
+        users=_b("DISCORD_ALLOW_MENTION_USERS", "users", True),
+        replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", "replied_user", True),
     )
 
 
@@ -1439,7 +1455,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
-                allowed_mentions=_build_allowed_mentions(),
+                allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure
@@ -3408,8 +3424,27 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Check if message reactions are enabled via config/env.
+
+        Uses the established per-profile gate accessor (issue #72348) so a
+        secondary multiplex profile's own scope/``extra.reactions`` is
+        authoritative instead of the default profile's bridged
+        ``DISCORD_REACTIONS``.
+        """
+        raw = self._gate_raw("reactions", "DISCORD_REACTIONS")
+        if raw is None:
+            return True
+        return str(raw).strip().lower() not in {"false", "0", "no"}
+
+    def _auto_thread_enabled(self) -> bool:
+        """Check if auto-threading is enabled via config/env (per-profile).
+
+        Same gate accessor as ``_reactions_enabled`` — see its docstring.
+        """
+        raw = self._gate_raw("auto_thread", "DISCORD_AUTO_THREAD")
+        if raw is None:
+            return True
+        return str(raw).strip().lower() in {"true", "1", "yes"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
@@ -8292,7 +8327,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
+            auto_thread = self._auto_thread_enabled()
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
@@ -10565,10 +10600,14 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         seeded_extra["free_response_channels"] = str(frc)
         if not _skip_env_bridge and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
             os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
-    if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
-        os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
-    if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
-        os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    if "auto_thread" in discord_cfg:
+        seeded_extra["auto_thread"] = str(discord_cfg["auto_thread"]).lower()
+        if not _skip_env_bridge and not os.getenv("DISCORD_AUTO_THREAD"):
+            os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "reactions" in discord_cfg:
+        seeded_extra["reactions"] = str(discord_cfg["reactions"]).lower()
+        if not _skip_env_bridge and not os.getenv("DISCORD_REACTIONS"):
+            os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
     backfill_cfg = discord_cfg.get("missed_message_backfill")
     if isinstance(backfill_cfg, dict):
         seeded_extra["missed_message_backfill"] = dict(backfill_cfg)
@@ -10610,13 +10649,14 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     # into unsafe modes (e.g. roles=true) if they actually want it.
     allow_mentions_cfg = discord_cfg.get("allow_mentions")
     if isinstance(allow_mentions_cfg, dict):
+        seeded_extra["allow_mentions"] = dict(allow_mentions_cfg)
         for yaml_key, env_key in (
             ("everyone", "DISCORD_ALLOW_MENTION_EVERYONE"),
             ("roles", "DISCORD_ALLOW_MENTION_ROLES"),
             ("users", "DISCORD_ALLOW_MENTION_USERS"),
             ("replied_user", "DISCORD_ALLOW_MENTION_REPLIED_USER"),
         ):
-            if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
+            if yaml_key in allow_mentions_cfg and not _skip_env_bridge and not os.getenv(env_key):
                 os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
     # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode.
     # YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".
@@ -10625,7 +10665,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         discord_cfg["reply_to_mode"] if "reply_to_mode" in discord_cfg
         else _discord_extra.get("reply_to_mode")
     )
-    if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
+    if _discord_rtm is not None and not _skip_env_bridge and not os.getenv("DISCORD_REPLY_TO_MODE"):
         _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
         os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
     _websocket_extra_cfg = discord_cfg.get("extra")

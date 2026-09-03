@@ -36,6 +36,13 @@ GATE_VARS = [
     "DISCORD_NO_THREAD_CHANNELS",
     "DISCORD_FREE_RESPONSE_CHANNELS",
     "DISCORD_ALLOW_BOTS",
+    "DISCORD_REACTIONS",
+    "DISCORD_AUTO_THREAD",
+    "DISCORD_ALLOW_MENTION_EVERYONE",
+    "DISCORD_ALLOW_MENTION_ROLES",
+    "DISCORD_ALLOW_MENTION_USERS",
+    "DISCORD_ALLOW_MENTION_REPLIED_USER",
+    "DISCORD_REPLY_TO_MODE",
 ]
 
 
@@ -372,6 +379,210 @@ class TestYamlBridgeSeeding:
 
         assert a._get_allowed_channels() == {"111"}
         assert b._get_allowed_channels() == {"222"}
+
+
+class TestReactionsAutoThreadGateIsolation:
+    """_reactions_enabled/_auto_thread_enabled must use the per-profile gate
+    accessor too (sibling gap next to the channel/user/role gates above)."""
+
+    def test_reactions_isolated(self):
+        a = _adapter()
+        b = _adapter()
+        _snapshot(a, {"DISCORD_REACTIONS": "false"})
+        _snapshot(b, {"DISCORD_REACTIONS": "true"})
+        assert a._reactions_enabled() is False
+        assert b._reactions_enabled() is True
+
+    def test_reactions_default_true_when_unset(self):
+        a = _adapter()
+        _snapshot(a, {})
+        assert a._reactions_enabled() is True
+
+    def test_reactions_extra_used_without_snapshot(self):
+        a = _adapter({"reactions": "false"})
+        assert a._reactions_enabled() is False
+
+    def test_process_env_does_not_leak_into_snapshotted_reactions(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_REACTIONS", "false")
+        b = _adapter({"reactions": "true"})
+        _snapshot(b, {"DISCORD_REACTIONS": "true"})
+        assert b._reactions_enabled() is True
+
+    def test_auto_thread_isolated(self):
+        a = _adapter()
+        b = _adapter()
+        _snapshot(a, {"DISCORD_AUTO_THREAD": "false"})
+        _snapshot(b, {"DISCORD_AUTO_THREAD": "true"})
+        assert a._auto_thread_enabled() is False
+        assert b._auto_thread_enabled() is True
+
+    def test_auto_thread_default_true_when_unset(self):
+        a = _adapter()
+        _snapshot(a, {})
+        assert a._auto_thread_enabled() is True
+
+    def test_process_env_does_not_leak_into_snapshotted_auto_thread(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        b = _adapter({"auto_thread": "true"})
+        _snapshot(b, {"DISCORD_AUTO_THREAD": "true"})
+        assert b._auto_thread_enabled() is True
+
+
+class TestAllowedMentionsScope:
+    """_build_allowed_mentions must not borrow the default profile's bridged
+    DISCORD_ALLOW_MENTION_* env — a permissive everyone=true leaking across
+    profiles lets every bot ping a whole server."""
+
+    def test_scoped_profile_falls_closed_to_safe_default(self, monkeypatch):
+        """Secondary profile scope has no override: safe defaults apply, the
+        default profile's bridged env is not consulted."""
+        discord_lib = pytest.importorskip(
+            "discord", reason="discord.py optional dep not installed"
+        )
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _build_allowed_mentions
+
+        monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "true")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            am = _build_allowed_mentions()
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert am.everyone is False
+
+    def test_scoped_profile_uses_own_extra(self, monkeypatch):
+        """A scoped secondary profile's own config.yaml allow_mentions block
+        is honored even though env is not consulted."""
+        discord_lib = pytest.importorskip(
+            "discord", reason="discord.py optional dep not installed"
+        )
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _build_allowed_mentions
+
+        monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "false")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            am = _build_allowed_mentions({"allow_mentions": {"everyone": True}})
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert am.everyone is True
+
+    def test_single_profile_env_precedence_unchanged(self, monkeypatch):
+        """Unscoped (single-profile) behavior is unaffected by the extra
+        parameter — legacy env-over-default precedence still applies."""
+        discord_lib = pytest.importorskip(
+            "discord", reason="discord.py optional dep not installed"
+        )
+        from agent import secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        monkeypatch.setenv("DISCORD_ALLOW_MENTION_EVERYONE", "true")
+        from plugins.platforms.discord.adapter import _build_allowed_mentions
+
+        am = _build_allowed_mentions()
+        assert am.everyone is True
+
+
+class TestReactionsAutoThreadMentionsReplyModeYamlBridge:
+    """_apply_yaml_config's env writes for auto_thread/reactions/
+    allow_mentions/reply_to_mode were unconditional (no _skip_env_bridge
+    check) — sibling gap next to the auth-gate keys TestYamlBridgeSeeding
+    already covers."""
+
+    def test_auto_thread_reactions_skip_env_bridge_when_scoped(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            seeded = _apply_yaml_config(
+                {}, {"auto_thread": False, "reactions": False},
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert seeded["auto_thread"] == "false"
+        assert seeded["reactions"] == "false"
+        assert os.getenv("DISCORD_AUTO_THREAD") is None
+        assert os.getenv("DISCORD_REACTIONS") is None
+
+    def test_auto_thread_reactions_bridge_env_single_profile(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+        monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        seeded = _apply_yaml_config({}, {"auto_thread": False, "reactions": False})
+
+        assert seeded["auto_thread"] == "false"
+        assert os.environ["DISCORD_AUTO_THREAD"] == "false"
+        assert os.environ["DISCORD_REACTIONS"] == "false"
+
+    def test_allow_mentions_skips_env_bridge_when_scoped(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        for var in (
+            "DISCORD_ALLOW_MENTION_EVERYONE",
+            "DISCORD_ALLOW_MENTION_ROLES",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            seeded = _apply_yaml_config(
+                {}, {"allow_mentions": {"everyone": True, "roles": True}},
+            )
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert seeded["allow_mentions"] == {"everyone": True, "roles": True}
+        assert os.getenv("DISCORD_ALLOW_MENTION_EVERYONE") is None
+        assert os.getenv("DISCORD_ALLOW_MENTION_ROLES") is None
+
+    def test_allow_mentions_bridges_env_single_profile(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        for var in (
+            "DISCORD_ALLOW_MENTION_EVERYONE",
+            "DISCORD_ALLOW_MENTION_ROLES",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        _apply_yaml_config({}, {"allow_mentions": {"everyone": True}})
+        assert os.environ["DISCORD_ALLOW_MENTION_EVERYONE"] == "true"
+
+    def test_reply_to_mode_skips_env_bridge_when_scoped(self, monkeypatch):
+        """The reverse-direction leak: a secondary profile's reply_to_mode
+        must not pollute env for the (unscoped) default profile to inherit."""
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        token = secret_scope.set_secret_scope({})
+        try:
+            _apply_yaml_config({}, {"reply_to_mode": "off"})
+        finally:
+            secret_scope.reset_secret_scope(token)
+
+        assert os.getenv("DISCORD_REPLY_TO_MODE") is None
+
+    def test_reply_to_mode_bridges_env_single_profile(self, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.discord.adapter import _apply_yaml_config
+
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+        _apply_yaml_config({}, {"reply_to_mode": "off"})
+        assert os.environ["DISCORD_REPLY_TO_MODE"] == "off"
 
 
 class TestTelegramGateIsolation:

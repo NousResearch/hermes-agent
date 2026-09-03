@@ -1,6 +1,7 @@
 """Tests for agent/verify/recipes.py — static run-recipe detection."""
 
 import json
+import os
 
 import pytest
 
@@ -131,6 +132,37 @@ class TestPythonDetection:
         recipe = detect_recipe(tmp_path)
         assert recipe.kind == "flask"
         assert recipe.port == 5000
+
+    def test_python_recipe_uses_project_venv_and_never_ambient_pip(self, tmp_path):
+        """A project venv must isolate verify bootstrap/test/start commands.
+
+        Regression for 2026-08-09: bare ``pip install -r requirements.txt``
+        ran inside Hermes' own venv, overwriting Hermes dependencies.
+        """
+        (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+        (tmp_path / "app.py").touch()
+        (tmp_path / "tests").mkdir()
+        venv_python = tmp_path / ".venv" / ("Scripts" if os.name == "nt" else "bin") / (
+            "python.exe" if os.name == "nt" else "python"
+        )
+        venv_python.parent.mkdir(parents=True)
+        venv_python.touch()
+
+        recipe = detect_recipe(tmp_path)
+        quoted = f'"{venv_python}"'
+        assert recipe.bootstrap == [f"{quoted} -m pip install -r requirements.txt"]
+        assert recipe.test == [f"{quoted} -m pytest"]
+        assert recipe.start == f"{quoted} -m flask --app app.py run --host 0.0.0.0 --port 5000"
+
+    def test_python_recipe_keeps_ambient_commands_without_venv(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("flask\n", encoding="utf-8")
+        (tmp_path / "app.py").touch()
+        (tmp_path / "tests").mkdir()
+
+        recipe = detect_recipe(tmp_path)
+        assert recipe.bootstrap == ["pip install -r requirements.txt"]
+        assert recipe.test == ["pytest"]
+        assert recipe.start == "python -m flask --app app.py run --host 0.0.0.0 --port 5000"
 
     def test_generic_python_uv(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")

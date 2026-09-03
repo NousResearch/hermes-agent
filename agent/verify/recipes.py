@@ -25,6 +25,7 @@ Layer ownership vs :mod:`agent.coding_context`:
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -256,6 +257,30 @@ def _detect_node_recipe(root: Path, pkg: dict[str, Any]) -> Recipe:
 # Python
 # ---------------------------------------------------------------------------
 
+def _venv_executable(root: Path) -> str | None:
+    """Return the path to a project-local virtualenv's python, if present.
+
+    🔴 2026-08-09 实测修复：`hermes verify` 的 Python recipe 默认用裸 ``pip`` /
+    ``python`` / ``pytest``，当 Hermes 自身跑在它自己的 venv 里时，这些裸命令
+    会解析到 Hermes venv 的可执行文件 → ``pip install -r requirements.txt``
+    把项目的依赖装进 Hermes venv，降级 Hermes 的固定版本依赖（本例 Pillow
+    12.3.0→12.2.0、httpx 0.28.1→0.27.2、cryptography 48.0.1→46.0.7，honcho/
+    mistral 的 httpx 约束一并被打破）。
+
+    带 ``.venv`` 的项目必须用 venv 自己的 python/pip，绝不污染调用方环境。
+    返回 venv python 的绝对路径（Windows 用 ``.venv/Scripts/python.exe``，
+    POSIX 用 ``.venv/bin/python``）；无 venv 时返回 None（沿用裸命令）。
+    """
+    venv_dir = root / ".venv"
+    if not venv_dir.is_dir():
+        return None
+    if os.name == "nt":
+        candidate = venv_dir / "Scripts" / "python.exe"
+    else:
+        candidate = venv_dir / "bin" / "python"
+    return str(candidate) if candidate.is_file() else None
+
+
 def _detect_python_recipe(root: Path) -> Recipe | None:
     pyproject = _read_text(root, "pyproject.toml")
     requirements = _read_text(root, "requirements.txt")
@@ -279,6 +304,23 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
     elif pyproject and not requirements:
         install = "pip install -e ."
 
+    # 🔴 venv 感知：项目自带 .venv 时，用 venv 的 python/pip，绝不污染调用方环境
+    venv_python = _venv_executable(root)
+    if venv_python and install.startswith("pip "):
+        # Preserve the detected pip arguments: requirements projects use
+        # ``-r requirements.txt`` while editable pyproject projects use ``-e .``.
+        install = f"\"{venv_python}\" -m {install}"
+    if venv_python:
+        pytest_cmd = f"\"{venv_python}\" -m pytest"
+        unittest_cmd = f"\"{venv_python}\" -m unittest discover"
+        python_cmd = f"\"{venv_python}\""
+        uvicorn_cmd = f"{python_cmd} -m uvicorn"
+    else:
+        pytest_cmd = "pytest"
+        unittest_cmd = "python -m unittest discover"
+        python_cmd = "python"
+        uvicorn_cmd = "uvicorn"
+
     has_tests = (root / "tests").exists()
 
     if is_django:
@@ -286,8 +328,8 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
             name="Django app",
             kind="django",
             bootstrap=[install],
-            test=["python manage.py test"],
-            start="python manage.py runserver 0.0.0.0:8000",
+            test=[f"{python_cmd} manage.py test"],
+            start=f"{python_cmd} manage.py runserver 0.0.0.0:8000",
             port=8000,
             evidence=_dedupe(
                 [
@@ -308,8 +350,8 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
             name="FastAPI app",
             kind="fastapi",
             bootstrap=[install],
-            test=["pytest"] if has_tests else [],
-            start=f"uvicorn {app_module} --host 0.0.0.0 --port 8000",
+            test=[pytest_cmd] if has_tests else [],
+            start=f"{uvicorn_cmd} {app_module} --host 0.0.0.0 --port 8000",
             port=8000,
             evidence=["Detected Python project", "Detected FastAPI/Uvicorn dependency"],
         )
@@ -325,8 +367,8 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
             name="Flask app",
             kind="flask",
             bootstrap=[install],
-            test=["pytest"] if has_tests else [],
-            start=f"flask --app {app_module} run --host 0.0.0.0 --port 5000",
+            test=[pytest_cmd] if has_tests else [],
+            start=f"{python_cmd} -m flask --app {app_module} run --host 0.0.0.0 --port 5000",
             port=5000,
             evidence=["Detected Python project", "Detected Flask dependency"],
         )
@@ -335,7 +377,7 @@ def _detect_python_recipe(root: Path) -> Recipe | None:
         name="Python project",
         kind="python",
         bootstrap=[install],
-        test=["pytest"] if has_tests else ["python -m unittest discover"],
+        test=[pytest_cmd] if has_tests else [unittest_cmd],
         evidence=["Detected Python project"],
     )
 

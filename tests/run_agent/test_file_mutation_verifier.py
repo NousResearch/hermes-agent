@@ -122,6 +122,29 @@ class TestRecordFileMutationResult:
         )
         assert agent._turn_failed_file_mutations == {}
 
+    def test_hermes_config_policy_redirect_does_not_create_stale_footer(self):
+        """A deliberately blocked config patch must not masquerade as an edit failure.
+
+        config.yaml is write-protected; the official recovery path is ``hermes
+        config set`` (a terminal command, not a file-mutation tool), so the
+        policy redirect cannot be superseded in this verifier's state machine.
+        """
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch",
+            {
+                "mode": "replace",
+                "path": "C:/Users/example/AppData/Local/hermes/config.yaml",
+                "old_string": "x",
+                "new_string": "y",
+            },
+            "Refusing to write to Hermes config file: C:/Users/example/AppData/Local/hermes/config.yaml\n"
+            "Agent cannot modify security-sensitive configuration. "
+            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.",
+            is_error=True,
+        )
+        assert agent._turn_failed_file_mutations == {}
+
     def test_failure_recorded(self):
         agent = _bare_agent()
         result = json.dumps({"success": False, "error": "Could not find old_string"})

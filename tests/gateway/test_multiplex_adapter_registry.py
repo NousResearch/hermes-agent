@@ -4,7 +4,7 @@ import asyncio
 import threading
 import time
 import types
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -259,6 +259,110 @@ def _install_secondary_reconnect_context(
 
 
 class TestSecondaryProfileFatalRecovery:
+    def test_slack_policy_binding_reuses_prepared_secret_scope(self, monkeypatch):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._profile_home_for_name = lambda _name: Path("/profiles/reviewer")
+        adapter = _FakeAdapter(config=PlatformConfig(extra={}))
+        adapter.platform = Platform.SLACK
+        hydration_flags = []
+
+        @contextmanager
+        def fake_scope(_profile_home, *, hydrate_secrets=True):
+            hydration_flags.append(hydrate_secrets)
+            yield
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+        monkeypatch.setattr("agent.secret_scope.get_secret", lambda *_args: "")
+
+        runner._bind_profile_adapter_bot_policy(adapter, "reviewer")
+
+        assert hydration_flags == [False]
+
+    def test_slack_policy_binding_captures_scoped_allowed_channels(
+        self, monkeypatch
+    ):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._profile_home_for_name = lambda _name: Path("/profiles/reviewer")
+        adapter = _FakeAdapter(config=PlatformConfig(extra={}))
+        adapter.platform = Platform.SLACK
+
+        @contextmanager
+        def fake_scope(_profile_home, *, hydrate_secrets=True):
+            assert hydrate_secrets is False
+            yield
+
+        def fake_secret(name, default=None):
+            return {
+                "SLACK_ALLOW_BOTS": "",
+                "SLACK_ALLOWED_CHANNELS": "C_REVIEW,C_PRIVATE",
+            }.get(name, default)
+
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+        monkeypatch.setattr("agent.secret_scope.get_secret", fake_secret)
+
+        runner._bind_profile_adapter_bot_policy(adapter, "reviewer")
+
+        assert adapter.config.extra["allowed_channels"] == "C_REVIEW,C_PRIVATE"
+
+    @pytest.mark.asyncio
+    async def test_secondary_reconnect_uses_recorded_served_home(self, monkeypatch):
+        runner = _secondary_recovery_runner()
+        exact_home = Path("/served/custom-reviewer")
+        runner._profile_homes = {"reviewer": exact_home}
+        replacement = _SecondaryRecoveryAdapter()
+        scoped_homes = []
+        _install_secondary_reconnect_context(
+            monkeypatch, runner, replacement, scoped_homes=scoped_homes
+        )
+        hydrated_homes = []
+
+        monkeypatch.setattr(
+            "hermes_cli.env_loader.hydrate_profile_secret_sources",
+            lambda home: hydrated_homes.append(Path(home)),
+        )
+
+        async def connect(adapter, platform, *, is_reconnect=False):
+            assert adapter is replacement
+            assert platform is Platform.DISCORD
+            assert is_reconnect is True
+            return True
+
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
+
+        await runner._run_secondary_profile_reconnect("reviewer", Platform.DISCORD)
+
+        assert hydrated_homes == [exact_home]
+        assert scoped_homes == [exact_home]
+        assert runner._profile_adapters["reviewer"][Platform.DISCORD] is replacement
+
+    @pytest.mark.asyncio
+    async def test_profile_platform_event_uses_off_loop_runtime_scope(
+        self, monkeypatch
+    ):
+        runner = _secondary_recovery_runner()
+        exact_home = Path("/served/custom-reviewer")
+        runner._profile_homes = {"reviewer": exact_home}
+        runner._handle_gateway_platform_event = AsyncMock(return_value=None)
+        scoped_homes = []
+
+        @asynccontextmanager
+        async def fake_async_scope(home):
+            scoped_homes.append(Path(home))
+            yield
+
+        def fail_sync_scope(*_args, **_kwargs):
+            raise AssertionError("platform events must not hydrate on the event loop")
+
+        monkeypatch.setattr(gateway_run, "_async_profile_runtime_scope", fake_async_scope)
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fail_sync_scope)
+        source = types.SimpleNamespace(profile=None)
+
+        await runner._make_profile_platform_event_handler("reviewer")({}, source)
+
+        assert source.profile == "reviewer"
+        assert scoped_homes == [exact_home]
+        runner._handle_gateway_platform_event.assert_awaited_once_with({}, source)
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("entry", ["startup", "reconnect"])
     async def test_secondary_hydrates_secrets_off_the_event_loop(self, monkeypatch, entry):
@@ -494,12 +598,10 @@ class TestSecondaryStartupFailureRecovery:
         assert Platform.DISCORD not in runner._profile_failed_platforms.get(
             "reviewer", {}
         )
-        # Reconnect must have re-entered the profile's own runtime scope.
-        assert Path("/profiles/reviewer") in scoped_homes
-        assert all(
-            path in (Path("/tmp/reviewer"), Path("/profiles/reviewer"))
-            for path in scoped_homes
-        )
+        # Reconnect must use the exact home recorded by startup. Rediscovery
+        # would silently switch custom served homes to /profiles/<name>.
+        assert scoped_homes
+        assert all(path == Path("/tmp/reviewer") for path in scoped_homes)
 
     @pytest.mark.asyncio
     async def test_raising_initial_connect_schedules_reconnect(

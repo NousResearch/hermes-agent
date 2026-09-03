@@ -32,7 +32,7 @@ class _ClarifyBypassAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "private"}
 
 
-def _event(text="custom answer"):
+def _event(text="custom answer", *, clarify_response_only=False):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
@@ -43,6 +43,11 @@ def _event(text="custom answer"):
             user_id="user1",
         ),
         message_id="msg1",
+        metadata=(
+            {"_hermes_clarify_response_only": "cl-active-session-test"}
+            if clarify_response_only
+            else {}
+        ),
     )
 
 

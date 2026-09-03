@@ -51,8 +51,12 @@ from plugins.platforms.slack.adapter import SlackAdapter
 from gateway.config import PlatformConfig
 
 
-def _make_adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-test-token")
+def _make_adapter(extra=None):
+    config = PlatformConfig(
+        enabled=True,
+        token="test-token",
+        extra=extra or {},
+    )
     adapter = SlackAdapter(config)
     adapter._app = MagicMock()
     adapter._bot_user_id = "U_BOT"
@@ -133,6 +137,76 @@ class TestSlackSendClarify:
                 action_ids = [element["action_id"] for element in block["elements"]]
                 assert len(action_ids) == len(set(action_ids))
 
+    @pytest.mark.asyncio
+    async def test_numbered_text_mode_lists_full_options_without_blocks(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter({"clarify_buttons": False})
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1234.5679"})
+
+        first = "Morning shift — arrive at 7:00 AM and stage equipment"
+        second = "Evening shift — arrive at 6:00 PM and close out after service"
+        cm.register("cid-text", "sk-text", "Choose a schedule", [first, second])
+        result = await adapter.send_clarify(
+            chat_id="C1",
+            question="Choose a schedule",
+            choices=[first, second],
+            clarify_id="cid-text",
+            session_key="sk-text",
+        )
+
+        assert result.success is True
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        assert "blocks" not in kwargs
+        assert "1." in kwargs["text"] and first in kwargs["text"]
+        assert "2." in kwargs["text"] and second in kwargs["text"]
+        assert "Reply with the number" in kwargs["text"]
+        assert cm.resolve_text_response_for_session("sk-text", "2") is True
+        with cm._lock:
+            assert cm._entries["cid-text"].response == second
+
+    def test_yaml_numbered_text_mode_reaches_slack_adapter(self, tmp_path, monkeypatch):
+        from gateway.config import Platform, load_gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    extra:\n"
+            "      clarify_buttons: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+        adapter = SlackAdapter(config.platforms[Platform.SLACK])
+
+        assert config.platforms[Platform.SLACK].extra["clarify_buttons"] is False
+        assert adapter._clarify_buttons_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_open_ended_no_buttons(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "9.9"})
+
+        result = await adapter.send_clarify(
+            chat_id="C1",
+            question="What should I name the branch?",
+            choices=None,
+            clarify_id="cid-open",
+            session_key="sk-open",
+        )
+
+        assert result.success is True
+        kwargs = mock_client.chat_postMessage.call_args[1]
+        # Open-ended delegates to the base plain-text path — no action blocks.
+        assert "blocks" not in kwargs or all(
+            b.get("type") != "actions" for b in (kwargs.get("blocks") or [])
+        )
+        assert "What should I name the branch?" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):
@@ -160,6 +234,63 @@ class TestSlackSendClarify:
 class TestSlackClarifyChoiceAction:
     def setup_method(self):
         _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_authorization_receives_originating_thread_id(self):
+        adapter = _make_adapter()
+        calls = []
+
+        def deny(user_id, chat_type, chat_id, **kwargs):
+            calls.append((user_id, chat_type, chat_id, kwargs))
+            return False
+
+        adapter.set_authorization_check(deny)
+        body = {
+            "team": {"id": "T1"},
+            "message": {"ts": "2.2", "thread_ts": "1.1", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "mallory", "id": "U_BAD"},
+        }
+
+        await adapter._handle_clarify_action(
+            AsyncMock(),
+            body,
+            {"action_id": "hermes_clarify_choice", "value": "cidAuth|0"},
+        )
+
+        assert calls == [("U_BAD", "group", "C1", {"thread_id": "1.1"})]
+
+    @pytest.mark.asyncio
+    async def test_authorization_callback_error_fails_closed_before_resolution(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter, auth_fn=lambda _source: True)
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("authorization unavailable")
+
+        adapter.set_authorization_check(explode)
+        cm.register("cid-error", "sk-error", "Pick", ["a", "b"])
+        adapter._clarify_resolved["2.3"] = False
+        body = {
+            "team": {"id": "T1"},
+            "message": {"ts": "2.3", "thread_ts": "1.1", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "mallory", "id": "U_BAD"},
+        }
+
+        await adapter._handle_clarify_action(
+            AsyncMock(),
+            body,
+            {"action_id": "hermes_clarify_choice", "value": "cid-error|0"},
+        )
+
+        with cm._lock:
+            entry = cm._entries["cid-error"]
+        assert entry.event.is_set() is False
+        assert entry.response is None
+        assert adapter._clarify_resolved["2.3"] is False
 
 
     @pytest.mark.asyncio

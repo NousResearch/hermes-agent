@@ -1,5 +1,6 @@
 """Regression tests for multiplex profile-aware own-policy authorization."""
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -130,6 +131,22 @@ def test_secondary_allowlist_dm_behavior_ignores_unauthorized(monkeypatch):
         profile="coder",
     ) == "ignore"
     assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == "ignore"
+
+
+def test_scoped_auth_env_does_not_inherit_process_allowlist(monkeypatch):
+    """An empty secondary scope must not trust another profile's process env."""
+    from agent import secret_scope
+    from gateway.authz_mixin import _auth_env
+
+    monkeypatch.setenv("SLACK_ALLOWED_USERS", "U_PRIMARY_ONLY")
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({})
+    try:
+        assert _auth_env("SLACK_ALLOWED_USERS") == ""
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
 
 
 def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):

@@ -196,6 +196,8 @@ def get_pending_for_session(
             entry = _entries.get(cid)
             if entry is None:
                 continue
+            if entry.event.is_set():
+                continue
             if include_choice_prompts or entry.awaiting_text:
                 return entry
         return None
@@ -423,6 +425,26 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     if not selected:
         return None
     return _json.dumps(selected, ensure_ascii=False)
+
+
+def resolve_text_response_for_clarify(
+    clarify_id: str,
+    session_key: str,
+    response: str,
+) -> bool:
+    """Resolve one exact pending clarify, rejecting stale prompt identities."""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or entry.session_key != session_key or entry.event.is_set():
+            return False
+
+        coerced = _coerce_text_response(entry, response)
+        if coerced is None:
+            return False
+
+        entry.response = coerced
+        entry.event.set()
+        return True
 
 
 def attempt_text_response_for_session(session_key: str, response: str) -> str:

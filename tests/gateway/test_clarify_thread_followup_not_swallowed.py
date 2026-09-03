@@ -57,7 +57,7 @@ class _FellThroughIntercept(Exception):
     """Sentinel: _handle_message got PAST the clarify text-intercept."""
 
 
-def _event(text):
+def _event(text, *, clarify_response_id=None):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
@@ -69,6 +69,9 @@ def _event(text):
             thread_id="1111.2222",
         ),
         message_id="msg1",
+        metadata={"_hermes_clarify_response_only": clarify_response_id}
+        if clarify_response_id
+        else {},
     )
 
 

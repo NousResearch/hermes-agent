@@ -4054,15 +4054,32 @@ class BasePlatformAdapter(ABC):
         explicit ``is True`` must not have a truthy non-boolean (a status
         string, a sentinel object) silently promoted to an authorization.
         """
-        if not user_id or self._authorization_check is None:
+        authorization_check = getattr(self, "_authorization_check", None)
+        if not user_id or authorization_check is None:
             return None
         extra: Dict[str, Any] = {}
         if is_bot:
             extra["is_bot"] = True
         if thread_id is not None:
             extra["thread_id"] = thread_id
+        call_extra = extra
+        if extra:
+            try:
+                parameters = inspect.signature(authorization_check).parameters
+                accepts_kwargs = any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                )
+                if not accepts_kwargs:
+                    call_extra = {
+                        key: value for key, value in extra.items() if key in parameters
+                    }
+            except (TypeError, ValueError):
+                # Some extension/builtin callables do not expose signatures.
+                # Preserve the existing direct-call behavior for those.
+                pass
         try:
-            result = self._authorization_check(user_id, chat_type, chat_id, **extra)
+            result = authorization_check(user_id, chat_type, chat_id, **call_extra)
             if result is True:
                 return True
             if result is False:
@@ -6515,10 +6532,14 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     _has_text_clarify = False
 
-                if _has_text_clarify:
+                _clarify_response_only = bool(
+                    (event.metadata or {}).get("_hermes_clarify_response_only")
+                )
+                if _has_text_clarify or _clarify_response_only:
                     logger.debug(
-                        "[%s] Routing message to clarify text-intercept for %s",
-                        self.name, session_key,
+                        "[%s] Routing message to clarify text-intercept/drop for %s",
+                        self.name,
+                        session_key,
                     )
                     try:
                         _thread_meta = _thread_metadata_for_source(

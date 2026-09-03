@@ -623,7 +623,23 @@ class GatewayAuthorizationMixin:
         }
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and _platform_gate_env(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            allow_bots_policy: Optional[str] = None
+            if source.platform == Platform.SLACK:
+                # Slack YAML bot policy is profile-local adapter state. Consult
+                # the exact transport that admitted this event so multiplex
+                # profiles cannot disagree between intake and final auth.
+                try:
+                    adapter = self._adapter_for_source(source)
+                    policy_resolver = getattr(adapter, "_slack_allow_bots", None)
+                    if callable(policy_resolver):
+                        allow_bots_policy = str(policy_resolver()).lower()
+                except Exception:
+                    allow_bots_policy = "none"
+            if allow_bots_policy is None:
+                allow_bots_policy = _auth_env(
+                    allow_bots_var or "", "none"
+                ).lower()
+            if allow_bots_policy in {"mentions", "all"}:
                 return True
 
         if not user_id:

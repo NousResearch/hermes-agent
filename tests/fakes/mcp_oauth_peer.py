@@ -20,10 +20,32 @@ class OAuthFailurePoint(str, Enum):
     MCP_INITIALIZATION = "mcp_initialization"
 
 
+class OAuthFailureKind(str, Enum):
+    DEFINITIVE = "definitive"
+    INDETERMINATE = "indeterminate"
+
+
+class ProbeOutcome(str, Enum):
+    AUTHENTICATED = "authenticated"
+    REJECTED = "rejected"
+    INDETERMINATE = "indeterminate"
+
+
 class InjectedOAuthFailure(RuntimeError):
-    def __init__(self, point: OAuthFailurePoint, events: tuple[str, ...]):
+    def __init__(
+        self,
+        point: OAuthFailurePoint,
+        events: tuple[str, ...],
+        *,
+        kind: OAuthFailureKind | None = None,
+        retry_after: float | None = None,
+        probe_outcome: ProbeOutcome | None = None,
+    ):
         self.point = point
         self.events = events
+        self.kind = kind
+        self.retry_after = retry_after
+        self.probe_outcome = probe_outcome
         super().__init__(f"injected OAuth failure after {point.value}")
 
 
@@ -74,7 +96,7 @@ def _stable_json(payload: dict) -> bytes:
 
 
 def seed_old_oauth_state(home: Path, server_name: str) -> OAuthArtifactState:
-    storage = HermesTokenStorage(server_name, hermes_home=home)
+    storage = HermesTokenStorage(server_name, hermes_home=Path(home).resolve())
     paths = (storage._tokens_path(), storage._client_info_path(), storage._meta_path())
     payloads = tuple(_stable_json(_OLD_DOCUMENTS[key]) for key in ("token", "client", "metadata"))
     paths[0].parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +108,7 @@ def seed_old_oauth_state(home: Path, server_name: str) -> OAuthArtifactState:
 
 
 def capture_oauth_state(home: Path, server_name: str) -> OAuthArtifactState:
-    storage = HermesTokenStorage(server_name, hermes_home=home)
+    storage = HermesTokenStorage(server_name, hermes_home=Path(home).resolve())
 
     def read(path: Path) -> bytes | None:
         try:
@@ -126,9 +148,25 @@ class _DumpableOAuthRecord:
         return dict(self.payload)
 
 
+_KINDED_POINTS = {
+    OAuthFailurePoint.PROTECTED_RESOURCE_DISCOVERY,
+    OAuthFailurePoint.AUTHORIZATION_SERVER_DISCOVERY,
+    OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION,
+    OAuthFailurePoint.TOKEN_EXCHANGE,
+}
+
+
 class FakeOAuthMCPPeer:
-    def __init__(self, failure_point: OAuthFailurePoint | None):
+    def __init__(
+        self,
+        failure_point: OAuthFailurePoint | None,
+        *,
+        kind: OAuthFailureKind = OAuthFailureKind.DEFINITIVE,
+        probe_outcome: ProbeOutcome = ProbeOutcome.REJECTED,
+    ):
         self.failure_point = failure_point
+        self.kind = kind
+        self.probe_outcome = probe_outcome
         self.completed_events: list[str] = []
         self.connect_timeouts: list[float | None] = []
         self._new_token = _DumpableOAuthRecord(
@@ -180,8 +218,21 @@ class FakeOAuthMCPPeer:
         del config, details
         self.connect_timeouts.append(connect_timeout)
         storage = HermesTokenStorage(server_name)
+        if self.failure_point is None:
+            for point in OAuthFailurePoint:
+                self._complete(point, storage)
+            return [("fake_tool", "Deterministic fake MCP tool")]
         for point in OAuthFailurePoint:
             self._complete(point, storage)
             if point is self.failure_point:
-                raise InjectedOAuthFailure(point, tuple(self.completed_events))
+                raise self._injected_failure(point)
         return [("fake_tool", "Deterministic fake MCP tool")]
+
+    def _injected_failure(self, point: OAuthFailurePoint) -> InjectedOAuthFailure:
+        events = tuple(self.completed_events)
+        if point in _KINDED_POINTS:
+            retry_after = 1.0 if self.kind is OAuthFailureKind.INDETERMINATE else None
+            return InjectedOAuthFailure(point, events, kind=self.kind, retry_after=retry_after)
+        if point is OAuthFailurePoint.MCP_INITIALIZATION:
+            return InjectedOAuthFailure(point, events, kind=None, probe_outcome=self.probe_outcome)
+        return InjectedOAuthFailure(point, events)

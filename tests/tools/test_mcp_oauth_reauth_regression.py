@@ -218,3 +218,57 @@ def test_dashboard_failed_reauth_preserves_active_state(
             surface="dashboard",
             failure_point=failure_point,
         )
+
+
+from tests.fakes.mcp_oauth_peer import OAuthFailureKind, ProbeOutcome
+
+_PRE_TOKEN_KINDED = [
+    OAuthFailurePoint.PROTECTED_RESOURCE_DISCOVERY,
+    OAuthFailurePoint.AUTHORIZATION_SERVER_DISCOVERY,
+    OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION,
+    OAuthFailurePoint.TOKEN_EXCHANGE,
+]
+
+
+@pytest.mark.parametrize("failure_point", _PRE_TOKEN_KINDED)
+def test_pre_token_failure_carries_default_definitive_kind(tmp_path, monkeypatch, failure_point):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(failure_point)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert caught.value.kind is OAuthFailureKind.DEFINITIVE
+    assert caught.value.retry_after is None
+
+
+@pytest.mark.parametrize("failure_point", _PRE_TOKEN_KINDED)
+def test_pre_token_failure_reports_indeterminate_kind_and_retry_after(tmp_path, monkeypatch, failure_point):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(failure_point, kind=OAuthFailureKind.INDETERMINATE)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert caught.value.kind is OAuthFailureKind.INDETERMINATE
+    assert isinstance(caught.value.retry_after, (int, float))
+
+
+def test_authenticated_probe_returns_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(None)
+    assert peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"}) == [("fake_tool", "Deterministic fake MCP tool")]
+
+
+@pytest.mark.parametrize("outcome", [ProbeOutcome.REJECTED, ProbeOutcome.INDETERMINATE])
+def test_probe_point_reports_requested_failing_outcome(tmp_path, monkeypatch, outcome):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(OAuthFailurePoint.MCP_INITIALIZATION, probe_outcome=outcome)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert caught.value.probe_outcome is outcome
+
+
+def test_publication_and_callback_points_take_no_kind(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    for point in (OAuthFailurePoint.AUTHORIZATION_URL_PUBLICATION, OAuthFailurePoint.CALLBACK_RECEIPT):
+        peer = FakeOAuthMCPPeer(point)
+        with pytest.raises(InjectedOAuthFailure) as caught:
+            peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+        assert caught.value.kind is None

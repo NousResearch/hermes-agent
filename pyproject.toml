@@ -212,7 +212,10 @@ voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
   "faster-whisper==1.2.1",
   "sounddevice==0.5.5",
-  "numpy==2.4.3",
+  # Range, not an exact pin: numpy here only floors/ceils the ABI the engines
+  # need. In sealed-venv deployments (Docker) the venv ships its own locked
+  # numpy, and the append-only lazy target can never override it (#102304).
+  "numpy>=2.4.3,<3",
 ]
 # "Hey Hermes" wake word — on-device hotword detection. All engines are
 # optional; openWakeWord (ONNX) is the free default, sherpa-onnx adds
@@ -227,7 +230,8 @@ wake = [
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
-  "numpy==2.4.3",
+  # Range for the same sealed-venv reason as [voice] above (#102304).
+  "numpy>=2.4.3,<3",
   # openWakeWord's onnx embedding model scores near-zero on macOS ARM64
   # (dscripka/openWakeWord#336), so the wake word runs on tflite there.
   # Upstream declares tflite-runtime for Linux only; ai-edge-litert is the

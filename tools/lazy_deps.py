@@ -143,10 +143,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
     "stt.mistral": ("mistralai==2.4.8",),
+    # numpy uses a floor+ceiling range, not an exact pin: the Docker image's
+    # sealed venv ships its own locked numpy (2.5.x), and an append-only
+    # durable target can never win a version conflict against the venv (#102304).
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
     # SILK voice-note decoding (WeChat/QQ .silk voice messages). pilk is a
     # small silk-v3 codec binding; installed on first .silk transcription.
@@ -162,6 +165,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # It lives in its own feature because lazy-dep specs cannot carry PEP 508
     # environment markers (_spec_is_safe rejects ";"), so the platform gate is
     # applied by the caller instead.
+    #
+    # numpy uses a floor+ceiling range like stt.faster_whisper above: none of
+    # the engines need an exact numpy build, and an exact pin is unsatisfiable
+    # whenever the host venv already ships a newer locked numpy (sealed Docker
+    # venv + append-only durable target, #102304).
     "wake.openwakeword.tflite": (
         "ai-edge-litert==2.1.6",
     ),
@@ -169,7 +177,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "openwakeword==0.6.0",
         "onnxruntime==1.27.0",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
     # Open-vocabulary keyword spotting: any typed phrase, zero training.
     # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
@@ -178,12 +186,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sherpa-onnx==1.13.4",
         "sentencepiece==0.2.2",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
     "wake.porcupine": (
         "pvporcupine==4.0.3",
         "sounddevice==0.5.5",
-        "numpy==2.4.3",
+        "numpy>=2.4.3,<3",
     ),
 
     # ─── Image generation backends ─────────────────────────────────────────

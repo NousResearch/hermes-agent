@@ -444,6 +444,14 @@ class TestProtectedInstructionFiles:
         assert target.read_text(encoding="utf-8") == "approved content"
         assert len(approvals["calls"]) == 1
 
+    def test_prompt_shows_write_content_preview(self, tmp_path, approvals):
+        target = tmp_path / "AGENTS.md"
+        approvals["answer"] = "deny"
+        self._write(target, "persist these rules")
+        call = approvals["calls"][0]
+        assert str(target) in call["command"]
+        assert "persist these rules" in call["command"]
+
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
         import tools.approval as A
@@ -633,6 +641,26 @@ class TestProtectedInstructionFiles:
         res = json.loads(patch_tool(mode="patch", patch=patch))
         assert not res.get("error"), res
         assert agents.read_text(encoding="utf-8") == "updated rules\n"
+
+    def test_patch_prompt_shows_patch_preview(self, tmp_path, approvals):
+        from tools.file_tools import patch_tool
+        import json
+        agents = tmp_path / "AGENTS.md"
+        agents.write_text("rules\n", encoding="utf-8")
+        patch = (
+            "*** Begin Patch\n"
+            f"*** Update File: {agents}\n"
+            "@@\n"
+            "-rules\n"
+            "+updated rules\n"
+            "*** End Patch"
+        )
+        approvals["answer"] = "deny"
+        res = json.loads(patch_tool(mode="patch", patch=patch))
+        assert res.get("error") and "BLOCKED" in res["error"]
+        call = approvals["calls"][0]
+        assert "*** Begin Patch" in call["command"]
+        assert "+updated rules" in call["command"]
 
     # ---- gateway round-trip ----------------------------------------------
 

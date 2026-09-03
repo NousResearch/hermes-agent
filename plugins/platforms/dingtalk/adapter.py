@@ -1835,29 +1835,66 @@ def _manual_credential_entry(prompt, save_env_value, print_success) -> None:
     print_success("DingTalk credentials saved")
 
 
+def _profile_scoped_config_load() -> bool:
+    """True when running inside a multiplexed secondary profile's scope.
+
+    Secondary-profile adapters are constructed and connected inside
+    ``_profile_runtime_scope`` (secret scope installed + multiplex active) —
+    the same discriminator the Buzz/Discord/Telegram/WhatsApp/LINE adapters
+    use for this bug class (#98738 / #72348 / #80099). The DEFAULT profile
+    under multiplexing runs unscoped: ``os.environ`` holds its own bridge
+    output there and keeps its legacy precedence.
+    """
+    try:
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+        return bool(is_multiplex_active() and current_secret_scope() is not None)
+    except Exception:
+        return False
+
+
 def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
-    """Translate config.yaml dingtalk: keys into DINGTALK_* env vars.
+    """Translate config.yaml dingtalk: keys into DINGTALK_* env vars and
+    PlatformConfig.extra entries.
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     dingtalk_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML (each assignment guarded by not os.getenv(...)).
-    Returns None — everything flows through env.
+    take precedence over YAML (each assignment guarded by not os.getenv(...))
+    for single-profile deployments.
+
+    Returns the bridged values as a dict, merged into this profile's
+    PlatformConfig.extra by the caller — every one of these fields is
+    already read extra-first (_dingtalk_require_mention/
+    _dingtalk_free_response_chats/_dingtalk_allowed_chats/
+    _compile_mention_patterns/_load_allowed_users), so seeding extra is both
+    how a scoped secondary profile's own YAML value reaches its adapter AND
+    how the process-global env write below is made skippable under
+    multiplex without losing single-profile behavior.
     """
     import json as _json
-    if "require_mention" in dingtalk_cfg and not os.getenv("DINGTALK_REQUIRE_MENTION"):
-        os.environ["DINGTALK_REQUIRE_MENTION"] = str(dingtalk_cfg["require_mention"]).lower()
-    if "mention_patterns" in dingtalk_cfg and not os.getenv("DINGTALK_MENTION_PATTERNS"):
-        os.environ["DINGTALK_MENTION_PATTERNS"] = _json.dumps(dingtalk_cfg["mention_patterns"])
+
+    _skip_env_bridge = _profile_scoped_config_load()
+    seeded: dict = {}
+    if "require_mention" in dingtalk_cfg:
+        seeded["require_mention"] = dingtalk_cfg["require_mention"]
+        if not _skip_env_bridge and not os.getenv("DINGTALK_REQUIRE_MENTION"):
+            os.environ["DINGTALK_REQUIRE_MENTION"] = str(dingtalk_cfg["require_mention"]).lower()
+    if "mention_patterns" in dingtalk_cfg:
+        seeded["mention_patterns"] = dingtalk_cfg["mention_patterns"]
+        if not _skip_env_bridge and not os.getenv("DINGTALK_MENTION_PATTERNS"):
+            os.environ["DINGTALK_MENTION_PATTERNS"] = _json.dumps(dingtalk_cfg["mention_patterns"])
     frc = dingtalk_cfg.get("free_response_chats")
-    if frc is not None and not os.getenv("DINGTALK_FREE_RESPONSE_CHATS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = str(frc)
+    if frc is not None:
+        seeded["free_response_chats"] = frc
+        if not _skip_env_bridge and not os.getenv("DINGTALK_FREE_RESPONSE_CHATS"):
+            _frc = ",".join(str(v) for v in frc) if isinstance(frc, list) else str(frc)
+            os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = _frc
     ac = dingtalk_cfg.get("allowed_chats")
-    if ac is not None and not os.getenv("DINGTALK_ALLOWED_CHATS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
+    if ac is not None:
+        seeded["allowed_chats"] = ac
+        if not _skip_env_bridge and not os.getenv("DINGTALK_ALLOWED_CHATS"):
+            _ac = ",".join(str(v) for v in ac) if isinstance(ac, list) else str(ac)
+            os.environ["DINGTALK_ALLOWED_CHATS"] = _ac
     allowed = dingtalk_cfg.get("allowed_users")
     if allowed is None:
         # Fall back to the documented nested paths (#44928). The docs
@@ -1884,11 +1921,12 @@ def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
                 if isinstance(_dt_extra, dict) and _dt_extra.get("allowed_users") is not None:
                     allowed = _dt_extra.get("allowed_users")
                     break
-    if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
-        if isinstance(allowed, list):
-            allowed = ",".join(str(v) for v in allowed)
-        os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
-    return None
+    if allowed is not None:
+        seeded["allowed_users"] = allowed
+        if not _skip_env_bridge and not os.getenv("DINGTALK_ALLOWED_USERS"):
+            _allowed = ",".join(str(v) for v in allowed) if isinstance(allowed, list) else str(allowed)
+            os.environ["DINGTALK_ALLOWED_USERS"] = _allowed
+    return seeded or None
 
 
 def _is_connected(config) -> bool:

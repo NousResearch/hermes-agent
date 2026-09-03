@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import os
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -765,3 +766,91 @@ class TestDingTalkAdapterAICards:
         mock_card_sdk.deliver_card_with_options_async.assert_called_once()
         mock_card_sdk.streaming_update_with_options_async.assert_called_once()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# _apply_yaml_config's env writes for require_mention/mention_patterns/
+# free_response_chats/allowed_chats/allowed_users were unconditional
+# (first-writer-wins into process-global os.environ, never seeded into
+# PlatformConfig.extra) even though every one of these fields is already
+# read extra-first by the adapter (_dingtalk_require_mention/
+# _dingtalk_free_response_chats/_dingtalk_allowed_chats/
+# _compile_mention_patterns/_load_allowed_users). Under multiplex, a
+# secondary profile's own config.yaml values leaked into shared env for
+# every other DingTalk adapter to inherit. Mirrors the Buzz/Discord/
+# Telegram/WhatsApp/LINE fix for #98738/#72348/#80099.
+
+_DINGTALK_ENV_VARS = (
+    "DINGTALK_REQUIRE_MENTION",
+    "DINGTALK_MENTION_PATTERNS",
+    "DINGTALK_FREE_RESPONSE_CHATS",
+    "DINGTALK_ALLOWED_CHATS",
+    "DINGTALK_ALLOWED_USERS",
+)
+
+
+class TestMultiplexProfileScope:
+
+    def test_scoped_load_seeds_extra_without_env_leak(self, monkeypatch):
+        from agent import secret_scope as ss
+        from plugins.platforms.dingtalk.adapter import _apply_yaml_config
+
+        for var in _DINGTALK_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({})
+        try:
+            seeded = _apply_yaml_config(
+                {},
+                {
+                    "require_mention": True,
+                    "mention_patterns": ["^hermes"],
+                    "free_response_chats": ["cid-free"],
+                    "allowed_chats": ["cid-allowed"],
+                    "allowed_users": ["staff-1"],
+                },
+            )
+        finally:
+            ss.reset_secret_scope(tok)
+
+        assert seeded == {
+            "require_mention": True,
+            "mention_patterns": ["^hermes"],
+            "free_response_chats": ["cid-free"],
+            "allowed_chats": ["cid-allowed"],
+            "allowed_users": ["staff-1"],
+        }
+        for var in _DINGTALK_ENV_VARS:
+            assert os.getenv(var) is None, f"{var} leaked into process env under scope"
+
+    def test_unscoped_single_profile_still_bridges_env(self, monkeypatch):
+        """Unscoped (single-profile) behavior is unchanged."""
+        from agent import secret_scope as ss
+        from plugins.platforms.dingtalk.adapter import _apply_yaml_config
+
+        for var in _DINGTALK_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        ss.set_multiplex_active(False)
+        _apply_yaml_config(
+            {}, {"require_mention": True, "allowed_users": ["staff-1"]},
+        )
+        assert os.environ["DINGTALK_REQUIRE_MENTION"] == "true"
+        assert os.environ["DINGTALK_ALLOWED_USERS"] == "staff-1"
+
+    def test_scoped_profiles_own_extra_reaches_adapter(self, monkeypatch):
+        """The extra _apply_yaml_config now seeds must actually reach the
+        adapter's own extra-first read accessors — not just avoid the leak."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+        for var in _DINGTALK_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("DINGTALK_ALLOWED_USERS", "default-profile-staff")
+
+        adapter = DingTalkAdapter(
+            PlatformConfig(enabled=True, extra={"allowed_users": ["profile-staff"]})
+        )
+        assert adapter._is_user_allowed("profile-staff", "") is True
+        assert adapter._is_user_allowed("default-profile-staff", "") is False

@@ -16,6 +16,7 @@ platform the gateway truncates it and points the user at the dashboard / file.
 from __future__ import annotations
 
 import json
+import re
 from typing import List, Optional
 
 from tools import write_approval as wa
@@ -31,20 +32,82 @@ def _fmt_state(subsystem: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fmt_pending_list(subsystem: str) -> str:
+    return _fmt_pending_list_inner(subsystem, show_all=False)
+
+
+def _fmt_all_pending_list(subsystem: str) -> str:
+    return _fmt_pending_list_inner(subsystem, show_all=True)
+
+
+_DEFAULT_LIMIT = 20
+_SUMMARY_CLIP = 80
+
+
+def _fmt_pending_list_inner(subsystem: str, show_all: bool) -> str:
     records = wa.list_pending(subsystem)
     if not records:
         return f"No pending {subsystem} writes."
-    lines = [f"Pending {subsystem} writes ({len(records)}):"]
-    for r in records:
-        origin = r.get("origin", "foreground")
-        tag = " [auto]" if origin == "background_review" else ""
-        lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
-    where = "/{s} approve <id>".format(s=subsystem)
+    total = len(records)
+    show = records if show_all else records[:_DEFAULT_LIMIT]
+    lines = [f"Pending {subsystem} writes ({total}):"]
+    if subsystem == wa.SKILLS:
+        _fmt_skills_grouped(lines, show)
+    else:
+        for r in show:
+            _fmt_one_record(lines, r)
+    if not show_all and total > _DEFAULT_LIMIT:
+        lines.append("")
+        lines.append(f"… and {total - _DEFAULT_LIMIT} more — /{subsystem} pending --all")
     lines.append("")
+    where = "/{s} approve <id>".format(s=subsystem)
     lines.append(f"Apply: {where}   Reject: /{subsystem} reject <id>")
     if subsystem == wa.SKILLS:
         lines.append("Review full diff: /skills diff <id>")
     return "\n".join(lines)
+
+
+def _fmt_one_record(lines: list[str], r: dict) -> None:
+    origin = r.get("origin", "foreground")
+    tag = " [auto]" if origin == "background_review" else ""
+    summary = (r.get("summary") or "").strip()
+    if len(summary) > _SUMMARY_CLIP:
+        summary = summary[:_SUMMARY_CLIP].rstrip() + "…"
+    lines.append(f"  {r['id']}{tag}  {summary}")
+
+
+def _fmt_skills_grouped(lines: list[str], records: list[dict]) -> None:
+    """Group pending skill records by skill name, flagging collisions."""
+    by_name: dict[str, list[dict]] = {}
+    action_order: list[str] = []
+    for r in records:
+        name = _extract_skill_name(r)
+        if name not in by_name:
+            by_name[name] = []
+            action_order.append(name)
+        by_name[name].append(r)
+    for name in action_order:
+        group = by_name[name]
+        if len(group) == 1:
+            _fmt_one_record(lines, group[0])
+        else:
+            actions = ", ".join(r.get("action", "?") for r in group)
+            lines.append(f"  ⚠ {name}  ({len(group)} pending: {actions})")
+            for r in group:
+                _fmt_one_record(lines, r)
+
+
+def _extract_skill_name(r: dict) -> str:
+    """Extract the skill name from a pending record, preferring the canonical payload.name."""
+    payload = r.get("payload", {})
+    name = payload.get("name", "")
+    if name:
+        return str(name).strip()[:60]
+    summary = (r.get("summary") or "").strip()
+    match = re.match(r"^(create|update|patch|delete)\s+(.+?)(?:\s*[—–-].*)?$", summary, re.IGNORECASE)
+    if match:
+        return match.group(2).strip()
+    name = payload.get("old_string", "").split("\n")[0][:40]
+    return name[:40] if name else summary[:40]
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +145,9 @@ def handle_pending_subcommand(
     rest = args[1:]
 
     if sub == "pending":
+        show_all = len(rest) >= 1 and rest[0].lower() in {"--all", "-a", "all"}
+        if show_all:
+            return _fmt_all_pending_list(subsystem)
         return _fmt_pending_list(subsystem)
 
     if sub in {"approve", "apply"}:

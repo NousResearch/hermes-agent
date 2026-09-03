@@ -810,8 +810,10 @@ def camofox_close(task_id: Optional[str] = None) -> str:
 def camofox_get_images(task_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox.
 
-    Extracts image information from the accessibility tree snapshot,
-    since Camofox does not expose a dedicated /images endpoint.
+    Evaluates a document.images expression through /tabs/{tab_id}/evaluate
+    (the same endpoint used for JS evaluation), since the accessibility
+    snapshot does not expose image srcs. Falls back to snapshot parsing
+    when the server does not support /evaluate.
     """
     try:
         session = _get_session(task_id)
@@ -824,30 +826,66 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
 
         import re
 
-        data = _get(
-            f"/tabs/{session['tab_id']}/snapshot",
-            params={"userId": session["user_id"]},
-        )
-        snapshot = data.get("snapshot", "")
-
-        # Parse img elements from the accessibility tree.
-        # Format: img "alt text" or img "alt text" [eN]
-        # URLs appear on /url: lines following img entries
         images = []
-        lines = snapshot.split("\n")
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith(("- img ", "img ")):
-                alt_match = re.search(r'img\s+"([^"]*)"', stripped)
-                alt = alt_match.group(1) if alt_match else ""
-                # Look for URL on the next line
-                src = ""
-                if i + 1 < len(lines):
-                    url_match = re.search(r'/url:\s*(\S+)', lines[i + 1].strip())
-                    if url_match:
-                        src = url_match.group(1)
-                if alt or src:
-                    images.append({"src": src, "alt": alt})
+        eval_supported = True
+        try:
+            data = _post(
+                f"/tabs/{session['tab_id']}/evaluate",
+                {
+                    "expression": "JSON.stringify(Array.from(document.images).map("
+                                  "i => ({src: (i.currentSrc || i.src), alt: (i.alt || '')})))",
+                    "userId": session["user_id"],
+                },
+            )
+            raw = data.get("result") if isinstance(data, dict) else data
+            parsed = raw
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if isinstance(parsed, str):
+                try:
+                    parsed = json.loads(parsed)
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    src = item.get("src") or ""
+                    alt = item.get("alt") or ""
+                    if src or alt:
+                        images.append({"src": src, "alt": alt})
+        except Exception as e:
+            error_msg = str(e)
+            if any(code in error_msg for code in ("404", "405", "501")):
+                eval_supported = False
+            else:
+                raise
+
+        if not eval_supported or not images:
+            # Fallback: parse img elements from the accessibility tree.
+            # Format: img "alt text" or img "alt text" [eN]
+            data = _get(
+                f"/tabs/{session['tab_id']}/snapshot",
+                params={"userId": session["user_id"]},
+            )
+            snapshot = data.get("snapshot", "")
+            lines = snapshot.split("\n")
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith(("- img ", "img ")):
+                    alt_match = re.search(r'img\s+"([^"]*)"', stripped)
+                    alt = alt_match.group(1) if alt_match else ""
+                    # Look for URL on the next line
+                    src = ""
+                    if i + 1 < len(lines):
+                        url_match = re.search(r'/url:\s*(\S+)', lines[i + 1].strip())
+                        if url_match:
+                            src = url_match.group(1)
+                    if alt or src:
+                        images.append({"src": src, "alt": alt})
 
         return json.dumps({
             "success": True,

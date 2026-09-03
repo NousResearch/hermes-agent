@@ -24,6 +24,37 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ Theip ar fhíordheimhniú an tsoláthraí. Seiceáil na dintiúir chumraithe; tá sonraí amha an tsoláthraí i logaí an gateway.'
+  provider_rejected: '⚠️ Dhiúltaigh soláthraí an mhúnla don iarratas. Choinnigh mé earráid amh an tsoláthraí as an gcomhrá; seiceáil logaí an gateway le haghaidh sonraí nó déan iarracht é a athfhocail.'
+  provider_rate_limited: '⏱️ Tá soláthraí an mhúnla ag teorannú iarratas. Fan nóiméad, le do thoil, agus bain triail eile as.'
+  provider_connection_error: '⚠️ Níl an freastalaí múnla ag freagairt — is cosúil nach bhfuil an críochphointe múnla cumraithe ar siúl nó nach féidir teacht air.'
+  provider_failed: '⚠️ Theip ar sholáthraí an mhúnla tar éis roinnt iarrachtaí. Choinnigh mé sonraí amha an tsoláthraí as an gcomhrá; seiceáil logaí an gateway le haghaidh diagnóise.'
+  learn_start_failed: 'Níorbh fhéidir /learn a thosú — bain triail eile as, le do thoil.'
+  init_start_failed: 'Níorbh fhéidir /init a thosú — bain triail eile as, le do thoil.'
+  moa_prepare_failed: 'Theip ar sheal MoA a ullmhú.'
+  quick_command_timed_out: 'Chuaigh an t-ordú tapa thar am (30s).'
+  goal_busy_hint: 'Tá an gníomhaire ag rith — úsáid /goal status / pause / clear / wait le linn an rithe, nó /stop sula socraíonn tú sprioc nua.'
+  voice_unsupported_platform: 'Ní thacaítear le cainéil ghutha ar an ardán seo.'
+  voice_discord_only: 'Ní oibríonn an t-ordú seo ach amháin i bhfreastalaí Discord.'
+  voice_join_first: 'Caithfidh tú a bheith i gcainéal gutha ar dtús.'
+  voice_not_in_channel: 'Níl tú i gcainéal gutha.'
+  voice_left_channel: 'D''fhág tú an cainéal gutha.'
+  topic_chat_id_unknown: 'Níorbh fhéidir ID an chomhrá a chinneadh.'
+  topic_mode_not_enabled: 'Níl mód topaicí ilseisiúin cumasaithe faoi láthair don chomhrá seo.'
+  topic_restore_not_telegram: 'Ní seisiún Telegram é an seisiún sin agus ní féidir é a athchóiriú isteach sa topaic seo.'
+  topic_restore_not_owner: 'Ní leis an úsáideoir Telegram seo é an seisiún sin.'
+  topic_restore_already_linked: 'Tá an seisiún sin nasctha le topaic Telegram eile cheana féin.'
+  goal_wait_usage: 'Úsáid: /goal wait <pid> [cúis]'
+  goal_wait_invalid_pid: '/goal wait: ní mór gur slánuimhir é <pid> (aitheantas próisis).'
+  goal_wait_cleared: '▶ Baineadh an bac feithimh — leanann lúb na sprice ar aghaidh.'
+  goal_no_wait_barrier: 'Níl aon bhac feithimh socraithe.'
+  goal_draft_usage: 'Úsáid: /goal draft <cuspóir i ngnáthchaint>'
+  goal_none_active_set: 'Níl aon sprioc ghníomhach ann. Socraigh ceann le /goal <téacs>.'
+  subgoal_remove_usage: 'Úsáid: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: ní mór gur slánuimhir é <n> (innéacs ó 1 ar aghaidh).'
+  subgoal_none_to_clear: 'Níl aon fhosprioc le glanadh.'
+  approve_admins_only: 'Ní féidir ach le riarthóirí an gateway an mód ceadaithe buan a athrú.'
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared:     "✓ Sprioc glanta."
@@ -49,6 +80,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — athraigh an tsamhail"
     usage_switch_provider:  "`/model <name> --provider <slug>` — athraigh an soláthraí"
     usage_persist:          "`/model <name> --global` — coinnigh"
+
+  activity:
+    still_on_it:                 "fós air"
+    one_sec:                     "soicind amháin"
 
   agents:
     header:                "🤖 **Gníomhairí & Tascanna Gníomhacha**"
@@ -90,6 +125,12 @@ gateway:
     switch_failed:         "Cruthaíodh an brainse ach theip ar athrú chuige."
     branched_one:          "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
     branched_many:         "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
+
+  busy_reject:
+    model:                  "Tá an gníomhaire ag rith — fan nó úsáid /stop ar dtús, ansin athraigh samhlacha."
+    codex_runtime:          "Tá an gníomhaire ag rith — fan nó úsáid /stop ar dtús, ansin athraigh runtime."
+    moa:                    "Tá an gníomhaire ag rith — fan nó úsáid /stop ar dtús, ansin rith /moa."
+    generic:                "⏳ Tá an gníomhaire ag rith — ní féidir `/{name}` a rith i lár seala. Fan leis an bhfreagra reatha nó úsáid `/stop` ar dtús."
 
   commands:
     usage:                 "Úsáid: `/commands [page]`"
@@ -160,6 +201,7 @@ gateway:
     resumed:               "▶ Sprioc atosaithe: {goal}\nAg leanúint ar aghaidh anois — déanfaidh mé an chéad chéim eile láithreach."
     invalid:               "Sprioc neamhbhailí: {error}"
     set:                   "⊙ Sprioc socraithe (buiséad {budget} seal): {goal}\nLeanfaidh mé ag obair go dtí go bhfuil an sprioc críochnaithe, go gcuirfidh tú ar sos / go nglanfaidh tú í, nó go n-úsáidfear an buiséad.\nSmacht: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Níorbh fhéidir conradh a dhréachtú — ag rith mar sprioc shaor.)"
 
   help:
     header:                "📖 **Orduithe Hermes**\n"
@@ -353,6 +395,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "Níl"
     queued:                "**Tascanna i scuaine:** {count}"
     platforms:             "**Ardáin Cheangailte:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Úsáid: /steer <prompt>  (níl aon ghníomhaire ag rith; á sheoladh mar ghnáth-theachtaireacht)"
 
   stop:
     stopped_pending:       "⚡ Stoptha. Ní raibh an gníomhaire tosaithe fós — is féidir leat leanúint leis an seisiún seo."

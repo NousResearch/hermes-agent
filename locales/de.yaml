@@ -20,6 +20,37 @@ approval:
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ Authentifizierung beim Provider fehlgeschlagen. Überprüfen Sie die konfigurierten Zugangsdaten; die Rohdaten des Providers finden Sie in den Gateway-Logs.'
+  provider_rejected: '⚠️ Der Modell-Provider hat die Anfrage abgelehnt. Die rohe Provider-Fehlermeldung wurde nicht im Chat angezeigt; Details finden Sie in den Gateway-Logs, oder versuchen Sie es mit einer anderen Formulierung.'
+  provider_rate_limited: '⏱️ Der Modell-Provider begrenzt derzeit die Anzahl der Anfragen. Bitte warten Sie einen Moment und versuchen Sie es erneut.'
+  provider_connection_error: '⚠️ Der Modellserver antwortet nicht — der konfigurierte Modell-Endpunkt läuft anscheinend nicht oder ist nicht erreichbar.'
+  provider_failed: '⚠️ Der Modell-Provider ist auch nach mehreren Versuchen fehlgeschlagen. Die rohen Provider-Details wurden nicht im Chat angezeigt; die Diagnose finden Sie in den Gateway-Logs.'
+  learn_start_failed: 'Konnte /learn nicht starten — bitte versuchen Sie es erneut.'
+  init_start_failed: 'Konnte /init nicht starten — bitte versuchen Sie es erneut.'
+  moa_prepare_failed: 'Vorbereitung des MoA-Durchgangs fehlgeschlagen.'
+  quick_command_timed_out: 'Schnellbefehl hat das Zeitlimit überschritten (30s).'
+  goal_busy_hint: 'Der Agent läuft gerade — verwenden Sie während des Laufs /goal status / pause / clear / wait oder /stop, bevor Sie ein neues Ziel festlegen.'
+  voice_unsupported_platform: 'Sprachkanäle werden auf dieser Plattform nicht unterstützt.'
+  voice_discord_only: 'Dieser Befehl funktioniert nur in einem Discord-Server.'
+  voice_join_first: 'Sie müssen sich zuerst in einem Sprachkanal befinden.'
+  voice_not_in_channel: 'Sie befinden sich nicht in einem Sprachkanal.'
+  voice_left_channel: 'Sprachkanal verlassen.'
+  topic_chat_id_unknown: 'Chat-ID konnte nicht ermittelt werden.'
+  topic_mode_not_enabled: 'Der Multi-Sitzungs-Themenmodus ist für diesen Chat derzeit nicht aktiviert.'
+  topic_restore_not_telegram: 'Diese Sitzung ist keine Telegram-Sitzung und kann nicht in dieses Thema wiederhergestellt werden.'
+  topic_restore_not_owner: 'Diese Sitzung gehört nicht zu diesem Telegram-Benutzer.'
+  topic_restore_already_linked: 'Diese Sitzung ist bereits mit einem anderen Telegram-Thema verknüpft.'
+  goal_wait_usage: 'Verwendung: /goal wait <pid> [Grund]'
+  goal_wait_invalid_pid: '/goal wait: <pid> muss eine ganzzahlige Prozess-ID sein.'
+  goal_wait_cleared: '▶ Wartebarriere aufgehoben — der Ziellauf wird fortgesetzt.'
+  goal_no_wait_barrier: 'Keine Wartebarriere festgelegt.'
+  goal_draft_usage: 'Verwendung: /goal draft <Ziel in einfacher Sprache>'
+  goal_none_active_set: 'Kein aktives Ziel. Legen Sie eines mit /goal <Text> fest.'
+  subgoal_remove_usage: 'Verwendung: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n> muss eine ganze Zahl sein (1-basierter Index).'
+  subgoal_none_to_clear: 'Keine Teilziele zu löschen.'
+  approve_admins_only: 'Nur Gateway-Administratoren können den dauerhaften Genehmigungsmodus ändern.'
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."
   draining:         "⏳ Warte auf {count} aktive(n) Agent(en) vor dem Neustart..."
   goal_cleared:     "✓ Ziel gelöscht."
@@ -45,6 +76,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — Modell wechseln"
     usage_switch_provider:  "`/model <name> --provider <slug>` — Anbieter wechseln"
     usage_persist:          "`/model <name> --global` — dauerhaft speichern"
+
+  activity:
+    still_on_it:                 "bin noch dran"
+    one_sec:                     "eine sekunde"
 
   agents:
     header:                "🤖 **Aktive Agenten & Aufgaben**"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "Verzweigung erstellt, aber Wechsel fehlgeschlagen."
     branched_one:          "⑂ Verzweigt zu **{title}** ({count} Nachricht kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
     branched_many:         "⑂ Verzweigt zu **{title}** ({count} Nachrichten kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
+
+  busy_reject:
+    model:                  "Agent läuft — warten oder zuerst /stop, dann Modell wechseln."
+    codex_runtime:          "Agent läuft — warten oder zuerst /stop, dann Runtime ändern."
+    moa:                    "Agent läuft — warten oder zuerst /stop, dann /moa ausführen."
+    generic:                "⏳ Agent läuft — `/{name}` kann nicht während eines Zuges ausgeführt werden. Warten Sie auf die aktuelle Antwort oder nutzen Sie zuerst `/stop`."
 
   commands:
     usage:                 "Verwendung: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ Ziel fortgesetzt: {goal}\nEs geht sofort weiter — ich übernehme jetzt den nächsten Schritt."
     invalid:               "Ungültiges Ziel: {error}"
     set:                   "⊙ Ziel gesetzt ({budget}-Zug-Budget): {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder das Budget aufgebraucht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Konnte keinen Vertrag entwerfen — wird als freies Ziel ausgeführt.)"
 
   help:
     header:                "📖 **Hermes-Befehle**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "Nein"
     queued:                "**Wartende Folgenachrichten:** {count}"
     platforms:             "**Verbundene Plattformen:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Verwendung: /steer <prompt>  (kein Agent aktiv; wird als normale Nachricht gesendet)"
 
   stop:
     stopped_pending:       "⚡ Gestoppt. Der Agent hatte noch nicht begonnen — Sie können diese Sitzung fortsetzen."

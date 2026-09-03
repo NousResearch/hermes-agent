@@ -20,6 +20,37 @@ approval:
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ プロバイダーの認証に失敗しました。設定された認証情報を確認してください。プロバイダーの詳細はゲートウェイのログに記録されています。'
+  provider_rejected: '⚠️ モデルプロバイダーがリクエストを拒否しました。エラーの詳細はチャットには表示しないようにしています。ゲートウェイのログで詳細を確認するか、別の言い回しでお試しください。'
+  provider_rate_limited: '⏱️ モデルプロバイダーがリクエストを制限しています。しばらく待ってからもう一度お試しください。'
+  provider_connection_error: '⚠️ モデルサーバーが応答していません — 設定されたモデルのエンドポイントが起動していないか、到達できないようです。'
+  provider_failed: '⚠️ モデルプロバイダーはリトライ後も失敗しました。プロバイダーの詳細はチャットには表示しないようにしています。診断情報はゲートウェイのログを確認してください。'
+  learn_start_failed: '/learn を開始できませんでした — もう一度お試しください。'
+  init_start_failed: '/init を開始できませんでした — もう一度お試しください。'
+  moa_prepare_failed: 'MoA ターンの準備に失敗しました。'
+  quick_command_timed_out: 'クイックコマンドがタイムアウトしました (30s)。'
+  goal_busy_hint: 'エージェントは実行中です — 実行中は /goal status / pause / clear / wait を使用するか、新しい目標を設定する前に /stop を使用してください。'
+  voice_unsupported_platform: 'このプラットフォームではボイスチャンネルはサポートされていません。'
+  voice_discord_only: 'このコマンドは Discord サーバーでのみ使用できます。'
+  voice_join_first: '先にボイスチャンネルに参加する必要があります。'
+  voice_not_in_channel: 'ボイスチャンネルに参加していません。'
+  voice_left_channel: 'ボイスチャンネルから退出しました。'
+  topic_chat_id_unknown: 'チャット ID を特定できませんでした。'
+  topic_mode_not_enabled: 'このチャットでは現在、マルチセッションのトピックモードが有効になっていません。'
+  topic_restore_not_telegram: 'そのセッションは Telegram セッションではないため、このトピックに復元できません。'
+  topic_restore_not_owner: 'そのセッションはこの Telegram ユーザーのものではありません。'
+  topic_restore_already_linked: 'そのセッションはすでに別の Telegram トピックにリンクされています。'
+  goal_wait_usage: '使い方: /goal wait <pid> [理由]'
+  goal_wait_invalid_pid: '/goal wait: <pid> は整数のプロセス ID である必要があります。'
+  goal_wait_cleared: '▶ 待機バリアが解除されました — 目標ループを再開します。'
+  goal_no_wait_barrier: '待機バリアは設定されていません。'
+  goal_draft_usage: '使い方: /goal draft <平易な言葉での目標>'
+  goal_none_active_set: 'アクティブな目標はありません。/goal <テキスト> で設定してください。'
+  subgoal_remove_usage: '使い方: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n> は整数（1 始まりのインデックス）である必要があります。'
+  subgoal_none_to_clear: 'クリアするサブゴールはありません。'
+  approve_admins_only: '永続的な承認モードを変更できるのはゲートウェイ管理者のみです。'
   approval_expired: "⚠️ 承認の有効期限が切れました（エージェントはもう待機していません）。エージェントに再試行を依頼してください。"
   draining:         "⏳ 再起動前に {count} 個のアクティブエージェントの終了を待っています..."
   goal_cleared:     "✓ 目標をクリアしました。"
@@ -71,6 +102,10 @@ gateway:
     usage:                 "使い方: /bg <プロンプト>\n例: /bg 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"
     started:               "🔄 バックグラウンドタスクを開始しました: 「{preview}」\nタスク ID: {task_id}\nチャットを続けられます — 完了したらここに結果が表示されます。"
 
+  activity:
+    still_on_it:                 "まだ作業中"
+    one_sec:                     "ちょっと待って"
+
   btw:
     usage:                 "使い方: /btw <質問>\n例: /btw あのエラーはどのファイルだった？\n\nこの会話について、作業を中断せずにちょっとした質問に答えます。独立したバックグラウンドタスクには /bg <プロンプト> を使ってください。"
     no_history:            "まだ会話がありません — 質問は通常のメッセージとして送ってください。"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "ブランチは作成されましたが、切り替えに失敗しました。"
     branched_one:          "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
     branched_many:         "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
+
+  busy_reject:
+    model:                  "エージェントは実行中です — 先に待つか /stop してからモデルを切り替えてください。"
+    codex_runtime:          "エージェントは実行中です — 先に待つか /stop してからランタイムを変更してください。"
+    moa:                    "エージェントは実行中です — 先に待つか /stop してから /moa を実行してください。"
+    generic:                "⏳ エージェントは実行中です — `/{name}` はターン途中で実行できません。現在の応答を待つか、先に `/stop` してください。"
 
   commands:
     usage:                 "使い方: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ 目標を再開しました: {goal}\nすぐに続行します — 直ちに次のステップに進みます。"
     invalid:               "無効な目標: {error}"
     set:                   "⊙ 目標を設定しました ({budget} ターンの予算): {goal}\n目標が完了するか、一時停止/解除されるか、予算が尽きるまで作業を続けます。\nコントロール: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "（コントラクトを作成できませんでした — 自由形式の目標として実行します。）"
 
   help:
     header:                "📖 **Hermes コマンド**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "いいえ"
     queued:                "**キュー内の後続:** {count}"
     platforms:             "**接続プラットフォーム:** {platforms}"
+
+  steer:
+    usage_no_agent:          "使い方: /steer <プロンプト>  (エージェントは実行されていません。通常のメッセージとして送信します)"
 
   stop:
     stopped_pending:       "⚡ 停止しました。エージェントはまだ開始していません — このセッションを続行できます。"

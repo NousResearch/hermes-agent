@@ -20,6 +20,37 @@ approval:
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ Verskaffer-verifikasie het misluk. Gaan die gekonfigureerde geloofsbriewe na; rou verskafferbesonderhede is in die gateway-loglae.'
+  provider_rejected: '⚠️ Die modelverskaffer het die versoek van die hand gewys. Ek het die rou verskafferfout buite die klets gehou; kyk die gateway-loglae na vir besonderhede of probeer om die versoek te herformuleer.'
+  provider_rate_limited: '⏱️ Die modelverskaffer pas tans tariefperke op versoeke toe. Wag asseblief ''n oomblik en probeer weer.'
+  provider_connection_error: '⚠️ Die modelbediener reageer nie — dit lyk of die gekonfigureerde modeleindpunt nie loop nie of onbereikbaar is.'
+  provider_failed: '⚠️ Die modelverskaffer het ná herpogings misluk. Ek het rou verskafferbesonderhede buite die klets gehou; raadpleeg die gateway-loglae vir diagnostiek.'
+  learn_start_failed: 'Kon nie /learn begin nie — probeer asseblief weer.'
+  init_start_failed: 'Kon nie /init begin nie — probeer asseblief weer.'
+  moa_prepare_failed: 'Kon nie die MoA-beurt voorberei nie.'
+  quick_command_timed_out: 'Vinnige opdrag het uitgetel (30s).'
+  goal_busy_hint: 'Die agent is tans besig — gebruik /goal status / pause / clear / wait terwyl dit loop, of /stop voordat jy ''n nuwe doelwit stel.'
+  voice_unsupported_platform: 'Stemkanale word nie op hierdie platform ondersteun nie.'
+  voice_discord_only: 'Hierdie opdrag werk slegs in ''n Discord-bediener.'
+  voice_join_first: 'Jy moet eers in ''n stemkanaal wees.'
+  voice_not_in_channel: 'Nie in ''n stemkanaal nie.'
+  voice_left_channel: 'Het die stemkanaal verlaat.'
+  topic_chat_id_unknown: 'Kon nie die geselsie-ID bepaal nie.'
+  topic_mode_not_enabled: 'Die multi-sessie-onderwerpmodus is tans nie vir hierdie geselsie geaktiveer nie.'
+  topic_restore_not_telegram: 'Daardie sessie is nie ''n Telegram-sessie nie en kan nie in hierdie onderwerp herstel word nie.'
+  topic_restore_not_owner: 'Daardie sessie behoort nie aan hierdie Telegram-gebruiker nie.'
+  topic_restore_already_linked: 'Daardie sessie is reeds aan ''n ander Telegram-onderwerp gekoppel.'
+  goal_wait_usage: 'Gebruik: /goal wait <pid> [rede]'
+  goal_wait_invalid_pid: '/goal wait: <pid> moet ''n heelgetal-proses-ID wees.'
+  goal_wait_cleared: '▶ Wagversperring verwyder — die doelwitlus hervat.'
+  goal_no_wait_barrier: 'Geen wagversperring gestel nie.'
+  goal_draft_usage: 'Gebruik: /goal draft <doelwit in gewone taal>'
+  goal_none_active_set: 'Geen aktiewe doelwit nie. Stel een met /goal <teks>.'
+  subgoal_remove_usage: 'Gebruik: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n> moet ''n heelgetal wees (indeks begin by 1).'
+  subgoal_none_to_clear: 'Geen subdoelwitte om te verwyder nie.'
+  approve_admins_only: 'Slegs gateway-administrateurs kan die permanente goedkeuringsmodus verander.'
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."
   draining:         "⏳ Wag vir {count} aktiewe agent(e) voor herbegin..."
   goal_cleared:     "✓ Doelwit verwyder."
@@ -45,6 +76,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — verander model"
     usage_switch_provider:  "`/model <name> --provider <slug>` — verander verskaffer"
     usage_persist:          "`/model <name> --global` — stoor permanent"
+
+  activity:
+    still_on_it:                 "steeds besig"
+    one_sec:                     "een oomblik"
 
   agents:
     header:                "🤖 **Aktiewe Agente & Take**"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "Tak is geskep, maar oorskakeling het misluk."
     branched_one:          "⑂ Vertak na **{title}** ({count} boodskap gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
     branched_many:         "⑂ Vertak na **{title}** ({count} boodskappe gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
+
+  busy_reject:
+    model:                  "Agent is tans besig — wag of /stop eers, verander dan modelle."
+    codex_runtime:          "Agent is tans besig — wag of /stop eers, verander dan die runtime."
+    moa:                    "Agent is tans besig — wag of /stop eers, voer dan /moa uit."
+    generic:                "⏳ Agent is tans besig — `/{name}` kan nie tydens ''n beurt loop nie. Wag vir die huidige antwoord of `/stop` eers."
 
   commands:
     usage:                 "Gebruik: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ Doelwit hervat: {goal}\nGaan nou voort — ek neem dadelik die volgende stap."
     invalid:               "Ongeldige doelwit: {error}"
     set:                   "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Kon nie ''n kontrak opstel nie — loop as ''n vryvorm-doelwit.)"
 
   help:
     header:                "📖 **Hermes-opdragte**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "Nee"
     queued:                "**Opgehoopte opvolge:** {count}"
     platforms:             "**Verbinde Platforms:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Gebruik: /steer <prompt>  (geen agent loop nie; stuur as ''n gewone boodskap)"
 
   stop:
     stopped_pending:       "⚡ Gestop. Die agent het nog nie begin nie — jy kan met hierdie sessie voortgaan."

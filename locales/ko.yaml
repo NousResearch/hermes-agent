@@ -20,6 +20,37 @@ approval:
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ 제공자 인증에 실패했습니다. 구성된 인증 정보를 확인하세요. 자세한 제공자 정보는 게이트웨이 로그에 있습니다.'
+  provider_rejected: '⚠️ 모델 제공자가 요청을 거부했습니다. 원시 제공자 오류는 채팅에 표시하지 않았습니다. 자세한 내용은 게이트웨이 로그를 확인하거나 문구를 바꿔 다시 시도하세요.'
+  provider_rate_limited: '⏱️ 모델 제공자가 요청을 제한하고 있습니다. 잠시 기다린 후 다시 시도하세요.'
+  provider_connection_error: '⚠️ 모델 서버가 응답하지 않습니다 — 구성된 모델 엔드포인트가 실행되고 있지 않거나 연결할 수 없는 것 같습니다.'
+  provider_failed: '⚠️ 재시도 후에도 모델 제공자가 실패했습니다. 원시 제공자 세부 정보는 채팅에 표시하지 않았습니다. 진단 내용은 게이트웨이 로그를 확인하세요.'
+  learn_start_failed: '/learn을(를) 시작할 수 없습니다 — 다시 시도하세요.'
+  init_start_failed: '/init을(를) 시작할 수 없습니다 — 다시 시도하세요.'
+  moa_prepare_failed: 'MoA 턴을 준비하지 못했습니다.'
+  quick_command_timed_out: '빠른 명령이 시간 초과되었습니다 (30s).'
+  goal_busy_hint: '에이전트가 실행 중입니다 — 실행 중에는 /goal status / pause / clear / wait 명령을, 새 목표를 설정하기 전에는 /stop을 사용하세요.'
+  voice_unsupported_platform: '이 플랫폼에서는 음성 채널이 지원되지 않습니다.'
+  voice_discord_only: '이 명령은 Discord 서버에서만 작동합니다.'
+  voice_join_first: '먼저 음성 채널에 참여해야 합니다.'
+  voice_not_in_channel: '음성 채널에 없습니다.'
+  voice_left_channel: '음성 채널에서 나갔습니다.'
+  topic_chat_id_unknown: '채팅 ID를 확인할 수 없습니다.'
+  topic_mode_not_enabled: '이 채팅에는 현재 다중 세션 주제 모드가 활성화되어 있지 않습니다.'
+  topic_restore_not_telegram: '해당 세션은 Telegram 세션이 아니므로 이 주제로 복원할 수 없습니다.'
+  topic_restore_not_owner: '해당 세션은 이 Telegram 사용자의 세션이 아닙니다.'
+  topic_restore_already_linked: '해당 세션은 이미 다른 Telegram 주제에 연결되어 있습니다.'
+  goal_wait_usage: '사용법: /goal wait <pid> [이유]'
+  goal_wait_invalid_pid: '/goal wait: <pid>은(는) 정수 프로세스 ID여야 합니다.'
+  goal_wait_cleared: '▶ 대기 장벽이 해제되었습니다 — 목표 루프가 재개됩니다.'
+  goal_no_wait_barrier: '설정된 대기 장벽이 없습니다.'
+  goal_draft_usage: '사용법: /goal draft <자연어로 작성한 목표>'
+  goal_none_active_set: '활성 목표가 없습니다. /goal <텍스트>로 목표를 설정하세요.'
+  subgoal_remove_usage: '사용법: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n>은(는) 정수여야 합니다 (1부터 시작하는 인덱스).'
+  subgoal_none_to_clear: '삭제할 하위 목표가 없습니다.'
+  approve_admins_only: '게이트웨이 관리자만 영구 승인 모드를 변경할 수 있습니다.'
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."
@@ -71,6 +102,10 @@ gateway:
     usage:                 "사용법: /bg <prompt>\n예시: /bg 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
     started:               "🔄 백그라운드 작업이 시작되었습니다: \"{preview}\"\n작업 ID: {task_id}\n계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다."
 
+  activity:
+    still_on_it:                 "진행 중"
+    one_sec:                     "잠시만"
+
   btw:
     usage:                 "사용법: /btw <질문>\n예시: /btw 그 오류가 어느 파일에 있었지?\n\n현재 작업을 중단하지 않고 이 대화에 대한 간단한 질문에 답합니다. 독립적인 백그라운드 작업은 /bg <prompt>를 사용하세요."
     no_history:            "아직 대화가 없습니다 — 질문을 일반 메시지로 보내주세요."
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "분기는 생성되었으나 전환에 실패했습니다."
     branched_one:          "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
     branched_many:         "⑂ **{title}**(으)로 분기했습니다 (메시지 {count}개 복사됨)\n원본: `{parent}`\n분기: `{new}`\n원본으로 돌아가려면 `/resume`을 사용하세요."
+
+  busy_reject:
+    model:                  "에이전트가 실행 중입니다 — 기다리거나 /stop 후에 모델을 전환하세요."
+    codex_runtime:          "에이전트가 실행 중입니다 — 기다리거나 /stop 후에 런타임을 변경하세요."
+    moa:                    "에이전트가 실행 중입니다 — 기다리거나 /stop 후에 /moa를 실행하세요."
+    generic:                "⏳ 에이전트가 실행 중입니다 — `/{name}`은(는) 턴 중에 실행할 수 없습니다. 현재 응답을 기다리거나 `/stop`을 먼저 실행하세요."
 
   commands:
     usage:                 "사용법: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ 목표 재개: {goal}\n바로 계속합니다 — 즉시 다음 단계를 진행하겠습니다."
     invalid:               "잘못된 목표: {error}"
     set:                   "⊙ 목표 설정됨 ({budget}회 예산): {goal}\n목표가 완료되거나, 일시정지/삭제하거나, 예산이 소진될 때까지 계속 작업하겠습니다.\n제어: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(계약 초안을 작성할 수 없습니다 — 자유 형식 목표로 실행합니다.)"
 
   help:
     header:                "📖 **Hermes 명령**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "아니오"
     queued:                "**대기 중인 후속 작업:** {count}"
     platforms:             "**연결된 플랫폼:** {platforms}"
+
+  steer:
+    usage_no_agent:          "사용법: /steer <프롬프트>  (에이전트가 실행 중이 아닙니다. 일반 메시지로 전송합니다)"
 
   stop:
     stopped_pending:       "⚡ 중지되었습니다. 에이전트가 아직 시작되지 않았습니다 — 이 세션을 계속할 수 있습니다."

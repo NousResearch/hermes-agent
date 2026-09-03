@@ -30,6 +30,37 @@ approval:
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the gateway logs.'
+  provider_rejected: '⚠️ The model provider rejected the request. I kept the raw provider error out of chat; check gateway logs for details or try rephrasing.'
+  provider_rate_limited: '⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.'
+  provider_connection_error: '⚠️ The model server is not responding — it looks like the configured model endpoint is not running or is unreachable.'
+  provider_failed: '⚠️ The model provider failed after retries. I kept raw provider details out of chat; check gateway logs for diagnostics.'
+  learn_start_failed: 'Could not start /learn — please try again.'
+  init_start_failed: 'Could not start /init — please try again.'
+  moa_prepare_failed: 'Failed to prepare MoA turn.'
+  quick_command_timed_out: 'Quick command timed out (30s).'
+  goal_busy_hint: 'Agent is running — use /goal status / pause / clear / wait mid-run, or /stop before setting a new goal.'
+  voice_unsupported_platform: 'Voice channels are not supported on this platform.'
+  voice_discord_only: 'This command only works in a Discord server.'
+  voice_join_first: 'You need to be in a voice channel first.'
+  voice_not_in_channel: 'Not in a voice channel.'
+  voice_left_channel: 'Left voice channel.'
+  topic_chat_id_unknown: 'Could not determine chat ID.'
+  topic_mode_not_enabled: 'Multi-session topic mode is not currently enabled for this chat.'
+  topic_restore_not_telegram: 'That session is not a Telegram session and cannot be restored into this topic.'
+  topic_restore_not_owner: 'That session does not belong to this Telegram user.'
+  topic_restore_already_linked: 'That session is already linked to another Telegram topic.'
+  goal_wait_usage: 'Usage: /goal wait <pid> [reason]'
+  goal_wait_invalid_pid: '/goal wait: <pid> must be an integer process id.'
+  goal_wait_cleared: '▶ Wait barrier cleared — goal loop resumes.'
+  goal_no_wait_barrier: 'No wait barrier set.'
+  goal_draft_usage: 'Usage: /goal draft <objective in plain language>'
+  goal_none_active_set: 'No active goal. Set one with /goal <text>.'
+  subgoal_remove_usage: 'Usage: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n> must be an integer (1-based index).'
+  subgoal_none_to_clear: 'No subgoals to clear.'
+  approve_admins_only: 'Only gateway admins can change the persistent approval mode.'
   # Messenger replies to slash commands and implicit state changes.
   approval_expired: "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
   draining:         "⏳ Draining {count} active agent(s) before restart..."
@@ -60,6 +91,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — switch model"
     usage_switch_provider:  "`/model <name> --provider <slug>` — switch provider"
     usage_persist:          "`/model <name> --global` — persist"
+
+  activity:
+    still_on_it:                 "still on it"
+    one_sec:                     "one sec"
 
   agents:
     header:                "🤖 **Active Agents & Tasks**"
@@ -101,6 +136,12 @@ gateway:
     switch_failed:         "Branch created but failed to switch to it."
     branched_one:          "⑂ Branched to **{title}** ({count} message copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
     branched_many:         "⑂ Branched to **{title}** ({count} messages copied)\nOriginal: `{parent}`\nBranch: `{new}`\nUse `/resume` to switch back to the original."
+
+  busy_reject:
+    model:                  "Agent is running — wait or /stop first, then switch models."
+    codex_runtime:          "Agent is running — wait or /stop first, then change runtime."
+    moa:                    "Agent is running — wait or /stop first, then run /moa."
+    generic:                "⏳ Agent is running — `/{name}` can't run mid-turn. Wait for the current response or `/stop` first."
 
   commands:
     usage:                 "Usage: `/commands [page]`"
@@ -171,6 +212,7 @@ gateway:
     resumed:               "▶ Goal resumed: {goal}\nContinuing now — I'll take the next step right away."
     invalid:               "Invalid goal: {error}"
     set:                   "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Couldn't draft a contract — running as a free-form goal.)"
 
   help:
     header:                "📖 **Hermes Commands**\n"
@@ -362,6 +404,9 @@ gateway:
     state_no:              "No"
     queued:                "**Queued follow-ups:** {count}"
     platforms:             "**Connected Platforms:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
 
   stop:
     stopped_pending:       "⚡ Stopped. The agent hadn't started yet — you can continue this session."

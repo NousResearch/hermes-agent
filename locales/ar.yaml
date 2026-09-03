@@ -25,6 +25,37 @@ approval:
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ فشل مصادقة المزوّد. تحقق من بيانات الاعتماد المكوّنة؛ توجد تفاصيل المزوّد الخام في سجلات البوابة.'
+  provider_rejected: '⚠️ رفض مزوّد النموذج الطلب. أبقيت خطأ المزوّد الخام خارج المحادثة؛ راجع سجلات البوابة للتفاصيل أو حاول إعادة الصياغة.'
+  provider_rate_limited: '⏱️ يقيّد مزوّد النموذج الطلبات حاليًا. يُرجى الانتظار لحظة ثم إعادة المحاولة.'
+  provider_connection_error: '⚠️ خادم النموذج لا يستجيب — يبدو أن نقطة نهاية النموذج المُهيأة غير قيد التشغيل أو يتعذر الوصول إليها.'
+  provider_failed: '⚠️ فشل مزوّد النموذج بعد عدة محاولات. أبقيت تفاصيل المزوّد الخام خارج المحادثة؛ راجع سجلات البوابة للتشخيص.'
+  learn_start_failed: 'تعذّر بدء /learn — يُرجى المحاولة مرة أخرى.'
+  init_start_failed: 'تعذّر بدء /init — يُرجى المحاولة مرة أخرى.'
+  moa_prepare_failed: 'فشل تحضير دورة MoA.'
+  quick_command_timed_out: 'انتهت مهلة الأمر السريع (30s).'
+  goal_busy_hint: 'الوكيل قيد التشغيل — استخدم /goal status / pause / clear / wait أثناء التشغيل، أو /stop قبل تحديد هدف جديد.'
+  voice_unsupported_platform: 'القنوات الصوتية غير مدعومة على هذه المنصة.'
+  voice_discord_only: 'يعمل هذا الأمر فقط في خادم Discord.'
+  voice_join_first: 'يجب أن تكون في قناة صوتية أولًا.'
+  voice_not_in_channel: 'لست في قناة صوتية.'
+  voice_left_channel: 'غادرت القناة الصوتية.'
+  topic_chat_id_unknown: 'تعذّر تحديد معرّف المحادثة.'
+  topic_mode_not_enabled: 'وضع المواضيع متعدد الجلسات غير مفعّل حاليًا لهذه المحادثة.'
+  topic_restore_not_telegram: 'تلك الجلسة ليست جلسة Telegram ولا يمكن استعادتها في هذا الموضوع.'
+  topic_restore_not_owner: 'تلك الجلسة لا تنتمي إلى مستخدم Telegram هذا.'
+  topic_restore_already_linked: 'تلك الجلسة مرتبطة بالفعل بموضوع Telegram آخر.'
+  goal_wait_usage: 'الاستخدام: /goal wait <pid> [سبب]'
+  goal_wait_invalid_pid: '/goal wait: يجب أن يكون <pid> عددًا صحيحًا يمثل معرّف العملية.'
+  goal_wait_cleared: '▶ تمت إزالة حاجز الانتظار — تستأنف حلقة الهدف.'
+  goal_no_wait_barrier: 'لا يوجد حاجز انتظار مضبوط.'
+  goal_draft_usage: 'الاستخدام: /goal draft <الهدف بلغة بسيطة>'
+  goal_none_active_set: 'لا يوجد هدف نشط. حدد واحدًا باستخدام /goal <نص>.'
+  subgoal_remove_usage: 'الاستخدام: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: يجب أن يكون <n> عددًا صحيحًا (مؤشر يبدأ من 1).'
+  subgoal_none_to_clear: 'لا توجد أهداف فرعية لمسحها.'
+  approve_admins_only: 'يمكن لمسؤولي البوابة فقط تغيير وضع الموافقة الدائم.'
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -69,6 +100,10 @@ gateway:
     usage_switch_provider:  "`/model <name> --provider <slug>` — تبديل المزوّد"
     usage_persist:          "`/model <name> --global` — حفظ دائم"
 
+  activity:
+    still_on_it:                 "ما زلت أعمل عليها"
+    one_sec:                     "لحظة واحدة"
+
   agents:
     header:                "🤖 **الوكلاء والمهام النشطة**"
     active_agents:         "**الوكلاء النشطون:** {count}"
@@ -109,6 +144,12 @@ gateway:
     switch_failed:         "أُنشئ الفرع لكن تعذّر التبديل إليه."
     branched_one:          "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
     branched_many:         "⑂ تم التفريع إلى **{title}** (نُسخت {count} رسالة)\nالأصل: `{parent}`\nالفرع: `{new}`\nاستخدم `/resume` للعودة إلى الأصل."
+
+  busy_reject:
+    model:                  "الوكيل قيد التشغيل — انتظر أو استخدم /stop أولًا، ثم بدّل النماذج."
+    codex_runtime:          "الوكيل قيد التشغيل — انتظر أو استخدم /stop أولًا، ثم غيّر بيئة التشغيل."
+    moa:                    "الوكيل قيد التشغيل — انتظر أو استخدم /stop أولًا، ثم شغّل /moa."
+    generic:                "⏳ الوكيل قيد التشغيل — `/{name}` لا يمكن تشغيله في منتصف الدورة. انتظر الرد الحالي أو استخدم `/stop` أولًا."
 
   commands:
     usage:                 "الاستخدام: `/commands [page]`"
@@ -179,6 +220,7 @@ gateway:
     resumed:               "▶ استُؤنف الهدف: {goal}\nسأتابع الآن — سأتخذ الخطوة التالية فورًا."
     invalid:               "هدف غير صالح: {error}"
     set:                   "⊙ حُدِّد الهدف (ميزانية {budget} دور): {goal}\nسأواصل العمل حتى يكتمل الهدف، أو توقفه/تمسحه، أو تنفد الميزانية.\nالتحكم: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(تعذّر صياغة عقد — التشغيل كهدف حر.)"
 
   help:
     header:                "📖 **أوامر Hermes**\n"
@@ -351,6 +393,9 @@ gateway:
     state_no:              "لا"
     queued:                "**المتابعات في الطابور:** {count}"
     platforms:             "**المنصّات المتصلة:** {platforms}"
+
+  steer:
+    usage_no_agent:          "الاستخدام: /steer <prompt>  (لا يوجد وكيل نشط؛ يُرسل كرسالة عادية)"
 
   stop:
     stopped_pending:       "⚡ تم الإيقاف. لم يكن الوكيل قد بدأ بعد — يمكنك متابعة هذه الجلسة."

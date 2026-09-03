@@ -20,6 +20,37 @@ approval:
   blocklist_message: "Questo comando è nella lista di blocco incondizionata e non può essere approvato."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ Autenticazione del provider non riuscita. Controllare le credenziali configurate; i dettagli del provider sono nei log del gateway.'
+  provider_rejected: "⚠️ Il provider del modello ha rifiutato la richiesta. Ho tenuto l'errore grezzo del provider fuori dalla chat; controllare i log del gateway per i dettagli o provare a riformulare."
+  provider_rate_limited: '⏱️ Il provider del modello sta limitando le richieste. Attendere un momento e riprovare.'
+  provider_connection_error: '⚠️ Il server del modello non risponde — sembra che l''endpoint del modello configurato non sia in esecuzione o non sia raggiungibile.'
+  provider_failed: '⚠️ Il provider del modello ha fallito dopo vari tentativi. Ho tenuto i dettagli grezzi del provider fuori dalla chat; controllare i log del gateway per la diagnosi.'
+  learn_start_failed: 'Impossibile avviare /learn — riprovare.'
+  init_start_failed: 'Impossibile avviare /init — riprovare.'
+  moa_prepare_failed: 'Impossibile preparare il turno MoA.'
+  quick_command_timed_out: 'Tempo scaduto per il comando rapido (30s).'
+  goal_busy_hint: "L'agente è in esecuzione — usare /goal status / pause / clear / wait durante l'esecuzione, oppure /stop prima di impostare un nuovo obiettivo."
+  voice_unsupported_platform: 'I canali vocali non sono supportati su questa piattaforma.'
+  voice_discord_only: 'Questo comando funziona solo in un server Discord.'
+  voice_join_first: 'Deve prima essere in un canale vocale.'
+  voice_not_in_channel: 'Non è in un canale vocale.'
+  voice_left_channel: 'Canale vocale abbandonato.'
+  topic_chat_id_unknown: "Impossibile determinare l'ID della chat."
+  topic_mode_not_enabled: 'La modalità topic multi-sessione non è attualmente abilitata per questa chat.'
+  topic_restore_not_telegram: 'Quella sessione non è una sessione Telegram e non può essere ripristinata in questo topic.'
+  topic_restore_not_owner: 'Quella sessione non appartiene a questo utente Telegram.'
+  topic_restore_already_linked: 'Quella sessione è già collegata a un altro topic Telegram.'
+  goal_wait_usage: 'Uso: /goal wait <pid> [motivo]'
+  goal_wait_invalid_pid: '/goal wait: <pid> deve essere un ID di processo intero.'
+  goal_wait_cleared: "▶ Barriera di attesa rimossa — il ciclo dell'obiettivo riprende."
+  goal_no_wait_barrier: 'Nessuna barriera di attesa impostata.'
+  goal_draft_usage: 'Uso: /goal draft <obiettivo in linguaggio naturale>'
+  goal_none_active_set: 'Nessun obiettivo attivo. Impostarne uno con /goal <testo>.'
+  subgoal_remove_usage: 'Uso: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n> deve essere un intero (indice a base 1).'
+  subgoal_none_to_clear: 'Nessun sotto-obiettivo da cancellare.'
+  approve_admins_only: 'Solo gli amministratori del gateway possono modificare la modalità di approvazione persistente.'
   approval_expired: "⚠️ Approvazione scaduta (l'agente non è più in attesa). Chiedi all'agente di riprovare."
   draining:         "⏳ Attendo il completamento di {count} agente/i attivo/i prima di riavviare..."
   goal_cleared:     "✓ Obiettivo cancellato."
@@ -45,6 +76,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — cambia modello"
     usage_switch_provider:  "`/model <name> --provider <slug>` — cambia provider"
     usage_persist:          "`/model <name> --global` — rendi permanente"
+
+  activity:
+    still_on_it:                 "ci sto ancora lavorando"
+    one_sec:                     "un secondo"
 
   agents:
     header:                "🤖 **Agenti e attività attivi**"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "Ramo creato ma il passaggio ad esso non è riuscito."
     branched_one:          "⑂ Diramato in **{title}** ({count} messaggio copiato)\nOriginale: `{parent}`\nRamo: `{new}`\nUsa `/resume` per tornare all'originale."
     branched_many:         "⑂ Diramato in **{title}** ({count} messaggi copiati)\nOriginale: `{parent}`\nRamo: `{new}`\nUsa `/resume` per tornare all'originale."
+
+  busy_reject:
+    model:                  "L'agente è in esecuzione — attendi o usa /stop prima, poi cambia modello."
+    codex_runtime:          "L'agente è in esecuzione — attendi o usa /stop prima, poi cambia runtime."
+    moa:                    "L'agente è in esecuzione — attendi o usa /stop prima, poi esegui /moa."
+    generic:                "⏳ L'agente è in esecuzione — `/{name}` non può essere eseguito durante un turno. Attendi la risposta corrente o usa `/stop` prima."
 
   commands:
     usage:                 "Uso: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ Obiettivo ripreso: {goal}\nContinuo subito — farò immediatamente il prossimo passo."
     invalid:               "Obiettivo non valido: {error}"
     set:                   "⊙ Obiettivo impostato (budget di {budget} turni): {goal}\nContinuerò a lavorare finché l'obiettivo non sarà completato, lo metterai in pausa/lo cancellerai, oppure il budget sarà esaurito.\nControlli: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Impossibile redigere un contratto — esecuzione come obiettivo libero.)"
 
   help:
     header:                "📖 **Comandi Hermes**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "No"
     queued:                "**Follow-up in coda:** {count}"
     platforms:             "**Piattaforme connesse:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Uso: /steer <prompt>  (nessun agente in esecuzione; inviato come messaggio normale)"
 
   stop:
     stopped_pending:       "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."

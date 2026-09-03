@@ -20,6 +20,37 @@ approval:
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ Sağlayıcı kimlik doğrulaması başarısız oldu. Yapılandırılmış kimlik bilgilerini kontrol edin; ham sağlayıcı ayrıntıları gateway günlüklerinde yer alır.'
+  provider_rejected: '⚠️ Model sağlayıcısı isteği reddetti. Ham sağlayıcı hatasını sohbete dahil etmedim; ayrıntılar için gateway günlüklerine bakın veya yeniden ifade etmeyi deneyin.'
+  provider_rate_limited: '⏱️ Model sağlayıcısı isteklere hız sınırı uyguluyor. Lütfen bir an bekleyin ve tekrar deneyin.'
+  provider_connection_error: '⚠️ Model sunucusu yanıt vermiyor — yapılandırılan model uç noktası çalışmıyor veya erişilemiyor gibi görünüyor.'
+  provider_failed: '⚠️ Model sağlayıcısı yeniden denemelerin ardından başarısız oldu. Ham sağlayıcı ayrıntılarını sohbete dahil etmedim; tanılama için gateway günlüklerine bakın.'
+  learn_start_failed: '/learn başlatılamadı — lütfen tekrar deneyin.'
+  init_start_failed: '/init başlatılamadı — lütfen tekrar deneyin.'
+  moa_prepare_failed: 'MoA turu hazırlanamadı.'
+  quick_command_timed_out: 'Hızlı komut zaman aşımına uğradı (30s).'
+  goal_busy_hint: 'Ajan çalışıyor — çalışma sırasında /goal status / pause / clear / wait kullanın veya yeni bir hedef belirlemeden önce /stop ile durdurun.'
+  voice_unsupported_platform: 'Ses kanalları bu platformda desteklenmiyor.'
+  voice_discord_only: 'Bu komut yalnızca bir Discord sunucusunda çalışır.'
+  voice_join_first: 'Önce bir ses kanalında olmanız gerekir.'
+  voice_not_in_channel: 'Bir ses kanalında değilsiniz.'
+  voice_left_channel: 'Ses kanalından ayrıldınız.'
+  topic_chat_id_unknown: 'Sohbet kimliği belirlenemedi.'
+  topic_mode_not_enabled: 'Çok oturumlu konu modu şu anda bu sohbet için etkin değil.'
+  topic_restore_not_telegram: 'Bu oturum bir Telegram oturumu değil ve bu konuya geri yüklenemez.'
+  topic_restore_not_owner: 'Bu oturum bu Telegram kullanıcısına ait değil.'
+  topic_restore_already_linked: 'Bu oturum başka bir Telegram konusuna zaten bağlı.'
+  goal_wait_usage: 'Kullanım: /goal wait <pid> [sebep]'
+  goal_wait_invalid_pid: '/goal wait: <pid> bir tamsayı işlem kimliği olmalıdır.'
+  goal_wait_cleared: '▶ Bekleme engeli kaldırıldı — hedef döngüsü devam ediyor.'
+  goal_no_wait_barrier: 'Bekleme engeli ayarlanmamış.'
+  goal_draft_usage: 'Kullanım: /goal draft <sade dille hedef>'
+  goal_none_active_set: 'Aktif hedef yok. /goal <metin> ile bir hedef belirleyin.'
+  subgoal_remove_usage: 'Kullanım: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: <n> bir tamsayı olmalıdır (1 tabanlı dizin).'
+  subgoal_none_to_clear: 'Temizlenecek alt hedef yok.'
+  approve_admins_only: 'Kalıcı onay modunu yalnızca gateway yöneticileri değiştirebilir.'
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining:         "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared:     "✓ Hedef temizlendi."
@@ -45,6 +76,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — modeli değiştir"
     usage_switch_provider:  "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
     usage_persist:          "`/model <name> --global` — kalıcı kaydet"
+
+  activity:
+    still_on_it:                 "hâlâ üzerinde"
+    one_sec:                     "bir saniye"
 
   agents:
     header:                "🤖 **Aktif Ajanlar ve Görevler**"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "Dal oluşturuldu ancak ona geçilemedi."
     branched_one:          "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
     branched_many:         "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
+
+  busy_reject:
+    model:                  "Ajan çalışıyor — bekle veya önce /stop yap, sonra model değiştir."
+    codex_runtime:          "Ajan çalışıyor — bekle veya önce /stop yap, sonra çalışma zamanını değiştir."
+    moa:                    "Ajan çalışıyor — bekle veya önce /stop yap, sonra /moa çalıştır."
+    generic:                "⏳ Ajan çalışıyor — `/{name}` tur ortasında çalıştırılamaz. Mevcut yanıtı bekle veya önce `/stop` yap."
 
   commands:
     usage:                 "Kullanım: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ Hedef devam ettirildi: {goal}\nHemen devam ediyorum — bir sonraki adımı derhal atacağım."
     invalid:               "Geçersiz hedef: {error}"
     set:                   "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Sözleşme taslağı hazırlanamadı — serbest biçimli hedef olarak çalışıyor.)"
 
   help:
     header:                "📖 **Hermes Komutları**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "Hayır"
     queued:                "**Sıradaki devam:** {count}"
     platforms:             "**Bağlı platformlar:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Kullanım: /steer <prompt>  (çalışan ajan yok; normal mesaj olarak gönderiliyor)"
 
   stop:
     stopped_pending:       "⚡ Durduruldu. Ajan henüz başlamamıştı — bu oturuma devam edebilirsin."

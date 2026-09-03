@@ -20,6 +20,37 @@ approval:
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ A szolgáltató hitelesítése sikertelen. Ellenőrizze a beállított hitelesítő adatokat; a nyers szolgáltatói adatok az átjáró naplóiban találhatók.'
+  provider_rejected: '⚠️ A modellszolgáltató elutasította a kérést. A nyers szolgáltatói hiba nem került a csevegésbe; a részletekért nézze meg az átjáró naplóit, vagy próbálja átfogalmazni.'
+  provider_rate_limited: '⏱️ A modellszolgáltató korlátozza a kérések gyakoriságát. Kérjük, várjon egy pillanatot, és próbálja újra.'
+  provider_connection_error: '⚠️ A modellkiszolgáló nem válaszol — úgy tűnik, a beállított modellvégpont nem fut vagy nem érhető el.'
+  provider_failed: '⚠️ A modellszolgáltató az újrapróbálkozások ellenére sem működött. A nyers szolgáltatói adatok nem kerültek a csevegésbe; a diagnosztikához nézze meg az átjáró naplóit.'
+  learn_start_failed: 'Nem sikerült elindítani a /learn parancsot — próbálja újra.'
+  init_start_failed: 'Nem sikerült elindítani a /init parancsot — próbálja újra.'
+  moa_prepare_failed: 'Nem sikerült előkészíteni a MoA kört.'
+  quick_command_timed_out: 'A gyorsparancs időtúllépés miatt megszakadt (30s).'
+  goal_busy_hint: 'Az ügynök éppen fut — használja a /goal status / pause / clear / wait parancsot futás közben, vagy a /stop parancsot, mielőtt új célt állítana be.'
+  voice_unsupported_platform: 'A hangcsatornák nem támogatottak ezen a platformon.'
+  voice_discord_only: 'Ez a parancs csak Discord szerveren működik.'
+  voice_join_first: 'Előbb csatlakoznia kell egy hangcsatornához.'
+  voice_not_in_channel: 'Nincs hangcsatornában.'
+  voice_left_channel: 'Kilépett a hangcsatornából.'
+  topic_chat_id_unknown: 'Nem sikerült meghatározni a csevegés azonosítóját.'
+  topic_mode_not_enabled: 'A több munkamenetes témamód jelenleg nincs engedélyezve ehhez a csevegéshez.'
+  topic_restore_not_telegram: 'Az a munkamenet nem Telegram-munkamenet, és nem állítható vissza ebbe a témába.'
+  topic_restore_not_owner: 'Az a munkamenet nem ehhez a Telegram-felhasználóhoz tartozik.'
+  topic_restore_already_linked: 'Az a munkamenet már egy másik Telegram-témához van kapcsolva.'
+  goal_wait_usage: 'Használat: /goal wait <pid> [indok]'
+  goal_wait_invalid_pid: '/goal wait: a <pid> egész számú folyamatazonosító kell, hogy legyen.'
+  goal_wait_cleared: '▶ A várakozási akadály eltávolítva — a célhurok folytatódik.'
+  goal_no_wait_barrier: 'Nincs beállítva várakozási akadály.'
+  goal_draft_usage: 'Használat: /goal draft <cél hétköznapi nyelven>'
+  goal_none_active_set: 'Nincs aktív cél. Állítson be egyet a /goal <szöveg> paranccsal.'
+  subgoal_remove_usage: 'Használat: /subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove: a <n> értékének egész számnak kell lennie (1-től kezdődő index).'
+  subgoal_none_to_clear: 'Nincsenek törölhető alcélok.'
+  approve_admins_only: 'Csak az átjáró adminisztrátorai módosíthatják az állandó jóváhagyási módot.'
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."
   draining:         "⏳ {count} aktív ügynök befejezésére várunk az újraindítás előtt..."
   goal_cleared:     "✓ A cél törölve."
@@ -45,6 +76,10 @@ gateway:
     usage_switch_model:     "`/model <name>` — modell váltása"
     usage_switch_provider:  "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist:          "`/model <name> --global` — megőrzés"
+
+  activity:
+    still_on_it:                 "még dolgozom rajta"
+    one_sec:                     "egy pillanat"
 
   agents:
     header:                "🤖 **Aktív ügynökök és feladatok**"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "Az ág létrejött, de nem sikerült rá váltani."
     branched_one:          "⑂ Új ág: **{title}** ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
     branched_many:         "⑂ Új ág: **{title}** ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
+
+  busy_reject:
+    model:                  "Az ügynök éppen fut — várj vagy használd a /stop parancsot előbb, utána válts modellt."
+    codex_runtime:          "Az ügynök éppen fut — várj vagy használd a /stop parancsot előbb, utána válts runtime-ot."
+    moa:                    "Az ügynök éppen fut — várj vagy használd a /stop parancsot előbb, utána futtasd a /moa parancsot."
+    generic:                "⏳ Az ügynök éppen fut — a `/{name}` nem futtatható kör közben. Várj a jelenlegi válaszra, vagy használd a `/stop` parancsot előbb."
 
   commands:
     usage:                 "Használat: `/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ Cél folytatva: {goal}\nMáris folytatom — azonnal megteszem a következő lépést."
     invalid:               "Érvénytelen cél: {error}"
     set:                   "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "(Nem sikerült szerződést megfogalmazni — futás szabad formátumú célként.)"
 
   help:
     header:                "📖 **Hermes parancsok**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "Nem"
     queued:                "**Sorban álló folytatások:** {count}"
     platforms:             "**Csatlakoztatott platformok:** {platforms}"
+
+  steer:
+    usage_no_agent:          "Használat: /steer <prompt>  (egy ügynök sem fut; küldés normál üzenetként)"
 
   stop:
     stopped_pending:       "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."

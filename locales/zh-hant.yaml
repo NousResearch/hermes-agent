@@ -20,6 +20,37 @@ approval:
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
 
 gateway:
+  # i18n: gateway messages converted from hardcoded strings (feat/i18n-strings-es)
+  provider_auth_failed: '⚠️ 提供方驗證失敗。請檢查已設定的憑證；原始提供方詳細資訊位於閘道記錄中。'
+  provider_rejected: '⚠️ 模型提供方拒絕了此請求。我未將原始提供方錯誤顯示於聊天中；請查看閘道記錄以取得詳細資訊，或嘗試重新措辭。'
+  provider_rate_limited: '⏱️ 模型提供方正在限制請求速率。請稍候片刻，然後再試一次。'
+  provider_connection_error: '⚠️ 模型伺服器沒有回應 — 設定的模型端點似乎未執行或無法連線。'
+  provider_failed: '⚠️ 模型提供方在重試後仍失敗。我未將原始提供方詳細資訊顯示於聊天中；請查看閘道記錄以進行診斷。'
+  learn_start_failed: '無法啟動 /learn — 請再試一次。'
+  init_start_failed: '無法啟動 /init — 請再試一次。'
+  moa_prepare_failed: '無法準備 MoA 回合。'
+  quick_command_timed_out: '快速指令逾時（30s）。'
+  goal_busy_hint: '代理正在執行中 — 請於執行期間使用 /goal status / pause / clear / wait，或先使用 /stop 再設定新目標。'
+  voice_unsupported_platform: '此平台不支援語音頻道。'
+  voice_discord_only: '此指令僅適用於 Discord 伺服器。'
+  voice_join_first: '您必須先加入語音頻道。'
+  voice_not_in_channel: '目前不在語音頻道中。'
+  voice_left_channel: '已離開語音頻道。'
+  topic_chat_id_unknown: '無法確定聊天 ID。'
+  topic_mode_not_enabled: '此聊天目前未啟用多工作階段主題模式。'
+  topic_restore_not_telegram: '該工作階段並非 Telegram 工作階段，無法還原至此主題。'
+  topic_restore_not_owner: '該工作階段不屬於此 Telegram 使用者。'
+  topic_restore_already_linked: '該工作階段已連結至另一個 Telegram 主題。'
+  goal_wait_usage: '用法：/goal wait <pid> [原因]'
+  goal_wait_invalid_pid: '/goal wait：<pid> 必須是整數的程序 ID。'
+  goal_wait_cleared: '▶ 等待屏障已清除 — 目標迴圈恢復執行。'
+  goal_no_wait_barrier: '尚未設定等待屏障。'
+  goal_draft_usage: '用法：/goal draft <以自然語言描述的目標>'
+  goal_none_active_set: '目前沒有作用中的目標。請使用 /goal <文字> 設定目標。'
+  subgoal_remove_usage: '用法：/subgoal remove <n>'
+  subgoal_remove_invalid: '/subgoal remove：<n> 必須是整數（從 1 開始的索引）。'
+  subgoal_none_to_clear: '沒有可清除的子目標。'
+  approve_admins_only: '僅有閘道管理員可以變更持久批准模式。'
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"
   draining:         "⏳ 正在等待 {count} 個活躍代理結束後重新啟動..."
   goal_cleared:     "✓ 目標已清除。"
@@ -71,6 +102,10 @@ gateway:
     usage:                 "用法：/bg <提示>\n範例：/bg 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"
     started:               "🔄 背景任務已啟動：「{preview}」\n任務 ID：{task_id}\n你可以繼續聊天 — 完成後結果將顯示於此。"
 
+  activity:
+    still_on_it:                 "還在處理中"
+    one_sec:                     "稍等一下"
+
   btw:
     usage:                 "用法：/btw <問題>\n範例：/btw 那個錯誤在哪個檔案？\n\n在不打斷目前工作的情況下，回答關於此對話的快速問題。若要執行獨立的背景任務，請使用 /bg <提示>。"
     no_history:            "尚無對話 — 請將問題作為一般訊息傳送。"
@@ -86,6 +121,12 @@ gateway:
     switch_failed:         "分支已建立，但無法切換到該分支。"
     branched_one:          "⑂ 已分支至 **{title}**（已複製 {count} 則訊息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切換回原始工作階段。"
     branched_many:         "⑂ 已分支至 **{title}**（已複製 {count} 則訊息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切換回原始工作階段。"
+
+  busy_reject:
+    model:                  "代理正在執行中 — 請等待或先 /stop，然後切換模型。"
+    codex_runtime:          "代理正在執行中 — 請等待或先 /stop，然後變更執行階段。"
+    moa:                    "代理正在執行中 — 請等待或先 /stop，然後執行 /moa。"
+    generic:                "⏳ 代理正在執行中 — `/{name}` 無法在回合中執行。請等待目前回應或先 `/stop`。"
 
   commands:
     usage:                 "用法：`/commands [page]`"
@@ -156,6 +197,7 @@ gateway:
     resumed:               "▶ 目標已恢復：{goal}\n立即繼續 — 我馬上進行下一步。"
     invalid:               "無效目標：{error}"
     set:                   "⊙ 目標已設定（{budget} 輪預算）：{goal}\n我會持續工作直到目標完成、你暫停／清除目標，或預算耗盡。\n控制指令：/goal status · /goal pause · /goal resume · /goal clear"
+    contract_draft_failed: "（無法起草合約 — 以自由形式目標執行。）"
 
   help:
     header:                "📖 **Hermes 指令**\n"
@@ -349,6 +391,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     state_no:              "否"
     queued:                "**排隊中的後續：** {count}"
     platforms:             "**已連線平台：** {platforms}"
+
+  steer:
+    usage_no_agent:          "用法：/steer <提示>  （沒有代理正在執行中；作為一般訊息傳送）"
 
   stop:
     stopped_pending:       "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"

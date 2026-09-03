@@ -309,13 +309,30 @@ function assertDistBuilt(): void {
 export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
-  // after building. We replicate that here.
-  //
-  // The desktop package is searched first: npm workspaces only hoist
-  // `electron` to the repo root when nothing conflicts, so a workspace-local
-  // install is just as ordinary an outcome as a hoisted one. The rules live in
-  // ./electron-binary so they can be unit-tested per platform.
-  return resolveElectronBinary([DESKTOP_ROOT, REPO_ROOT])
+  // after building. We replicate that here. The binary is `electron.exe` on
+  // Windows, bare `electron` elsewhere.
+  const binName = process.platform === 'win32' ? 'electron.exe' : 'electron'
+  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', binName)
+
+  if (fs.existsSync(localElectron)) {
+    return localElectron
+  }
+
+  // Fall back to PATH (`which` is POSIX-only; `where` is its Windows analogue
+  // and may print several lines — take the first).
+  const locator = process.platform === 'win32' ? 'where' : 'which'
+  const result = spawnSync(locator, ['electron'], {
+    encoding: 'utf8',
+  })
+
+  const firstMatch = result.stdout.trim().split(/\r?\n/)[0]?.trim()
+  if (result.status === 0 && firstMatch) {
+    return firstMatch
+  }
+
+  throw new Error(
+    'Electron binary not found. Run "npm install" from the repo root to install devDependencies.',
+  )
 }
 
 /**

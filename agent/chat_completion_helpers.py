@@ -4515,8 +4515,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
-            # Accumulate reasoning content
-            reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            # Accumulate reasoning content. Merge Gateway and similar
+            # OpenAI-compat shims stream it as ``thinking`` (#101392).
+            reasoning_text = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or getattr(delta, "thinking", None)
+            )
             if reasoning_text:
                 # Summary-part models (gpt-5.x and other Responses relays) send
                 # one complete markdown block per delta with no separator, so

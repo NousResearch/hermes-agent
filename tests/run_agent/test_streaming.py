@@ -15,7 +15,7 @@ import pytest
 
 def _make_stream_chunk(
     content=None, tool_calls=None, finish_reason=None,
-    model=None, reasoning_content=None, usage=None,
+    model=None, reasoning_content=None, usage=None, thinking=None,
 ):
     """Build a mock streaming chunk matching OpenAI's ChatCompletionChunk shape."""
     delta = SimpleNamespace(
@@ -23,6 +23,7 @@ def _make_stream_chunk(
         tool_calls=tool_calls,
         reasoning_content=reasoning_content,
         reasoning=None,
+        thinking=thinking,
     )
     choice = SimpleNamespace(
         index=0,
@@ -646,6 +647,43 @@ class TestReasoningStreaming:
         assert text_deltas == ["The answer is 42"]
         assert response.choices[0].message.reasoning_content == "Let me think about this"
         assert response.choices[0].message.content == "The answer is 42"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_reasoning_callback_fires_for_thinking_field(self, mock_close, mock_create):
+        """Merge Gateway and similar OpenAI-compat shims stream reasoning as
+        ``delta.thinking`` rather than ``reasoning``/``reasoning_content``
+        (#101392) — it should still reach the reasoning callback."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(thinking="17*23 is "),
+            _make_stream_chunk(thinking="391"),
+            _make_stream_chunk(content="391"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+
+        reasoning_deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            reasoning_callback=lambda t: reasoning_deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert reasoning_deltas == ["17*23 is ", "391"]
 
 
 # ── Test: _has_stream_consumers ──────────────────────────────────────────

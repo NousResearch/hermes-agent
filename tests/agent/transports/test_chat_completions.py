@@ -614,6 +614,26 @@ class TestChatCompletionsNormalize:
         assert nr.provider_data == {"reasoning_content": ""}
         assert nr.reasoning_content == ""
 
+    def test_thinking_field_falls_back_to_reasoning(self, transport):
+        """Merge Gateway and similar OpenAI-compat shims return reasoning as
+        ``message.thinking`` rather than ``reasoning``/``reasoning_content``
+        (#101392) — it should still surface as ``reasoning``."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="42",
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content=None,
+                    thinking="17*23 is 391",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.reasoning == "17*23 is 391"
+
 
 
     def test_refusal_none_is_noop(self, transport):

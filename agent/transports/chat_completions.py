@@ -1066,15 +1066,21 @@ class ChatCompletionsTransport(ProviderTransport):
             )
 
         # Preserve reasoning fields separately.  DeepSeek/Moonshot use
-        # ``reasoning_content``; others use ``reasoning``.  Downstream code
-        # (_extract_reasoning, thinking-prefill retry) reads both distinctly,
-        # so keep them apart in provider_data rather than merging.
-        reasoning = getattr(msg, "reasoning", None)
+        # ``reasoning_content``; others use ``reasoning``. Merge Gateway and
+        # similar OpenAI-compat shims use ``thinking`` (#101392) — fold it
+        # into ``reasoning`` since it's the same plain-text-reasoning shape.
+        # Downstream code (_extract_reasoning, thinking-prefill retry) reads
+        # ``reasoning``/``reasoning_content`` distinctly, so keep those two
+        # apart in provider_data rather than merging.
+        reasoning = getattr(msg, "reasoning", None) or getattr(msg, "thinking", None)
         reasoning_content = getattr(msg, "reasoning_content", None)
-        if reasoning_content is None and hasattr(msg, "model_extra"):
+        if hasattr(msg, "model_extra"):
             model_extra = getattr(msg, "model_extra", None) or {}
-            if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
-                reasoning_content = model_extra["reasoning_content"]
+            if isinstance(model_extra, dict):
+                if reasoning_content is None and "reasoning_content" in model_extra:
+                    reasoning_content = model_extra["reasoning_content"]
+                if reasoning is None and "thinking" in model_extra:
+                    reasoning = model_extra["thinking"]
 
         provider_data: Dict[str, Any] = {}
         if reasoning_content is not None:

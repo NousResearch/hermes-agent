@@ -19,6 +19,7 @@ describe('Lunar City asset manifest', () => {
     )
     expect(LUNAR_CITY_ASSET_MANIFEST.productionAssetPipeline).toEqual({
       highPolyMasterFirst: true,
+      masking: 'required_before_image_to_3d_generation',
       productionSource: 'full_resolution_high_poly_master_assets',
       rejectedSources: ['raw_scene_crop_image_to_3d'],
       retopology: 'derive_smart_low_poly_lods_from_master',
@@ -28,6 +29,9 @@ describe('Lunar City asset manifest', () => {
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetManifest).toBe('lunar-city/hero-assets/hero-assets-manifest.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetPreview).toBe('lunar-city/hero-assets/lunar-city-hero-assets.png')
     expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetManifest).toBe('lunar-city/master-assets/master-asset-manifest.json')
+    expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetMaskManifest).toBe(
+      'lunar-city/master-assets/masks/mask-manifest.json'
+    )
     expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetRejectedCandidates).toBe(
       'lunar-city/master-assets/rejected-candidates.json'
     )
@@ -308,6 +312,91 @@ describe('Lunar City asset manifest', () => {
       expect(asset.acceptance.requiresVisualApproval).toBe(true)
       expect(asset.acceptance.minimumTriangleCount).toBeGreaterThanOrEqual(asset.heroAsset ? 120000 : 45000)
     }
+  })
+
+  it('requires masked reference silhouettes before future image-to-3D master generation', () => {
+    const maskManifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/masks/mask-manifest.json'), 'utf8')
+    ) as {
+      maskCount: number
+      maskingPolicy: {
+        generationMustPreserveSilhouette: boolean
+        generationMustUseMaskedSource: boolean
+        humanReviewRequiredBeforeMasterPromotion: boolean
+        rejectIfSilhouetteMismatch: boolean
+        requiredBeforeImageTo3DGeneration: boolean
+      }
+      masks: Array<{
+        coverageRatio: number
+        id: string
+        mask: string
+        maskedSource?: string
+        maskedSourceCachePath: string
+        method: string
+        productionUse: string
+        qualityFlags: string[]
+        requiresHumanMaskReview: boolean
+        silhouettePreview: string
+        sourceReferenceCrop: string
+        targetMasterAssetExists: boolean
+        targetMasterAssetId: string
+      }>
+      privacy: {
+        containsPrivateProfileIdentifiers: boolean
+        usesRawSoulContent: boolean
+      }
+      productionEligibility: string
+      productionUse: string
+    }
+    const masterManifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/master-asset-manifest.json'), 'utf8')
+    ) as {
+      requiredAssets: Array<{ id: string }>
+    }
+
+    const requiredMasterIds = new Set(masterManifest.requiredAssets.map(asset => asset.id))
+
+    expect(LUNAR_CITY_ASSET_MANIFEST.productionAssetPipeline.masking).toBe(
+      'required_before_image_to_3d_generation'
+    )
+    expect(maskManifest.maskCount).toBe(23)
+    expect(maskManifest.masks).toHaveLength(23)
+    expect(maskManifest.productionUse).toBe('silhouette_prep_only')
+    expect(maskManifest.productionEligibility).toBe('not_production_master_asset')
+    expect(maskManifest.maskingPolicy.requiredBeforeImageTo3DGeneration).toBe(true)
+    expect(maskManifest.maskingPolicy.generationMustUseMaskedSource).toBe(true)
+    expect(maskManifest.maskingPolicy.generationMustPreserveSilhouette).toBe(true)
+    expect(maskManifest.maskingPolicy.rejectIfSilhouetteMismatch).toBe(true)
+    expect(maskManifest.maskingPolicy.humanReviewRequiredBeforeMasterPromotion).toBe(true)
+    expect(maskManifest.privacy.usesRawSoulContent).toBe(false)
+    expect(maskManifest.privacy.containsPrivateProfileIdentifiers).toBe(false)
+
+    for (const mask of maskManifest.masks) {
+      expect(mask.productionUse).toBe('silhouette_prep_only')
+      expect(mask.requiresHumanMaskReview).toBe(true)
+      expect(mask.qualityFlags).toContain('requires_human_silhouette_review')
+      expect(mask.coverageRatio).toBeGreaterThan(0.03)
+      expect(mask.coverageRatio).toBeLessThan(0.96)
+      expect(mask.targetMasterAssetExists).toBe(true)
+      expect(requiredMasterIds.has(mask.targetMasterAssetId)).toBe(true)
+      expect(mask.mask).toBe(`lunar-city/master-assets/masks/${mask.id}-mask.png`)
+      expect(mask.maskedSource).toBeUndefined()
+      expect(mask.maskedSourceCachePath).toBe(`/private/tmp/lunar-city-master-asset-masked-sources/${mask.id}-masked.png`)
+      expect(mask.silhouettePreview).toBe(`lunar-city/master-assets/masks/${mask.id}-silhouette.png`)
+      expect(mask.sourceReferenceCrop).toBe(`lunar-city/generated-3d/reference-crops/${mask.id}.png`)
+      expect(['background_delta_fallback', 'rembg_alpha_then_background_delta_union']).toContain(mask.method)
+      expect(existsSync(join(process.cwd(), 'public', mask.mask))).toBe(true)
+      expect(existsSync(mask.maskedSourceCachePath)).toBe(true)
+      expect(existsSync(join(process.cwd(), 'public', mask.silhouettePreview))).toBe(true)
+      expect(existsSync(join(process.cwd(), 'public', mask.sourceReferenceCrop))).toBe(true)
+    }
+
+    expect(maskManifest.masks.find(mask => mask.id === 'building-engineering')?.targetMasterAssetId).toBe(
+      'building-engineering-workshop'
+    )
+    expect(maskManifest.masks.find(mask => mask.id === 'prop-break-garden')?.targetMasterAssetId).toBe(
+      'building-break-garden'
+    )
   })
 
   it('records high-poly generated candidates rejected for wrong silhouettes', () => {

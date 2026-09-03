@@ -78,6 +78,7 @@ export interface WorldGenerated3DManifest {
 
 export interface WorldProductionAssetPipeline {
   highPolyMasterFirst: boolean
+  masking: 'required_before_image_to_3d_generation'
   productionSource: 'full_resolution_high_poly_master_assets'
   rejectedSources: Array<'raw_scene_crop_image_to_3d'>
   retopology: 'derive_smart_low_poly_lods_from_master'
@@ -96,6 +97,7 @@ export interface WorldAssetManifest {
   heroAssetManifest?: string
   heroAssetPreview?: string
   masterAssetManifest?: string
+  masterAssetMaskManifest?: string
   masterAssetRejectedCandidates?: string
   profileManifest: string
   productionAssetPipeline: WorldProductionAssetPipeline
@@ -275,10 +277,12 @@ export const LUNAR_CITY_ASSET_MANIFEST: WorldAssetManifest = {
   heroAssetManifest: 'lunar-city/hero-assets/hero-assets-manifest.json',
   heroAssetPreview: 'lunar-city/hero-assets/lunar-city-hero-assets.png',
   masterAssetManifest: 'lunar-city/master-assets/master-asset-manifest.json',
+  masterAssetMaskManifest: 'lunar-city/master-assets/masks/mask-manifest.json',
   masterAssetRejectedCandidates: 'lunar-city/master-assets/rejected-candidates.json',
   profileManifest: 'lunar-city/profile-assets.json',
   productionAssetPipeline: {
     highPolyMasterFirst: true,
+    masking: 'required_before_image_to_3d_generation',
     productionSource: 'full_resolution_high_poly_master_assets',
     rejectedSources: ['raw_scene_crop_image_to_3d'],
     retopology: 'derive_smart_low_poly_lods_from_master',

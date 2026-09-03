@@ -4,11 +4,34 @@ Production Lunar City art starts here.
 
 The accepted pipeline is:
 
-1. Create or import a full-resolution/high-poly master asset.
-2. Validate that the master clearly matches the approved Lunar City reference style.
-3. Retopologize into smart low-poly runtime LODs.
-4. Bake PBR textures from the master: 2K default, 4K only for hero leaders and building facades.
-5. Rig and animate characters after master validation.
+1. Generate or hand-author masked source cards and silhouette previews from the
+   approved reference images.
+2. Create or import a full-resolution/high-poly master asset from the masked
+   source, not from the raw scene crop.
+3. Validate that the master clearly matches the approved Lunar City reference
+   silhouette and style.
+4. Retopologize into smart low-poly runtime LODs.
+5. Bake PBR textures from the master: 2K default, 4K only for hero leaders and building facades.
+6. Rig and animate characters after master validation.
+
+Mask artifacts live in `masks/` and are indexed by `masks/mask-manifest.json`:
+
+- `*-mask.png` is the grayscale silhouette mask.
+- `*-silhouette.png` is the visual review card for silhouette approval.
+
+Run mask prep before any image-to-3D generation:
+
+```bash
+/private/tmp/TripoSR/.venv/bin/python apps/desktop/scripts/generate_lunar_city_asset_masks.py
+```
+
+The script also writes transparent masked source cards to
+`/private/tmp/lunar-city-master-asset-masked-sources/`. Those cache files are
+used as image-to-3D inputs and are intentionally not checked into the desktop
+asset tree because they are large binary prep artifacts.
+
+These masks are prep artifacts only. They require human silhouette review before
+any generated asset can be promoted to a production master.
 
 Do not use these as production sources:
 

@@ -438,7 +438,7 @@ class CopilotACPClient:
             _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
             _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
 
-        response_text, reasoning_text = self._run_prompt(
+        response_text, reasoning_text, model_applied = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
             model=model,
@@ -461,10 +461,17 @@ class CopilotACPClient:
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
+        # Only claim the requested model when it was actually applied to the
+        # session. When Copilot doesn't offer it (unknown/policy-disabled id)
+        # or the session/set_config_option|set_model RPC failed, _run_prompt
+        # silently continues with the session's default model — reporting
+        # the requested id here would falsely attribute cost/audit records
+        # to a model that never ran. Fall back to the generic marker instead,
+        # matching the "no model requested" case below.
         completion = SimpleNamespace(
             choices=[choice],
             usage=usage,
-            model=model or "copilot-acp",
+            model=(model or "copilot-acp") if model_applied else "copilot-acp",
         )
         if stream:
             return _completion_to_stream_chunks(completion)
@@ -476,7 +483,19 @@ class CopilotACPClient:
         *,
         timeout_seconds: float,
         model: str | None = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, bool]:
+        """Run one ACP prompt turn.
+
+        Returns ``(response_text, reasoning_text, model_applied)``.
+        ``model_applied`` is False when a specific ``model`` was requested
+        but the session ended up running its own default instead (the
+        requested id wasn't offered, or the selection RPC raised) — the
+        caller must not report the requested id as authoritative in that
+        case. It is True whenever no specific substitution risk exists
+        (no model requested, or the requested id is the generic
+        ``copilot-acp`` marker) as well as when selection genuinely
+        succeeded.
+        """
         # Fast-fail when the CLI doesn't support the ACP args we'd pass.
         # Without this guard, a CLI like Claude Code v2.x exits with
         # ``error: unknown option '--acp'`` immediately, then the parent
@@ -655,6 +674,10 @@ class CopilotACPClient:
             # select option and session/set_config_option updates it. Copilot
             # still exposes the older models/session/set_model extension too,
             # so retain that only as compatibility fallback for older agents.
+            # ``model_applied`` records whether the requested id genuinely
+            # ended up selected, so the caller can avoid reporting an id the
+            # session never actually ran (see the return statements below).
+            model_applied = True
             if requested_model and requested_model != "copilot-acp":
                 try:
                     selection = _model_selection_request(session, requested_model)
@@ -662,12 +685,14 @@ class CopilotACPClient:
                         method, params = selection
                         _request(method, params)
                     else:
+                        model_applied = False
                         logger.warning(
                             "Copilot ACP does not offer model %r; using the "
                             "session default.",
                             requested_model,
                         )
                 except Exception as exc:
+                    model_applied = False
                     logger.warning(
                         "Copilot ACP model selection for %r failed; continuing "
                         "with the session default: %s",
@@ -691,7 +716,7 @@ class CopilotACPClient:
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )
-            return "".join(text_parts), "".join(reasoning_parts)
+            return "".join(text_parts), "".join(reasoning_parts), model_applied
         finally:
             self.close()
 

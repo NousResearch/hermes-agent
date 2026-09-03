@@ -97,4 +97,33 @@ Examples:
         default=[],
         help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
+
+    reproduce_parser = debug_sub.add_parser(
+        "reproduce",
+        help="Build a local reproduction bundle (build info, redacted config, "
+        "plugin inventory, logs, optional session export)",
+    )
+    reproduce_sub = reproduce_parser.add_subparsers(dest="reproduce_action")
+
+    reproduce_build = reproduce_sub.add_parser(
+        "build", help="Create a reproduction bundle (default action)"
+    )
+    reproduce_build.add_argument("--output", help="Output .zip path")
+    reproduce_build.add_argument(
+        "--session", help="Session id to include (opt-in, off by default)"
+    )
+    reproduce_build.add_argument(
+        "--lines", type=int, default=200, help="Log lines to include (default: 200)"
+    )
+    reproduce_build.add_argument(
+        "--no-redact",
+        action="store_true",
+        help="Disable redaction (local-only bundle; use with care)",
+    )
+
+    reproduce_inspect = reproduce_sub.add_parser(
+        "inspect", help="List a bundle's contents without executing anything in it"
+    )
+    reproduce_inspect.add_argument("bundle", help="Path to a .zip bundle")
+
     debug_parser.set_defaults(func=cmd_debug)

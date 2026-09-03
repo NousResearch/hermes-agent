@@ -2124,8 +2124,8 @@ DEFAULT_CONFIG = {
         #                     /memory reject <id>.
         # To disable memory entirely, use memory_enabled: false instead.
         "write_approval": False,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "memory_char_limit": 6000,  # ~2,200 tokens at 2.75 chars/token
+        "user_char_limit": 4000,  # ~1,450 tokens at 2.75 chars/token
         # Periodic built-in memory review. External providers with automatic
         # turn/session extraction can set this to 0 and keep the small local
         # store reserved for explicit high-frequency operational facts.

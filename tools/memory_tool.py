@@ -175,8 +175,8 @@ class MemoryStore:
 
     def __init__(
         self,
-        memory_char_limit: int = 2200,
-        user_char_limit: int = 1375,
+        memory_char_limit: int = 6000,
+        user_char_limit: int = 4000,
         *,
         memory_enabled: bool = True,
         user_profile_enabled: bool = True,
@@ -201,7 +201,9 @@ class MemoryStore:
         """Reset the per-turn consolidation-failure counter (call at turn start)."""
         self._consolidation_failures = 0
 
-    def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
+    def _consolidation_failure(
+        self, response: Dict[str, Any], target: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Count an at-capacity consolidation failure and degrade gracefully.
 
         Under the per-turn cap, return ``response`` unchanged (it already tells
@@ -209,11 +211,15 @@ class MemoryStore:
         exceeded, drop the retry instruction and return a TERMINAL result so the
         model stops looping memory calls and proceeds to answer the user — a
         failed memory side effect must never block the turn's reply (#42405).
+
+        The terminal result still carries a compact usage snapshot (chars used
+        vs the limit, entry count) for the affected store, so the failure is
+        diagnosable without re-opening the loop (#101459).
         """
         self._consolidation_failures += 1
         if self._consolidation_failures <= self._MAX_CONSOLIDATION_FAILURES_PER_TURN:
             return response
-        return {
+        terminal = {
             "success": False,
             "done": True,
             "error": (
@@ -223,6 +229,13 @@ class MemoryStore:
                 "in a later turn."
             ),
         }
+        if target is not None:
+            entries = self._entries_for(target)
+            terminal["usage"] = (
+                f"{self._char_count(target):,}/{self._char_limit(target):,} chars "
+                f"across {len(entries)} entries ({target})"
+            )
+        return terminal
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -451,7 +464,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return self._consolidation_failure({
+                failure = {
                     "success": False,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
@@ -462,7 +475,8 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
-                })
+                }
+                return self._consolidation_failure(failure, target)
 
             entries.append(content)
             self._set_entries(target, entries)
@@ -495,11 +509,12 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return self._consolidation_failure({
+                failure = {
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to replace.",
                     "current_entries": entries,
-                })
+                }
+                return self._consolidation_failure(failure, target)
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
@@ -523,7 +538,7 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
-                return self._consolidation_failure({
+                failure = {
                     "success": False,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
@@ -533,7 +548,8 @@ class MemoryStore:
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
-                })
+                }
+                return self._consolidation_failure(failure, target)
 
             entries[idx] = new_content
             self._set_entries(target, entries)
@@ -558,11 +574,12 @@ class MemoryStore:
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
             if not matches:
-                return self._consolidation_failure({
+                failure = {
                     "success": False,
                     "error": f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text of the entry you want to remove.",
                     "current_entries": entries,
-                })
+                }
+                return self._consolidation_failure(failure, target)
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
@@ -675,7 +692,7 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
             if new_total > limit:
                 current = self._char_count(target)
-                return self._consolidation_failure({
+                failure = {
                     "success": False,
                     "error": (
                         f"After applying all {len(operations)} operations, memory would be at "
@@ -684,7 +701,8 @@ class MemoryStore:
                     ),
                     "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
-                })
+                }
+                return self._consolidation_failure(failure, target)
 
             # Commit.
             self._set_entries(target, working)
@@ -696,12 +714,13 @@ class MemoryStore:
         """Build a batch-abort error that reports live (uncommitted) state."""
         current = self._char_count(target)
         limit = self._char_limit(target)
-        return self._consolidation_failure({
+        failure = {
             "success": False,
             "error": message + " No operations were applied (batch is all-or-nothing).",
             "current_entries": self._entries_for(target),
             "usage": f"{current:,}/{limit:,}",
-        })
+        }
+        return self._consolidation_failure(failure, target)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -921,8 +940,8 @@ def load_on_disk_store() -> "MemoryStore":
     Falls back to the built-in defaults if config can't be loaded, so this can
     never raise on a missing/unreadable config.
     """
-    memory_char_limit = 2200
-    user_char_limit = 1375
+    memory_char_limit = 6000
+    user_char_limit = 4000
     memory_enabled = True
     user_profile_enabled = True
     try:

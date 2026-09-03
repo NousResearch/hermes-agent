@@ -142,6 +142,33 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_default_limits_fit_a_week_of_distillation(self, tmp_path, monkeypatch):
+        """A default-configured store must absorb a week of cron-distillation
+        writes without hitting the consolidation wall (#101459)."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore()
+        store.load_from_disk()
+        assert store.user_char_limit >= 4000
+        assert store.memory_char_limit >= 6000
+        day = "Session distillation: fixed login redirect; shipped config flag; reviewed PR #42, day"
+        for target in ("user", "memory"):
+            for i in range(7):
+                r = store.add(target, f"{day} {i:02d}")
+                assert r["success"] is True, r
+            assert store._char_count(target) <= store._char_limit(target)
+
+    def test_terminal_consolidation_failure_carries_usage_snapshot(self, store):
+        """Past the per-turn cap the terminal result must still report how full
+        the store is, so the failure is diagnosable without reopening the loop."""
+        store.add("memory", "fact A")
+        cap = store._MAX_CONSOLIDATION_FAILURES_PER_TURN
+        for _ in range(cap):
+            store.replace("memory", "nonexistent", "new")
+        r = store.replace("memory", "nonexistent", "new")
+        assert r["done"] is True
+        assert "current_entries" not in r
+        assert r["usage"] == "6/500 chars across 1 entries (memory)"
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):

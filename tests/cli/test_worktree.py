@@ -873,6 +873,33 @@ class TestWorktreeLockReaping:
         cli._prune_stale_worktrees(str(git_repo))
         assert wt.exists(), "dirty worktree must survive even past the 72h tier"
 
+    def test_nested_task_worktree_does_not_dirty_persistent_anchor(self, git_repo):
+        import cli
+
+        anchor = git_repo.parent / "persistent-anchor"
+        subprocess.run(
+            [
+                "git", "-C", str(git_repo), "worktree", "add",
+                str(anchor), "-b", "anchor/persistent", "HEAD",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        nested = anchor / ".worktrees" / "t_nested"
+        subprocess.run(
+            [
+                "git", "-C", str(git_repo), "worktree", "add",
+                str(nested), "-b", "wt/t_nested", "HEAD",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+
+        assert not cli._worktree_is_dirty(str(anchor))
+
+        # The exemption is limited to the reserved untracked container; an
+        # unrelated untracked file must still protect the anchor from cleanup.
+        (anchor / "unfinished.txt").write_text("keep me\n", encoding="utf-8")
+        assert cli._worktree_is_dirty(str(anchor))
+
 
 
 class TestWorktreeLockPredicate:

@@ -5970,11 +5970,14 @@ def _cleanup_worktree_workspace(
     """Remove a finished task's linked git worktree when it holds no work.
 
     Mirrors the safety judgment of the CLI startup pruner
-    (``cli._prune_stale_worktrees``): removal requires a clean working tree
-    AND every commit reachable from a remote-tracking ref. Any doubt — dirty
-    files, unpushed commits, unresolvable repo, failing git — preserves the
-    worktree. The task's auto-generated ``wt/<task-id>`` branch is deleted
-    with it; custom branches are kept. Best-effort like the scratch path.
+    (``cli._prune_stale_worktrees``), but first requires deterministic task
+    ownership: the resolved path must be ``.worktrees/<task-id>`` and its
+    checked-out branch must match the task row. Removal then requires a clean
+    working tree AND every commit reachable from a remote-tracking ref. Any
+    doubt — ambiguous ownership, dirty files, unpushed commits, unresolvable
+    repo, failing git — preserves the worktree. The task's auto-generated
+    ``wt/<task-id>`` branch is deleted with it; custom branches are kept.
+    Best-effort like the scratch path.
     """
     try:
         from cli import _worktree_has_unpushed_commits, _worktree_is_dirty
@@ -5984,11 +5987,28 @@ def _cleanup_worktree_workspace(
         wp = Path(path).expanduser()
         if not wp.is_dir():
             return
+        wp = wp.resolve(strict=False)
+        if wp.name != task_id or wp.parent.name != ".worktrees":
+            _log.warning(
+                "Preserving worktree for task %s: path is not the task-owned "
+                ".worktrees/%s checkout: %s",
+                task_id, task_id, wp,
+            )
+            return
+        branch = (branch_name or "").strip() or f"wt/{task_id}"
+        actual_branch = _git_current_branch(wp)
+        if actual_branch != branch:
+            _log.warning(
+                "Preserving worktree for task %s: branch ownership is ambiguous "
+                "at %s (expected %s, found %s)",
+                task_id, wp, branch, actual_branch or "detached/unknown",
+            )
+            return
         common = _git_common_dir(wp)
         if common is None or common.name != ".git":
             return  # not a linked worktree of a normal repo — never guess
         repo_root = common.parent
-        if wp.resolve(strict=False) == repo_root.resolve(strict=False):
+        if wp == repo_root.resolve(strict=False):
             return  # never remove the main checkout
         if _worktree_is_dirty(str(wp)) or _worktree_has_unpushed_commits(str(wp)):
             _log.info(
@@ -6014,7 +6034,6 @@ def _cleanup_worktree_workspace(
             )
             return
         _log.debug("Removed worktree workspace: %s", wp)
-        branch = (branch_name or "").strip() or f"wt/{task_id}"
         if branch.startswith("wt/"):
             subprocess.run(
                 ["git", "-C", str(repo_root), "branch", "-D", branch],
@@ -7725,10 +7744,35 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
-    if target.exists() and repo_common is not None:
+    if target.exists():
+        target_resolved = target.resolve(strict=False)
+        target_root = _git_toplevel(target)
         target_common = _git_common_dir(target)
-        if target_common == repo_common:
+        actual_branch = _git_current_branch(target)
+        target_is_linked = _is_linked_worktree_checkout(target)
+        if (
+            repo_common is not None
+            and target_root == target_resolved
+            and target_is_linked
+            and target_common == repo_common
+            and actual_branch == branch_name
+        ):
             return
+        if (
+            repo_common is None
+            or target_root != target_resolved
+            or not target_is_linked
+            or target_common != repo_common
+        ):
+            raise RuntimeError(
+                f"refusing to reuse existing worktree target {target}: "
+                "repository ownership is ambiguous"
+            )
+        raise RuntimeError(
+            f"refusing to reuse existing worktree target {target}: branch ownership "
+            f"is ambiguous (expected {branch_name}, found "
+            f"{actual_branch or 'detached/unknown'})"
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
         cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
@@ -7803,26 +7847,34 @@ def _resolve_worktree_workspace(
     requested_resolved = requested.resolve(strict=False)
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
-        actual_branch = _git_current_branch(requested)
-        if actual_branch == branch_name:
-            return requested_resolved, actual_branch
-        # The requested path is an existing checkout of a DIFFERENT
-        # task's branch. Decompose children inherit the root's
-        # workspace_path verbatim, so siblings all point here; reusing
-        # the checkout as-is would run this task on the other task's
-        # branch — silent cross-task provenance corruption, and unsafe
-        # when siblings run concurrently. Fall back to a fresh worktree
-        # of our own under the same repo.
-        fallback_root = _repo_root_for_worktree_target(requested.parent)
-        if fallback_root is not None:
+        common = _git_common_dir(requested_resolved)
+        if common is None or common.name != ".git":
+            raise RuntimeError(
+                f"task {task.id} linked worktree {requested_resolved} has "
+                "ambiguous repository ownership"
+            )
+        is_task_owned_target = (
+            requested_resolved.name == task.id
+            and requested_resolved.parent.name == ".worktrees"
+        )
+        if is_task_owned_target:
+            _ensure_git_worktree(common.parent, requested_resolved, branch_name)
+            return requested_resolved, branch_name
+        # A concrete target below a conventional .worktrees directory belongs
+        # to another task. Heal stale/shared rows by resolving a sibling target
+        # from the linked checkout's verified common Git directory — never from
+        # an unrelated repository that merely surrounds the filesystem path.
+        if requested_resolved.parent.name == ".worktrees":
+            fallback_root = common.parent
             fallback = fallback_root / ".worktrees" / task.id
-            if fallback.resolve(strict=False) != requested_resolved:
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
-                return fallback.resolve(strict=False), branch_name
-        # No repo to anchor a fallback on (or the occupied path IS this
-        # task's own canonical worktree): keep the legacy reuse rather
-        # than failing dispatch.
-        return requested_resolved, actual_branch or branch_name
+            _ensure_git_worktree(fallback_root, fallback, branch_name)
+            return fallback.resolve(strict=False), branch_name
+        # Otherwise the linked checkout itself is a persistent repo-root anchor.
+        # Materialize below that exact anchor so filesystem nesting cannot switch
+        # repository identity when the anchor lives inside another checkout.
+        target = requested_resolved / ".worktrees" / task.id
+        _ensure_git_worktree(requested_resolved, target, branch_name)
+        return target, branch_name
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:

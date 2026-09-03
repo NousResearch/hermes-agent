@@ -2439,6 +2439,30 @@ DEFAULT_CONFIG = {
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
+    # Task-ownership controller (`hermes task ...`) — durable local task state
+    # with verification-gated completion. See docs/task-ownership-controller.md.
+    "task_ownership": {
+        # Master switch. OFF by default (shadow mode): explicit `hermes task`
+        # commands (create/update/outcome/receipt/verify/done/...) always work
+        # regardless of this flag — they're deliberate operator/worker actions.
+        # Only `hermes task age-check` (the one command meant to run unattended,
+        # e.g. from cron) is gated: with this off, age-check is a strict no-op
+        # (no output, no state mutation), so wiring the cron job ahead of
+        # opting in can never spam notifications or silently rot task state.
+        # `hermes task enable` / `hermes task disable` flip this cleanly.
+        "enabled": False,
+        # Hours of no activity (no state change) before a task is flagged at
+        # the soft "warn" tier by `hermes task age-check`. No state change,
+        # just a one-time flag per aging window (no repeat spam on later runs).
+        "aging_warn_hours": 24,
+        # Hours of no activity before a task auto-transitions to STALE and is
+        # flagged at the "stale" tier. Fires once per aging window, same as above.
+        "aging_stale_hours": 72,
+        # Default `max_retries` for `hermes task create` when --max-retries is
+        # not passed explicitly.
+        "default_max_retries": 3,
+    },
+
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
     # Empty string means use server-local time.
     "timezone": "",

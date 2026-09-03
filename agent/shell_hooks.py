@@ -673,7 +673,8 @@ def _evaluate_result(
     * exit code 2 on a blocking-capable event — block, with the message
       taken from stdout block JSON, then stderr, then a default
       (Claude-Code / Cursor compatible);
-    * other non-zero exits — warn, then parse stdout normally;
+    * other non-zero exits — warn, then parse stdout normally; a
+      ``fail_closed`` hook blocks if no directive was produced;
     * non-JSON / unparseable stdout on a ``fail_closed`` blocking hook —
       block instead of silently contributing nothing.
 
@@ -735,6 +736,11 @@ def _evaluate_result(
 
     stdout = (r["stdout"] or "").strip()
     parsed = _parse_response(spec.event, stdout)
+
+    if parsed is None and fail_closed and r["returncode"] != 0:
+        return _fail_closed_block(
+            spec, f"hook exited {r['returncode']} with no directive",
+        )
 
     if parsed is None and fail_closed and stdout:
         # The hook produced output we could not turn into a directive.

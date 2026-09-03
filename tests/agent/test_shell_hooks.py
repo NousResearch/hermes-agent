@@ -644,6 +644,14 @@ class TestEvaluateResult:
         assert r["action"] == "block"
         assert "unparseable stdout" in r["message"]
 
+    def test_nonzero_exit_without_directive_fail_closed_blocks(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stderr="Traceback: hook crashed"),
+        )
+        assert r["action"] == "block"
+        assert "hook exited 1 with no directive" in r["message"]
+
     def test_unparseable_stdout_fails_open_by_default(self):
         r = shell_hooks._evaluate_result(
             self._spec(),

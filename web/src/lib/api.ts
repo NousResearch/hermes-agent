@@ -2074,8 +2074,9 @@ export interface ManagedFileEntry {
   name: string;
   path: string;
   is_directory: boolean;
+  broken_link?: boolean;
   size: number | null;
-  mtime: number;
+  mtime: number | null;
   mime_type: string | null;
 }
 

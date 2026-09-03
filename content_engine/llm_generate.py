@@ -1,8 +1,7 @@
-"""LLM draft generator for personal brands — cheap-first via agent-cron mechanism.
+"""LLM draft generator for personal brands using governed Hermes routes.
 
-Mirrors the successful pattern from the research digest and CeeCee review crons:
-agent-based (no_agent: false), model+provider set, fallback_providers from
-config.yaml applied by cron/scheduler.py. Each post is a small bounded generation.
+The active profile's model and fallback_providers are resolved by the same
+Hermes runtime APIs as CLI/gateway/cron, including native credential pools.
 
 Returns the identical draft dict shape as llm_drafts.generate_drafts for drop-in use.
 
@@ -388,91 +387,141 @@ _SELF_CALL = False
 When False (cron mode), the cron agent handles generation via its own prompt."""
 
 
-# Canonical generation chain:
-#   1. Ollama-Cloud — deepseek-v4-flash: active low-cost content model.
-#   2. Ollama-Cloud — gpt-oss:120b: different model family for redundancy.
-# OpenCode is intentionally not in the active chain: Cloudflare/availability
-# issues made it too fragile for unattended blog/content crons.
-_FREE_FALLBACK_CHAIN = [
-    {"base": "https://ollama.com/v1", "model": "deepseek-v4-flash", "provider": "ollama"},
-    {"base": "https://ollama.com/v1", "model": "gpt-oss:120b", "provider": "ollama"},
-]
-
-# Long-form / factual tier (articles + blog): stronger models with fallback.
-# Primary: CommandCode (deepseek-v4-flash 0731 build).
-# Final fallback: NVIDIA NIM MiniMax M3 after Gemini. If all fail, callers
-# such as the art_director hard-stop rather than silently degrading.
-_LONGFORM_CHAIN = [
-    {"base": "https://api.commandcode.ai/provider/v1", "model": "deepseek/deepseek-v4-flash", "provider": "commandcode"},
-    {"base": "https://ollama.com/v1", "model": "deepseek-v4-flash", "provider": "ollama"},
-    {"base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-flash", "provider": "gemini"},
-    {"base": "https://integrate.api.nvidia.com/v1", "model": "minimaxai/minimax-m3", "provider": "nvidia-nim"},
-]
+CONTENT_ROUTING_SURFACE = "content-strategist"
 
 
-def _opencode_key() -> str:
-    """Bearer key shared across opencode zen/go endpoints."""
-    return (os.getenv("OPENCODE_GO_API_KEY", "")
-            or os.getenv("CONTENT_LLM_API_KEY", "")
-            or os.getenv("OPENCODE_API_KEY", "")
-            or os.getenv("OPENCODE_ZEN_API_KEY", "")).strip()
+def _content_surface_home():
+    """Resolve the governed content surface independently of the caller."""
+    from hermes_cli.profiles import get_profile_dir, profile_exists
+
+    if not profile_exists(CONTENT_ROUTING_SURFACE):
+        raise RuntimeError(
+            f"Governed content routing surface {CONTENT_ROUTING_SURFACE!r} is unavailable"
+        )
+    return get_profile_dir(CONTENT_ROUTING_SURFACE)
 
 
-def _key_for(provider: str) -> str:
-    """Resolve the bearer key for a chain entry's provider."""
-    if provider == "openai":
-        return os.getenv("OPENAI_API_KEY", "").strip()
-    if provider == "ollama":
-        return os.getenv("OLLAMA_API_KEY", "").strip()
-    if provider == "nvidia-nim":
-        return os.getenv("NVIDIA_API_KEY", "").strip()
-    if provider == "gemini":
-        return (os.getenv("GEMINI_API_KEY", "")
-                or os.getenv("GOOGLE_AI_API_KEY", "")
-                or os.getenv("GOOGLE_API_KEY", "")).strip()
-    if provider == "commandcode":
-        return os.getenv("COMMANDCODE_API_KEY", "").strip()
-    return _opencode_key()
+def _load_hermes_config(*, home_resolver=None, config_loader=None) -> dict:
+    """Load content-strategist through canonical Hermes override APIs."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.config import load_config
+
+    home = (home_resolver or _content_surface_home)()
+    loader = config_loader or load_config
+    token = set_hermes_home_override(home)
+    try:
+        config = loader()
+    finally:
+        reset_hermes_home_override(token)
+    if not isinstance(config, dict):
+        raise RuntimeError(
+            f"Governed content routing surface {CONTENT_ROUTING_SURFACE!r} has invalid config"
+        )
+    return config
+
+
+def _resolve_runtime(**kwargs) -> dict:
+    """Late-bound seam for Hermes' shared provider + credential-pool resolver."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    return resolve_runtime_provider(**kwargs)
 
 
 def _llm_configs(longform: bool = False) -> list[dict]:
-    """Ordered list of generation endpoints to try, best/most-specific first.
+    """Resolve the governed, exact-model route chain using Hermes runtime APIs.
 
-    The env-configured endpoint (CONTENT_LLM_BASE_URL/MODEL) is tried first when
-    set, then the built-in chain (short-post by default; the long-form/factual
-    chain when ``longform=True``). Deduped by (base, model). Each endpoint is
-    attempted in turn until one returns usable text, so a single quota-exhausted
-    provider degrades to the next provider instead of to canned templates.
+    ``longform`` is retained for API compatibility; route policy belongs to the
+    governed content surface's generated config, never to this application module.
     """
-    configs: list[dict] = []
-    seen: set = set()
-
-    # Optional operator override (tried first when set). Pick the matching key
-    # from the base URL instead of assuming the legacy OpenCode key.
-    base = os.getenv("CONTENT_LLM_BASE_URL", "").strip().rstrip("/")
-    model = os.getenv("CONTENT_LLM_MODEL", "").strip()
-    if base and model:
-        provider = (
-            "ollama" if "ollama.com" in base else
-            "openai" if "openai.com" in base else
-            "gemini" if "generativelanguage.googleapis.com" in base else
-            "commandcode" if "commandcode.ai" in base else
-            "opencode"
+    del longform
+    config = _load_hermes_config()
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
+    primary_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+    primary_provider = str(model_cfg.get("provider") or "auto").strip()
+    if not primary_model or not primary_provider:
+        raise RuntimeError(
+            f"Governed content routing surface {CONTENT_ROUTING_SURFACE!r} has no valid model route"
         )
-        configs.append({"base": base, "model": model, "key": _key_for(provider)})
-        seen.add((base, model))
 
-    chain = _LONGFORM_CHAIN if longform else _FREE_FALLBACK_CHAIN
-    for fb in chain:
-        sig = (fb["base"], fb["model"])
-        provider = fb.get("provider", "opencode")
-        key = _key_for(provider)
-        if sig not in seen and key:
-            configs.append({"base": fb["base"], "model": fb["model"],
-                            "key": key})
-            seen.add(sig)
+    from hermes_cli.fallback_config import get_fallback_chain, resolve_entry_api_key
 
+    routes = [{
+        "provider": primary_provider,
+        "model": primary_model,
+        "base_url": model_cfg.get("base_url"),
+        "api_key": model_cfg.get("api_key"),
+    }, *get_fallback_chain(config)]
+    configs: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for route in routes:
+        exact_model = str(route.get("model") or "").strip()
+        provider = str(route.get("provider") or "").strip()
+        base_url = str(route.get("base_url") or "").strip().rstrip("/") or None
+        identity = (provider.lower(), exact_model.lower(), (base_url or "").lower())
+        if not provider or not exact_model or identity in seen:
+            continue
+        route_model_id = str(route.get("route_model_id") or exact_model).strip()
+        if route_model_id != primary_model:
+            continue
+        seen.add(identity)
+        try:
+            runtime = _resolve_runtime(
+                requested=provider,
+                explicit_api_key=resolve_entry_api_key(route),
+                explicit_base_url=base_url,
+                target_model=exact_model,
+            )
+        except Exception as exc:
+            print(f"[llm_generate] route resolution failed for {provider}: {exc}", file=sys.stderr)
+            continue
+        cfg = {
+            "base": str(runtime.get("base_url") or "").rstrip("/"),
+            "model": exact_model,
+            "key": runtime.get("api_key") or "",
+            "provider": provider,
+            "api_mode": runtime.get("api_mode") or "chat_completions",
+        }
+        pool = runtime.get("credential_pool")
+        if pool is not None:
+            cfg["_credential_pool"] = pool
+            current = pool.peek()
+            if current is not None:
+                cfg["_credential_id"] = current.id
+        if cfg["base"]:
+            configs.append(cfg)
     return configs
+
+
+def _call_llm_chain(system: str, user: str, *, timeout: int = 90,
+                    max_tokens: int = 3000, longform: bool = False) -> Optional[str]:
+    """Try every governed route, rotating a native pool after failed calls."""
+    for cfg in _llm_configs(longform=longform):
+        attempted_ids: set[str] = set()
+        while True:
+            credential_id = str(cfg.get("_credential_id") or "")
+            if credential_id:
+                if credential_id in attempted_ids:
+                    break
+                attempted_ids.add(credential_id)
+            result = _call_llm(system, user, cfg, timeout=timeout, max_tokens=max_tokens)
+            if result:
+                return result
+            pool = cfg.get("_credential_pool")
+            failure_status = cfg.get("_failure_status")
+            if pool is None or not credential_id or failure_status not in {401, 402, 403, 429}:
+                break
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=failure_status, credential_id=credential_id,
+                api_key_hint=cfg.get("key"),
+                failure_reason="rate_limit" if failure_status == 429 else "auth",
+            )
+            if next_entry is None:
+                break
+            cfg = dict(cfg)
+            cfg["key"] = next_entry.runtime_api_key
+            cfg["_credential_id"] = next_entry.id
+    return None
 
 
 def _llm_config() -> Optional[dict]:
@@ -507,6 +556,32 @@ def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
 
     ``max_tokens`` remains overridable for long-form callers.
     """
+    cfg.pop("_failure_status", None)
+    if (cfg.get("api_mode") or "chat_completions") != "chat_completions":
+        try:
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, resolved_model = resolve_provider_client(
+                cfg.get("provider", "custom"), model=cfg["model"],
+                explicit_base_url=cfg.get("base"), explicit_api_key=cfg.get("key"),
+                api_mode=cfg.get("api_mode"),
+            )
+            if client is None:
+                return None
+            response = client.chat.completions.create(
+                model=resolved_model or cfg["model"],
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user}],
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip() or None
+        except Exception as exc:
+            cfg["_failure_status"] = getattr(exc, "status_code", None)
+            print(f"[llm_generate] Hermes provider call failed: {exc}", file=sys.stderr)
+            return None
+
     try:
         import requests
     except ImportError:
@@ -557,6 +632,7 @@ def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
             return None
 
         if r.status_code != 200:
+            cfg["_failure_status"] = r.status_code
             transient = r.status_code == 429 or r.status_code >= 500
             if transient and attempt == 0:
                 print(
@@ -592,11 +668,8 @@ def generate_one(
 ) -> Optional[dict]:
     """Generate one draft: build prompt → call model → gate; retry on fail.
 
-    With CONTENT_LLM_BASE_URL/MODEL set, generation happens here directly via
-    an OpenAI-compatible endpoint, gated by gate_post with one retry carrying
-    the gate's feedback. Without that config, behaviour is unchanged: cron
-    mode returns None and the cron agent generates from
-    build_generation_prompt().
+    Generation uses the active profile's governed exact-model route chain and
+    is gated by gate_post with one retry carrying the gate's feedback.
 
     Returns a draft dict (same shape as llm_drafts.generate_drafts items)
     or None.

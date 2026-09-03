@@ -502,8 +502,8 @@ class TestPlan:
         for cfg, data in before.items():
             assert Path(cfg).read_bytes() == data, f"dry-run modified {cfg}"
 
-    def test_main_model_preserved_everywhere(self, tmp_hermes_home, by_id, surfaces):
-        """Every profile's current main model appears unchanged in the planned output."""
+    def test_main_model_preserved_except_approved_content_migration(self, tmp_hermes_home, by_id, surfaces):
+        """Registry preserves live mains except the approved content migration."""
         def extract_main(doc):
             m = doc.get("model")
             if isinstance(m, dict) and m.get("default"):
@@ -523,11 +523,24 @@ class TestPlan:
             with open(entry["path"], encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
             main = extract_main(doc)
+            if entry["surface"] == "content-strategist":
+                assert main == "minimax/minimax-m3-free"
+                assert entry["main_model"] == "deepseek-v4-flash"
+                checked += 1
+                continue
             assert entry["main_model"] == main, (
                 f"{entry['surface']}: registry says {entry['main_model']}, live is {main}"
             )
             checked += 1
         assert checked == 63
+
+    def test_content_strategist_uses_approved_same_model_slots(self, by_id, surfaces):
+        surface = next(s for s in surfaces if s["surface"] == "content-strategist")
+        assert surface["main_model"] == "deepseek-v4-flash"
+        assert surface["slots"] == [f"slot-dsflash-{i}" for i in range(1, 6)]
+        assert {by_id[slot]["model_id"] for slot in surface["slots"]} == {
+            surface["main_model"]
+        }
 
     def test_keep_current_surfaces_have_no_routes(self, surfaces):
         for s in surfaces:

@@ -2,6 +2,7 @@
 (no raw git commit subjects in topics/titles)."""
 import time
 
+import pytest
 import requests
 
 import llm_generate as lg
@@ -25,87 +26,128 @@ _BUILTIN_KEY_VARS = (
 )
 
 
+def test_llm_configs_use_governed_config_and_runtime_resolution(monkeypatch):
+    config = {
+        "model": {"provider": "primary", "default": "exact-model"},
+        "fallback_providers": [
+            {"provider": "fallback-a", "model": "exact-model"},
+            {"provider": "fallback-c", "model": "exact-model"},
+            {"provider": "fallback-b", "model": "exact-model", "base_url": "https://b.test/v1"},
+        ],
+    }
+    calls = []
+
+    def resolve(**kwargs):
+        calls.append(kwargs)
+        return {
+            "provider": kwargs["requested"],
+            "base_url": kwargs.get("explicit_base_url") or f"https://{kwargs['requested']}.test/v1",
+            "api_key": f"pool-{kwargs['requested']}",
+            "api_mode": "chat_completions",
+        }
+
+    monkeypatch.setattr(lg, "_load_hermes_config", lambda: config)
+    monkeypatch.setattr(lg, "_resolve_runtime", resolve)
+
+    assert lg._llm_configs() == [
+        {"base": "https://primary.test/v1", "model": "exact-model", "key": "pool-primary", "provider": "primary", "api_mode": "chat_completions"},
+        {"base": "https://fallback-a.test/v1", "model": "exact-model", "key": "pool-fallback-a", "provider": "fallback-a", "api_mode": "chat_completions"},
+        {"base": "https://fallback-c.test/v1", "model": "exact-model", "key": "pool-fallback-c", "provider": "fallback-c", "api_mode": "chat_completions"},
+        {"base": "https://b.test/v1", "model": "exact-model", "key": "pool-fallback-b", "provider": "fallback-b", "api_mode": "chat_completions"},
+    ]
+    assert [call["target_model"] for call in calls] == [
+        "exact-model", "exact-model", "exact-model", "exact-model",
+    ]
+
+
+def test_content_config_uses_surface_override_and_ignores_root(monkeypatch, tmp_path):
+    from hermes_constants import get_hermes_home
+
+    root = tmp_path / "hermes"
+    surface = root / "profiles" / "content-strategist"
+    surface.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    seen = []
+    governed = {"model": {"provider": "content", "default": "deepseek-v4-flash"}}
+
+    def canonical_loader():
+        seen.append(get_hermes_home())
+        return governed if get_hermes_home() == surface else {
+            "model": {"provider": "root", "default": "root-model"}
+        }
+
+    assert lg._load_hermes_config(config_loader=canonical_loader) == governed
+    assert seen == [surface]
+    assert get_hermes_home() == root
+
+
+def test_content_config_missing_or_invalid_surface_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "missing-root"))
+    with pytest.raises(RuntimeError, match="content-strategist.*unavailable"):
+        lg._load_hermes_config()
+    with pytest.raises(RuntimeError, match="content-strategist.*invalid config"):
+        lg._load_hermes_config(home_resolver=lambda: tmp_path, config_loader=lambda: [])
+
+
+def test_llm_configs_exclude_cross_model_fallback(monkeypatch):
+    monkeypatch.setattr(lg, "_load_hermes_config", lambda: {
+        "model": {"provider": "primary", "default": "deepseek-v4-flash"},
+        "fallback_providers": [{"provider": "other", "model": "root-model"}],
+    })
+    monkeypatch.setattr(lg, "_resolve_runtime", lambda **kwargs: {
+        "base_url": "https://example.test/v1", "api_key": "key",
+    })
+    assert [route["model"] for route in lg._llm_configs()] == ["deepseek-v4-flash"]
+
+
+def test_llm_configs_do_not_filter_routes_by_environment(monkeypatch):
+    monkeypatch.delenv("UNCONFIGURED_PROVIDER_KEY", raising=False)
+    monkeypatch.setattr(lg, "_load_hermes_config", lambda: {
+        "model": {"provider": "custom-provider", "default": "m"},
+        "fallback_providers": [],
+    })
+    monkeypatch.setattr(lg, "_resolve_runtime", lambda **kwargs: {
+        "provider": "custom", "base_url": "http://localhost:11434/v1",
+        "api_key": "no-key-required", "api_mode": "chat_completions",
+    })
+
+    assert len(lg._llm_configs()) == 1
+
+
+def test_call_llm_chain_attempts_every_governed_route(monkeypatch):
+    configs = [
+        {"provider": "one", "base": "https://one.test/v1", "model": "m", "key": "a"},
+        {"provider": "two", "base": "https://two.test/v1", "model": "m", "key": "b"},
+        {"provider": "three", "base": "https://three.test/v1", "model": "m", "key": "c"},
+    ]
+    attempted = []
+    monkeypatch.setattr(lg, "_llm_configs", lambda longform=False: configs)
+    monkeypatch.setattr(
+        lg, "_call_llm",
+        lambda _system, _user, cfg, **_kwargs: (
+            attempted.append(cfg["provider"]) or ("done" if cfg["provider"] == "three" else None)
+        ),
+    )
+
+    assert lg._call_llm_chain("system", "user") == "done"
+    assert attempted == ["one", "two", "three"]
+
+
 def _clear_builtin_keys(monkeypatch):
     for name in _BUILTIN_KEY_VARS:
         monkeypatch.delenv(name, raising=False)
 
-def test_fallback_chain_is_ollama_cloud_only():
-    bases = [(c["base"], c["model"], c["provider"]) for c in lg._FREE_FALLBACK_CHAIN]
-    assert bases[0] == ("https://ollama.com/v1", "deepseek-v4-flash", "ollama")
-    assert bases[1] == ("https://ollama.com/v1", "gpt-oss:120b", "ollama")
-    assert not any("opencode" in c["base"] for c in lg._FREE_FALLBACK_CHAIN)
-
-
-def test_key_for_provider(monkeypatch):
-    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-xyz")
-    monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-abc")
-    monkeypatch.setenv("NVIDIA_API_KEY", "nim-789")
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-123")
-    assert lg._key_for("ollama") == "ollama-xyz"
-    # Legacy OpenCode key resolution is retained for explicit fallback entries/operator overrides.
-    assert lg._key_for("opencode") == "go-abc"
-    assert lg._key_for("nvidia-nim") == "nim-789"
-    assert lg._key_for("gemini") == "gemini-123"
-
-
-def test_longform_chain_uses_nim_as_final_credentialled_fallback(monkeypatch):
-    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
-    _clear_builtin_keys(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
-    monkeypatch.setenv("NVIDIA_API_KEY", "nim-test")
-
-    cfgs = lg._llm_configs(longform=True)
-
-    assert cfgs == [
-        {
-            "base": "https://generativelanguage.googleapis.com/v1beta/openai",
-            "model": "gemini-2.5-flash",
-            "key": "gemini-test",
-        },
-        {
-            "base": "https://integrate.api.nvidia.com/v1",
-            "model": "minimaxai/minimax-m3",
-            "key": "nim-test",
-        },
-    ]
-
-
-def test_llm_configs_attaches_ollama_keys(monkeypatch):
-    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
-    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-xyz")
-    cfgs = lg._llm_configs()
-    assert cfgs[0]["base"] == "https://ollama.com/v1"
-    assert cfgs[0]["model"] == "deepseek-v4-flash"
-    assert all(c["key"] == "ollama-xyz" for c in cfgs)
-
-
-def test_longform_chain_has_provider_fallbacks(monkeypatch):
-    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
-    _clear_builtin_keys(monkeypatch)
-    monkeypatch.setenv("COMMANDCODE_API_KEY", "commandcode-test")
-    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test")
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
-    cfgs = lg._llm_configs(longform=True)
-    models = [c["model"] for c in cfgs]
-    assert models[0] == "deepseek/deepseek-v4-flash"
-    assert "deepseek-v4-flash" in models
-    assert "gemini-2.5-flash" in models
-
-
-def test_short_and_longform_differ(monkeypatch):
-    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
-    _clear_builtin_keys(monkeypatch)
-    monkeypatch.setenv("COMMANDCODE_API_KEY", "commandcode-test")
-    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test")
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
-    short = [c["model"] for c in lg._llm_configs(longform=False)]
-    long = [c["model"] for c in lg._llm_configs(longform=True)]
-    assert short[0] == "deepseek-v4-flash"
-    assert long[0] == "deepseek/deepseek-v4-flash"
+def test_longform_does_not_create_an_app_owned_route_tier(monkeypatch):
+    monkeypatch.setattr(lg, "_load_hermes_config", lambda: {
+        "model": {"provider": "p", "default": "same-model"},
+        "fallback_providers": [],
+    })
+    monkeypatch.setattr(lg, "_resolve_runtime", lambda **_kwargs: {
+        "provider": "p", "base_url": "https://p.test/v1", "api_key": "pool-key",
+        "api_mode": "chat_completions",
+    })
+    assert lg._llm_configs(longform=True) == lg._llm_configs(longform=False)
 
 
 def test_fabricated_numbers_catches_growth_metrics():
@@ -115,63 +157,6 @@ def test_fabricated_numbers_catches_growth_metrics():
     assert ag._fabricated_numbers("conversion rose 45%", "")
     assert not ag._fabricated_numbers("I cut 3 features in 2 weeks", "")
     assert not ag._fabricated_numbers("we hit 1,000 users", "the launch reached 1,000 users")
-
-
-def test_env_override_is_tried_first(monkeypatch):
-    _clear_builtin_keys(monkeypatch)
-    monkeypatch.setenv("CONTENT_LLM_BASE_URL", "https://example.test/v1")
-    monkeypatch.setenv("CONTENT_LLM_MODEL", "custom-model")
-    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-test")
-    cfgs = lg._llm_configs()
-    assert (cfgs[0]["base"], cfgs[0]["model"]) == ("https://example.test/v1", "custom-model")
-    assert any(c["model"] == "deepseek-v4-flash" for c in cfgs)
-    assert any(c["model"] == "gpt-oss:120b" for c in cfgs)
-
-
-def test_gemini_override_uses_gemini_key(monkeypatch):
-    monkeypatch.setenv("CONTENT_LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
-    monkeypatch.setenv("CONTENT_LLM_MODEL", "gemini-2.5-flash")
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-xyz")
-    cfgs = lg._llm_configs(longform=True)
-    assert cfgs[0]["base"] == "https://generativelanguage.googleapis.com/v1beta/openai"
-    assert cfgs[0]["model"] == "gemini-2.5-flash"
-    assert cfgs[0]["key"] == "gemini-xyz"
-
-
-def test_commandcode_override_uses_commandcode_key_and_dedupes(monkeypatch):
-    _clear_builtin_keys(monkeypatch)
-    monkeypatch.setenv(
-        "CONTENT_LLM_BASE_URL", "https://api.commandcode.ai/provider/v1"
-    )
-    monkeypatch.setenv("CONTENT_LLM_MODEL", "deepseek/deepseek-v4-flash")
-    monkeypatch.setenv("COMMANDCODE_API_KEY", "commandcode-xyz")
-
-    cfgs = lg._llm_configs(longform=True)
-
-    matching = [
-        cfg
-        for cfg in cfgs
-        if cfg["base"] == "https://api.commandcode.ai/provider/v1"
-        and cfg["model"] == "deepseek/deepseek-v4-flash"
-    ]
-    assert matching == [
-        {
-            "base": "https://api.commandcode.ai/provider/v1",
-            "model": "deepseek/deepseek-v4-flash",
-            "key": "commandcode-xyz",
-        }
-    ]
-
-
-def test_longform_chain_skips_builtin_providers_without_credentials(monkeypatch):
-    monkeypatch.delenv("CONTENT_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("CONTENT_LLM_MODEL", raising=False)
-    _clear_builtin_keys(monkeypatch)
-    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
-
-    cfgs = lg._llm_configs(longform=True)
-
-    assert [cfg["model"] for cfg in cfgs] == ["gemini-2.5-flash"]
 
 
 def test_call_llm_retries_transient_http_error(monkeypatch):

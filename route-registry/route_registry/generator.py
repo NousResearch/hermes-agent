@@ -395,6 +395,7 @@ def build_chain(surf: dict[str, Any], by_id: dict[str, dict[str, Any]],
         h = copy.deepcopy(s["hermes"])
         h["route_slot"] = s["slot"]
         h["route_class"] = s["class"]
+        h["route_model_id"] = s["model_id"]
         h["pool_accounts"] = [s["provider_account"]]
         chain.append(h)
     chain = dedupe_deployments(chain)

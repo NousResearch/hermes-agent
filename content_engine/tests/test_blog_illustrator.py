@@ -6,6 +6,7 @@ the hero and each section. Generation backend is Codex CLI (no FAL/Pollinations)
 """
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,165 @@ def test_illustrate_returns_hero_and_section_paths(monkeypatch, tmp_path):
     assert Path(images["hero_path"]).exists()
     assert isinstance(images["section_paths"], dict)
     assert len(images["section_paths"]) <= 2
+
+
+def test_codex_cli_uses_isolated_pool_accounts_and_fails_over(monkeypatch, tmp_path):
+    primary = tmp_path / "primary-codex"
+    primary.mkdir()
+    (primary / "auth.json").write_text('{"primary": true}')
+    out = tmp_path / "out.png"
+    calls = []
+
+    class Entry:
+        def __init__(self, ident, access, refresh):
+            self.id, self.access_token, self.refresh_token = ident, access, refresh
+
+    entries = [Entry("one", "access-1", "refresh-1"), Entry("two", "access-2", "refresh-2")]
+
+    class Pool:
+        def __init__(self):
+            self.index = 0
+            self.released = []
+
+        def acquire_lease(self, _credential_id=None):
+            return entries[self.index].id if self.index < len(entries) else None
+
+        def entries(self):
+            return entries
+
+        def release_lease(self, ident):
+            self.released.append(ident)
+
+        def mark_exhausted_and_rotate(self, **kwargs):
+            self.index += 1
+            return entries[self.index] if self.index < len(entries) else None
+
+    pool = Pool()
+    monkeypatch.setenv("CODEX_HOME", str(primary))
+    monkeypatch.setattr(bi, "_load_codex_pool", lambda: pool)
+
+    def run(_argv, **kwargs):
+        auth = Path(kwargs["env"]["CODEX_HOME"]) / "auth.json"
+        payload = json.loads(auth.read_text())
+        calls.append((Path(kwargs["env"]["CODEX_HOME"]), payload))
+        if len(calls) == 1:
+            return type("Result", (), {"returncode": 1, "stdout": "usage_limit_reached", "stderr": ""})()
+        generated = tmp_path / "generated.png"
+        generated.write_bytes(b"image")
+        monkeypatch.setattr(bi, "_find_latest_codex_image", lambda **_kw: str(generated))
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr(bi.subprocess, "run", run)
+
+    assert bi._generate_codex_image("prompt", str(out), raise_on_cap=True) == str(out)
+    assert [payload["tokens"]["access_token"] for _, payload in calls] == ["access-1", "access-2"]
+    assert all(home != primary for home, _ in calls)
+    assert all(not home.exists() for home, _ in calls)
+    assert (primary / "auth.json").read_text() == '{"primary": true}'
+    assert pool.released == ["one", "two"]
+
+
+def test_codex_image_is_found_inside_isolated_codex_home(monkeypatch, tmp_path):
+    out = tmp_path / "out.png"
+
+    class Entry:
+        id = "one"
+        access_token = "access"
+        refresh_token = "refresh"
+
+    class Pool:
+        def acquire_lease(self, _credential_id=None): return "one"
+        def release_lease(self, _ident): pass
+        def entries(self): return [Entry()]
+        def has_available(self): return True
+
+    monkeypatch.setattr(bi, "_load_codex_pool", Pool)
+
+    def run(_argv, **kwargs):
+        images = Path(kwargs["env"]["CODEX_HOME"]) / "generated_images" / "session"
+        images.mkdir(parents=True)
+        (images / "generated.png").write_bytes(b"isolated-image")
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr(bi.subprocess, "run", run)
+    assert bi._generate_codex_image("prompt", str(out)) == str(out)
+    assert out.read_bytes() == b"isolated-image"
+
+
+def test_codex_attempt_budget_covers_every_pool_account(monkeypatch, tmp_path):
+    entries = [type("Entry", (), {
+        "id": str(i), "access_token": f"access-{i}", "refresh_token": f"refresh-{i}",
+    })() for i in range(3)]
+
+    class Pool:
+        def __init__(self): self.index = 0
+        def acquire_lease(self, credential_id=None):
+            entry = entries[self.index]
+            assert credential_id == entry.id
+            self.index += 1
+            return entry.id
+        def release_lease(self, _ident): pass
+        def entries(self): return entries
+        def has_available(self): return True
+
+    calls = []
+    monkeypatch.setattr(bi, "_load_codex_pool", Pool)
+
+    def timeout(_argv, **kwargs):
+        calls.append(kwargs["timeout"])
+        raise bi.subprocess.TimeoutExpired(_argv, kwargs["timeout"])
+
+    monkeypatch.setattr(bi.subprocess, "run", timeout)
+    assert bi._generate_codex_image("prompt", str(tmp_path / "out.png"), timeout=1, retry_timeout=2) is None
+    assert calls == [1, 2, 2]
+
+
+def test_concurrent_codex_runs_never_share_or_mutate_primary_auth(monkeypatch, tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    (primary / "auth.json").write_text("primary")
+    homes = []
+    homes_lock = threading.Lock()
+
+    class Entry:
+        id = "one"
+        access_token = "access"
+        refresh_token = "refresh"
+
+    class Pool:
+        def acquire_lease(self, _credential_id=None): return "one"
+        def release_lease(self, _ident): pass
+        def entries(self): return [Entry()]
+        def has_available(self): return True
+
+    monkeypatch.setenv("CODEX_HOME", str(primary))
+    monkeypatch.setattr(bi, "_load_codex_pool", Pool)
+
+    def run(_argv, **kwargs):
+        home = Path(kwargs["env"]["CODEX_HOME"])
+        assert json.loads((home / "auth.json").read_text())["tokens"]["access_token"] == "access"
+        with homes_lock:
+            homes.append(home)
+        generated = tmp_path / f"generated-{threading.get_ident()}.png"
+        generated.write_bytes(b"image")
+        return type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr(bi.subprocess, "run", run)
+    monkeypatch.setattr(
+        bi, "_find_latest_codex_image",
+        lambda **_kw: str(tmp_path / f"generated-{threading.get_ident()}.png"),
+    )
+    results = []
+    threads = [threading.Thread(target=lambda i=i: results.append(
+        bi._generate_codex_image("prompt", str(tmp_path / f"out-{i}.png"))
+    )) for i in range(2)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join()
+
+    assert len(set(homes)) == 2
+    assert all(not home.exists() for home in homes)
+    assert (primary / "auth.json").read_text() == "primary"
+    assert len(results) == 2 and all(results)
 
 
 def test_illustrate_caps_at_max_sections(monkeypatch, tmp_path):

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -72,9 +74,6 @@ def _record_style(style_id: str) -> None:
 
 
 # ── Codex CLI generation ────────────────────────────────────────
-CODEX_IMAGES_DIR = Path.home() / ".codex" / "generated_images"
-
-
 # Substrings that mean the ChatGPT/Codex image quota is exhausted (both the raw
 # HTTP 429 form and the friendly weekly-cap CLI message). A capped run is NOT a
 # per-image failure — the whole batch should defer, not count attempts.
@@ -95,27 +94,94 @@ def _output_shows_cap(text: str) -> bool:
     return any(sig in low for sig in _CODEX_CAP_SIGNALS)
 
 
+def _load_codex_pool():
+    """Return Hermes' native Codex credential pool."""
+    from agent.credential_pool import load_pool
+
+    return load_pool("openai-codex")
+
+
+def _codex_auth_payload(entry) -> dict:
+    tokens = {
+        "access_token": entry.access_token,
+        "refresh_token": entry.refresh_token,
+    }
+    for key in ("account_id", "id_token"):
+        value = getattr(entry, key, None)
+        if value:
+            tokens[key] = value
+    return {"tokens": tokens}
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    """Atomically create a mode-0600 auth file inside an isolated directory."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _generate_codex_image(full_prompt: str, out_path: str,
                           timeout: int = 300,
                           retry_timeout: int = 360,
                           raise_on_cap: bool = False) -> Optional[str]:
     """Generate an image via Codex CLI and copy it to out_path.
 
-    Codex generates internally then we copy the newest image out of
-    ~/.codex/generated_images/. Retries once with a longer timeout.
+    Codex generates internally then we copy the newest image out of its
+    isolated CODEX_HOME. Every configured pool account may be attempted.
     Returns out_path on success, None on failure. When raise_on_cap is set and
     Codex reports its usage cap, raises CodexCapExceeded so batch callers can
     defer instead of burning retries (a capped 429 does not consume quota).
     """
-    for attempt, current_timeout in enumerate([timeout, retry_timeout], 1):
+    try:
+        pool = _load_codex_pool()
+    except Exception as exc:
+        print(f"[blog_illustrator] Codex credential pool unavailable: {exc}")
+        return None
+
+    entries = list(pool.entries())
+    timeouts = [timeout, *([retry_timeout] * max(0, len(entries) - 1))]
+    exhausted = False
+    for attempt, current_timeout in enumerate(timeouts, 1):
+        credential_id = pool.acquire_lease(entries[attempt - 1].id)
+        if not credential_id:
+            break
+        entry = next((item for item in entries if item.id == credential_id), None)
+        if entry is None:
+            pool.release_lease(credential_id)
+            break
         before_ts = time.time()
+        copied_image = False
         try:
-            result = subprocess.run(
-                ["codex", "exec", "--disable", "use_linux_sandbox_bwrap",
-                 full_prompt],
-                capture_output=True, text=True, timeout=current_timeout,
-                cwd=str(config.SAHILBLOG_REPO),
-            )
+            with tempfile.TemporaryDirectory(prefix="hermes-codex-image-") as codex_home:
+                codex_home_path = Path(codex_home)
+                auth_path = codex_home_path / "auth.json"
+                _write_private_json(auth_path, _codex_auth_payload(entry))
+                child_env = os.environ.copy()
+                child_env["CODEX_HOME"] = codex_home
+                result = subprocess.run(
+                    ["codex", "exec", "--disable", "use_linux_sandbox_bwrap", full_prompt],
+                    capture_output=True, text=True, timeout=current_timeout,
+                    cwd=str(config.SAHILBLOG_REPO), env=child_env,
+                )
+                capped = _output_shows_cap(result.stdout) or _output_shows_cap(result.stderr)
+                img = None if capped else _find_latest_codex_image(
+                    after_ts=before_ts,
+                    images_dir=codex_home_path / "generated_images",
+                )
+                if img and Path(img).exists():
+                    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(img, out_path)
+                    copied_image = True
             print(f"[blog_illustrator] codex exec exit={result.returncode} (attempt {attempt})")
             if result.returncode != 0:
                 print(f"[blog_illustrator] codex stdout: {(result.stdout or '')[-500:]}")
@@ -126,39 +192,42 @@ def _generate_codex_image(full_prompt: str, out_path: str,
         except Exception as exc:
             print(f"[blog_illustrator] codex execution error: {exc}")
             continue
+        finally:
+            pool.release_lease(credential_id)
 
         if _output_shows_cap(result.stdout) or _output_shows_cap(result.stderr):
-            print("[blog_illustrator] Codex usage cap reached")
-            if raise_on_cap:
-                raise CodexCapExceeded("Codex image usage cap reached")
-            return None
+            print(f"[blog_illustrator] Codex usage cap reached for account {credential_id}")
+            exhausted = True
+            pool.mark_exhausted_and_rotate(
+                status_code=429, credential_id=credential_id,
+                api_key_hint=entry.access_token, failure_reason="rate_limit",
+            )
+            continue
 
-        img = _find_latest_codex_image(after_ts=before_ts)
-        if not img or not Path(img).exists():
+        if not copied_image:
             print(f"[blog_illustrator] no image found after codex run (attempt {attempt})")
             continue
 
-        size_kb = Path(img).stat().st_size // 1024
-        print(f"[blog_illustrator] generated {size_kb}KB -> {img}")
-        try:
-            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(img, out_path)
-        except Exception as exc:
-            print(f"[blog_illustrator] copy failed (attempt {attempt}): {exc}")
-            continue
+        size_kb = Path(out_path).stat().st_size // 1024
+        print(f"[blog_illustrator] generated {size_kb}KB -> {out_path}")
         if Path(out_path).exists():
             print(f"[blog_illustrator] verified: {Path(out_path).stat().st_size} bytes")
             return out_path
 
+    if exhausted and raise_on_cap and not pool.has_available():
+        raise CodexCapExceeded("Codex image usage cap reached for all configured accounts")
     print(f"[blog_illustrator] all Codex attempts failed for {out_path}")
     return None
 
 
 def _find_latest_codex_image(
     after_ts: Optional[float] = None,
-    images_dir: Path = CODEX_IMAGES_DIR,
+    images_dir: Optional[Path] = None,
 ) -> Optional[str]:
     """Find the newest Codex-generated image after a timestamp (by mtime)."""
+    images_dir = images_dir or Path(
+        os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
+    ) / "generated_images"
     if not images_dir.exists():
         return None
     candidates: list[tuple[float, str]] = []

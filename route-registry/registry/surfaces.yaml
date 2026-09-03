@@ -53,11 +53,13 @@ surfaces:
   - slot-dsflash-5
 - surface: content-strategist
   tier: LUNA
-  main_model: minimax/minimax-m3-free
+  main_model: deepseek-v4-flash
   slots:
-  - slot-mini-m3free-1
-  - slot-mini-m3free-2
-  - slot-mini-m3free-3
+  - slot-dsflash-1
+  - slot-dsflash-2
+  - slot-dsflash-3
+  - slot-dsflash-4
+  - slot-dsflash-5
 - surface: default
   tier: SOL
   main_model: gpt-5.6-sol

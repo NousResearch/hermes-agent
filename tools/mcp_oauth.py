@@ -797,6 +797,31 @@ def _make_callback_handler() -> tuple[type, dict]:
 # ---------------------------------------------------------------------------
 
 
+def _augment_authorization_url(authorization_url: str) -> str:
+    """Add provider-specific authorization query params.
+
+    Dropbox only issues a refresh_token when the authorize request carries
+    ``token_access_type=offline``. The MCP SDK builds a generic OAuth URL with
+    no way to inject provider extras, so without this the token response is a
+    4-hour access token with no refresh_token — every gateway restart after
+    expiry looks like a dead server (#dropbox-short-lived-token).
+    """
+    try:
+        from urllib.parse import urlsplit, parse_qs, urlencode, urlunsplit
+
+        parts = urlsplit(authorization_url)
+        if parts.netloc.endswith("dropbox.com") and "/oauth2/authorize" in parts.path:
+            query = parse_qs(parts.query, keep_blank_values=True)
+            if "token_access_type" not in query:
+                query["token_access_type"] = ["offline"]
+                authorization_url = urlunsplit(
+                    parts._replace(query=urlencode(query, doseq=True))
+                )
+    except Exception:  # never break the flow over URL augmentation
+        pass
+    return authorization_url
+
+
 def _make_redirect_handler(port: int, redirect_uri: str | None = None):
     """Return a redirect handler closure that closes over the given port.
 
@@ -815,6 +840,7 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         Opens the browser automatically when possible; always prints the URL
         as a fallback for headless/SSH/gateway environments.
         """
+        authorization_url = _augment_authorization_url(authorization_url)
         from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow
 
         dashboard_flow = get_dashboard_oauth_flow()

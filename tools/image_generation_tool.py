@@ -701,6 +701,40 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "max_reference_images": 3,
     },
+    "meta/muse-image/text-to-image": {
+        "display": "Meta Muse Image",
+        "speed": "~5s",
+        "strengths": "Meta. Realism + typography at commodity price",
+        "price": "$0.01/image",
+        "size_style": "aspect_ratio",
+        # Muse accepts 21:9…9:21; when aspect_ratio is omitted the model
+        # picks output dimensions from the request, so we always send one
+        # on text-to-image for deterministic framing.
+        "sizes": {
+            "landscape": "16:9",
+            "square": "1:1",
+            "portrait": "9:16",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "png",
+        },
+        # No seed parameter in the vendor schema (like Grok Imagine 2.0) —
+        # seed is filtered out by the supports whitelist.
+        "supports": {
+            "prompt", "aspect_ratio", "num_images", "output_format",
+            "sync_mode",
+        },
+        "upscale": False,
+        # Edit takes 1-10 reference image_urls; aspect_ratio is omitted on
+        # edits so Muse follows the input image's framing automatically.
+        "edit_endpoint": "meta/muse-image/edit",
+        "edit_supports": {
+            "prompt", "image_urls", "num_images", "output_format",
+            "sync_mode",
+        },
+        "max_reference_images": 10,
+    },
 }
 
 # Default model is the fastest reasonable option. Kept cheap and sub-1s.

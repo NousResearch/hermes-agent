@@ -144,6 +144,39 @@ class TestAugust2026Catalog:
         assert p["image_size"] == "landscape_16_9"
 
 
+class TestMetaMuseImage:
+    """Meta Muse Image (meta/muse-image/*) — Aug 2026 addition."""
+
+    MODEL = "meta/muse-image/text-to-image"
+
+    def test_in_catalog_with_edit_pair(self, image_tool):
+        meta = image_tool.FAL_MODELS[self.MODEL]
+        assert meta["size_style"] == "aspect_ratio"
+        assert meta["edit_endpoint"] == "meta/muse-image/edit"
+        # FAL schema: edit takes 1-10 reference image_urls.
+        assert meta["max_reference_images"] == 10
+
+    def test_text_payload_matches_vendor_schema(self, image_tool):
+        """Muse's schema exposes only prompt/aspect_ratio/num_images/
+        output_format/sync_mode — no seed, no resolution/quality knobs."""
+        p = image_tool._build_fal_payload(self.MODEL, "hello", "landscape", seed=42)
+        assert p["aspect_ratio"] == "16:9"
+        assert p["num_images"] == 1
+        assert p["output_format"] == "png"
+        for absent in ("seed", "image_size", "resolution", "quality"):
+            assert absent not in p
+
+    def test_edit_payload_omits_aspect_ratio(self, image_tool):
+        """On edits Muse follows the input image's framing; we deliberately
+        keep aspect_ratio off the edit whitelist."""
+        p = image_tool._build_fal_edit_payload(
+            self.MODEL, "swap the sky", ["https://x/a.png"], "portrait"
+        )
+        assert p["image_urls"] == ["https://x/a.png"]
+        assert "aspect_ratio" not in p
+        assert "seed" not in p
+
+
 # ---------------------------------------------------------------------------
 # Payload building — three size families
 # ---------------------------------------------------------------------------

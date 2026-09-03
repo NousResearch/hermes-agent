@@ -1178,6 +1178,82 @@ class TestRateLimitErrorWithoutStatusCode:
         assert result.reason != FailoverReason.rate_limit
 
 
+class TestCopilotAcpSessionLimit:
+    """The GitHub Copilot / Claude ACP bridge raises a plain RuntimeError when
+    the periodic session/usage cap is hit, e.g. "Copilot ACP session/prompt
+    failed: Internal error: You've hit your session limit · resets 5:20pm
+    (America/New_York)". It carries no HTTP status code, so it must be
+    recognized by message as a *transient* (it resets) usage limit →
+    FailoverReason.rate_limit (retryable + fallback-eligible). If it were left
+    unclassified, the eager fallback at conversation_loop.py:2764 would never
+    fire and the gateway would only retry then hard-fail."""
+
+    SESSION_LIMIT_MSG = (
+        "Copilot ACP session/prompt failed: Internal error: You've hit your "
+        "session limit · resets 5:20pm (America/New_York)"
+    )
+
+    def test_session_limit_classified_as_rate_limit(self):
+        result = classify_api_error(
+            RuntimeError(self.SESSION_LIMIT_MSG),
+            provider="claude-acp",
+            model="claude-opus-4-8",
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_session_limit_wrapped_in_retry_envelope(self):
+        """The conversation loop wraps it as 'API call failed after N retries.
+        <raw>' — the inner session-limit signal must still win."""
+        wrapped = "API call failed after 2 retries. " + self.SESSION_LIMIT_MSG
+        result = classify_api_error(
+            RuntimeError(wrapped), provider="claude-acp", model="claude-opus-4-8"
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_fallback is True
+
+    def test_session_limit_without_reset_signal_is_billing(self):
+        """A session-limit message lacking any transient signal falls to billing
+        (still fallback-eligible; no pointless retries against a hard cap)."""
+        result = classify_api_error(
+            RuntimeError("Internal error: you've hit your session limit"),
+            provider="claude-acp",
+            model="claude-opus-4-8",
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
+
+    def test_prose_never_resets_is_not_transient(self):
+        """The bare word "resets" in prose must not flip a hard cap to a
+        retryable rate limit: "never resets" names the ABSENCE of a reset
+        window. Only the time-shaped form ("resets 5:20pm", "resets at 9")
+        counts as a transient signal."""
+        result = classify_api_error(
+            RuntimeError("your trial quota never resets — upgrade to continue"),
+            provider="claude-acp",
+            model="claude-opus-4-8",
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.reason != FailoverReason.rate_limit
+        assert result.retryable is False
+
+    def test_prose_plan_resets_monthly_is_not_transient(self):
+        """Documentation-quoting errors ("plan resets monthly") carry no
+        concrete reset moment — retrying against them burns the retry budget
+        on a cap that will not lift this session."""
+        result = classify_api_error(
+            RuntimeError(
+                "Usage limit exceeded for this API key. Note: the free plan "
+                "resets monthly; upgrade for higher limits."
+            ),
+            provider="claude-acp",
+            model="claude-opus-4-8",
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.reason != FailoverReason.rate_limit
+        assert result.retryable is False
+
 
 # ── Test: multimodal_tool_content_unsupported pattern ───────────────────
 

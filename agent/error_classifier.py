@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -239,6 +240,11 @@ _USAGE_LIMIT_PATTERNS = [
     "quota",
     "limit exceeded",
     "key limit exceeded",
+    # GitHub Copilot / Claude ACP periodic session cap, e.g.
+    # "You've hit your session limit · resets 5:20pm (America/New_York)".
+    # It resets on a rolling window, so the transient signals below steer
+    # it to rate_limit (retryable + fallback) rather than billing.
+    "session limit",
 ]
 
 # Patterns confirming usage limit is transient (not billing)
@@ -257,6 +263,23 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "per minute",
     "per second",
 ]
+
+# Shape-gated transient signal for the bare "resets" form. The word alone is
+# too broad: prose uses ("your trial quota never resets", "plan resets
+# monthly") name no concrete reset moment and would send hard caps into
+# pointless retries. The Copilot/Claude ACP session cap emits
+# "resets 5:20pm (America/New_York)" — the word followed by a time-ish
+# token — so require a digit (optionally after "at") right after the word.
+_USAGE_LIMIT_TRANSIENT_RESETS_RE = re.compile(
+    r"\bresets?\s+(?:at\s+)?\d", re.IGNORECASE
+)
+
+
+def _msg_has_usage_limit_transient_signal(error_msg: str) -> bool:
+    """Substring transient signals plus the shape-gated bare-"resets" form."""
+    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+        return True
+    return _USAGE_LIMIT_TRANSIENT_RESETS_RE.search(error_msg) is not None
 
 # Payload-too-large patterns detected from message text (no status_code attr).
 # Proxies and some backends embed the HTTP status in the error message.
@@ -1546,7 +1569,7 @@ def _has_usage_limit_transient_signal(
     response_headers,
 ) -> bool:
     """Return whether a usage-limit response identifies a reset window."""
-    if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+    if _msg_has_usage_limit_transient_signal(error_msg):
         return True
 
     payloads = [body]
@@ -1584,7 +1607,7 @@ def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
     """
     # Check for transient usage-limit signals first
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
-    has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+    has_transient_signal = _msg_has_usage_limit_transient_signal(error_msg)
 
     if has_usage_limit and has_transient_signal:
         # Transient quota — treat as rate limit, not billing
@@ -1966,7 +1989,7 @@ def _classify_by_message(
     # billing exhaustion.
     has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
     if has_usage_limit:
-        has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+        has_transient_signal = _msg_has_usage_limit_transient_signal(error_msg)
         if has_transient_signal:
             return result_fn(
                 FailoverReason.rate_limit,

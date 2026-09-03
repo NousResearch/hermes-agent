@@ -343,3 +343,66 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+def test_telegram_final_response_surfaces_session_limit_reset_time():
+    """A Copilot/Claude ACP session-limit error must read as a usage/session
+    limit with its reset time — not the opaque 'failed after retries' message."""
+    raw = (
+        "API call failed after 2 retries. Copilot ACP session/prompt failed: "
+        "Internal error: You've hit your session limit · resets 5:20pm "
+        "(America/New_York)"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    lowered = sanitized.lower()
+    assert "usage/session limit" in lowered or "session limit" in lowered
+    assert "resets 5:20pm" in sanitized  # the actionable reset hint survives
+    assert "failed after retries" not in lowered  # not the generic fallback
+    assert "internal error" not in lowered  # raw provider envelope withheld
+
+
+def test_telegram_status_surfaces_session_limit_reset_time():
+    """Same mapping on the status path that feeds 'gateway logs' notices."""
+    raw = (
+        "⚠️ Copilot ACP session/prompt failed: Internal error: You've hit your "
+        "session limit · resets 5:20pm (America/New_York)"
+    )
+
+    sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
+
+    assert sanitized is not None
+    assert "resets 5:20pm" in sanitized
+    assert "failed after retries" not in sanitized.lower()
+
+
+def test_telegram_session_limit_hint_keeps_dotted_time_tokens_whole():
+    """A reset hint written with dotted abbreviations ("5:20 p.m. ET") must
+    surface whole — truncating at the first period ("resets 5:20 p") reads
+    as a bug in chat."""
+    raw = (
+        "API call failed after 2 retries. Copilot ACP session/prompt failed: "
+        "Internal error: You've hit your session limit · resets 5:20 p.m. ET"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "resets 5:20 p.m. ET" in sanitized
+    assert "failed after retries" not in sanitized.lower()
+
+
+def test_telegram_session_limit_long_timezone_hint_never_dangles_paren():
+    """When the hint budget slices a long parenthesized timezone tail
+    mid-token, the partial token and its unbalanced "(" must be dropped —
+    users must never see "resets 5:20pm (America/New_Yo" in chat."""
+    raw = (
+        "API call failed after 2 retries. Copilot ACP session/prompt failed: "
+        "Internal error: You've hit your session limit · resets 5:20pm "
+        "(America/Argentina/ComodRivadavia_Daylight_Saving_Region)"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "resets 5:20pm" in sanitized
+    # No half-sliced timezone fragment and no dangling parenthesis.
+    assert "America/" not in sanitized
+    assert sanitized.count("(") == sanitized.count(")")

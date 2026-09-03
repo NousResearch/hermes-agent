@@ -580,6 +580,22 @@ def _probe_populated_edge(
     domain at X; a probe that errors (its b-tree path crosses the damage) or
     finds a row keeps growing. At most ~64 probes per edge, so the cap costs
     a bounded, tiny slice of the salvage budget instead of all of it.
+
+    The ``sqlite_sequence`` hint (AUTOINCREMENT tables) caps in one query:
+    when the damaged leaf sits at the populated range's edge, every outward
+    gallop probe must cross it to confirm emptiness and raises instead —
+    the gallop then doubles into the synthetic tail and exhausts the budget,
+    the exact #80205 failure. The sequence value is a best-effort hint only
+    (never the sole source of truth); it is checked against ``anchor`` and
+    skipped on any read error.
+
+    Scope: only AUTOINCREMENT tables (``messages`` and the other rowid
+    tables in state.db) get the hint. For tables without a sequence entry
+    (e.g. ``sessions``, TEXT primary key) the gallop still cannot confirm
+    emptiness past a corrupt tail leaf and falls back to the domain edge —
+    the residual #80205 budget-burn remains for those tables. Callers can
+    detect a hint-based cap via the ``hint`` key in the result and should
+    treat a hint-capped bound as approximate, not exact.
     """
 
     ascending = edge == "high"
@@ -590,6 +606,30 @@ def _probe_populated_edge(
     )
     domain_limit = _MAX_SQLITE_ROWID if ascending else _MIN_SQLITE_ROWID
     result: dict[str, Any] = {"edge": edge, "probes": 0, "capped": False}
+
+    # AUTOINCREMENT hint (issue #80205 suggestion 2): sqlite_sequence records
+    # the highest rowid ever assigned. When the damaged leaf sits at the edge
+    # of the populated range, the gallop below can never confirm emptiness
+    # (every outward probe must cross the corrupt page and raises), so this
+    # hint caps in one query. Best-effort: only used when >= the readable
+    # anchor, skipped on read errors.
+    if ascending:
+        try:
+            row = source.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            row = None
+        if (
+            row is not None
+            and isinstance(row[0], int)
+            and int(row[0]) >= anchor
+            and int(row[0]) < domain_limit
+        ):
+            result["bound"] = int(row[0]) + 1
+            result["capped"] = True
+            result["hint"] = "sqlite_sequence"
+            return result
 
     position = anchor
     span = 1
@@ -833,6 +873,19 @@ def _copy_table_salvage(
         result["error"] = (
             f"copied {result['copied_rows']} and excluded "
             f"{result['excluded_rows']} of {source_rows} source rows"
+        )
+    elif (
+        any(p.get("hint") for p in (bounds.get("edge_probes") or []))
+        and source_rows is None
+    ):
+        # The high bound came from the sqlite_sequence hint and the source
+        # row count is unverifiable (COUNT(*) crossed the damaged page), so a
+        # stale-low seq could silently drop tail rows. Never claim "complete"
+        # on a hint-capped bound without a count check.
+        result["status"] = "partial"
+        result["error"] = (
+            "hint-capped upper bound with unverifiable source row count "
+            "(COUNT(*) crossed the damaged page)"
         )
     else:
         result["status"] = "complete"

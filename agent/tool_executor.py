@@ -175,6 +175,11 @@ class _BatchAbandoned(BaseException):
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
+    # Model quirk: some OpenAI-compatible gateways emit "" (empty string) for
+    # tools with no required params. Normalise to an empty object, matching the
+    # history sanitizer in message_sanitization._repair_tool_call_arguments.
+    if isinstance(raw_arguments, str) and not raw_arguments.strip():
+        return {}, None
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):

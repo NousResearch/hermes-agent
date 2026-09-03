@@ -1670,12 +1670,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # with ``[owner reply] `` here so the marker survives any downstream
             # failure (e.g. handover-rule errors that bypass silent_ingest).
             # Gated by ``WHATSAPP_FORWARD_OWNER_MESSAGES`` at the bridge layer;
-            # metadata + text tagging are unconditional when the flag is present
             # so a future producer can set it without adapter changes.
             if data.get("fromOwner"):
                 metadata["whatsapp_from_owner"] = True
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
+
+            # Per-channel ephemeral prompt (mirrors Telegram/Slack adapters).
+            from gateway.platforms.base import resolve_channel_prompt
+            _chat_id = data.get("chatId", "")
+            _channel_prompt = resolve_channel_prompt(self.config.extra, _chat_id)
 
             return MessageEvent(
                 text=body,
@@ -1686,6 +1690,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 media_urls=cached_urls,
                 media_types=media_types,
                 metadata=metadata,
+                channel_prompt=_channel_prompt,
                 reply_to_message_id=reply_to_message_id,
                 reply_to_text=reply_to_text,
                 reply_to_author_id=reply_to_author_id,

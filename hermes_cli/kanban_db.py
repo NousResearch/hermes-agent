@@ -32,9 +32,12 @@ Board resolution order (highest precedence first, all optional):
 * ``HERMES_KANBAN_DB`` env var (pins the DB file path directly — legacy
   override still honoured; highest precedence when the file path itself
   is what the caller wants to force).
-* ``<root>/kanban/current`` — a one-line text file holding the slug of
-  the "currently selected" board. Written by ``hermes kanban boards
-  switch <slug>``. When absent, the active board is ``default``.
+* Profile-scoped ``kanban.default_board`` from ``config.yaml``. Repository
+  profiles use this to avoid inheriting another profile's ambient selection.
+* ``<root>/kanban/current`` — a one-line text file holding the shared fallback
+  board. Written by ``hermes kanban boards switch <slug>`` and used when
+  the active profile has no ``kanban.default_board``. When absent, the active
+  board is ``default``.
 
 In standard installs ``<root>`` is ``~/.hermes``. In Docker / custom
 deployments where ``HERMES_HOME`` points outside ``~/.hermes`` (e.g.
@@ -612,11 +615,18 @@ def get_current_board() -> str:
 
     Order (highest precedence first):
 
-    1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
+    1. A request-scoped override used by in-process callers.
+    2. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
        spawn, or manually for ad-hoc overrides).
-    2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
+    3. Profile-scoped ``kanban.default_board`` from ``config.yaml``.
+    4. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
        switch``), but only when that board still exists.
-    3. ``DEFAULT_BOARD`` (``"default"``).
+    5. ``DEFAULT_BOARD`` (``"default"``).
+
+    The profile default deliberately precedes the shared current-board file:
+    a repository profile must not inherit whichever board a different profile
+    last selected in the human CLI. An explicit configured default may name a
+    board that has not been initialized yet; the first connection bootstraps it.
 
     A malformed or stale slug at any step falls through to the next layer
     with a best-effort warning — the dispatcher must never crash because a
@@ -640,6 +650,34 @@ def get_current_board() -> str:
         except ValueError:
             pass
     try:
+        # Profile-scoped default for ordinary CLI/tool calls. This sits above
+        # the deployment-wide ``kanban/current`` convenience pointer so one
+        # repository profile cannot silently inherit another profile's board.
+        # Import lazily to keep kanban_db importable in lightweight test rigs.
+        try:
+            from hermes_cli.config import load_config_readonly
+            configured = load_config_readonly().get("kanban", {}).get("default_board")
+        except Exception as exc:
+            _log.warning("Unable to load kanban.default_board: %s", exc)
+        else:
+            try:
+                if configured is None or configured == "":
+                    pass
+                elif not isinstance(configured, str):
+                    raise ValueError("must be a board slug string or null")
+                elif configured.strip():
+                    normed = _normalize_board_slug(configured.strip())
+                    if normed:
+                        if not board_exists(normed):
+                            _log.warning(
+                                "kanban.default_board %r does not exist yet; "
+                                "the first connection will initialize it",
+                                normed,
+                            )
+                        return normed
+            except (TypeError, ValueError) as exc:
+                _log.warning("Ignoring invalid kanban.default_board: %s", exc)
+
         f = current_board_path()
         if f.exists():
             val = f.read_text(encoding="utf-8").strip()

@@ -66,10 +66,14 @@ def _make_running_again(conn, tid):
 def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        # M1 guard: prove ownership of the live claim, mirroring how a real
+        # worker (the claimer) blocks its own running task.
+        run_id = kb.get_task(conn, tid).current_run_id
+        kb.block_task(conn, tid, reason="x", kind="capability", expected_run_id=run_id)
         kb.unblock_task(conn, tid)
         _make_running_again(conn, tid)
-        kb.block_task(conn, tid, reason="x", kind="capability")
+        run_id = kb.get_task(conn, tid).current_run_id
+        kb.block_task(conn, tid, reason="x", kind="capability", expected_run_id=run_id)
         events = [e for e in kb.list_events(conn, tid)
                   if e.kind == "block_loop_detected"]
         assert events, "expected a block_loop_detected event"
@@ -89,7 +93,8 @@ def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:
         parent = kb.create_task(conn, title="parent", assignee="worker")
         child = _running_task(conn, title="child")
         kb.link_tasks(conn, parent_id=parent, child_id=child)
-        kb.block_task(conn, child, reason="wait", kind="dependency")
+        run_id = kb.get_task(conn, child).current_run_id
+        kb.block_task(conn, child, reason="wait", kind="dependency", expected_run_id=run_id)
         assert kb.get_task(conn, child).status == "todo"
         # Finish the parent, then let recompute_ready run.
         with kb.write_txn(conn):

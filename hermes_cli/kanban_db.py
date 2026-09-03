@@ -6261,6 +6261,7 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    force: bool = False,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
@@ -6288,6 +6289,14 @@ def block_task(
 
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
+
+    When the task is ``running`` under a live claim, a caller that supplies
+    no ``expected_run_id`` must pass ``force=True`` (explicit human/CLI
+    override) — otherwise the request is refused instead of silently
+    clearing the live worker's ``claim_lock``/``worker_pid`` and ending its
+    in-flight run out from under it. Workers prove ownership by passing
+    their own run id as ``expected_run_id`` (unchanged). Mirrors
+    :func:`request_review`'s M1 live-claim-theft guard.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
@@ -6296,10 +6305,17 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, claim_lock FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
+            return False
+        if (
+            expected_run_id is None
+            and not force
+            and cur_row["status"] == "running"
+            and cur_row["claim_lock"] is not None
+        ):
             return False
         source_status = (
             _retry_status_for_run(conn, task_id)

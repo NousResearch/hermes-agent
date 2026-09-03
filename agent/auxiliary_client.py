@@ -6767,6 +6767,24 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+    # OpenCode Zen free tier: the keyless placeholder must never reach the
+    # wire on the async (vision) path either — the Zen relay serves free
+    # models anonymously but 401s any unrecognized bearer. Mirror
+    # _create_openai_client: override the SDK's Authorization header with an
+    # empty value whenever the sync client carries the keyless placeholder.
+    # This runs AFTER the base_url host matching above so the keyless headers
+    # win over any provider/attribution fallback that set default_headers.
+    try:
+        from hermes_cli.models import (
+            OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+            opencode_zen_free_headers,
+        )
+        if sync_client.api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
+            _keyless = dict(async_kwargs.get("default_headers") or {})
+            _keyless.update(opencode_zen_free_headers())
+            async_kwargs["default_headers"] = _keyless
+    except Exception:
+        pass
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async

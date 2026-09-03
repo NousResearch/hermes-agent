@@ -4865,3 +4865,90 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+class TestOpenCodeFreeAsyncVisionClientKeyless:
+    """Regression for #94748: the async (vision) client for the keyless
+    opencode-free placeholder must blank the Authorization header so the SDK
+    never sends ``Bearer opencode-zen-free-keyless`` (the Zen relay 401s any
+    unrecognized bearer). The sync chokepoint (_create_openai_client) already
+    handled this; the async path (_to_async_client) did not.
+    """
+
+    ZEN_V1 = "https://opencode.ai/zen/v1"
+
+    def _fake_sync_client(self, api_key):
+        """A minimal OpenAI-shaped sync client, like the one
+        _create_openai_client returns (exposes .api_key and .base_url)."""
+        from openai import OpenAI
+
+        return OpenAI(api_key=api_key, base_url=self.ZEN_V1, max_retries=0)
+
+    def test_keyless_async_client_blanks_authorization(self):
+        """The AsyncOpenAI built from a keyless sync client carries an empty
+        Authorization default header, so the placeholder never reaches the
+        wire as a bearer."""
+        from agent import auxiliary_client as ac
+        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
+
+        captured: dict = {}
+
+        def _capture_async(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        sync_client = self._fake_sync_client(OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER)
+        # _to_async_client imports AsyncOpenAI locally (`from openai import
+        # AsyncOpenAI`), so patch the source module, not the aux module.
+        with patch("openai.AsyncOpenAI", side_effect=_capture_async):
+            async_client, model = ac._to_async_client(sync_client, "x-preview-f-free", is_vision=True)
+
+        headers = dict(captured.get("default_headers") or {})
+        assert headers.get("Authorization") == "", (
+            "async opencode-free keyless client must blank Authorization "
+            "so the SDK never sends 'Bearer opencode-zen-free-keyless'; "
+            f"got default_headers={headers!r}"
+        )
+
+    def test_keyless_async_client_still_attributable(self):
+        """Keyless async requests still identify as Hermes (attribution
+        headers mirror the opencode zen/go profiles)."""
+        from agent import auxiliary_client as ac
+        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
+
+        captured: dict = {}
+
+        def _capture_async(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        sync_client = self._fake_sync_client(OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER)
+        with patch("openai.AsyncOpenAI", side_effect=_capture_async):
+            ac._to_async_client(sync_client, "x-preview-f-free", is_vision=True)
+
+        headers = dict(captured.get("default_headers") or {})
+        assert headers.get("X-Title") == "Hermes Agent"
+        assert str(headers.get("User-Agent", "")).startswith("HermesAgent/")
+
+    def test_keyed_providers_unchanged(self):
+        """The async path for providers with REAL API keys must be untouched —
+        no keyless Authorization blanking leaks to keyed providers."""
+        from agent import auxiliary_client as ac
+
+        captured: dict = {}
+
+        def _capture_async(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        sync_client = self._fake_sync_client("sk-real-key")
+        with patch("openai.AsyncOpenAI", side_effect=_capture_async):
+            ac._to_async_client(sync_client, "some-model")
+
+        headers = dict(captured.get("default_headers") or {})
+        # A real key should be sent as the SDK's bearer — we must NOT blank it.
+        assert captured.get("api_key") == "sk-real-key"
+        assert headers.get("Authorization") != "", (
+            "keyed providers must not have their Authorization blanked; "
+            f"got default_headers={headers!r}"
+        )

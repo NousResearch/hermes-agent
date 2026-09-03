@@ -345,9 +345,12 @@ class _SupermemoryClient:
         response = self._client.search.memories(**kwargs)
         results = []
         for item in (getattr(response, "results", None) or []):
+            # The SDK returns `memory` for memory hits and `chunk` for
+            # document hits in hybrid/documents search modes.
+            content = getattr(item, "memory", None) or getattr(item, "chunk", None) or ""
             results.append({
                 "id": getattr(item, "id", ""),
-                "memory": getattr(item, "memory", "") or "",
+                "memory": content,
                 "similarity": getattr(item, "similarity", None),
                 "updated_at": getattr(item, "updated_at", None) or getattr(item, "updatedAt", None),
                 "metadata": getattr(item, "metadata", None),

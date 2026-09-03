@@ -3127,8 +3127,16 @@ def init_agent(
     # serves. (Overlaps #60103's silent-clamp dead zone; this is the
     # init-order half.)
     _cc_window = getattr(agent.context_compressor, "context_length", 0) or 0
+    # model.ollama_num_ctx is an Ollama knob (VRAM cap for a local server);
+    # a stale value left in config from local-only setups must not clamp a
+    # cloud session to that token count. The auto-detection branch above
+    # already gates on is_local_endpoint — the explicit-override path and
+    # this clamp follow the same rule: Ollama settings only steer Ollama
+    # endpoints.
+    _num_ctx_is_local = bool(agent.base_url) and is_local_endpoint(agent.base_url)
     if (
-        agent._ollama_num_ctx
+        _num_ctx_is_local
+        and agent._ollama_num_ctx
         and agent._ollama_num_ctx > 0
         and _cc_window
         and agent._ollama_num_ctx < _cc_window

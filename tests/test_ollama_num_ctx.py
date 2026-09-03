@@ -187,3 +187,44 @@ class TestCompressorClampsToNumCtx:
         # num_ctx above the resolved window must not RAISE the compressor
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
+
+    def _build_cloud_agent(self, cfg, probed_ctx):
+        import agent.context_compressor as cc_mod
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=probed_ctx,
+            ),
+            patch.object(
+                cc_mod, "get_model_context_length", return_value=probed_ctx,
+            ),
+        ):
+            from run_agent import AIAgent
+            return AIAgent(
+                model="glm-5.3-flash",
+                api_key="sk-test",
+                base_url="https://api.z.ai/api/paas/v4",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    def test_cloud_endpoint_ignores_ollama_num_ctx_override(self):
+        """A stale model.ollama_num_ctx (set to cap VRAM on a local Ollama
+        box) must not clamp a cloud session's compressor to that value —
+        ollama_num_ctx only steers local endpoints, matching the
+        auto-detection branch."""
+        agent = self._build_cloud_agent(
+            {"agent": {}, "model": {"ollama_num_ctx": 65536}},
+            probed_ctx=1000000,
+        )
+        # The override is still recorded (it applies when the user points
+        # the session back at the local server)…
+        assert agent._ollama_num_ctx == 65536
+        # …but the compressor keeps the provider-resolved 1M window.
+        assert agent.context_compressor.context_length == 1000000

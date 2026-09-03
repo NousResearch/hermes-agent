@@ -271,3 +271,24 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+class TestPromptAlias:
+    """The prompt spelling must work before and after the chat command."""
+
+    def test_top_level_prompt_is_preserved_for_chat(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["--prompt", "start the task"])
+
+        assert args.prompt == "start the task"
+        assert args.command is None
+
+    def test_chat_prompt_maps_to_query(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        args = parser.parse_args(["chat", "--prompt", "start the task"])
+
+        assert args.query == "start the task"

@@ -39,6 +39,7 @@ _VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset(
         "-s", "--skills",
         "--usage-file",
         "--in",
+        "--prompt",
     }
 )
 _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
@@ -217,6 +218,15 @@ def build_top_level_parser():
         help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
     parser.add_argument(
+        "--prompt",
+        metavar="PROMPT",
+        default=None,
+        help=(
+            "Start chat immediately with PROMPT. This is an alias for "
+            "chat --query and preserves the normal interactive session flow."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION",
@@ -351,9 +361,10 @@ def build_top_level_parser():
     )
     _query_group = chat_parser.add_mutually_exclusive_group()
     _query_group.add_argument(
-        "-q", "--query",
+        "-q", "--query", "--prompt",
+        dest="query",
         help=(
-            "Query to run. On a real TTY the prompt seeds an interactive "
+            "Prompt to run. On a real TTY the prompt seeds an interactive "
             "session (submitted literally as the first turn); combined with "
             "--oneshot or -Q, or on a non-TTY, it answers and exits."
         ),

@@ -12981,6 +12981,13 @@ def _guard_noninteractive_user_config(args) -> None:
 
 
 def _set_chat_arg_defaults(args) -> None:
+    # The top-level --prompt spelling shares the normal chat pipeline with
+    # chat --query; promote it before dispatch while preserving explicit
+    # subcommand query values.
+    top_level_prompt = getattr(args, "prompt", None)
+    if top_level_prompt is not None and not getattr(args, "query", None):
+        args.query = top_level_prompt
+
     for attr, default in [
         ("query", None),
         ("model", None),

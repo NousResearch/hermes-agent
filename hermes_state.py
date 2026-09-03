@@ -5560,6 +5560,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 apply_database_pragmas(self._conn, db_label="state.db")
                 self._conn.execute("PRAGMA foreign_keys=ON")
+                # P1 #101035: writer must wait briefly on busy, not fail fast,
+                # but must not override the #74478 patience design. timeout=1.0
+                # already, so busy_timeout=1000 matches it — statement blocks
+                # 1s inside SQLite, then application-level jittered retry
+                # (_connect_and_init_with_lock_patience) handles contention.
+                # _set_journal_mode_no_wait correctly uses 0 for exclusive detection.
+                try:
+                    self._conn.execute("PRAGMA busy_timeout=1000")
+                except sqlite3.OperationalError as exc:
+                    logger.debug("busy_timeout pragma failed on writer: %s", exc)
                 self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
 
@@ -5735,6 +5745,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             conn.row_factory = sqlite3.Row
             apply_database_pragmas(conn, db_label="state.db")
+            # Read path also tolerates brief writer contention — timeout=5.0 already,
+            # so busy_timeout=5000 matches it. Keeps read availability under burst.
+            try:
+                conn.execute("PRAGMA busy_timeout=5000")
+            except sqlite3.OperationalError as exc:
+                logger.debug("busy_timeout pragma failed on reader: %s", exc)
             # Load the CJK tokenizer extension on this connection so
             # messages_fts_cjk queries work on the read path. The .so
             # registers the tokenizer in the connection's in-memory

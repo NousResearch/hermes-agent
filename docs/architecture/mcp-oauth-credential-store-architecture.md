@@ -1,8 +1,9 @@
 # MCP OAuth Credential Store Architecture
 
-Status: Proposed
+Status: Proposed (design-review feedback incorporated 2026-09-03)
 Audience: Hermes maintainers and contributors
 Related requirements: [`../requirements/mcp-oauth-credential-store-requirements.md`](../requirements/mcp-oauth-credential-store-requirements.md)
+Related review: [`../requirements/mcp-oauth-design-review-findings.md`](../requirements/mcp-oauth-design-review-findings.md), [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md)
 
 ## 1. Summary
 
@@ -128,21 +129,32 @@ Backends do not import UI, gateway, CLI, or MCP transport modules. Surface code 
 ```python
 @dataclass(frozen=True)
 class OAuthIdentity:
-    profile_id: str
+    profile_home: Path
     server_name: str
     server_url: str
 ```
 
-`profile_id` is derived deterministically from the canonical profile-scoped Hermes home. It is not a display label. The backend key uses a SHA-256 digest of the canonical identity so arbitrary server names cannot become filesystem paths or Keychain account identifiers.
+The domain object carries the profile-scoped Hermes home as a `Path`, the type `get_hermes_home()` returns and every other Hermes caller works with. `profile_home` is not a display label.
+
+`profile_id` is not a field. It is a *derived backend key*: the SHA-256 digest of the canonical identity — `canonicalize(profile_home)` plus the normalized `server_url` and `server_name`. Backends use this digest for filenames, Keychain account strings, and lock filenames, so arbitrary server names cannot become filesystem paths or Keychain account identifiers.
+
+Profile-home canonicalization is a single shared function with the semantics of `hermes_constants.hermes_home_key()` — `os.path.normcase(str(Path(home).expanduser().resolve(strict=False)))`. The OAuth digest and the existing plugin/registry scope key must not drift; `MCPOAuthManager._key()` and `hermes_cli.profiles.profile_matches_home()` are migrated onto the same helper (both currently omit `normcase`). Canonicalization *follows the path*: a profile directory that is deleted and recreated (backup restore, profile reset) resolves to the same digest and keeps its credentials — an inode- or UUID-file-based identity would orphan them, so it is deliberately not used.
+
+Known limitations of path-string identity, both out of scope for the current design:
+
+- A case-insensitive filesystem accessed through spellings that differ only in case (`~/.hermes` vs `~/.Hermes`) produces different digests off Windows (`normcase` lowercases only on Windows). Pathological; matches existing `_key()` behavior.
+- Cross-namespace access (a container and the host sharing one profile volume at different mount paths) is not reconcilable by canonicalization. If that topology is ever supported, the fix is an explicit operator-set `mcp.oauth.credential_identity` string in profile config, used verbatim (hashed) when present — not a cleverer auto-derivation.
 
 The serialized bundle also retains the normalized server URL and discovered issuer. These values are validated on load to prevent a token from being used with a different MCP or authorization server.
 
 Normalization rules:
 
-- Profile home: expanded and resolved with `strict=False`.
+- Profile home: `expanduser()` then `resolve(strict=False)` then `normcase` (the `hermes_home_key()` helper). Resolving requires the directory to exist; it does by the time any OAuth operation runs.
 - Server name: preserved for display, normalized only for comparison where existing Hermes server-name rules require it.
 - Server URL: lowercase scheme and hostname, default port removed, fragment removed, and trailing slash normalized without changing a meaningful path.
 - Issuer: normalized according to OAuth issuer comparison requirements; no substring or suffix matching.
+
+A parametrized contract test asserts that `{tilde, trailing slash, embedded ``..``, symlinked parent, ``/var`` vs ``/private/var``}` spellings of one profile home all yield an identical digest across two independent calls.
 
 ### 4.2 Credential bundle
 
@@ -166,13 +178,13 @@ class StoredBundle:
     revision: str
 ```
 
-`OAuthTokenRecord` contains access token, optional refresh token, token type, scopes, `accepted_at_utc`, and absolute expiry. Relative `expires_in` is accepted from protocol responses but converted to an absolute timestamp before persistence. Persisting `accepted_at_utc` preserves the original token lifetime needed to calculate the proportional refresh window after restart.
-
-The conversion uses the wall-clock UTC time at which Hermes accepts the token response:
+`OAuthTokenRecord` contains access token, optional refresh token, token type, scopes, `accepted_at_utc`, absolute `expires_at`, and `original_expires_in`.
 
 ```text
 expires_at = accepted_at_utc + expires_in
 ```
+
+The conversion uses the wall-clock UTC time at which Hermes accepts the token response. Both the absolute `expires_at` and `original_expires_in` — the relative lifetime exactly as the provider returned it, in seconds — are persisted. `original_expires_in` is authoritative for the load-time plausibility guard (§4.3) and is never recomputed on load; a refresh response replaces it with the new grant's value. Persisting `accepted_at_utc` alongside preserves the original lifetime needed to calculate the proportional refresh window after restart.
 
 Persisted expiration is always an absolute UTC timestamp. Monotonic time is used for waits, retry delays, and timeout measurement within a running process, but it is not persisted because it has no meaning after restart.
 
@@ -197,6 +209,18 @@ refresh_due_at = expires_at - refresh_window
 The safety window is clamped to zero for invalid or non-positive lifetimes. Implementations may refresh earlier when a provider explicitly requires it, but they shall not treat a token as valid beyond `expires_at`.
 
 A token for which the provider supplies neither `expires_in` nor another trustworthy expiration signal has `unknown` expiration. Hermes may use it until the provider rejects it. A 401 or equivalent authentication rejection then triggers at most one coordinated reload/refresh attempt when a refresh token exists; otherwise the result is `reauthorization_required`.
+
+**Wall-clock plausibility guard.** State is recalculated from `expires_at` on every load (§7.1). Because `expires_at` is wall-clock UTC, a backward clock step between acceptance and use (NTP correction, manual change, VM snapshot restore) would make a token look valid longer than it is. Before classifying from `expires_at`, the lifecycle service checks the persisted anchors:
+
+```text
+if original_expires_in is None:            -> unknown
+if now < accepted_at_utc:                  -> unknown        # clock behind acceptance
+elapsed = now - accepted_at_utc
+if elapsed < 0 or elapsed > original_expires_in * CLOCK_SLACK:  -> unknown
+otherwise classify normally from expires_at
+```
+
+`CLOCK_SLACK` is `2.0` — wide enough to absorb legitimate NTP drift and refresh-token re-anchoring, narrow enough to trip on a gross step. The guard only *demotes* to `unknown` (an already-safe state: use until rejection, then bounded recovery per §7.1); it never shortens `expires_at`, so it cannot cause a forced-refresh storm. Residual risk: a small backward step (seconds to minutes, within the slack band) still passes and can make a token look valid slightly longer than it is; the §7.1 rejection-recovery path is the backstop.
 
 ### 4.4 Refresh-token merge rule
 
@@ -331,29 +355,43 @@ Surface          Lifecycle           Store/lock          Staged adapter       Id
 
 ### 6.2 Failure behavior
 
-If discovery, registration, browser interaction, callback validation, token exchange, MCP probing, cancellation, or timeout fails:
+The authorization flow crosses five network boundaries, only the last of which holds a staged token: (1) protected-resource / authorization-server discovery, (2) dynamic client registration, (3) browser authorization, (4) token exchange, (5) the post-exchange authentication probe against the MCP server. Failures are classified on two axes — *position* (pre-token vs post-token) and *kind* (definitive rejection vs indeterminate) — rather than treated as one undifferentiated "probe failed".
+
+**Pre-token failures (steps 1–4).** No staged token exists, so there is nothing to commit; the flow always aborts. The abort *kind* determines the surfaced error:
+
+- Definitive (HTTP 400, `invalid_grant`, `invalid_client`, unsupported registration): abort with a permanent typed error — `reauthorization_required` or a configuration error the surface can act on.
+- Indeterminate (HTTP 5xx, connection reset, DNS failure, timeout at a discovery/registration/token endpoint; HTTP 429): one immediate retry of the failed sub-step, then abort with the transient `authorization_endpoint_unavailable` error ("retry shortly", not "authentication failed"). The step-3 authorization code is single-use and short-lived, so a browser redo after the retry is protocol-mandated, not policy. A `429` `Retry-After` interval is surfaced verbatim; the flow does not sit on the administrative lock waiting it out.
+
+**Post-token failures (step 5).** A staged token from a completed code exchange is in hand. See §6.3.
+
+On any abort:
 
 1. The staged adapter is discarded.
 2. The administrative lock is released.
 3. The active bundle remains unchanged.
 4. The cached provider remains valid unless the failure independently proved it unusable.
-5. The surface receives a typed, humanizable error.
+5. The surface receives a typed, humanizable error carrying the kind (`rejected` vs `endpoint_unavailable`).
 
 There is no snapshot restore operation.
 
 ### 6.3 Successful commit validation
 
-Before `replace_authorized`, the lifecycle service verifies:
+Before `replace_authorized`, the lifecycle service verifies the staged bundle:
 
-- A non-empty access token exists.
+- A non-empty access token exists (a provider that exposes public tools without ever challenging the request is not authorized unless the staged adapter received a token).
 - Token type is supported.
 - The staged issuer matches discovered/configured expectations.
 - The client record is coherent with configured pre-registration or dynamic registration.
 - Redirect URI and client authentication method are present when required.
 - Absolute expiry is valid when supplied.
-- The MCP server completed the configured authentication probe.
 
-A provider that exposes public tools without authenticating is not considered authorized unless the staged adapter received a token.
+**Authentication probe outcome.** The post-exchange probe against the MCP server is classified, not treated as pass/fail:
+
+- `authenticated` (probe succeeded and a staged token is present): commit.
+- `rejected` (HTTP 401/403, or an `invalid_token` body): retry once after ~2 s first — a fresh token being refused is often authorization-server-to-resource-server replication lag or minor clock skew, which a short wait clears. Still rejected: abort loudly with `reauthorization_required` and a "check clock sync / token audience" hint. Another browser round will not fix a genuinely refused fresh token.
+- `indeterminate` (HTTP 5xx, timeout, or 429 from the MCP server): retry once after ~2 s, then **commit the staged bundle** and record `probe=deferred` on the `mcp_oauth.reauth_committed` event. The MCP server being unreachable is not evidence against a token from a verified code exchange; the runtime's 401-recovery path (§7.1) discovers a genuinely bad token on first real use.
+
+A single ~2 s retry is the entire budget for both `rejected` and `indeterminate`, so the administrative lock is never held across a backoff loop.
 
 ## 7. Refresh flow
 
@@ -368,7 +406,9 @@ Before an authenticated resource request, the lifecycle service evaluates the lo
 
 A response rejecting an apparently valid or unknown-lifetime token causes one coordinated credential reload. If another process has already committed a different valid access token, Hermes retries once with that token. Otherwise, if the bundle is refreshable, Hermes performs one refresh attempt. The original request is not placed in an unbounded authentication retry loop.
 
-Wall-clock movement may change expiration classification after a restart or between requests. Hermes recalculates state from `expires_at` on every bundle load and before refresh-sensitive operations. In-process timers use monotonic time and are advisory only; the persisted absolute expiration remains authoritative.
+A bundle committed with `probe=deferred` (§6.3) reaches the runtime unverified by design. Its first authentication rejection is expected, not anomalous: the runtime routes it straight into the reload/refresh recovery above and surfaces `reauthorization_required` if that fails, without the elevated logging reserved for a fresh-token rejection during commit.
+
+Wall-clock movement may change expiration classification after a restart or between requests. Hermes recalculates state from `expires_at` on every bundle load and before refresh-sensitive operations, applying the plausibility guard in §4.3. In-process timers use monotonic time and are advisory only; the persisted absolute expiration remains authoritative.
 
 ### 7.2 Sequence
 
@@ -421,6 +461,7 @@ The same locks coordinate file and Keychain backends because they are scoped to 
 | Operation | Administrative lock | Mutation lock | Revision check |
 |---|---:|---:|---:|
 | Load | No | Backend-dependent brief read | No |
+| Revision probe | No | Backend-dependent brief read | No |
 | Token refresh commit | No | Yes | Yes |
 | Initial authorization | Yes | Commit only | Create-if-absent |
 | Explicit reauthorization | Yes | Commit only | No; explicit replacement |
@@ -428,12 +469,16 @@ The same locks coordinate file and Keychain backends because they are scoped to 
 | Explicit deletion | Yes | Yes | No |
 | In-memory eviction | No | No | No |
 
+**Revision-probe cadence.** The provider manager (§12.1) checks whether the stored revision changed only at provider-rebuild decision points — before an authorization flow, during 401 recovery, and on explicit refresh or status — never on the per-request read path. Each cached provider entry additionally holds the last-observed revision under a short in-memory TTL (default 10 s) with exponential backoff and last-known-good fallback on probe failure, so an auth-sensitive request never forces a backend round trip (a `security` subprocess spawn on the Keychain backend). If profiling ever shows the subprocess probe itself is a hot-path cost, the escalation is Security.framework bindings for load/probe, which does not change the store protocol.
+
 ### 8.4 Crash guarantees
 
 - Crash before staged commit: active bundle unchanged.
 - Crash during file commit: atomic replace yields old or new complete bundle.
 - Crash during Keychain replacement: Keychain operation yields old or new item; read-back verification detects uncertain outcomes.
 - Crash after commit before provider eviction: disk-change/revision detection rebuilds the provider on the next request.
+
+The revision travels *inside* the same serialized envelope as the bundle it identifies (§9.2), committed by the one atomic write. There is no separate revision manifest, so no crash window can leave the revision and the state it describes mismatched. The transitional Chunk 4 backend, which carries a revision alongside not-yet-unified legacy records, achieves the same property by embedding the revision in the token record's own JSON and writing it with that record's atomic replace — see `../design/mcp-oauth-04-expiration-refresh-concurrency.md`.
 
 ## 9. File backend
 
@@ -481,12 +526,12 @@ Under the mutation lock, the backend:
 
 1. Reads and validates the current revision when compare-and-swap is requested.
 2. Creates a random same-directory temporary file with `O_EXCL` and mode `0600`.
-3. Writes the full bundle, flushes it, and calls `fsync`.
+3. Writes the full envelope — the new revision and the bundle it identifies, together — flushes it, and calls `fsync`.
 4. Atomically replaces the destination with `os.replace`.
 5. `fsync`s the parent directory on POSIX where supported.
 6. Releases the mutation lock.
 
-Readers observe a complete old or new file.
+Readers observe a complete old or new file. Because the revision and its bundle share the one envelope and the one `os.replace`, no reader and no crash can pair a revision with state it does not describe.
 
 ## 10. Apple Keychain backend
 
@@ -564,7 +609,9 @@ Backend instances may be cached in process, but no cached instance may capture t
 - Durable `remove` moves to `OAuthLifecycleService.delete`.
 - Disk mtime watching becomes backend-neutral revision watching.
 
-The manager's cache key remains profile plus server identity. Each cached entry remembers the loaded storage revision. Before an auth flow, it asks the lifecycle service whether the revision changed and rebuilds when necessary.
+The manager's cache key remains profile plus server identity, canonicalized through the shared `hermes_home_key()` helper (§4.1) so it and the credential digest cannot disagree about which profile a request belongs to.
+
+Each cached entry remembers the last-observed storage revision. **Invariant: the revision is probed only at rebuild decision points** — before an authorization flow, during 401 recovery, and on explicit refresh or status — never on the runtime read path that serves a resource request. The remembered revision is held under a short TTL (default 10 s) with backoff and last-known-good fallback (§8.3), so between decision points a process may serve requests from a slightly stale bundle; compare-and-swap still rejects any stale *write*, and a stale *read* costs at most one late refresh, recovered by 401 handling.
 
 ### 12.2 CLI
 
@@ -644,6 +691,7 @@ All store and lifecycle errors derive from `MCPOAuthCredentialError` and include
 
 ```text
 credential_not_found
+credential_ambiguous
 backend_unavailable
 backend_locked
 backend_timeout
@@ -656,12 +704,16 @@ reauthorization_in_progress
 reauthorization_required
 authorization_cancelled
 authorization_timeout
+authorization_endpoint_unavailable
 invalid_staged_bundle
 migration_required
 migration_conflict
 migration_failed
 deletion_failed
 ```
+
+- `credential_ambiguous` — a backend found more than one stored item matching the identity (e.g. two Keychain generic-password items with the same service and account). The payload is not corrupt, so `credential_corrupt` would misdescribe it; the store must refuse the operation rather than act on an arbitrary match, and diagnostics name the exact remediation.
+- `authorization_endpoint_unavailable` — a pre-token step (discovery, registration, token exchange) failed on a transient transport condition (HTTP 5xx / 429 / timeout) that persisted through one retry (§6.2). Distinct from `authorization_timeout`, which is the user not completing the browser step. Surfaces present it as "retry shortly", carrying any `Retry-After` interval.
 
 Surfaces translate these errors into presentation appropriate to interactive or background operation. They do not infer deletion, retry, or fallback policy from raw exception text.
 
@@ -681,6 +733,13 @@ Structured lifecycle events include:
 - `mcp_oauth.backend_error`
 
 Permitted fields include profile display name, server name, backend, revision prefix, expiry status, error code, and duration. Token values, authorization codes, client secrets, full revisions, and raw provider response bodies are prohibited.
+
+Event-specific fields:
+
+- `mcp_oauth.reauth_committed` carries `probe` — `authenticated` when the post-exchange probe confirmed the token, `deferred` when it was committed past an indeterminate probe outcome (§6.3).
+- `mcp_oauth.reauth_aborted` carries `reason` — `rejected` (definitive auth rejection), `endpoint_unavailable` (transient pre-token failure), `cancelled`, or `timeout`.
+
+**Revision-prefix bound.** Any logged or diagnostic revision prefix is at most 8 hexadecimal characters (32 bits). The revision itself is 128 bits and is used only for compare-and-swap; a bounded prefix is enough to correlate two log lines by eye while leaving the value unguessable. A test asserts no emitted field — log or `OAuthCredentialStatus.revision_prefix` — exceeds the bound.
 
 A diagnostic command should expose output equivalent to:
 
@@ -721,10 +780,12 @@ One parameterized contract suite runs against every backend implementation:
 - Atomic reader behavior during replacement.
 - Delete and missing delete.
 - Identity and profile isolation.
+- Identity-digest stability: `{tilde, trailing slash, embedded ``..``, symlinked parent, ``/var`` vs ``/private/var``}` spellings of one profile home resolve to one digest.
 - Corrupt and unsupported bundle behavior.
 - Backend locked/unavailable behavior.
+- No emitted revision prefix exceeds 8 hex characters.
 
-The Apple Keychain contract suite uses a unique service suffix in platform CI and removes only items created by that test run.
+The Apple Keychain contract suite uses a unique service suffix in platform CI and removes only items created by that test run. It additionally asserts duplicate-item ambiguity: with two generic-password items matching one service/account, `load`, `compare_and_swap`, `replace_authorized`, and `delete` each return `credential_ambiguous` and never operate on an arbitrary match.
 
 ### 17.2 Lifecycle tests
 
@@ -737,6 +798,7 @@ Lifecycle tests use a real store implementation and a fake OAuth protocol peer, 
 - Public MCP initialization without a token is not reported as authenticated.
 - Refresh without a returned refresh token preserves the previous refresh token.
 - Relative `expires_in` is converted to the expected absolute UTC expiration.
+- `original_expires_in` is persisted and is not recomputed on load.
 - Tokens become `refresh_due` at the specified safety-window threshold.
 - Short-lived tokens use ten percent of their lifetime rather than a fixed 60-second window.
 - Expired tokens refresh before a resource request when refreshable.
@@ -744,11 +806,19 @@ Lifecycle tests use a real store implementation and a fake OAuth protocol peer, 
 - Unknown-lifetime tokens remain usable until provider rejection.
 - An authentication rejection performs at most one coordinated reload/refresh retry.
 - Wall-clock changes do not affect monotonic operation timeouts or create unbounded retries.
+- A load where `now` precedes `accepted_at_utc`, or where elapsed exceeds `original_expires_in × CLOCK_SLACK`, classifies as `unknown`; normal NTP-scale drift within the slack band does not.
+- Pre-token token-exchange HTTP 500 retries once, then aborts with `authorization_endpoint_unavailable`, active bundle untouched.
+- Pre-token token-exchange HTTP 400 `invalid_grant` aborts with a permanent error, no retry storm.
+- A 429 at the token endpoint surfaces its `Retry-After` and does not hold the administrative lock waiting.
+- Probe HTTP 401 retries once after the short delay, then aborts loudly without committing.
+- Probe HTTP 503 retries once, then commits the staged bundle with `probe=deferred`.
+- A `probe=deferred` bundle whose token is in fact invalid surfaces `reauthorization_required` on first runtime use via the 401 path, without fresh-token-rejection logging.
 - Stale refresh loses to newer reauthorization.
 - Refresh during failed reauthorization survives.
 - Two explicit reauthorization processes serialize.
 - Explicit deletion cannot race with reauthorization.
 - Parked reconnect evicts memory only.
+- The revision is probed only at rebuild decision points, never on the per-request read path; a stale in-TTL bundle still serves reads and CAS still rejects a stale write.
 
 ### 17.3 Surface-routing tests
 
@@ -783,8 +853,9 @@ Exit criterion: no surface directly manipulates `mcp-tokens/`.
 - Route CLI, dashboard, and TUI/Desktop RPC authorization through one service.
 - Remove snapshot/remove/restore reauthorization logic.
 - Add administrative locks and cross-surface concurrency tests.
+- Commit order in the compatibility backend is fixed as metadata → client → token, each an atomic `os.replace`, so a concurrent reader that observes the new token also observes new-or-compatible client and metadata.
 
-Exit criterion: failed authorization cannot modify active credentials.
+Exit criterion: failed authorization cannot modify active credentials. This phase guarantees *no destructive failure* only. Because the compatibility backend still writes the token, client, and metadata as separate files, a concurrent reader can still observe an incoherent triple during a commit; the one remaining interleaving (reader between the client write and the token write sees the old token with the new client, benign while the dynamic registration is unchanged) is closed only in Phase 3, when the versioned single bundle lands.
 
 ### Phase 3: versioned file bundle and CAS
 
@@ -832,6 +903,9 @@ The architecture introduces no requirement for Electron. Local CLI and gateway o
 | Observability | 14, 15 |
 | Security | 9, 10, 16 |
 | Reliability and testing | 8.4, 17 |
+| Clock robustness | 4.2, 4.3, 7.1 |
+| Probe/commit policy | 6.2, 6.3, 7.1 |
+| Runtime hot-path cost | 8.3, 12.1 |
 
 ## 21. Consequences
 
@@ -842,6 +916,9 @@ The architecture introduces no requirement for Electron. Local CLI and gateway o
 - File and Keychain storage become implementation choices rather than UI-specific behavior.
 - Refresh and reauthorization have explicit concurrency semantics.
 - Credential state becomes coherent and easier to validate, migrate, and diagnose.
+- A transient outage at an authorization or MCP endpoint no longer forces a user to repeat a browser flow whose token is fine.
+- The runtime read path performs no per-request backend probe, so the Keychain backend adds no subprocess spawn to an authenticated request.
+- A gross wall-clock step is detected and demoted to a safe state rather than silently extending a token's apparent life.
 
 ### Costs
 
@@ -849,5 +926,7 @@ The architecture introduces no requirement for Electron. Local CLI and gateway o
 - Cross-process locking and Keychain integration require platform tests.
 - Migration must support both legacy files and new bundles across multiple releases.
 - A full browser reauthorization holds an administrative lock for that server, so a second explicit attempt is rejected or waits.
+- The probe-outcome classifier and the wall-clock guard are new logic on the authorization and load paths, each with its own test matrix.
+- A bundle committed with `probe=deferred` reaches the runtime unverified; correctness then depends on the 401-recovery path, not on commit-time proof.
 
 These costs are accepted because they replace duplicated destructive control paths with one testable credential lifecycle boundary.

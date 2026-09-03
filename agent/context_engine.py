@@ -25,16 +25,193 @@ Lifecycle:
      gateway session expiry) — NOT per-turn
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
 
 
+logger = logging.getLogger(__name__)
+
 MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
 _MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...\n"
+
+
+def _toolset_selects_context_engine(
+    name: str,
+    *,
+    visited: Optional[set[str]] = None,
+) -> bool:
+    """Return whether a named toolset selects the dynamic engine family."""
+    if name in {"all", "*", "context_engine"}:
+        return True
+
+    from toolsets import get_toolset, validate_toolset
+
+    if not validate_toolset(name):
+        return False
+    if visited is None:
+        visited = set()
+    if name in visited:
+        return False
+    visited.add(name)
+    definition = get_toolset(name)
+    if not isinstance(definition, dict):
+        return False
+    return any(
+        _toolset_selects_context_engine(include, visited=visited)
+        for include in definition.get("includes", [])
+    )
+
+
+def context_engine_tool_family_enabled(
+    enabled_toolsets,
+    disabled_toolsets,
+) -> bool:
+    """Return whether policy permits enumerating dynamic engine schemas."""
+    if isinstance(disabled_toolsets, str):
+        disabled_names = {disabled_toolsets}
+    else:
+        disabled_names = {str(name) for name in (disabled_toolsets or [])}
+    try:
+        if any(_toolset_selects_context_engine(name) for name in disabled_names):
+            return False
+        if enabled_toolsets is None:
+            return True
+        if isinstance(enabled_toolsets, str):
+            enabled_names = [enabled_toolsets]
+        else:
+            enabled_names = [str(name) for name in enabled_toolsets]
+        return any(
+            _toolset_selects_context_engine(name) for name in enabled_names
+        )
+    except Exception:
+        logger.debug(
+            "Failed to resolve toolsets for context-engine tools",
+            exc_info=True,
+        )
+        return False
+
+
+def context_engine_denied_tool_names(disabled_toolsets) -> Optional[set[str]]:
+    """Resolve final subtraction for dynamic context-engine schemas.
+
+    ``None`` means the entire dynamic family is denied. Unknown toolsets are
+    ignored like registry filtering, while resolver failures fail closed.
+    """
+    if not disabled_toolsets:
+        return set()
+    if isinstance(disabled_toolsets, str):
+        disabled_names = [disabled_toolsets]
+    else:
+        disabled_names = [str(name) for name in disabled_toolsets]
+    try:
+        from toolsets import bundle_non_core_tools, resolve_toolset, validate_toolset
+
+        denied: set[str] = set()
+        for name in disabled_names:
+            if not validate_toolset(name):
+                continue
+            if _toolset_selects_context_engine(name):
+                return None
+            denied.update(
+                bundle_non_core_tools(name)
+                if name.startswith("hermes-")
+                else resolve_toolset(name)
+            )
+    except Exception:
+        logger.debug(
+            "Failed to resolve disabled toolsets for context-engine tools",
+            exc_info=True,
+        )
+        return None
+    return denied
+
+
+def effective_context_engine_tool_schemas(
+    raw_schemas,
+    *,
+    enabled_toolsets,
+    disabled_toolsets,
+) -> List[Dict[str, Any]]:
+    """Return normalized dynamic schemas surviving selection and subtraction."""
+    if not context_engine_tool_family_enabled(
+        enabled_toolsets,
+        disabled_toolsets,
+    ):
+        return []
+
+    denied_names = context_engine_denied_tool_names(disabled_toolsets)
+    if denied_names is None:
+        return []
+
+    from agent.memory_manager import normalize_tool_schema
+
+    effective = []
+    for raw_schema in raw_schemas:
+        schema = normalize_tool_schema(raw_schema)
+        if schema is None:
+            logger.warning(
+                "Context engine returned a tool schema with no resolvable "
+                "name; skipping to avoid poisoning the request (%r)",
+                raw_schema,
+            )
+            continue
+        if schema["name"] not in denied_names:
+            effective.append(schema)
+    return effective
+
+
+def inject_context_engine_tools(agent: Any) -> int:
+    """Append policy-eligible context-engine schemas to an agent at startup."""
+    agent._context_engine_tool_names = set()
+    compressor = getattr(agent, "context_compressor", None)
+    tools = getattr(agent, "tools", None)
+    if compressor is None or tools is None:
+        return 0
+    get_schemas = getattr(compressor, "get_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+    enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+    disabled_toolsets = getattr(agent, "disabled_toolsets", None)
+    if not context_engine_tool_family_enabled(
+        enabled_toolsets,
+        disabled_toolsets,
+    ):
+        return 0
+
+    existing_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    registry_routes = getattr(agent, "_tool_registry_routes", {})
+    if isinstance(registry_routes, dict):
+        existing_names.update(registry_routes)
+    valid_names = getattr(agent, "valid_tool_names", None)
+    if valid_names is None:
+        valid_names = set()
+        agent.valid_tool_names = valid_names
+
+    added = 0
+    schemas = effective_context_engine_tool_schemas(
+        get_schemas(),
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+    )
+    for schema in schemas:
+        name = schema["name"]
+        if name in existing_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_names.add(name)
+        agent._context_engine_tool_names.add(name)
+        existing_names.add(name)
+        added += 1
+    return added
 
 
 def sanitize_memory_context(memory_context: str) -> str:

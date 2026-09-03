@@ -20,6 +20,27 @@ import { setConnection, setGatewayState } from '@/store/session'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
+type SpawnPriority = 'foreground' | 'background'
+
+function isBackgroundSlotWaitTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const extra = error as Error & { priority?: string; silent?: boolean }
+
+  return (
+    extra.name === 'LocalBackendSlotWaitTimeoutError' ||
+    extra.silent === true ||
+    extra.priority === 'background' ||
+    (error.message.includes('timed out while waiting for a free slot') && error.message.includes('(background)'))
+  )
+}
+
+function connectionPriorityOpts(priority: SpawnPriority): { priority: 'foreground' } | undefined {
+  return priority === 'foreground' ? { priority: 'foreground' } : undefined
+}
+
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
@@ -489,7 +510,7 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary): Promise<void> {
+async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -497,6 +518,18 @@ async function openSecondary(entry: Secondary): Promise<void> {
   }
 
   if (entry.connectPromise) {
+    if (spawnPriority === 'foreground') {
+      // Hydration may already own this dial as a background slot wait. Kick a
+      // foreground IPC so main can promote it onto the reserved slot.
+      void (entry.connectionId && desktop.getConnectionFor
+        ? desktop.getConnectionFor({
+            connectionId: entry.connectionId,
+            profile: entry.profile,
+            priority: 'foreground'
+          })
+        : desktop.getConnection(entry.profile, { priority: 'foreground' }))
+    }
+
     await entry.connectPromise
 
     return
@@ -540,18 +573,33 @@ async function openSecondary(entry: Secondary): Promise<void> {
     // this secondary (SSH terminal, messaging DELETE, session send, …) never
     // settles either. Bound the same way use-gateway-boot.ts bounds the
     // primary's equivalent awaits.
-    const conn =
-      entry.connectionId && desktop.getConnectionFor
-        ? await withTimeout(
-            desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile }),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
-            `Timed out connecting to profile "${entry.profile}"`
-          )
-        : await withTimeout(
-            desktop.getConnection(entry.profile),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
-            `Timed out connecting to profile "${entry.profile}"`
-          )
+    const conn = await (async () => {
+      try {
+        return entry.connectionId && desktop.getConnectionFor
+          ? await withTimeout(
+              desktop.getConnectionFor({
+                connectionId: entry.connectionId,
+                profile: entry.profile,
+                ...(connectionPriorityOpts(spawnPriority) ?? {})
+              }),
+              RECONNECT_ATTEMPT_TIMEOUT_MS,
+              `Timed out connecting to profile "${entry.profile}"`
+            )
+          : await withTimeout(
+              spawnPriority === 'foreground'
+                ? desktop.getConnection(entry.profile, { priority: 'foreground' })
+                : desktop.getConnection(entry.profile),
+              RECONNECT_ATTEMPT_TIMEOUT_MS,
+              `Timed out connecting to profile "${entry.profile}"`
+            )
+      } catch (error) {
+        if (spawnPriority !== 'foreground' && isBackgroundSlotWaitTimeout(error)) {
+          throw error
+        }
+
+        throw error
+      }
+    })()
 
     entry.connection = conn
 
@@ -781,7 +829,8 @@ async function sharedPrimaryRoute(profile: string): Promise<boolean> {
 // request-scope flag; dedicated local/remote profiles use their pooled socket.
 async function gatewayForProfile(
   profile: string,
-  leaseRequest = false
+  leaseRequest = false,
+  spawnPriority: SpawnPriority = 'background'
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
@@ -840,7 +889,7 @@ async function gatewayForProfile(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, spawnPriority)
     }
   } catch (error) {
     release()
@@ -1300,8 +1349,11 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 // it. No scheduleReconnect on failure: a hover is speculative, so a dead
 // backend must not start a background retry loop — the real switch owns retry
 // and error UX. An already-open (or primary) profile is a no-op.
-export async function openGatewayForProfile(profile: string): Promise<void> {
-  await gatewayForProfile(profile)
+export async function openGatewayForProfile(
+  profile: string,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+): Promise<void> {
+  await gatewayForProfile(profile, false, spawnPriority)
 }
 
 // ── Connection-scoped agents (multi-source roster) ─────────────────────────
@@ -1321,12 +1373,15 @@ export async function openGatewayForProfile(profile: string): Promise<void> {
 export async function openGatewayForAgent(
   connectionId: null | string,
   profile: string,
-  { activationLease = false }: { activationLease?: boolean } = {}
+  {
+    activationLease = false,
+    spawnPriority = 'background'
+  }: { activationLease?: boolean; spawnPriority?: SpawnPriority } = {}
 ): Promise<void> {
   const scope = registryBackendScopeKey(connectionId, profile)
 
   if (scope === normKey(profile) || isPrimaryRegistryRoute(connectionId, profile)) {
-    return openGatewayForProfile(profile)
+    return openGatewayForProfile(profile, { spawnPriority })
   }
 
   if (await isAttachedSharedRemote(connectionId, profile)) {
@@ -1356,7 +1411,7 @@ export async function openGatewayForAgent(
   }
 
   try {
-    await openSecondary(entry)
+    await openSecondary(entry, spawnPriority)
   } catch (error) {
     if (activationLease) {
       entry.activationLeaseUntil = 0
@@ -1412,7 +1467,7 @@ export async function ensureGatewayForAgent(
     entry.reconnectAttempt = 0
 
     try {
-      await openSecondary(entry)
+      await openSecondary(entry, 'foreground')
     } catch {
       scheduleReconnect(entry)
     }
@@ -1489,7 +1544,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
       entry.reconnectAttempt = 0
 
       try {
-        await openSecondary(entry)
+        await openSecondary(entry, 'foreground')
       } catch (error) {
         // #81094: a failed secondary dial must NOT fall through to setActive()
         // with a closed socket — that silently routes the user's messages to the

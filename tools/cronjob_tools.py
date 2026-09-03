@@ -363,21 +363,34 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             # snapshots; None for platforms without scope.
             "scope_id": get_session_env("HERMES_SESSION_SCOPE_ID") or None,
         }
+
+    # Desktop conversations use the TUI gateway rather than a messaging
+    # platform, so they intentionally have no HERMES_SESSION_PLATFORM/chat id.
+    # Their durable session key is nevertheless a precise return address for
+    # the desktop notification poller. Keep this distinct from a real gateway
+    # platform: cron.scheduler routes it through that local session bridge,
+    # never through a process-wide desktop env gate.
+    if get_session_env("HERMES_SESSION_SOURCE").strip().lower() == "desktop":
+        session_key = get_session_env("HERMES_SESSION_KEY").strip()
+        if session_key:
+            return {
+                "platform": "desktop",
+                "chat_id": session_key,
+                "session_key": session_key,
+                "session_id": get_session_env("HERMES_SESSION_ID") or None,
+            }
     return None
 
 
 def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> Optional[str]:
     """Return an informational notice when a created job won't deliver anywhere.
 
-    TUI/CLI sessions cannot be captured as a cron ``origin`` (no
-    ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` is set for them), so a
-    ``deliver="origin"`` request — or an omitted ``deliver`` that defaults to
-    origin-or-local — produces a job that runs and saves output to
-    ``last_output`` but is never delivered back into the session. This is by
-    design (there is no live-delivery channel for local sessions), but silently
-    dropping the user's "tell me when it runs" intent is the trap reported in
-    #51568. Surface it at create time so the agent can relay it instead of
-    promising a delivery that never happens.
+    A session without a captured, reachable cron origin — including CLI/TUI
+    sessions and a Desktop session missing its durable key — cannot receive a
+    ``deliver="origin"`` request. It instead runs and saves output to
+    ``last_output`` without delivering it back into the session. Surface that
+    at create time so the agent can relay the limitation instead of promising a
+    delivery that cannot happen.
 
     Returns ``None`` when the user explicitly asked for ``local`` (no surprise),
     or when the job resolves to a real delivery target.
@@ -397,7 +410,7 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
     return (
         "This is a local-only cron job: its output is saved (view it with "
         "cronjob(action='list')) but will NOT be delivered back into this "
-        "session — CLI/TUI sessions have no live-delivery channel. To be "
+        "session — it has no live-delivery route. To be "
         "notified when it runs, recreate or update the job with deliver set to "
         "a gateway-connected platform, e.g. deliver='telegram' or deliver='all'."
     )

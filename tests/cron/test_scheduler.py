@@ -197,6 +197,41 @@ class TestResolveDeliveryTarget:
             "_resolved_from": "origin",
         }
 
+    def test_desktop_origin_delivery_uses_captured_session_key(self):
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "desktop",
+            "chat_id": "desktop-session-key",
+            "thread_id": None,
+            "_resolved_from": "origin",
+        }
+
+    def test_desktop_explicit_target_must_match_captured_origin(self, caplog):
+        job = {
+            "id": "desktop-job",
+            "deliver": "desktop:other-session",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            assert _resolve_delivery_target(job) is None
+
+        assert any(
+            "does not match the captured desktop origin" in record.message
+            and "desktop-job" in record.message
+            for record in caplog.records
+        )
+
 
     def test_bare_platform_delivery_uses_home_root_instead_of_origin_thread(self, monkeypatch):
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "home-parent")
@@ -380,6 +415,62 @@ class TestDeliverResultWrapping:
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
+
+    def test_desktop_delivery_uses_session_queue_without_gateway_config(self):
+        job = {
+            "id": "desktop-job",
+            "name": "desktop report",
+            "deliver": "origin",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        with (
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("cron.scheduler._queue_desktop_cron_delivery", return_value=True) as queue_delivery,
+            patch("gateway.config.load_gateway_config") as load_gateway_config,
+        ):
+            assert _deliver_result(job, "desktop report content") is None
+
+        queue_delivery.assert_called_once_with(
+            job,
+            {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+                "thread_id": None,
+                "_resolved_from": "origin",
+            },
+            "desktop report content",
+        )
+        load_gateway_config.assert_not_called()
+
+    def test_desktop_queue_failure_is_not_reported_as_inactive(self, caplog):
+        job = {
+            "id": "desktop-job",
+            "name": "desktop report",
+            "deliver": "origin",
+            "origin": {
+                "platform": "desktop",
+                "chat_id": "desktop-session-key",
+            },
+        }
+
+        with (
+            patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+            patch("cron.scheduler._queue_desktop_cron_delivery", return_value=None),
+            patch("gateway.config.load_gateway_config") as load_gateway_config,
+            caplog.at_level(logging.ERROR, logger="cron.scheduler"),
+        ):
+            assert _deliver_result(job, "desktop report content") is None
+
+        assert any(
+            "failed to queue desktop delivery" in record.message
+            for record in caplog.records
+        )
+        assert not any("is not active" in record.message for record in caplog.records)
+        load_gateway_config.assert_not_called()
 
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
@@ -735,7 +826,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
         seen = {}
 
-        (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n")
+        (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n", encoding="utf-8")
         monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
@@ -1028,7 +1119,7 @@ class TestRunJobConfigLogging:
     def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
         """When config.yaml is malformed, a warning should be logged."""
         bad_yaml = tmp_path / "config.yaml"
-        bad_yaml.write_text("invalid: yaml: [[[bad")
+        bad_yaml.write_text("invalid: yaml: [[[bad", encoding="utf-8")
 
         job = {
             "id": "test-job",
@@ -1074,7 +1165,7 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n", encoding="utf-8")
         monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
 
         job = {"id": "env-job", "name": "env test", "prompt": "hi"}
@@ -1224,7 +1315,7 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n", encoding="utf-8")
         monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
 
         job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
@@ -1269,7 +1360,7 @@ class TestRunJobModelResolution:
 
     def test_null_job_model_falls_back_to_env(self, tmp_path, monkeypatch):
         """``model: null`` on the job uses HERMES_MODEL when set."""
-        (tmp_path / "config.yaml").write_text("")
+        (tmp_path / "config.yaml").write_text("", encoding="utf-8")
         monkeypatch.setenv("HERMES_MODEL", "env-model")
 
         job = {"id": "null-model-job", "name": "null model", "prompt": "hi", "model": None}
@@ -1295,7 +1386,7 @@ class TestRunJobModelResolution:
 
     def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
         """All three sources empty → fail fast with a clear message, not an opaque 400."""
-        (tmp_path / "config.yaml").write_text("")
+        (tmp_path / "config.yaml").write_text("", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "no-model-job", "name": "no model anywhere", "prompt": "hi", "model": None}
@@ -1327,7 +1418,7 @@ class TestRunJobModelResolution:
         resolver mirrors that so a config that works in the CLI also works in
         cron.
         """
-        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n")
+        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "alias-job", "name": "alias", "prompt": "hi", "model": None}
@@ -1352,7 +1443,7 @@ class TestRunJobModelResolution:
 
     def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
         """A malformed config.yaml degrades gracefully when the job has a model."""
-        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
+        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "corrupt-job", "name": "corrupt", "prompt": "hi", "model": "explicit-model"}
@@ -1734,7 +1825,7 @@ class TestBuildJobPromptAbsoluteSkillPath:
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "alpha-skill"
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
+        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.", encoding="utf-8")
         absolute_path = str(skill_dir)
         seen_names: list[str] = []
 
@@ -2801,10 +2892,6 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
-
-
-
 class TestFailureStreakNudge:
     """Poke-inspired repeated-failure review nudge (_failure_streak_nudge)."""
 

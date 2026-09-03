@@ -645,6 +645,43 @@ class TestLocalDeliveryNotice:
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
 
+    def test_desktop_origin_uses_live_session_key_no_notice(self):
+        """Desktop has no gateway platform, but its session key is routable."""
+        from cron.jobs import get_job
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(
+            source="desktop",
+            session_key="desktop-session-key",
+            session_id="desktop-session-id",
+        )
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 2m")
+        )
+
+        assert created["deliver"] == "origin"
+        assert "local-only cron job" not in created["message"]
+        stored = get_job(created["job_id"])
+        assert stored["origin"] == {
+            "platform": "desktop",
+            "chat_id": "desktop-session-key",
+            "session_key": "desktop-session-key",
+            "session_id": "desktop-session-id",
+        }
+
+    def test_desktop_origin_without_session_key_emits_local_notice(self):
+        """A malformed Desktop context must not claim the report is routable."""
+        from gateway.session_context import set_session_vars
+
+        set_session_vars(source="desktop")
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 2m")
+        )
+
+        assert created["deliver"] == "local"
+        assert "local-only cron job" in created["message"]
+        assert "no live-delivery route" in created["message"]
+
 
 class TestValidateCronBaseUrl:
     """The cron base_url guard must not let a NAMED custom provider's stored

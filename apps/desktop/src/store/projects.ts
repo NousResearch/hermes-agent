@@ -509,6 +509,16 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 // when the user enters it. Same backend grouping as `projects.tree`, so ids and
 // membership match exactly.
 let projectSessionsRefreshGeneration = 0
+const projectSessionsCache = new Map<string, SidebarProjectTree>()
+
+function projectSessionsCacheKey(projectId: string, profile?: null | string): string {
+  return `${profile ?? ''}::${projectId}`
+}
+
+/** Last successful drill-in payload for this project+profile, if any. */
+export function cachedProjectSessions(projectId: string, profile?: null | string): SidebarProjectTree | null {
+  return projectSessionsCache.get(projectSessionsCacheKey(projectId, profile)) ?? null
+}
 
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
   const generation = ++projectSessionsRefreshGeneration
@@ -526,7 +536,12 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
       return null
     }
 
-    return res.project ?? null
+    if (res.project) {
+      projectSessionsCache.set(projectSessionsCacheKey(projectId, context.profile), res.project)
+      return res.project
+    }
+
+    return cachedProjectSessions(projectId, context.profile)
   } catch {
     return null
   }

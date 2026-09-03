@@ -355,14 +355,19 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
 
     for session in sessions:
         cwd = (session.get("cwd") or "").strip()
-        if not cwd:
+        persisted_root = (session.get("git_repo_root") or "").strip()
+        # Remote/imported rows may have lost cwd while still carrying a repo
+        # root. Place those on the persisted root (main lane) instead of
+        # dropping them out of an explicit project they already belong to.
+        anchor = cwd or persisted_root
+        if not anchor:
             continue
 
         placement = _place(
-            cwd,
+            anchor,
             (session.get("git_branch") or "").strip(),
             resolve,
-            (session.get("git_repo_root") or "").strip(),
+            persisted_root,
         )
         if not placement:
             continue
@@ -507,10 +512,17 @@ def _project_for_path(index: _FolderIndex, target: str) -> Optional[dict]:
 
 def _project_for_session(session: dict, index: _FolderIndex, resolve: Optional[Resolve]) -> Optional[dict]:
     cwd = (session.get("cwd") or "").strip()
-    if not cwd:
-        return None
     repo_root = _session_repo_root(session, resolve)
-    candidates = [cwd, repo_root] if repo_root and repo_root != cwd else [cwd]
+    # Empty cwd used to short-circuit to Home even when git_repo_root still
+    # identified an explicit project (remote/VPS rows, imported history). Match
+    # on whichever anchors exist so a bound chat cannot become homeless.
+    candidates: list[str] = []
+    if cwd:
+        candidates.append(cwd)
+    if repo_root and repo_root not in candidates:
+        candidates.append(repo_root)
+    if not candidates:
+        return None
 
     best: Optional[dict] = None
     best_len = -1

@@ -11,6 +11,7 @@ import {
   liveSessionProjectId,
   mergeRepoWorktreeGroups,
   NO_PROJECT_ID,
+  namedProjectSessionIds,
   overlayLiveLanes,
   overlayLivePreviews,
   reconcileEnteredProjectSessions,
@@ -1044,6 +1045,59 @@ describe('overlayLiveLanes', () => {
     expect(overlayLiveLanes(home, [makeCwdSession('/www/app', { id: 'fresh' })])).toBe(home)
   })
 
+  it('collects session ids from named projects and skips Home', () => {
+    const bound = makeCwdSession('/www/app', { id: 'bound' })
+    const homeRow = makeCwdSession(null, { id: 'home-row' })
+    const ids = namedProjectSessionIds([
+      projectNode({ id: 'p_app', previewSessions: [bound] }),
+      homeNode([homeRow])
+    ])
+
+    expect([...ids]).toEqual(['bound'])
+  })
+
+  it('does not inject a named-project chat into Home when it is already claimed', () => {
+    const bound = makeCwdSession(null, { id: 'bound' })
+    const home = homeNode([])
+    const claimed = new Set(['bound'])
+
+    const overlaid = overlayLiveLanes(home, [bound], new Set(), claimed)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).not.toContain('bound')
+    expect(overlaid.sessionCount).toBe(0)
+  })
+
+  it('refreshes a snapshot row in place when live cwd is empty', () => {
+    const existing = makeCwdSession('/www/app', { id: 'keep', git_branch: 'main', title: 'old' })
+    const project = projectNode({
+      id: '/www/app',
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: '/www/app::branch::main',
+              label: 'main',
+              isMain: true,
+              path: '/www/app',
+              sessions: [existing]
+            })
+          ]
+        }
+      ]
+    })
+    const live = [makeCwdSession(null, { id: 'keep', title: 'updated' })]
+
+    const overlaid = overlayLiveLanes(project, live)
+
+    expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['keep'])
+    expect(overlaid.repos[0].groups[0].sessions[0].title).toBe('updated')
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
   it('evicts a session from the main lane when the live overlay places it into a worktree lane', () => {
     // Session was in main when the backend tree was captured, but the live
     // $sessions cache now has it under a worktree cwd. The overlay must place
@@ -1130,6 +1184,56 @@ describe('overlayLivePreviews', () => {
     const previews = overlayLivePreviews([homeNode([])], [makeCwdSession(null, { id: 'fresh' })], [], 3)
 
     expect(previews[NO_PROJECT_ID].map(s => s.id)).toEqual(['fresh'])
+  })
+
+  it('keeps a bound snapshot row out of Home when live cwd is empty', () => {
+    const bound = makeCwdSession('/www/app', { id: 'bound', git_branch: 'main' })
+    const project = projectNode({
+      id: 'p_app',
+      previewSessions: [bound],
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [bound] })]
+        }
+      ]
+    })
+    const home = homeNode([])
+    const live = [makeCwdSession(null, { id: 'bound' })]
+
+    const previews = overlayLivePreviews([project, home], live, [makeProject('p_app', ['/www/app'])], 3)
+
+    expect(previews['p_app']?.map(s => s.id)).toEqual(['bound'])
+    expect(previews[NO_PROJECT_ID]).toBeUndefined()
+  })
+
+  it('does not list the same live session under two projects', () => {
+    const row = makeCwdSession('/www/app', { id: 'dup', git_branch: 'main' })
+    const projectA = projectNode({
+      id: 'p_a',
+      previewSessions: [row]
+    })
+    const projectB = projectNode({
+      id: 'p_b',
+      previewSessions: []
+    })
+    // Live cwd now sits under B, so overlay must move it — not clone it.
+    const live = [makeCwdSession('/www/other', { id: 'dup', git_repo_root: '/www/other' })]
+
+    const previews = overlayLivePreviews(
+      [projectA, projectB],
+      live,
+      [makeProject('p_a', ['/www/app']), makeProject('p_b', ['/www/other'])],
+      3
+    )
+
+    const inA = previews['p_a']?.map(s => s.id) ?? []
+    const inB = previews['p_b']?.map(s => s.id) ?? []
+    expect(inA).not.toContain('dup')
+    expect(inB).toEqual(['dup'])
   })
 })
 

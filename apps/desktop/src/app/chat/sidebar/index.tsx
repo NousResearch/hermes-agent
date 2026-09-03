@@ -74,6 +74,7 @@ import {
 } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import {
+  $activeGatewayProfile,
   $newChatProfile,
   $profileColors,
   $profiles,
@@ -91,6 +92,7 @@ import {
   $projectTreeLoading,
   $reposScanning,
   ALL_PROJECTS,
+  cachedProjectSessions,
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
@@ -154,6 +156,7 @@ import { ProjectDialog } from './project-dialog'
 import {
   excludeProjectSessions,
   liveSessionProjectId,
+  namedProjectSessionIds,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -968,9 +971,16 @@ export function ChatSidebar({
     }
 
     let cancelled = false
+    const cached = cachedProjectSessions(enteredProjectId, $activeGatewayProfile.get())
+
+    if (cached?.id === enteredProjectId) {
+      setEnteredProjectTree(cached)
+    }
 
     void fetchProjectSessions(enteredProjectId).then(project => {
-      if (!cancelled) {
+      // A null result is a stale/failed RPC — keep the last good tree (cache or
+      // previous hydrate) so remote lag cannot blank the entered project.
+      if (!cancelled && project) {
         setEnteredProjectTree(project)
       }
     })
@@ -1019,10 +1029,17 @@ export function ChatSidebar({
   // different times, but a row visible in the overview must not disappear on
   // entry. The backend seeds each project folder as an (empty) repo, so the
   // overlay always has a lane to place a missing in-project session into.
+  const claimedNamedIds = useMemo(
+    () => namedProjectSessionIds(agentProjectTree ?? []),
+    [agentProjectTree]
+  )
+
   const enteredProjectContent = useMemo(
     () =>
-      enteredProject ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds) : undefined,
-    [enteredProject, enteredProjectOverlaySessions, removedSessionIds]
+      enteredProject
+        ? overlayLiveLanes(enteredProject, enteredProjectOverlaySessions, removedSessionIds, claimedNamedIds)
+        : undefined,
+    [enteredProject, enteredProjectOverlaySessions, removedSessionIds, claimedNamedIds]
   )
 
   const scopedRepoPaths = useMemo(

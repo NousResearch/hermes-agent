@@ -657,3 +657,25 @@ def test_equivalent_windows_spellings_derive_one_lane_key():
     b = pt._place_by_heuristic("C:\\work\\notes\\")
     assert a is not None and b is not None
     assert pt._lane_key(a["lane_key"]) == pt._lane_key(b["lane_key"])
+
+
+def test_cwdless_session_with_repo_root_stays_in_explicit_project():
+    """A bound chat that lost cwd must not fall into Home when git_repo_root remains.
+
+    Remote/VPS session.info often arrives with an empty cwd while the persisted
+    repo root still identifies the project folder. Home is only for never-bound
+    detached rows.
+    """
+    project = _project("p_app", "App", ["/www/app"])
+    owned = _session(None, repo_root="/www/app", branch="main")
+    never_bound = _session(None)
+
+    tree = pt.build_tree([project], [owned, never_bound], [], resolve=lambda _cwd: None, hydrate=True)
+
+    explicit = next(p for p in tree["projects"] if p["id"] == "p_app")
+    assert owned["id"] in [s["id"] for repo in explicit["repos"] for g in repo["groups"] for s in g["sessions"]]
+    assert never_bound["id"] not in [
+        s["id"] for repo in explicit["repos"] for g in repo["groups"] for s in g["sessions"]
+    ]
+    assert _home_session_ids(tree) == [never_bound["id"]]
+    assert owned["id"] not in _home_session_ids(tree)

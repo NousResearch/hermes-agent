@@ -531,7 +531,20 @@ export function overlayRepoLanes(
   for (const session of live) {
     const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !sessionPath) {
+    if (removed.has(session.id)) {
+      continue
+    }
+
+    // Empty cwd+root cannot pick a lane, but a row already in this snapshot
+    // must stay put and still receive live title/activity — otherwise the
+    // entered project goes blank while Home picks the chat up (#75330/#77591).
+    if (!sessionPath) {
+      for (const g of lanes) {
+        if (g.sessions.some(s => s.id === session.id)) {
+          g.sessions = upsertSession(g.sessions, session)
+          changed = true
+        }
+      }
       continue
     }
 
@@ -635,11 +648,17 @@ export function overlayRepoLanes(
 function overlayHomeLane(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string>
+  removed: ReadonlySet<string>,
+  claimedNamedIds: ReadonlySet<string> = NO_REMOVED
 ): SidebarProjectTree {
   const lane = project.repos[0]?.groups[0]
-  const detached = live.filter(session => isDetachedSession(session) && !removed.has(session.id))
-  const kept = (lane?.sessions ?? []).filter(session => !removed.has(session.id))
+  const isClaimed = (session: SessionInfo): boolean =>
+    claimedNamedIds.has(session.id) ||
+    Boolean(session._lineage_root_id && claimedNamedIds.has(session._lineage_root_id))
+  const detached = live.filter(
+    session => isDetachedSession(session) && !removed.has(session.id) && !isClaimed(session)
+  )
+  const kept = (lane?.sessions ?? []).filter(session => !removed.has(session.id) && !isClaimed(session))
 
   if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
     return project
@@ -718,10 +737,11 @@ export function excludeProjectSessions(
 export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  claimedNamedIds: ReadonlySet<string> = NO_REMOVED
 ): SidebarProjectTree {
   if (project.isNoProject) {
-    return overlayHomeLane(project, live, removed)
+    return overlayHomeLane(project, live, removed, claimedNamedIds)
   }
 
   let changed = false
@@ -767,6 +787,86 @@ interface PreviewOverlayOptions {
   rankIds?: string[]
 }
 
+/** Session ids already listed under named (non-Home) projects in a snapshot. */
+export function namedProjectSessionIds(projects: SidebarProjectTree[]): Set<string> {
+  const ids = new Set<string>()
+
+  const take = (session: SessionInfo) => {
+    ids.add(session.id)
+
+    if (session._lineage_root_id) {
+      ids.add(session._lineage_root_id)
+    }
+  }
+
+  for (const project of projects) {
+    if (project.isNoProject) {
+      continue
+    }
+
+    for (const session of project.previewSessions ?? []) {
+      take(session)
+    }
+
+    for (const repo of project.repos) {
+      for (const group of repo.groups) {
+        for (const session of group.sessions) {
+          take(session)
+        }
+      }
+    }
+  }
+
+  return ids
+}
+
+function snapshotProjectOwner(projects: SidebarProjectTree[]): Map<string, string> {
+  const owners = new Map<string, string>()
+
+  const take = (session: SessionInfo, projectId: string) => {
+    if (!owners.has(session.id)) {
+      owners.set(session.id, projectId)
+    }
+
+    if (session._lineage_root_id && !owners.has(session._lineage_root_id)) {
+      owners.set(session._lineage_root_id, projectId)
+    }
+  }
+
+  for (const project of projects) {
+    for (const session of project.previewSessions ?? []) {
+      take(session, project.id)
+    }
+
+    for (const repo of project.repos) {
+      for (const group of repo.groups) {
+        for (const session of group.sessions) {
+          take(session, project.id)
+        }
+      }
+    }
+  }
+
+  return owners
+}
+
+function overlayPreviewProjectId(
+  session: SessionInfo,
+  explicitProjects: ProjectInfo[],
+  snapshotOwner: string | undefined
+): null | string {
+  const computed = liveSessionProjectId(session, explicitProjects)
+  const detached = isDetachedSession(session)
+  const stickyNamed = snapshotOwner && snapshotOwner !== NO_PROJECT_ID ? snapshotOwner : undefined
+
+  // Bound membership wins over a transient empty cwd (Home demotion / orphan).
+  if (stickyNamed && (detached || !computed)) {
+    return stickyNamed
+  }
+
+  return computed ?? (detached ? NO_PROJECT_ID : null)
+}
+
 /** Merge live sessions into per-project overview previews, keyed by project id. */
 export function overlayLivePreviews(
   projects: SidebarProjectTree[],
@@ -775,20 +875,26 @@ export function overlayLivePreviews(
   limit: number,
   { removed = NO_REMOVED, rankIds }: PreviewOverlayOptions = {}
 ): Record<string, SessionInfo[]> {
+  const owners = snapshotProjectOwner(projects)
   const byProject = new Map<string, SessionInfo[]>()
+  const liveOwner = new Map<string, string>()
 
   for (const session of live) {
     if (removed.has(session.id)) {
       continue
     }
 
-    const projectId =
-      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+    const projectId = overlayPreviewProjectId(
+      session,
+      explicitProjects,
+      owners.get(session.id) ?? (session._lineage_root_id ? owners.get(session._lineage_root_id) : undefined)
+    )
 
     if (!projectId) {
       continue
     }
 
+    liveOwner.set(session.id, projectId)
     const arr = byProject.get(projectId) ?? []
     arr.push(session)
     byProject.set(projectId, arr)
@@ -798,7 +904,17 @@ export function overlayLivePreviews(
 
   for (const node of projects) {
     const liveRows = byProject.get(node.id) ?? []
-    const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
+    const base = (node.previewSessions ?? []).filter(session => {
+      if (removed.has(session.id)) {
+        return false
+      }
+
+      const assigned = liveOwner.get(session.id)
+
+      // A live row placed in another project must not also remain in this
+      // snapshot (double-list / ghost-dupe).
+      return !assigned || assigned === node.id
+    })
 
     if (!liveRows.length && !base.length) {
       continue

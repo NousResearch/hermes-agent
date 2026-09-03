@@ -1050,6 +1050,18 @@ class ResponsesApiTransport(ProviderTransport):
                 extra_body["prompt_cache_key"] = bounded
             else:
                 extra_body.pop("prompt_cache_key", None)
+        issuer_kind = getattr(self, "_last_issuer_kind", None)
+        if sanitize_harmony_tokens and issuer_kind in (None, "codex_backend"):
+            # The ChatGPT Codex backend hard-drops request bodies over
+            # ~1.2 MB without an HTTP response (measured 2026-08-02).
+            # Enforce the total body budget as the last step before send;
+            # runs on retries too. Gated on the issuer classification (with
+            # the harmony flag as a conservative fallback when the issuer
+            # has not been resolved yet) so other Harmony-speaking backends
+            # never get their requests silently degraded.
+            from agent.request_budget import apply_request_body_budget
+
+            normalized = apply_request_body_budget(normalized)
         return normalized
 
     def map_finish_reason(self, raw_reason: str) -> str:

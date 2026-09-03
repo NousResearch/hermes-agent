@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -266,7 +268,44 @@ def _png_bytes() -> bytes:
     )
 
 
+def _jpeg_bytes(size: tuple[int, int] = (4, 3), quality: int = 90) -> bytes:
+    """Return a valid synthetic JPEG."""
+    from PIL import Image
+
+    image = Image.new("RGB", size, (20, 80, 140))
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def _noisy_jpeg_bytes(size: tuple[int, int] = (1200, 900)) -> bytes:
+    """Return a valid, poorly compressible JPEG for payload-limit tests."""
+    from PIL import Image
+
+    image = Image.effect_noise(size, 100).convert("RGB")
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
 class TestBuildNativeContentParts:
+    def test_small_png_and_jpeg_preserve_exact_bytes_and_mime(self, tmp_path: Path):
+        fixtures = (
+            ("small.png", _png_bytes(), "image/png"),
+            ("small.jpg", _jpeg_bytes(), "image/jpeg"),
+        )
+
+        for filename, expected_bytes, expected_mime in fixtures:
+            image_path = tmp_path / filename
+            image_path.write_bytes(expected_bytes)
+            parts, skipped = build_native_content_parts("inspect", [str(image_path)])
+
+            assert skipped == []
+            data_url = parts[1]["image_url"]["url"]
+            header, encoded = data_url.split(",", 1)
+            assert header == f"data:{expected_mime};base64"
+            assert base64.b64decode(encoded) == expected_bytes
+
     def test_text_then_image(self, tmp_path: Path):
         img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())
@@ -322,13 +361,10 @@ class TestBuildNativeContentParts:
 
 
 class TestLargeImageHandling:
-    """Large images attach at native size; shrink is handled reactively at
-    retry time in ``run_agent._try_shrink_image_parts_in_messages`` rather
-    than proactively here.
-    """
+    """Native attachments are constrained before entering the user message."""
 
-    def test_large_image_passes_through_unchanged(self, tmp_path: Path):
-        """A multi-MB image is attached as-is — no resize, no skip."""
+    def test_byte_safe_image_passes_through_unchanged(self, tmp_path: Path):
+        """An image below both limits retains its historical pass-through."""
         from agent import image_routing as _ir
 
         img = tmp_path / "medium.png"
@@ -339,6 +375,173 @@ class TestLargeImageHandling:
         assert url.startswith("data:image/png;base64,")
         # Base64 expansion means output is ~4/3 of input, plus header.
         assert len(url) > 200_000
+
+    def test_oversized_jpeg_is_constrained_and_source_is_unchanged(
+        self, tmp_path: Path
+    ):
+        from PIL import Image
+
+        from agent import image_routing as _ir
+
+        source_bytes = _noisy_jpeg_bytes()
+        source_checksum = hashlib.sha256(source_bytes).hexdigest()
+        image_path = tmp_path / "oversized.jpg"
+        image_path.write_bytes(source_bytes)
+        config = {
+            "agent": {
+                "native_image_max_payload_bytes": 220_000,
+                "native_image_max_dimension": 600,
+            }
+        }
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=config):
+            data_url = _ir._file_to_data_url(image_path)
+
+        assert data_url is not None
+        assert len(data_url.encode("ascii")) <= 220_000
+        assert data_url.startswith("data:image/jpeg;base64,")
+        output_bytes = base64.b64decode(data_url.split(",", 1)[1])
+        with Image.open(BytesIO(output_bytes)) as output:
+            assert output.format == "JPEG"
+            assert max(output.size) <= 600
+            assert abs((output.width / output.height) - (1200 / 900)) < 0.01
+        assert image_path.read_bytes() == source_bytes
+        assert hashlib.sha256(image_path.read_bytes()).hexdigest() == source_checksum
+
+    def test_config_override_changes_preprocessing_limit(self, tmp_path: Path):
+        from agent import image_routing as _ir
+
+        source_bytes = _noisy_jpeg_bytes((800, 600))
+        image_path = tmp_path / "override.jpg"
+        image_path.write_bytes(source_bytes)
+
+        high_limit = {
+            "agent": {
+                "native_image_max_payload_bytes": 2_000_000,
+                "native_image_max_dimension": 2000,
+            }
+        }
+        low_limit = {
+            "agent": {
+                "native_image_max_payload_bytes": 150_000,
+                "native_image_max_dimension": 500,
+            }
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=high_limit):
+            unchanged_url = _ir._file_to_data_url(image_path)
+        with patch("hermes_cli.config.load_config_readonly", return_value=low_limit):
+            constrained_url = _ir._file_to_data_url(image_path)
+
+        assert unchanged_url is not None
+        assert constrained_url is not None
+        assert base64.b64decode(unchanged_url.split(",", 1)[1]) == source_bytes
+        assert len(constrained_url.encode("ascii")) <= 150_000
+        assert base64.b64decode(constrained_url.split(",", 1)[1]) != source_bytes
+
+    def test_malformed_config_values_fall_back_to_safe_defaults(self):
+        from agent.image_payloads import (
+            DEFAULT_NATIVE_IMAGE_MAX_DIMENSION,
+            DEFAULT_NATIVE_IMAGE_MAX_PAYLOAD_BYTES,
+            get_native_image_limits,
+        )
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        # The loader fallback and the user-visible config defaults must stay in
+        # lockstep even if either setting changes later.
+        assert DEFAULT_CONFIG["agent"]["native_image_max_payload_bytes"] == (
+            DEFAULT_NATIVE_IMAGE_MAX_PAYLOAD_BYTES
+        )
+        assert DEFAULT_CONFIG["agent"]["native_image_max_dimension"] == (
+            DEFAULT_NATIVE_IMAGE_MAX_DIMENSION
+        )
+
+        malformed = {
+            "agent": {
+                "native_image_max_payload_bytes": "many",
+                "native_image_max_dimension": -5,
+            }
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=malformed):
+            assert get_native_image_limits() == (
+                DEFAULT_NATIVE_IMAGE_MAX_PAYLOAD_BYTES,
+                DEFAULT_NATIVE_IMAGE_MAX_DIMENSION,
+            )
+
+        string_override = {
+            "agent": {
+                "native_image_max_payload_bytes": "8388608",
+                "native_image_max_dimension": "9000",
+            }
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=string_override):
+            assert get_native_image_limits() == (8 * 1024 * 1024, 9000)
+
+    def test_oversized_corrupt_supported_image_is_skipped_without_crashing(
+        self, tmp_path: Path, caplog
+    ):
+        from agent import image_routing as _ir
+
+        image_path = tmp_path / "corrupt.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"not-an-image" * 500)
+        config = {
+            "agent": {
+                "native_image_max_payload_bytes": 1000,
+                "native_image_max_dimension": 7900,
+            }
+        }
+        with patch("hermes_cli.config.load_config_readonly", return_value=config):
+            assert _ir._file_to_data_url(image_path) is None
+
+        assert "skipping attachment" in caplog.text
+
+    def test_exif_orientation_is_applied_when_preprocessing(self, tmp_path: Path):
+        from PIL import Image
+
+        from agent import image_routing as _ir
+
+        image = Image.new("RGB", (80, 40), (200, 100, 20))
+        exif = Image.Exif()
+        exif[274] = 6  # Rotate 90 degrees clockwise for display.
+        image_path = tmp_path / "oriented.jpg"
+        image.save(image_path, format="JPEG", quality=95, exif=exif)
+        config = {
+            "agent": {
+                "native_image_max_payload_bytes": 100_000,
+                "native_image_max_dimension": 50,
+            }
+        }
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=config):
+            data_url = _ir._file_to_data_url(image_path)
+
+        assert data_url is not None
+        with Image.open(BytesIO(base64.b64decode(data_url.split(",", 1)[1]))) as output:
+            assert output.size == (25, 50)
+
+    def test_transparent_oversized_image_remains_transparent_png(self, tmp_path: Path):
+        from PIL import Image
+
+        from agent import image_routing as _ir
+
+        image = Image.effect_noise((512, 512), 100).convert("RGBA")
+        image.putalpha(Image.linear_gradient("L").resize(image.size))
+        image_path = tmp_path / "transparent.png"
+        image.save(image_path, format="PNG")
+        config = {
+            "agent": {
+                "native_image_max_payload_bytes": 150_000,
+                "native_image_max_dimension": 7900,
+            }
+        }
+
+        with patch("hermes_cli.config.load_config_readonly", return_value=config):
+            data_url = _ir._file_to_data_url(image_path)
+
+        assert data_url is not None
+        assert data_url.startswith("data:image/png;base64,")
+        assert len(data_url.encode("ascii")) <= 150_000
+        with Image.open(BytesIO(base64.b64decode(data_url.split(",", 1)[1]))) as output:
+            assert "A" in output.getbands()
 
     def test_missing_file_returns_none(self, tmp_path: Path):
         from agent import image_routing as _ir

@@ -28,7 +28,7 @@ from agent.acp_openai_bridge import (
     render_tool_bridge_sections as _render_tool_bridge_sections,
 )
 from agent.file_safety import get_read_block_error, get_write_denied_error, is_write_approval_required
-from agent.redact import redact_sensitive_text
+from agent.redact import normalize_tool_output_content, redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
@@ -285,6 +285,8 @@ def _format_messages_as_prompt(
             role = "context"
 
         content = message.get("content")
+        if role == "tool":
+            content = normalize_tool_output_content(content)
         rendered = _render_message_content(content)
         if not rendered:
             continue

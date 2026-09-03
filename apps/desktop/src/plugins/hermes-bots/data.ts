@@ -7,6 +7,7 @@
  */
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
+import { useEffect } from 'react'
 
 import { displayName } from './labels'
 import {
@@ -633,9 +634,30 @@ interface UnionRoster {
 
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
+  const activeProfile = String(useValue(host.state.profile) || 'default').trim() || 'default'
+
+  // The five-second roster refresh is recurring ownership, not a succession
+  // of unrelated one-shot requests. Keep its profile socket leased for this
+  // query observer's lifetime so a background profile does not dial and tear
+  // down a fresh WebSocket on every tick. Explicit remote sources retain their
+  // composite route; the local/legacy path uses the bare-profile pool.
+  useEffect(() => {
+    if (typeof host.retainProfileSocket !== 'function') {
+      return undefined
+    }
+
+    const connectionId = String(activeConnectionId || '').trim()
+
+    const route: ProfileRoute | string =
+      connectionId && connectionId !== 'local'
+        ? { connectionId, mode: 'remote', profile: activeProfile, targetProfile: activeProfile }
+        : activeProfile
+
+    return host.retainProfileSocket(route)
+  }, [activeConnectionId, activeProfile])
 
   return useQuery({
-    queryKey: [...ROSTER_KEY, activeConnectionId],
+    queryKey: [...ROSTER_KEY, activeConnectionId, activeProfile],
     queryFn: async () => {
       // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
       // against each bot's last local meta write, and a fetch issued before
@@ -664,9 +686,7 @@ export function useRoster() {
 
       // Owner routing is ambient in the SDK now (post-#92731): requestForBot
       // resolves the active owner itself, no captured route needed here.
-      const activeBot = {
-        name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
-      }
+      const activeBot = { name: activeProfile }
 
       const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
       // Newer backends inject the teammate-messaging protocol into every
@@ -711,12 +731,13 @@ export function useRoster() {
 
 /** Synchronous union-roster read for the composer surfaces (autocomplete
  *  provider + mention middleware). useRoster caches under
- *  [...ROSTER_KEY, activeConnectionId] — a 3-element key — so a bare
- *  getQueryData(ROSTER_KEY) exact-match lookup returns undefined forever
- *  (issue #89303: remote handles absent from @ autocomplete, mentions
- *  unrouted). Read the live connection's entry first, then fall back to a
- *  prefix scan keeping the freshest snapshot. Never throws: cold cache or
- *  legacy queryClient returns null and callers fall back to their own path. */
+ *  [...ROSTER_KEY, activeConnectionId, activeProfile] — a 4-element key — so
+ *  a bare getQueryData(ROSTER_KEY) exact-match lookup returns undefined
+ *  forever (issue #89303: remote handles absent from @ autocomplete,
+ *  mentions unrouted). Read the live connection+profile entry first, then
+ *  the legacy connection-only entry, then fall back to a prefix scan keeping
+ *  the freshest snapshot. Never throws: cold cache or legacy queryClient
+ *  returns null and callers fall back to their own path. */
 export function cachedUnionRoster(): RosterSnapshot | null {
   if (typeof queryClient === 'undefined' || !queryClient || typeof queryClient.getQueryData !== 'function') {
     return null
@@ -724,10 +745,17 @@ export function cachedUnionRoster(): RosterSnapshot | null {
 
   try {
     const connectionId = String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
-    const exact = queryClient.getQueryData<RosterSnapshot>([...ROSTER_KEY, connectionId])
+    const activeProfile = String(host.state.profile?.get?.() || 'default').trim() || 'default'
+    const exact = queryClient.getQueryData<RosterSnapshot>([...ROSTER_KEY, connectionId, activeProfile])
 
     if (Array.isArray(exact?.profiles)) {
       return exact
+    }
+
+    const legacyExact = queryClient.getQueryData<RosterSnapshot>([...ROSTER_KEY, connectionId])
+
+    if (Array.isArray(legacyExact?.profiles)) {
+      return legacyExact
     }
 
     if (typeof queryClient.getQueriesData === 'function') {

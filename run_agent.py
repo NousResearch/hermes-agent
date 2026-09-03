@@ -171,6 +171,21 @@ from hermes_cli.timeouts import (
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
+
+# Gateway chat surfaces (Discord, Telegram, Slack, etc.) should never fan out a
+# runaway no-tool response into hundreds of platform messages or persist a
+# megabyte assistant turn into state.db.  Operators can tune with
+# gateway.max_final_response_chars or HERMES_GATEWAY_MAX_FINAL_RESPONSE_CHARS;
+# 0/negative disables the guard for trusted installs.
+_GATEWAY_FINAL_RESPONSE_CHAR_LIMIT_DEFAULT = 120_000
+_GATEWAY_FINAL_RESPONSE_CHAR_LIMIT_ENV = "HERMES_GATEWAY_MAX_FINAL_RESPONSE_CHARS"
+_GATEWAY_FINAL_RESPONSE_NOTICE_TEMPLATE = (
+    "\n\n⚠️ Response truncated by Hermes gateway: the model produced "
+    "{original_len:,} characters, exceeding the {limit:,}-character safety "
+    "limit. Ask me to continue, summarize, or narrow the request if you need "
+    "the omitted content."
+)
+
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
@@ -4466,6 +4481,118 @@ class AIAgent:
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.
         return ""
+
+    def _gateway_final_response_char_limit(self) -> int:
+        """Return the active gateway final-response character cap.
+
+        CLI/TUI sessions are intentionally not capped by default.  Gateway
+        sessions are: a runaway no-tool model response can otherwise be split
+        into hundreds of Discord/Telegram messages and persisted into state.db.
+        Operators can override with ``gateway.max_final_response_chars`` or the
+        ``HERMES_GATEWAY_MAX_FINAL_RESPONSE_CHARS`` environment variable.
+        Values <= 0 disable the guard.
+        """
+        gateway_session = bool(
+            getattr(self, "platform", None)
+            or getattr(self, "_gateway_session_key", None)
+            or os.environ.get("HERMES_SESSION_SOURCE") not in (None, "", "cli")
+        )
+        env = os.environ.get(_GATEWAY_FINAL_RESPONSE_CHAR_LIMIT_ENV)
+        if env is not None:
+            try:
+                return int(str(env).strip())
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid %s=%r; expected integer characters",
+                    _GATEWAY_FINAL_RESPONSE_CHAR_LIMIT_ENV,
+                    env,
+                )
+        if not gateway_session:
+            return 0
+        try:
+            from hermes_cli.config import load_config as _load_config
+            cfg = _load_config() or {}
+        except Exception:
+            cfg = {}
+        gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else None
+        if isinstance(gateway_cfg, dict) and "max_final_response_chars" in gateway_cfg:
+            try:
+                return int(gateway_cfg.get("max_final_response_chars") or 0)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid gateway.max_final_response_chars=%r; "
+                    "expected integer characters",
+                    gateway_cfg.get("max_final_response_chars"),
+                )
+        return _GATEWAY_FINAL_RESPONSE_CHAR_LIMIT_DEFAULT
+
+    @staticmethod
+    def _truncate_text_with_gateway_notice(text: str, limit: int) -> tuple[str, bool, int]:
+        """Cap ``text`` to ``limit`` characters and append a user-visible notice."""
+        if not isinstance(text, str):
+            return text, False, 0
+        original_len = len(text)
+        if limit <= 0 or original_len <= limit:
+            return text, False, original_len
+        notice = _GATEWAY_FINAL_RESPONSE_NOTICE_TEMPLATE.format(
+            original_len=original_len,
+            limit=limit,
+        )
+        if len(notice) >= limit:
+            return notice[:limit], True, original_len
+        keep = max(0, limit - len(notice))
+        return text[:keep].rstrip() + notice, True, original_len
+
+    def _apply_gateway_final_response_guardrail(
+        self,
+        final_response: str,
+        messages: list,
+    ) -> tuple[str, bool, int, int]:
+        """Bound gateway-visible and gateway-persisted assistant text.
+
+        The returned response is what the gateway delivers.  The latest
+        assistant text message is also rewritten before session DB persistence
+        so one pathological model turn cannot bloat durable history.  Tool call
+        payloads are left untouched because truncating those would corrupt the
+        protocol transcript.
+        """
+        limit = self._gateway_final_response_char_limit()
+        if limit <= 0:
+            return final_response, False, len(final_response or ""), limit
+
+        bounded_response, response_truncated, response_original_len = (
+            self._truncate_text_with_gateway_notice(final_response or "", limit)
+        )
+
+        message_truncated = False
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                if msg.get("tool_calls"):
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, str):
+                    continue
+                bounded_content, did_truncate, _ = self._truncate_text_with_gateway_notice(content, limit)
+                if did_truncate:
+                    msg["content"] = bounded_content
+                    msg["gateway_response_truncated"] = True
+                    msg["gateway_response_original_chars"] = len(content)
+                    msg["gateway_response_limit_chars"] = limit
+                    message_truncated = True
+                break
+
+        truncated = response_truncated or message_truncated
+        if truncated:
+            logger.warning(
+                "Gateway final response truncated: response_chars=%d limit=%d platform=%s session=%s",
+                response_original_len,
+                limit,
+                getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE") or "unknown",
+                getattr(self, "session_id", ""),
+            )
+        return bounded_response, truncated, response_original_len, limit
 
     def _apply_pending_steer_to_tool_results(self, messages: list, num_tool_msgs: int) -> None:
         """Forwarder — see ``agent.agent_runtime_helpers.apply_pending_steer_to_tool_results``."""

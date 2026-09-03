@@ -593,7 +593,7 @@ Visually the target is the familiar Linear / Fusion layout: dark theme, column h
 
 The kanban board has two ways to handle a task you drop into the Triage column:
 
-**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
+**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. Only triage cards carrying decomposition intent are eligible: Linear-bridge cards are already-specced single work items and are skipped, and cards escalated by the repeated-block loop breaker are reserved for human intervention. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `hermes kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
@@ -611,10 +611,14 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
+| `decomposition_max_children` | `6` | Hard maximum children accepted from one decomposition response. Oversized graphs are rejected atomically. |
+| `decomposition_max_depth` | `1` | Hard lineage depth. `1` allows a root at depth `0` to fan out once and prevents generated children from decomposing recursively. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
+
+The task row's internal `triage_origin` provenance is not a user-facing config knob. New rough-idea cards created in Triage are stamped `decompose`; tasks escalated after repeated same-kind blocks are stamped `block_recurrence`. The automatic sweep accepts the former and leaves the latter for a human. Legacy rows have `triage_origin = NULL` and remain eligible for backward compatibility. Decomposition lineage is stored separately in `decomposition_depth`; legacy rows migrate to depth `0`.
 
 And the two auxiliary LLM slots:
 
@@ -791,14 +795,22 @@ All commands are also available as a slash command in the interactive CLI and in
 
 | Config key | Default | What it does |
 |------------|---------|--------------|
-| `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
+| `kanban.max_spawn` | unset (unlimited) | **Live concurrency ceiling** — the maximum number of workers running _at any instant_ across the whole board. It is **not** a per-tick launch budget: tasks already in `running` are counted against it, so at the ceiling a tick spawns nothing more. (A per-tick interpretation would let a 60-second tick grow concurrency by N every minute on a busy board.) A value that isn't a whole number ≥ 1 is refused: the dispatcher logs an error and **spawns nothing** until you fix it, rather than falling back to unlimited. See the note below on how it combines with `max_in_progress`. |
+| `kanban.max_in_progress` | unset (unlimited) | Also a live cap on simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
+:::note `max_spawn` vs `max_in_progress` (the naming trap)
+Both keys are **live concurrency ceilings on running workers**, not per-tick launch budgets, despite `max_spawn` reading like "how many to spawn this tick." When **both** are set, the effective global worker cap is their **minimum**: `min(max_spawn, max_in_progress)`. For example, with `max_spawn: 2` and `max_in_progress: 3`, the board runs **at most 2** workers at once (`min(2, 3) = 2`). Set just one if you only need one ceiling; set both only when a lower bound from either should win.
+
+Whichever ceiling binds, it is **one shared budget across both dispatch lanes**. A tick spawns from two queues — `ready` cards and `review` cards — and every spawn from either lane draws down the same cap alongside the workers already running. A PR handoff (below) that empties the ready queue does not buy the review lane a free slot.
+:::
+
 ```yaml
 kanban:
-  max_in_progress: 2
+  max_spawn: 2          # live ceiling: at most 2 workers running at once
+  max_in_progress: 3    # also a live ceiling; effective cap = min(2, 3) = 2
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
@@ -814,7 +826,14 @@ hermes kanban create "nightly backup audit" \
 
 ### Respawn guard
 
-The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
+The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference). Note that ready cards with a live PR are normally swept into `review` by the PR handoff below *before* the guard would defer them, so `active_pr` mainly remains as a fallback for direct callers of `check_respawn_guard`.
+
+### Board-state hygiene: PR handoff and supersession
+
+A parent card that already did its work shouldn't loiter in `ready` behind the respawn guard. Two lifecycle transitions keep the board honest:
+
+- **PR handoff → review.** When a ready card has a recent GitHub PR comment (what used to trip the `active_pr` guard), the dispatcher sweeps it out of `ready` into `review` at the start of each tick and records an `auto_review_handoff` event. The review lane (or a human) then verifies/merges the PR — the original maker is **not** re-spawned, so there's no duplicate-PR risk. Swept ids are surfaced in the dispatch result's `pr_handoff_to_review`. The reviewer this schedules is an ordinary worker and counts against the same live concurrency ceiling as any other spawn, so a handoff can never push the board past `max_in_progress`.
+- **Explicit supersession → archived.** When a replacement card takes over a parent's work, retire the parent explicitly with `hermes kanban supersede <task-id> --replaced-by <replacement-id> [--note "..."]`. It transitions the card out of `ready` (or any non-terminal state) into `archived` and records an auditable `superseded` event (carrying the replacement pointer) plus a comment. Crucially, the card's dependents are **transferred onto the replacement** — each `old-parent → child` edge is retargeted to `replacement → child` — so they stay blocked until the replacement finishes, rather than being released early. Because of that, a card that has dependents **requires** `--replaced-by`. The transfer de-duplicates existing edges and skips any that would form a cycle. The source must be non-terminal (a `done`/`archived` card can't be rewritten) and the replacement must exist, be distinct, and be active (non-terminal). Integrations can call `hermes_cli.kanban_db.supersede_task(...)` directly for the same effect.
 
 ### Drag-to-delete and bulk delete (dashboard)
 

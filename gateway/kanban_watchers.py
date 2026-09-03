@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -49,6 +50,15 @@ def _safe_review_reason(value: Any, limit: int = 160) -> str:
     return reason
 
 
+# Programming errors that a watcher tick must SURFACE, not mask (BUI-938).
+#
+# The fail-closed watcher loops catch broad operational exceptions so one bad
+# board or transient I/O failure cannot wedge the loop. NameError,
+# AttributeError, and TypeError are programming defects and must propagate.
+# Narrow config conversion boundaries still catch malformed values locally.
+_WATCHER_PROGRAMMING_ERRORS = (NameError, AttributeError, TypeError)
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -79,6 +89,117 @@ def _resolve_auto_decompose_settings(
     if per_tick < 1:
         per_tick = 1
     return enabled, per_tick
+
+
+# A live-concurrency ceiling that could not be resolved from config. 0 means
+# "spawn nothing": ``dispatch_once`` counts already-running tasks plus this
+# tick's spawns against the ceiling, so 0 breaks both the ready and the review
+# spawn loop on their first iteration. The dispatcher itself keeps running —
+# heartbeat, stale-claim reclaim, promotion, reconciliation and notifications
+# all continue — only *new* work is withheld until the operator fixes the
+# value.
+_SPAWN_CAP_FAIL_CLOSED = 0
+
+
+def _coerce_live_concurrency_cap(raw: Any, setting: str) -> Optional[int]:
+    """Resolve a ``kanban.*`` live-concurrency ceiling to an ``int`` or ``None``.
+
+    Returns ``None`` when the setting is unset (no ceiling — the documented
+    default), the positive ``int`` when the value is usable, and
+    :data:`_SPAWN_CAP_FAIL_CLOSED` when it is not.
+
+    A numeric string is *accepted and normalised* (``"5"`` -> ``5``): YAML
+    quoting and env-var plumbing produce those routinely and the operator's
+    intent is unambiguous. Only values that cannot yield a usable ceiling at
+    all — non-numeric strings, fractional or non-finite numbers, containers,
+    ``bool``, zero and negatives — are rejected.
+
+    **Why this boundary exists.** ``dispatch_once`` does arithmetic on this
+    value (``min(...)``, ``>=`` against a running-task count). Handing it a raw
+    ``str`` raises ``TypeError`` deep inside a tick, and this module
+    deliberately re-raises ``TypeError`` from a tick as a *programming* error
+    (BUI-938) — so an operator's config typo would tear the whole dispatcher
+    down. Converting here keeps that surfacing intact: the ``except`` below is
+    wrapped around the ``float()`` call and nothing else, so a genuine
+    ``TypeError`` from a real watcher bug still propagates untouched. A
+    malformed *config value* is expected operational input, and it is handled
+    locally, where it is read.
+
+    **Why it fails closed rather than ignoring the value.** Falling back to
+    ``None`` would mean *unlimited*: a typo in a safety ceiling would remove
+    the ceiling, which is the exact opposite of what the operator asked for.
+    Withholding spawns instead keeps the board bounded, keeps the dispatcher
+    alive, and turns the mistake into a loud, actionable log line.
+
+    **Why quoting cannot change the answer.** ``max_spawn: 5.9`` and
+    ``max_spawn: "5.9"`` are one operator intent typed two ways — YAML decides
+    which one the loader hands us, and that is not a decision about
+    concurrency. A bare ``int()`` resolved them differently: it *truncated* the
+    float to ``5``, silently granting a ceiling nobody asked for, while
+    rejecting the string. A ceiling that depends on quoting is precisely the
+    ambiguity this boundary exists to remove, so both spellings take one path —
+    parse as ``float``, screen out the non-finite values (``int(float("inf"))``
+    raises ``OverflowError``, which is *not* a ``ValueError`` and so would
+    escape this function and kill the watcher outright), then require a whole
+    number. ``5.9`` and ``"5.9"`` now both fail closed, and so does ``.inf``.
+    """
+    if raw is None:
+        return None
+    # bool is an int subclass — ``max_spawn: true`` is a config mistake, not a
+    # ceiling of 1, so reject it before int() silently accepts it.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        logger.error(
+            "kanban dispatcher: invalid %s=%r (expected a whole number >= 1); "
+            "refusing to spawn kanban workers until it is fixed",
+            setting, raw,
+        )
+        return _SPAWN_CAP_FAIL_CLOSED
+    if isinstance(raw, int):
+        # Already exact. Round-tripping through float() would lose precision
+        # above 2**53 on a value that needed no parsing in the first place.
+        value = raw
+    else:
+        # str and float share ONE path, so the result cannot depend on whether
+        # the number arrived quoted.
+        try:
+            parsed = float(raw)
+        except (TypeError, ValueError):
+            logger.error(
+                "kanban dispatcher: invalid %s=%r (expected a whole number >= 1); "
+                "refusing to spawn kanban workers until it is fixed",
+                setting, raw,
+            )
+            return _SPAWN_CAP_FAIL_CLOSED
+        if not math.isfinite(parsed):
+            # ``.inf`` / ``.nan`` / ``"1e400"``. int() cannot represent these:
+            # NaN raises ValueError but infinity raises OverflowError, which
+            # would sail past the except above and out of this function.
+            logger.error(
+                "kanban dispatcher: invalid %s=%r (expected a finite whole "
+                "number >= 1); refusing to spawn kanban workers until it is fixed",
+                setting, raw,
+            )
+            return _SPAWN_CAP_FAIL_CLOSED
+        if parsed != int(parsed):
+            # The quoting-parity case: reject the fractional value in either
+            # spelling rather than truncating one of them to a ceiling the
+            # operator never wrote.
+            logger.error(
+                "kanban dispatcher: invalid %s=%r (expected a whole number >= 1, "
+                "not a fractional one); refusing to spawn kanban workers until "
+                "it is fixed",
+                setting, raw,
+            )
+            return _SPAWN_CAP_FAIL_CLOSED
+        value = int(parsed)
+    if value < 1:
+        logger.error(
+            "kanban dispatcher: %s=%r is below 1; refusing to spawn kanban "
+            "workers until it is fixed (remove the setting for no ceiling)",
+            setting, raw,
+        )
+        return _SPAWN_CAP_FAIL_CLOSED
+    return value
 
 
 def _kanban_dispatch_allowed() -> bool:
@@ -153,6 +274,22 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
         handle.close()
         return None, "contended"
     return handle, "held"
+
+
+def _kb_clear_heartbeat_safe(_kb) -> None:
+    """Best-effort clear of the dispatcher heartbeat on shutdown/handover.
+
+    Removing the heartbeat on a CLEAN exit means a standby sees "no
+    heartbeat" (holder gone) rather than a frozen-but-stale stamp, so it
+    takes over immediately without waiting out the stale threshold. Guarded
+    so a missing/older kanban_db (no such function) never breaks shutdown.
+    """
+    try:
+        clear = getattr(_kb, "clear_dispatcher_heartbeat", None)
+        if callable(clear):
+            clear()
+    except Exception:
+        pass
 
 
 def _release_singleton_lock(handle) -> None:
@@ -1095,6 +1232,14 @@ class GatewayKanbanWatchersMixin:
                             await _to_thread_process_service(
                                 self._kanban_unsub, sub, board_slug,
                             )
+            except _WATCHER_PROGRAMMING_ERRORS:
+                # A typo / bad attribute / bad call signature in the notifier
+                # tick is a bug, not a delivery outage — surface it instead of
+                # masking it as an operational "tick failed" (BUI-938). Best-
+                # effort *delivery* boundaries inside the tick (adapter.send,
+                # artifact upload, wake injection) keep their own broad catches
+                # on purpose: a flaky adapter must not crash the watcher.
+                raise
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             # Sleep with cancellation checks.
@@ -1271,6 +1416,64 @@ class GatewayKanbanWatchersMixin:
                     path, exc,
                 )
 
+    async def _kanban_standby_until_takeover(
+        self, _kb, lock_path, interval: float, stale_seconds: float,
+    ) -> "tuple[Optional[object], str]":
+        """Hot-standby loop for a gateway that lost the dispatcher lock.
+
+        Only reached when ``kanban.dispatcher_takeover_enabled`` is armed.
+        Each cycle: (1) re-attempt the flock — if it frees (holder died /
+        was killed), we win it and return ``(handle, "held")`` so the caller
+        falls through into the normal dispatch loop; (2) otherwise read the
+        heartbeat and, if it is stale past ``stale_seconds`` while the holder
+        pid is still alive, log a CRITICAL "dispatcher appears HUNG" line
+        (rate-limited) so an operator knows to kill the wedged process — at
+        which point the next cycle takes over automatically. Never force-
+        kills the holder. Returns ``(None, "standby")`` if shutdown is
+        requested first.
+        """
+        logger.warning(
+            "kanban dispatcher: lock contended; entering armed STANDBY "
+            "(takeover on free, hang-surfacing every %.0fs).", interval,
+        )
+        last_hang_warn = 0.0
+        while self._running:
+            # Sleep one interval in 1s slices for snappy shutdown.
+            slept = 0.0
+            while slept < interval and self._running:
+                await asyncio.sleep(min(1.0, interval - slept))
+                slept += 1.0
+            if not self._running:
+                return None, "standby"
+            handle, state = _acquire_singleton_lock(lock_path)
+            if state == "held":
+                logger.critical(
+                    "kanban dispatcher: TOOK OVER dispatch — previous lock "
+                    "holder released the lock (died/was killed). This standby "
+                    "is now the active dispatcher.",
+                )
+                return handle, "held"
+            # Still contended — inspect the heartbeat to tell hung from healthy.
+            try:
+                hb = await asyncio.to_thread(_kb.read_dispatcher_heartbeat)
+            except Exception:
+                hb = None
+            age = hb.get("age_seconds") if isinstance(hb, dict) else None
+            alive = hb.get("pid_alive") if isinstance(hb, dict) else None
+            if age is not None and age >= stale_seconds and alive is not False:
+                now = time.time()
+                if now - last_hang_warn >= max(stale_seconds, 60.0):
+                    logger.critical(
+                        "kanban dispatcher: active holder pid=%s appears HUNG — "
+                        "heartbeat is %.0fs stale (threshold %.0fs) but the process "
+                        "is still alive, so the flock is not released and dispatch "
+                        "is STOPPED fleet-wide. Kill that pid to let this standby "
+                        "take over. (No auto-kill: surfacing only.)",
+                        (hb or {}).get("pid"), age, stale_seconds,
+                    )
+                    last_hang_warn = now
+        return None, "standby"
+
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
@@ -1328,24 +1531,6 @@ class GatewayKanbanWatchersMixin:
         # wal_autocheckpoint=0 — concurrent manual WAL checkpoints can corrupt
         # index pages. The lock lives at the machine-global kanban root
         # (shared across profiles by design), so it serialises ALL gateways.
-        self._kanban_dispatcher_lock_handle = None
-        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
-        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        if _lock_state == "contended":
-            logger.info(
-                "kanban dispatcher: another gateway already holds the dispatcher "
-                "lock (%s); this gateway will NOT dispatch.", _lock_path,
-            )
-            return
-        if _lock_state == "held":
-            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
-        else:
-            logger.warning(
-                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
-                "on config control alone.", _lock_path,
-            )
-
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         except (ValueError, TypeError):
@@ -1356,8 +1541,72 @@ class GatewayKanbanWatchersMixin:
             interval = 60.0
         interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
-        # Read max_spawn config to limit concurrent kanban tasks
-        max_spawn = kanban_cfg.get("max_spawn", None)
+        # Hung-dispatcher failover (gated; default OFF — inert until an
+        # operator arms it). systemd's Restart=always recovers a dispatcher
+        # that DIES (the flock frees, a standby re-acquires). It does NOT
+        # recover a dispatcher that HANGS: the flock is held for the whole
+        # process lifetime, so a wedged event loop stops dispatch fleet-wide
+        # with nothing to notice. When ``kanban.dispatcher_takeover_enabled``
+        # is true, a gateway that loses the lock becomes a hot STANDBY: it
+        # watches the heartbeat, loudly surfaces a hung holder, and takes
+        # over the moment the flock frees (holder killed by systemd/operator/
+        # OOM). It NEVER force-kills the holder — surfacing + automatic
+        # takeover-on-free only, per the surface-don't-act rule.
+        takeover_enabled = bool(kanban_cfg.get("dispatcher_takeover_enabled", False))
+        try:
+            takeover_stale_seconds = float(
+                kanban_cfg.get("dispatcher_takeover_stale_seconds", 0) or 0
+            )
+        except (ValueError, TypeError):
+            takeover_stale_seconds = 0.0
+        if takeover_stale_seconds <= 0:
+            # Default: five missed ticks. Long enough that a merely-slow tick
+            # (big board, WAL checkpoint) never trips it; short enough that a
+            # real hang is caught in minutes at the 60s default interval.
+            takeover_stale_seconds = max(interval * 5.0, 60.0)
+
+        self._kanban_dispatcher_lock_handle = None
+        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
+        if _lock_state == "contended":
+            if not takeover_enabled:
+                logger.info(
+                    "kanban dispatcher: another gateway already holds the dispatcher "
+                    "lock (%s); this gateway will NOT dispatch.", _lock_path,
+                )
+                return
+            # Armed standby: watch the heartbeat, surface a hang, take over
+            # when the lock frees. Returns "held" (fall through to dispatch)
+            # or None (shutdown requested while standing by).
+            _lock_handle, _lock_state = await self._kanban_standby_until_takeover(
+                _kb, _lock_path, interval, takeover_stale_seconds,
+            )
+            if _lock_state != "held":
+                return
+        if _lock_state == "held":
+            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
+            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+        else:
+            logger.warning(
+                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
+                "on config control alone.", _lock_path,
+            )
+
+        # Read max_spawn config to limit concurrent kanban tasks.
+        #
+        # max_spawn is a LIVE concurrency ceiling (the maximum number of
+        # workers running at any instant), NOT a per-tick launch budget —
+        # already-running tasks count against it. dispatch_once therefore does
+        # arithmetic on this value (min(...), >= against a running-task
+        # count), so it has to arrive as an int.
+        #
+        # Coerce HERE, at the config boundary, and fail CLOSED on a value that
+        # cannot yield a usable ceiling. This module re-raises TypeError out of
+        # a tick as a programming error (BUI-938), so a raw string reaching
+        # that arithmetic would tear the dispatcher down over an operator typo.
+        max_spawn = _coerce_live_concurrency_cap(
+            kanban_cfg.get("max_spawn", None), "kanban.max_spawn",
+        )
         if max_spawn is not None:
             logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
@@ -1399,6 +1648,18 @@ class GatewayKanbanWatchersMixin:
                 effective_max_in_progress,
             )
         max_in_progress = effective_max_in_progress
+
+        # When both live ceilings are set, the effective global worker cap is
+        # their minimum. Log it explicitly so operators aren't surprised that
+        # e.g. max_spawn=2 + max_in_progress=3 runs at most 2 workers.
+        if isinstance(max_spawn, int) and isinstance(max_in_progress, int):
+            logger.info(
+                "kanban dispatcher: effective global worker cap = "
+                "min(max_spawn=%d, max_in_progress=%d) = %d",
+                max_spawn,
+                max_in_progress,
+                min(max_spawn, max_in_progress),
+            )
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
@@ -1589,6 +1850,14 @@ class GatewayKanbanWatchersMixin:
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
+            except _WATCHER_PROGRAMMING_ERRORS:
+                # A NameError/AttributeError/TypeError out of dispatch_once is a
+                # watcher bug, not a per-board operational failure. Do NOT
+                # downgrade it to a swallowed "tick failed on board" + return
+                # None (which would let the loop keep spinning on a broken
+                # build and mask the defect, as in BUI-936). Surface it to the
+                # dispatcher loop, which tears down and re-raises (BUI-938).
+                raise
             except Exception as exc:
                 if _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = (fingerprint, time.monotonic())
@@ -1719,10 +1988,21 @@ class GatewayKanbanWatchersMixin:
                 try:
                     os.environ["HERMES_KANBAN_BOARD"] = slug
                     try:
-                        triage_ids = _decomp.list_triage_ids()
+                        triage_ids = _decomp.list_auto_decompose_ids(
+                            limit=auto_decompose_per_tick,
+                        )
+                    except _WATCHER_PROGRAMMING_ERRORS:
+                        # The confirmed BUI-936 failure: a NameError raised here
+                        # (list_auto_decompose_ids called with an undefined name)
+                        # was swallowed into an empty triage list, so the sweep
+                        # silently no-op'd and the defect was invisible. A
+                        # NameError/AttributeError/TypeError on this call is a
+                        # watcher bug — surface it (BUI-938) rather than
+                        # downgrading it to "no triage tasks this tick".
+                        raise
                     except Exception as exc:
                         logger.debug(
-                            "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
+                            "kanban auto-decompose: list_auto_decompose_ids failed on board %s (%s)",
                             slug, exc,
                         )
                         triage_ids = []
@@ -1734,6 +2014,16 @@ class GatewayKanbanWatchersMixin:
                             outcome = _decomp.decompose_task(
                                 tid, author="auto-decomposer",
                             )
+                        except _WATCHER_PROGRAMMING_ERRORS:
+                            # Consistent with the sibling list call above: a
+                            # NameError/AttributeError/TypeError from invoking
+                            # decompose_task is a watcher bug, not a per-task
+                            # operational failure, so it must not be downgraded
+                            # to a logged "crashed" + continue (which would let
+                            # the sweep spin over a broken build). Surface it
+                            # (BUI-938). Genuine per-task operational failures
+                            # still fail closed below (log + skip this task).
+                            raise
                         except Exception:
                             logger.exception(
                                 "kanban auto-decompose: decompose_task crashed on %s",
@@ -1769,7 +2059,50 @@ class GatewayKanbanWatchersMixin:
         logger.info(
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
+        # Linear -> Kanban bridge. Re-read the settings every dispatcher tick.
+        # ``enabled`` is an emergency rollback switch for a card-creating path;
+        # a live true -> false flip must take effect on the next tick without a
+        # gateway restart. Any config read/shape error therefore fails closed.
+        def _read_linear_bridge_settings() -> tuple[dict, bool, float]:
+            try:
+                fresh_config = _load_config()
+                fresh_kanban = fresh_config.get("kanban", {})
+                if not isinstance(fresh_kanban, dict):
+                    raise TypeError("kanban config must be a mapping")
+                fresh_bridge = fresh_kanban.get("linear_bridge", {})
+                if not isinstance(fresh_bridge, dict):
+                    raise TypeError("kanban.linear_bridge must be a mapping")
+                enabled = bool(fresh_bridge.get("enabled", False))
+                try:
+                    poll_every = float(
+                        fresh_bridge.get("poll_interval_seconds", 300) or 300
+                    )
+                except (TypeError, ValueError):
+                    poll_every = 300.0
+                return fresh_bridge, enabled, max(poll_every, 0.0)
+            except Exception:
+                logger.exception(
+                    "linear bridge: config reload failed; disabling live bridge "
+                    "for this dispatcher tick"
+                )
+                return {}, False, 300.0
+
+        _lb_last_poll = 0.0
+        _tick_count = 0
+        _last_unroutable_warn = 0
         while self._running:
+            # Heartbeat FIRST, every tick: the liveness signal that makes a
+            # HUNG dispatcher (flock held, event loop wedged) detectable by a
+            # standby / the doctor CLI. Best-effort; never blocks the loop.
+            _tick_count += 1
+            try:
+                await asyncio.to_thread(
+                    _kb.write_dispatcher_heartbeat, _tick_count, interval,
+                )
+            except Exception:
+                logger.debug(
+                    "kanban dispatcher: heartbeat write skipped", exc_info=True
+                )
             try:
                 # Reap zombie children before per-board work so a board DB
                 # failure cannot block cleanup of unrelated workers.
@@ -1785,10 +2118,12 @@ class GatewayKanbanWatchersMixin:
 
             try:
                 # Global emergency stop (`hermes pause`): skip auto-decompose
-                # and dispatch entirely — no new workers while paused. Running
-                # workers finish naturally; zombie reaping above still runs.
+                # and all work creation/dispatch — no new cards or workers while
+                # paused. Running workers finish naturally; zombie reaping above
+                # still runs.
                 if not _kanban_dispatch_allowed():
                     ready_pending = False
+                    results = []
                     bad_ticks = 0
                 else:
                     # Re-read the auto-decompose toggle live each tick so a user
@@ -1797,6 +2132,46 @@ class GatewayKanbanWatchersMixin:
                     _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
                     if _ad_enabled:
                         await _to_thread_process_service(_auto_decompose_tick, _ad_per_tick)
+                    # Linear -> Kanban bridge poll. Best-effort: a bridge failure
+                    # must never break dispatch. Run before normal dispatch so
+                    # newly created Kanban cards can be claimed in the same tick.
+                    _lb_cfg, _lb_enabled, _lb_poll_every = (
+                        _read_linear_bridge_settings()
+                    )
+                    if _lb_enabled:
+                        _lb_now = time.time()
+                        if _lb_now - _lb_last_poll >= _lb_poll_every:
+                            _lb_last_poll = _lb_now
+                            try:
+                                from gateway import linear_bridge as _lb
+
+                                _lb_report = await _to_thread_process_service(
+                                    _lb.run_bridge_tick, _lb_cfg,
+                                )
+                                if (
+                                    _lb_report.get("would_create")
+                                    or _lb_report.get("created")
+                                    or _lb_report.get("unroutable")
+                                ):
+                                    logger.info(
+                                        "linear bridge tick: would_create=%d created=%d "
+                                        "unroutable=%d already_seen=%d dry_run=%s",
+                                        len(_lb_report.get("would_create") or []),
+                                        len(_lb_report.get("created") or []),
+                                        len(_lb_report.get("unroutable") or []),
+                                        _lb_report.get("already_seen", 0),
+                                        bool(_lb_cfg.get("dry_run", True)),
+                                    )
+                            except Exception:
+                                logger.warning(
+                                    "linear bridge tick failed (dispatch unaffected)",
+                                    exc_info=True,
+                                )
+                    else:
+                        # Re-enable should poll immediately; more importantly, a
+                        # live true -> false rollback must stop before this tick's
+                        # normal dispatcher work begins.
+                        _lb_last_poll = 0.0
                     results = await _to_thread_process_service(_tick_once)
                     any_spawned = False
                     for slug, res in (results or []):
@@ -1832,9 +2207,47 @@ class GatewayKanbanWatchersMixin:
                             bad_ticks,
                         )
                         last_warn_at = now
+                # Unroutable-assignee telemetry (assignee-validation fix): a
+                # ready task whose assignee is neither a profile nor a known
+                # pull lane can NEVER be worked and no terminal will claim it
+                # — the 55h-silent fable failure. dispatch_once surfaces these
+                # per board in ``skipped_unroutable``; aggregate and warn
+                # distinctly from the "0 spawned" case above (that one blames
+                # profile health; this one blames the task's assignee).
+                unroutable_ids: list[str] = []
+                for _slug, _res in (results or []):
+                    if _res is not None:
+                        unroutable_ids.extend(getattr(_res, "skipped_unroutable", []) or [])
+                if unroutable_ids:
+                    now = int(time.time())
+                    if now - _last_unroutable_warn >= 300:
+                        logger.warning(
+                            "kanban dispatcher STUCK (unroutable assignee): %d ready "
+                            "task(s) assigned to a name that is neither a Hermes "
+                            "profile nor a known pull lane — they will sit forever. "
+                            "ids=%s. Reassign to a real profile, register the lane, "
+                            "or run `hermes kanban doctor`.",
+                            len(unroutable_ids), unroutable_ids[:10],
+                        )
+                        _last_unroutable_warn = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
+                _kb_clear_heartbeat_safe(_kb)
                 self._release_kanban_dispatcher_lock()
+                raise
+            except _WATCHER_PROGRAMMING_ERRORS:
+                # Surface programming errors instead of masking them as an
+                # "unexpected watcher error" and spinning the loop (BUI-938):
+                # a NameError inside a tick used to be logged and swallowed,
+                # hiding the defect and silently changing corrupt-board
+                # behavior (BUI-936). Tear down the same way the cancellation
+                # path does — clear the heartbeat and release the singleton
+                # lock — so a standby can take over the dispatcher, then
+                # re-raise so CI / operators see the crash.
+                logger.exception("kanban dispatcher: programming error in tick; surfacing")
+                _kb_clear_heartbeat_safe(_kb)
+                _release_singleton_lock(self._kanban_dispatcher_lock_handle)
+                self._kanban_dispatcher_lock_handle = None
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
@@ -1846,4 +2259,5 @@ class GatewayKanbanWatchersMixin:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
 
+        _kb_clear_heartbeat_safe(_kb)
         self._release_kanban_dispatcher_lock()

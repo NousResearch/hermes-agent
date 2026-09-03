@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import cast
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -250,6 +251,26 @@ def finalize_turn(
             or normal_text_response
         )
     )
+
+    # Bound gateway-visible and gateway-persisted final text before any
+    # trajectory/session write. CLI/TUI turns remain uncapped by default.
+    _gateway_response_truncated = False
+    _gateway_response_original_chars = len(final_response or "")
+    _gateway_response_limit_chars = 0
+    _gateway_guardrail = getattr(
+        agent, "_apply_gateway_final_response_guardrail", None
+    )
+    if final_response and not interrupted and callable(_gateway_guardrail):
+        _gateway_guardrail_result = cast(
+            tuple[str, bool, int, int],
+            _gateway_guardrail(final_response, messages),
+        )
+        (
+            final_response,
+            _gateway_response_truncated,
+            _gateway_response_original_chars,
+            _gateway_response_limit_chars,
+        ) = _gateway_guardrail_result
 
     # Preflight can seed the display count before the provider receives the
     # request. Roll that estimate back only when an interrupt wins the race
@@ -636,6 +657,24 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+        # A plugin can expand a capped model answer again. Re-apply the cap
+        # before post-call hooks, external-memory sync, and gateway delivery.
+        if callable(_gateway_guardrail):
+            _post_transform_guardrail_result = cast(
+                tuple[str, bool, int, int],
+                _gateway_guardrail(final_response, messages),
+            )
+            (
+                final_response,
+                _post_transform_truncated,
+                _post_transform_original_chars,
+                _post_transform_limit_chars,
+            ) = _post_transform_guardrail_result
+            if _post_transform_truncated:
+                _gateway_response_truncated = True
+                _gateway_response_original_chars = _post_transform_original_chars
+                _gateway_response_limit_chars = _post_transform_limit_chars
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
@@ -749,6 +788,9 @@ def finalize_turn(
             (getattr(agent, "request_overrides", {}) or {}).get("extra_body") or {}
         ).get("service_tier"),
         "session_id": agent.session_id,
+        "gateway_response_truncated": _gateway_response_truncated,
+        "gateway_response_original_chars": _gateway_response_original_chars,
+        "gateway_response_limit_chars": _gateway_response_limit_chars,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

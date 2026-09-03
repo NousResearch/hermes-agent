@@ -33,6 +33,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agent.redact import normalize_tool_output
+
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
@@ -50,6 +52,15 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
 def _format_tool_args(d: dict) -> str:
     """Format a dict as JSON the way Hermes' existing tool_calls path does."""
     return json.dumps(d, ensure_ascii=False, sort_keys=True)
+
+
+def _tool_result_message(call_id: str, content: str) -> dict[str, str]:
+    """Build a projected tool result through the shared safety boundary."""
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": normalize_tool_output(content),
+    }
 
 
 @dataclass
@@ -166,11 +177,7 @@ class CodexEventProjector:
         exit_code = item.get("exitCode")
         if exit_code is not None and exit_code != 0:
             output = f"[exit {exit_code}]\n{output}"
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": output,
-        }
+        tool_msg = _tool_result_message(call_id, output)
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -205,11 +212,10 @@ class CodexEventProjector:
             self._pending_reasoning = []
         status = item.get("status") or "unknown"
         n = len(changes_summary)
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": f"apply_patch status={status}, {n} change(s)",
-        }
+        tool_msg = _tool_result_message(
+            call_id,
+            f"apply_patch status={status}, {n} change(s)",
+        )
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -248,11 +254,7 @@ class CodexEventProjector:
             content = json.dumps(result, ensure_ascii=False)[:4000]
         else:
             content = ""
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": content,
-        }
+        tool_msg = _tool_result_message(call_id, content)
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )
@@ -288,11 +290,7 @@ class CodexEventProjector:
         else:
             success = item.get("success")
             content = f"success={success}"
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": call_id,
-            "content": content,
-        }
+        tool_msg = _tool_result_message(call_id, content)
         return ProjectionResult(
             messages=[assistant_msg, tool_msg], is_tool_iteration=True
         )

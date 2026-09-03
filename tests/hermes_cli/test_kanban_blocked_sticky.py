@@ -1,30 +1,9 @@
-"""Regression tests for #28712 — kanban dispatcher must not auto-promote
-worker-initiated ``kanban_block`` (sticky blocks), but must keep
-auto-recovering circuit-breaker blocks.
+"""Regression tests for fail-closed Kanban block gates.
 
-The bug: when a worker called ``kanban_block(reason="review-required:
-...")`` to hand off to a human, the dispatcher's ``recompute_ready``
-would promote the task back to ``ready`` on the next tick.  The fresh
-worker found nothing to do (work already applied), exited cleanly, and
-got recorded as a ``protocol_violation`` → ``gave_up`` → promote → loop
-until manual intervention.
-
-These tests pin down:
-
-* Worker / operator-initiated blocks are sticky and survive
-  ``recompute_ready``.
-* Circuit-breaker blocks (``gave_up`` event, status flipped via
-  ``_record_task_failure``) still auto-recover — the original intent
-  of #40c1decb3 is preserved.
-* An explicit ``kanban_unblock`` clears the sticky state.
-* The full block → promote → crash → ``gave_up`` loop is broken after
-  this fix: subsequent ticks leave the task blocked.
-
-The tangentially related schema-init ordering bug originally reported
-in #28712 (``init_db`` crashing on legacy DBs that pre-dated the
-``session_id`` migration) is covered separately by
-``test_kanban_db.py::test_connect_migrates_legacy_db_before_optional_column_indexes``,
-landed via #28754 / #28781 ahead of this fix.
+The dispatcher may auto-promote dependency waits in ``todo`` after their
+parents finish. It must never infer that a ``blocked`` card is runnable:
+creation-time blocks, worker/operator blocks, circuit-breaker blocks, and
+unknown legacy state all require an explicit ``unblock_task`` transition.
 """
 
 from __future__ import annotations
@@ -46,6 +25,73 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
+
+
+# ---------------------------------------------------------------------------
+# Creation-time blocks must be sticky
+# ---------------------------------------------------------------------------
+
+
+def test_blocked_on_creation_stays_blocked_until_explicit_unblock(
+    kanban_home: Path,
+) -> None:
+    """``initial_status=blocked`` is a human gate, not a dependency wait.
+
+    Creation must persist the same sticky ``blocked`` event used by
+    ``block_task`` so dispatcher recomputation cannot silently bypass it.
+    Only an explicit unblock may return the card to the runnable queue.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="human release gate",
+            initial_status="blocked",
+        )
+
+        events = [
+            row["kind"]
+            for row in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+                (tid,),
+            )
+        ]
+        assert events == ["created", "blocked"]
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_unknown_block_state_fails_closed(kanban_home: Path) -> None:
+    """A blocked row with no auditable gate event must never auto-run."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ambiguous legacy block")
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,))
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_ambiguous_reblock_after_unblock_fails_closed(kanban_home: Path) -> None:
+    """A blocked row without a matching new block event stays gated."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="ambiguous reblock", initial_status="blocked"
+        )
+        assert kb.unblock_task(conn, tid)
+
+        # Simulate an unsupported/legacy writer changing only the status. The
+        # old ``unblocked`` event cannot authorize a later ambiguous block.
+        conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = ?", (tid,))
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +129,71 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
 # ---------------------------------------------------------------------------
 
 
+def test_circuit_breaker_block_below_limit_still_fails_closed(
+    kanban_home: Path,
+) -> None:
+    """Failure counters cannot silently release a blocked card."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        kb.complete_task(conn, parent, result="ok")
 
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='transient error' WHERE id=?",
+            (child,),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+
+def test_gave_up_block_requires_explicit_unblock(kanban_home: Path) -> None:
+    """A circuit-breaker ``gave_up`` event is not an automatic release."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        kb.complete_task(conn, parent, result="ok")
+
+        conn.execute(
+            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', NULL, ?)",
+            (child, int(time.time())),
+        )
+        conn.commit()
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, child).status == "blocked"
+        assert kb.unblock_task(conn, child)
+        assert kb.get_task(conn, child).status == "ready"
 
 # ---------------------------------------------------------------------------
 # unblock_task clears the sticky state
 # ---------------------------------------------------------------------------
 
+
+def test_unblock_clears_sticky_state(kanban_home: Path) -> None:
+    """Explicit unblock is the only supported exit from blocked state."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="t")
+        kb.claim_task(conn, tid)
+        kb.block_task(
+            conn, tid,
+            reason="review-required: ...",
+            expected_run_id=kb.get_task(conn, tid).current_run_id,
+        )
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+        latest = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert latest["kind"] == "unblocked"
 
 # ---------------------------------------------------------------------------
 # Full bug-shaped loop: block → promote → crash → gave_up → next tick

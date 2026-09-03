@@ -1980,6 +1980,71 @@ class TestConvertMessages:
         assert len(result) == 1
         assert result[0] == {"role": "user", "content": "Hello world"}
 
+    def test_image_message(self):
+        text_block = SimpleNamespace(text="Look at this")
+        img_block = SimpleNamespace(data="abc123", mimeType="image/png")
+        msg = SimpleNamespace(
+            role="user",
+            content=[text_block, img_block],
+            content_as_list=[text_block, img_block],
+        )
+        params = _make_sampling_params(messages=[msg])
+        result = self.handler._convert_messages(params)
+        assert len(result) == 1
+        parts = result[0]["content"]
+        assert len(parts) == 2
+        assert parts[0] == {"type": "text", "text": "Look at this"}
+        assert parts[1]["type"] == "image_url"
+        assert "data:image/png;base64,abc123" in parts[1]["image_url"]["url"]
+
+    def test_image_message_normalizes_multimodal_text(self):
+        bcrypt = "$2b$12$" + "N" * 53
+        incident = "Environment=DB_PASSWORD=s3cr3tValue123"
+        text_block = SimpleNamespace(text=f"{bcrypt}\n{incident}")
+        img_block = SimpleNamespace(data="abc123", mimeType="image/png")
+        msg = SimpleNamespace(
+            role="user",
+            content=[text_block, img_block],
+            content_as_list=[text_block, img_block],
+        )
+
+        result = self.handler._convert_messages(_make_sampling_params(messages=[msg]))
+
+        parts = result[0]["content"]
+        assert bcrypt not in parts[0]["text"]
+        assert incident not in parts[0]["text"]
+        assert "[REDACTED:BCRYPT_2B]" in parts[0]["text"]
+        assert "[REDACTED:NAME:DB_PASSWORD]" in parts[0]["text"]
+        assert parts[1]["image_url"]["url"] == "data:image/png;base64,abc123"
+
+    def test_tool_result_message(self):
+        inner = SimpleNamespace(text="42 degrees")
+        tr_block = SimpleNamespace(toolUseId="call_1", content=[inner])
+        msg = SimpleNamespace(
+            role="user",
+            content=[tr_block],
+            content_as_list=[tr_block],
+        )
+        params = _make_sampling_params(messages=[msg])
+        result = self.handler._convert_messages(params)
+        assert len(result) == 1
+        assert result[0]["role"] == "tool"
+        assert result[0]["tool_call_id"] == "call_1"
+        assert result[0]["content"] == "42 degrees"
+
+    def test_tool_result_message_is_normalized(self):
+        incident = "Environment=DB_PASSWORD=s3cr3tValue123"
+        inner = SimpleNamespace(text=incident)
+        tr_block = SimpleNamespace(toolUseId="call-secret", content=[inner])
+        msg = SimpleNamespace(
+            role="user",
+            content=[tr_block],
+            content_as_list=[tr_block],
+        )
+        params = _make_sampling_params(messages=[msg])
+        result = self.handler._convert_messages(params)
+        assert incident not in result[0]["content"]
+        assert "[REDACTED:NAME:DB_PASSWORD]" in result[0]["content"]
 
     def test_tool_use_message(self):
         tu_block = SimpleNamespace(

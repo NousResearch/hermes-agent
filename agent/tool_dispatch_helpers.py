@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import stamp_message_timestamp
+from agent.redact import normalize_tool_output_content
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
@@ -613,11 +614,14 @@ def make_tool_result_message(
     # paths that do not go through the live executor's canonical-id helper.
     tool_call_id = _normalize_tool_call_id(tool_call_id)
 
-    # Order matters: detect provider-side elision on the RAW content and
-    # append the notice first, THEN wrap — so the notice lives inside the
-    # untrusted block next to the data it describes, appended exactly once
-    # at construction time (cache-safe).
-    wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
+    # Order matters: detect provider-side elision on the raw content, normalize
+    # and redact the resulting payload, then wrap it as untrusted content. The
+    # notice remains inside the untrusted block and prior conversation content
+    # is never mutated.
+    normalized = normalize_tool_output_content(
+        _maybe_append_elision_notice(name, content)
+    )
+    wrapped = _maybe_wrap_untrusted(name, normalized)
     message = stamp_message_timestamp({
         "role": "tool",
         "name": name,

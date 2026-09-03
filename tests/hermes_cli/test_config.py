@@ -135,6 +135,13 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_linear_bridge_shipping_defaults_are_safe(self):
+        bridge = DEFAULT_CONFIG["kanban"]["linear_bridge"]
+        assert bridge["enabled"] is False
+        assert bridge["dry_run"] is True
+        assert bridge["max_creates_per_tick"] == 1
+        assert bridge["issue_id_allowlist"] == []
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

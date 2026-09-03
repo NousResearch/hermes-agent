@@ -7,12 +7,19 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
+import base64
+import binascii
+import json
 import logging
+import math
 import os
 import re
 import shlex
 import threading
 from urllib.parse import unquote_plus
+from collections import Counter
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 # Basenames treated as ``.env`` files by _command_reads_env_file. Imported
 # from agent/file_safety (the read-block list) so the two defenses can't
@@ -22,6 +29,99 @@ from urllib.parse import unquote_plus
 from agent.file_safety import _BLOCKED_PROJECT_ENV_BASENAMES as _ENV_FILE_BASENAMES
 
 logger = logging.getLogger(__name__)
+
+TOOL_OUTPUT_REDACTED_PREFIX = "[REDACTED:"
+DEFAULT_TOOL_OUTPUT_SECRET_NAMES = (
+    "access_token",
+    "api_key",
+    "apikey",
+    "auth_token",
+    "client_secret",
+    "password",
+    "passwd",
+    "private_key",
+    "refresh_token",
+    "secret",
+    "secret_key",
+    "token",
+)
+DEFAULT_TOOL_OUTPUT_ENTROPY_MIN_LENGTH = 48
+DEFAULT_TOOL_OUTPUT_ENTROPY_FLOOR = 4.5
+DEFAULT_TOOL_OUTPUT_SPILL_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+@dataclass(frozen=True)
+class ToolOutputRedactionPolicy:
+    """Runtime policy for the final tool-output safety boundary."""
+
+    secret_names: tuple[str, ...] = DEFAULT_TOOL_OUTPUT_SECRET_NAMES
+    entropy_min_length: int = DEFAULT_TOOL_OUTPUT_ENTROPY_MIN_LENGTH
+    entropy_floor: float = DEFAULT_TOOL_OUTPUT_ENTROPY_FLOOR
+    spill_max_age_seconds: int = DEFAULT_TOOL_OUTPUT_SPILL_MAX_AGE_SECONDS
+
+
+def _coerce_secret_names(value: Any) -> tuple[str, ...]:
+    """Return normalized config names without looking up any named value."""
+    if value is None:
+        return DEFAULT_TOOL_OUTPUT_SECRET_NAMES
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return DEFAULT_TOOL_OUTPUT_SECRET_NAMES
+    names = {
+        str(name).strip()
+        for name in value
+        if str(name).strip() and len(str(name).strip()) <= 128
+    }
+    return tuple(sorted(names, key=lambda item: (-len(item), item.casefold())))
+
+
+def resolve_tool_output_redaction_policy() -> ToolOutputRedactionPolicy:
+    """Resolve non-secret matcher settings from ``config.yaml`` at call time.
+
+    The configured deny-list contains *names only*. This function never reads
+    environment variables or fetches the values associated with those names.
+    """
+    raw: dict[str, Any] = {}
+    try:
+        from hermes_cli.config import read_raw_config
+
+        loaded = read_raw_config()
+        security = loaded.get("security", {}) if isinstance(loaded, dict) else {}
+        raw = security.get("tool_output_redaction", {}) if isinstance(security, dict) else {}
+        if not isinstance(raw, dict):
+            raw = {}
+    except Exception as exc:
+        logger.debug("Could not resolve tool-output redaction config: %s", exc)
+
+    def _bounded_int(key: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            return max(minimum, min(maximum, int(raw.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        entropy_floor = float(raw.get("entropy_floor", DEFAULT_TOOL_OUTPUT_ENTROPY_FLOOR))
+    except (TypeError, ValueError):
+        entropy_floor = DEFAULT_TOOL_OUTPUT_ENTROPY_FLOOR
+    entropy_floor = max(0.0, min(8.0, entropy_floor))
+
+    return ToolOutputRedactionPolicy(
+        secret_names=_coerce_secret_names(raw.get("secret_names")),
+        entropy_min_length=_bounded_int(
+            "entropy_min_length",
+            DEFAULT_TOOL_OUTPUT_ENTROPY_MIN_LENGTH,
+            8,
+            4096,
+        ),
+        entropy_floor=entropy_floor,
+        spill_max_age_seconds=_bounded_int(
+            "spill_max_age_seconds",
+            DEFAULT_TOOL_OUTPUT_SPILL_MAX_AGE_SECONDS,
+            0,
+            365 * 24 * 60 * 60,
+        ),
+    )
 
 # Sensitive query-string parameter names (case-insensitive exact match).
 # Ported from nearai/ironclaw#2529 — catches tokens whose values don't match
@@ -460,6 +560,457 @@ _JWT_RE = re.compile(
     r"eyJ[A-Za-z0-9_-]{10,}"           # Header (always starts with eyJ)
     r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
 )
+
+# Final-boundary tool-output matchers. These deliberately use stable,
+# class-labelled placeholders instead of head/tail-preserving masks.
+_TOOL_BCRYPT_RE = re.compile(
+    r"(?<![./A-Za-z0-9])\$2(?P<variant>[aby])\$\d{2}\$[./A-Za-z0-9]{53}"
+    r"(?![./A-Za-z0-9])"
+)
+_TOOL_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN (?P<label>(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY)-----"
+    r"[\s\S]*?"
+    r"-----END (?P=label)-----"
+)
+_TOOL_GITHUB_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<prefix>github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)"
+    r"[A-Za-z0-9_]{20,255}"
+    r"(?![A-Za-z0-9_])"
+)
+_TOOL_AWS_ACCESS_KEY_RE = re.compile(
+    r"(?<![A-Z0-9])"
+    r"(?:A3T[A-Z0-9]|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)"
+    r"[A-Z0-9]{16}"
+    r"(?![A-Z0-9])"
+)
+_TOOL_JWT_CANDIDATE_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?P<header>eyJ[A-Za-z0-9_-]{5,})\."
+    r"(?P<payload>[A-Za-z0-9_-]{8,})\."
+    r"(?P<signature>[A-Za-z0-9_-]{16,})"
+    r"(?![A-Za-z0-9_-])"
+)
+_TOOL_DYNAMIC_VALUE_RE = re.compile(
+    r"^(?:"
+    r"os\.(?:getenv|environ)|process\.env|\$ENV\{|\$\{|\{\{|"
+    r"[A-Za-z_][A-Za-z0-9_.]*\s*\(|"
+    r"None$|null$|true$|false$"
+    r")",
+    re.IGNORECASE,
+)
+_TOOL_DIGEST_PREFIX_RE = re.compile(r"(?:sha(?:1|224|256|384|512)-)$", re.IGNORECASE)
+_TOOL_DIGEST_VALUE_RE = re.compile(
+    r"sha(?:1|224|256|384|512)-[A-Za-z0-9_+/=-]{20,}",
+    re.IGNORECASE,
+)
+_TOOL_SHELL_VARIABLE_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+_TOOL_SHELL_AUTH_HEADER_RE = re.compile(
+    r"(?:Proxy-)?Authorization:\s*"
+    r"(?:[A-Za-z][\w.+-]*\s+)?"
+    r"\$[A-Za-z_][A-Za-z0-9_]*",
+    re.IGNORECASE,
+)
+_TOOL_PACKAGE_VERSION_RE = re.compile(
+    r"^[~^<>=]*\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$"
+)
+_TOOL_PACKAGE_REFERENCE_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_.-]*/\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$"
+)
+
+
+def _tool_placeholder(label: str) -> str:
+    return f"{TOOL_OUTPUT_REDACTED_PREFIX}{label}]"
+
+
+def _decode_base64url_json(value: str) -> dict[str, Any] | None:
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        parsed = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, binascii.Error, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _redact_tool_jwts(text: str) -> str:
+    def _replace(match: re.Match) -> str:
+        header = _decode_base64url_json(match.group("header"))
+        payload = _decode_base64url_json(match.group("payload"))
+        if header is None or payload is None:
+            return match.group(0)
+        if not ({"alg", "typ"} & set(header)):
+            return match.group(0)
+        return _tool_placeholder("JWT")
+
+    return _TOOL_JWT_CANDIDATE_RE.sub(_replace, text)
+
+
+def _name_label(name: str) -> str:
+    expanded = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    expanded = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", expanded)
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", expanded).strip("_").upper()
+    return cleaned or "SECRET"
+
+
+def _tool_name_parts(name: str) -> tuple[str, ...]:
+    """Split snake/kebab/dotted and camelCase credential names."""
+    expanded = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    expanded = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", expanded)
+    return tuple(
+        part for part in re.split(r"[_.-]+", expanded.casefold()) if part
+    )
+
+
+def _is_tool_credential_literal(value: str) -> bool:
+    """Return whether an adjacent value looks like credential data.
+
+    Named-value matching is a silent, irreversible boundary, so a secret-like
+    key alone is insufficient.  Values that are ordinary source identifiers,
+    type annotations, indexing expressions, constants, or bracketed sentinels
+    stay visible. Credential literals must be long enough and combine letters
+    with digits.
+    """
+    value = value.strip()
+    if (
+        not value
+        or value.startswith(TOOL_OUTPUT_REDACTED_PREFIX)
+        or _TOOL_DYNAMIC_VALUE_RE.match(value)
+        or _TOOL_PACKAGE_VERSION_RE.match(value)
+        or _TOOL_PACKAGE_REFERENCE_RE.match(value)
+        or value.isdecimal()
+    ):
+        return False
+
+    if (
+        (value.startswith("[") and value.endswith("]"))
+        or (value.startswith("{") and value.endswith("}"))
+        or (value.startswith("<") and value.endswith(">"))
+        or any(char in value for char in "()[]{}")
+    ):
+        return False
+
+    if any(char.isspace() for char in value):
+        return False
+
+    if not value.isascii():
+        return False
+
+    if (
+        "://" in value
+        or value.startswith(("/", "./", "../"))
+        or re.fullmatch(r"(?:\+\+|--)[A-Za-z_$][A-Za-z0-9_$.]*", value)
+        or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$.]*(?:\+\+|--)", value)
+        or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*\.[A-Za-z0-9_$.]+", value)
+        or re.fullmatch(r"[A-Fa-f0-9]{8,}", value)
+    ):
+        return False
+
+    placeholder = value.casefold()
+    if (
+        "..." in value
+        or re.search(r"x{4,}", placeholder)
+        or re.search(
+            r"(?:^|[-_.])(?:dummy|example|fake|inspect|placeholder|sample|synthetic|test|your)(?:$|[-_.])",
+            placeholder,
+        )
+        or placeholder in {"no-key-required", "moa-virtual-provider"}
+    ):
+        return False
+
+    # Constants such as OPENAI_API_KEY name another setting; they are not its
+    # value.  This also preserves source fixtures that document env-var names.
+    if re.fullmatch(r"[A-Z][A-Z0-9_]*", value) and "_" in value:
+        return False
+
+    if len(value) < 8:
+        return False
+
+    has_alpha = any(char.isalpha() for char in value)
+    has_digit = any(char.isdigit() for char in value)
+    return has_alpha and has_digit
+
+
+def _redact_tool_named_values(text: str, names: Iterable[str]) -> str:
+    normalized = tuple(name for name in names if name)
+    if not normalized:
+        return text
+
+    configured_parts = tuple(_tool_name_parts(name) for name in normalized)
+    assignment_re = re.compile(
+        rf"(?=(?<![A-Za-z0-9_.-])"
+        rf"(?P<key_quote>['\"]?)(?P<name>[A-Za-z0-9_.-]{{1,128}})(?P=key_quote)"
+        rf"(?P<separator>\s*(?:=|:)\s*)"
+        # Keep the alternatives disjoint and atomic. The previous pattern also
+        # allowed a backslash through its second alternative, which caused
+        # catastrophic backtracking on long, truncated escaped JSON strings.
+        rf"(?:(?P<value_quote>['\"])(?P<quoted>(?>\\.|[^\\'\"])*)(?P=value_quote)"
+        rf"|(?P<bare>[^\s,;'\"}}\]]+)))",
+    )
+
+    def _is_secret_name(name: str) -> bool:
+        parts = _tool_name_parts(name)
+        if not parts:
+            return False
+        is_environment_name = bool(
+            re.fullmatch(r"[A-Z0-9_]+", name)
+            and any(char.isalpha() for char in name)
+        )
+        for configured in configured_parts:
+            if not configured or len(configured) > len(parts):
+                continue
+            # Lowercase/camel-case compound config names are considered secret
+            # only when the configured name is the suffix. This preserves
+            # source identifiers such as ``api_key_name``.
+            if parts[-len(configured):] == configured:
+                return True
+            # All-uppercase identifiers are environment/config names. Match a
+            # configured name at any component boundary so credential prefixes,
+            # infixes, and deployment suffixes remain covered. The adjacent
+            # value predicate below prevents source expressions from matching.
+            if is_environment_name:
+                for index in range(len(parts) - len(configured) + 1):
+                    if parts[index:index + len(configured)] == configured:
+                        return True
+        return False
+
+    replacements: list[tuple[int, int, str]] = []
+    for match in assignment_re.finditer(text):
+        if not _is_secret_name(match.group("name")):
+            continue
+        prefix_parts = text[:match.start("name")].rsplit(None, 1)
+        token_prefix = prefix_parts[-1] if prefix_parts else ""
+        if "://" in token_prefix:
+            # Preserve URL query parameters.  The legacy redactor deliberately
+            # leaves web URLs intact so source links and asset identifiers are
+            # not silently rewritten.
+            continue
+        value = match.group("quoted") if match.group("value_quote") else match.group("bare")
+        if not _is_tool_credential_literal(value):
+            continue
+        value_group = "quoted" if match.group("value_quote") else "bare"
+        replacements.append(
+            (
+                match.start(value_group),
+                match.end(value_group),
+                _tool_placeholder(f"NAME:{_name_label(match.group('name'))}"),
+            )
+        )
+
+    # The lookahead permits nested assignments such as the exact incident
+    # shape ``Environment=DB_PASSWORD=value``. Prefer the outermost selected
+    # secret value if two qualifying assignments overlap, then patch backwards.
+    selected: list[tuple[int, int, str]] = []
+    for replacement in sorted(replacements, key=lambda item: (item[0], -item[1])):
+        if selected and replacement[0] < selected[-1][1]:
+            continue
+        selected.append(replacement)
+    for start, end, placeholder in reversed(selected):
+        text = f"{text[:start]}{placeholder}{text[end:]}"
+    return text
+
+
+def _shannon_entropy_per_character(value: str) -> float:
+    if not value:
+        return 0.0
+    length = len(value)
+    return -sum(
+        (count / length) * math.log2(count / length)
+        for count in Counter(value).values()
+    )
+
+
+def _redact_tool_high_entropy(
+    text: str,
+    *,
+    min_length: int,
+    entropy_floor: float,
+) -> str:
+    candidate_re = re.compile(
+        rf"(?<![A-Za-z0-9_+/\-])"
+        rf"(?P<value>[A-Za-z0-9][A-Za-z0-9_+/\-]{{{max(0, min_length - 2)},}}"
+        rf"[A-Za-z0-9](?:={{1,2}})?)"
+        rf"(?![A-Za-z0-9_+/\-=])"
+    )
+
+    def _replace(match: re.Match) -> str:
+        value = match.group("value")
+        prefix = text[max(0, match.start() - 128):match.start()]
+        if (
+            _TOOL_DIGEST_PREFIX_RE.search(prefix)
+            or _TOOL_DIGEST_VALUE_RE.match(value)
+        ):
+            return value
+        prefix_parts = prefix.rsplit(None, 1)
+        token_prefix = prefix_parts[-1] if prefix_parts else ""
+        if token_prefix.endswith("base64,"):
+            return value
+        if "://" in token_prefix and prefix[-1:] not in {"=", "&", "?", "#"}:
+            return value
+        if re.fullmatch(r"[A-Fa-f0-9]+", value):
+            return value
+        classes = sum(
+            (
+                any(char.islower() for char in value),
+                any(char.isupper() for char in value),
+                any(char.isdigit() for char in value),
+                any(char in "_+/=-" for char in value),
+            )
+        )
+        if classes < 3:
+            return value
+        if _shannon_entropy_per_character(value) < entropy_floor:
+            return value
+        return _tool_placeholder("HIGH_ENTROPY")
+
+    return candidate_re.sub(_replace, text)
+
+
+def _legacy_redact_preserving_digests(text: str) -> str:
+    """Run the legacy pass without rewriting digests or shell references."""
+    protected_literals: list[tuple[str, str]] = []
+    next_marker_index = 0
+
+    def _new_marker(label: str, literal: str) -> str:
+        nonlocal next_marker_index
+        marker_index = next_marker_index
+        marker = f"\x00HERMES_TOOL_{label}_{marker_index}\x00"
+        while marker in text:
+            marker_index += 1
+            marker = f"\x00HERMES_TOOL_{label}_{marker_index}\x00"
+        next_marker_index = marker_index + 1
+        protected_literals.append((marker, literal))
+        return marker
+
+    def _shield_shell_secret_header(match: re.Match) -> str:
+        if _TOOL_SHELL_VARIABLE_RE.fullmatch(match.group(2)):
+            return _new_marker("SHELL_HEADER", match.group(0))
+        return match.group(0)
+
+    shielded = _TOOL_SHELL_AUTH_HEADER_RE.sub(
+        lambda match: _new_marker("SHELL_AUTH", match.group(0)),
+        text,
+    )
+    shielded = _SECRET_HEADER_RE.sub(_shield_shell_secret_header, shielded)
+    shielded = _TOOL_DIGEST_VALUE_RE.sub(
+        lambda match: _new_marker("DIGEST", match.group(0)),
+        shielded,
+    )
+    shielded = _TOOL_SHELL_VARIABLE_RE.sub(
+        lambda match: _new_marker("SHELL", match.group(0)),
+        shielded,
+    )
+    redacted = redact_sensitive_text(
+        shielded,
+        force=True,
+        code_file=True,
+        file_read=True,
+    )
+    for marker, literal in protected_literals:
+        redacted = redacted.replace(marker, literal)
+    return redacted
+
+
+def _redact_tool_output_classes(
+    text: str,
+    policy: ToolOutputRedactionPolicy,
+) -> str:
+    """Apply the tool-specific shape, name, and entropy matchers."""
+    text = _TOOL_PRIVATE_KEY_RE.sub(_tool_placeholder("PEM_PRIVATE_KEY"), text)
+    text = _TOOL_BCRYPT_RE.sub(
+        lambda match: _tool_placeholder(f"BCRYPT_2{match.group('variant').upper()}"),
+        text,
+    )
+    text = _TOOL_GITHUB_TOKEN_RE.sub(_tool_placeholder("GITHUB_TOKEN"), text)
+    text = _redact_tool_jwts(text)
+    text = _TOOL_AWS_ACCESS_KEY_RE.sub(_tool_placeholder("AWS_ACCESS_KEY_ID"), text)
+    text = _redact_tool_named_values(text, policy.secret_names)
+    text = _redact_tool_high_entropy(
+        text,
+        min_length=policy.entropy_min_length,
+        entropy_floor=policy.entropy_floor,
+    )
+    return text
+
+
+def normalize_tool_output(
+    text: str,
+    *,
+    policy: ToolOutputRedactionPolicy | None = None,
+) -> str:
+    """Normalize a tool result before model serialization or spill storage.
+
+    The pass is deterministic and idempotent. Shape matches use stable class
+    labels; configured name matches use ``[REDACTED:NAME:<NAME>]``. Name
+    matching inspects adjacent literals only and never resolves a secret value.
+    """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
+    if not text:
+        return text
+    policy = policy or resolve_tool_output_redaction_policy()
+
+    text = _redact_tool_output_classes(text, policy)
+
+    # Preserve all existing Hermes credential classes at this forced boundary.
+    return _legacy_redact_preserving_digests(text)
+
+
+def normalize_tool_output_content(
+    content: Any,
+    *,
+    policy: ToolOutputRedactionPolicy | None = None,
+) -> Any:
+    """Normalize string output or text-bearing multimodal content parts.
+
+    Binary and image parts are preserved by identity. Text dictionaries and
+    the outer list are shallow-copied so callers never mutate producer-owned
+    multimodal results.
+    """
+    if isinstance(content, str):
+        return normalize_tool_output(content, policy=policy)
+    if not isinstance(content, list):
+        return content
+
+    normalized_parts: list[Any] = []
+    for part in content:
+        if not isinstance(part, dict):
+            normalized_parts.append(part)
+            continue
+
+        part_type = part.get("type")
+        if (
+            part_type in {"text", "input_text", "output_text"}
+            and isinstance(part.get("text"), str)
+        ):
+            normalized_parts.append(
+                {
+                    **part,
+                    "text": normalize_tool_output(part["text"], policy=policy),
+                }
+            )
+        elif part_type == "resource":
+            normalized_part = part
+            if isinstance(part.get("text"), str):
+                normalized_part = {
+                    **normalized_part,
+                    "text": normalize_tool_output(part["text"], policy=policy),
+                }
+            resource = part.get("resource")
+            if isinstance(resource, dict) and isinstance(resource.get("text"), str):
+                normalized_part = {
+                    **normalized_part,
+                    "resource": {
+                        **resource,
+                        "text": normalize_tool_output(resource["text"], policy=policy),
+                    },
+                }
+            normalized_parts.append(normalized_part)
+        else:
+            normalized_parts.append(part)
+    return normalized_parts
 
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
@@ -1487,4 +2038,10 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        # Preserve the formatter's established legacy placeholders, then add
+        # the tool-output-only classes that the legacy pass does not cover.
+        redacted = redact_sensitive_text(original)
+        return _redact_tool_output_classes(
+            redacted,
+            resolve_tool_output_redaction_policy(),
+        )

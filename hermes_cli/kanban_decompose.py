@@ -177,6 +177,16 @@ def _load_config() -> dict:
         return {}
 
 
+def _positive_kanban_limit(cfg: dict, key: str, default: int) -> int:
+    """Read a positive integer safety limit, failing closed to ``default``."""
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    try:
+        value = int(kanban_cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 1 else default
+
+
 def _resolve_orchestrator_profile(cfg: dict) -> str:
     """Resolve which profile owns the root/orchestration task after fan-out.
 
@@ -268,6 +278,39 @@ def _normalize_assignee_choice(
     return chosen
 
 
+def _is_linear_bridge_task(task: kb.Task) -> bool:
+    """Return True for tasks durably originating from the Linear bridge.
+
+    ``created_by`` is the primary provenance marker. The immutable
+    ``linear:<uuid>`` idempotency key is a defense-in-depth fallback for
+    older rows or import paths that predate the creator stamp.
+    """
+    created_by = (task.created_by or "").strip().casefold()
+    idempotency_key = (task.idempotency_key or "").strip().casefold()
+    return created_by == "linear_bridge" or idempotency_key.startswith("linear:")
+
+
+def _auto_decompose_ineligibility_reason(task: kb.Task, cfg: dict) -> Optional[str]:
+    """Return a stable reason when automatic decomposition must skip ``task``."""
+    if task.status != "triage":
+        return f"task is not in triage (status={task.status!r})"
+    if _is_linear_bridge_task(task):
+        return "linear bridge tasks are already specified and cannot be decomposed"
+    if task.triage_origin == kb.TRIAGE_ORIGIN_BLOCK_RECURRENCE:
+        return "task is in triage for human escalation, not decomposition"
+    max_depth = _positive_kanban_limit(
+        cfg,
+        "decomposition_max_depth",
+        kb.DEFAULT_DECOMPOSITION_MAX_DEPTH,
+    )
+    if task.decomposition_depth >= max_depth:
+        return (
+            f"maximum decomposition depth {max_depth} reached "
+            f"(task depth {task.decomposition_depth})"
+        )
+    return None
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -285,12 +328,20 @@ def decompose_task(
         task = kb.get_task(conn, task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, "unknown task id")
-    if task.status != "triage":
-        return DecomposeOutcome(
-            task_id, False, f"task is not in triage (status={task.status!r})"
-        )
-
     cfg = _load_config()
+    ineligible_reason = _auto_decompose_ineligibility_reason(task, cfg)
+    if ineligible_reason is not None:
+        return DecomposeOutcome(task_id, False, ineligible_reason)
+    max_children = _positive_kanban_limit(
+        cfg,
+        "decomposition_max_children",
+        kb.DEFAULT_DECOMPOSITION_MAX_CHILDREN,
+    )
+    max_depth = _positive_kanban_limit(
+        cfg,
+        "decomposition_max_depth",
+        kb.DEFAULT_DECOMPOSITION_MAX_DEPTH,
+    )
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
@@ -384,6 +435,12 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, "decomposer returned fanout=true with empty tasks list",
         )
+    if len(raw_tasks) > max_children:
+        return DecomposeOutcome(
+            task_id,
+            False,
+            f"decomposition requested {len(raw_tasks)} children; maximum {max_children}",
+        )
 
     # Rewrite invalid assignees to the default fallback. Never leave a
     # task with assignee=None — the user explicitly does not want that.
@@ -438,6 +495,8 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                max_children=max_children,
+                max_depth=max_depth,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
@@ -457,7 +516,7 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return all task ids currently in the triage column."""
     with kb.connect_closing() as conn:
         rows = kb.list_tasks(
             conn,
@@ -466,3 +525,36 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             limit=1000,
         )
     return [row.id for row in rows]
+
+
+def list_auto_decompose_ids(
+    *,
+    tenant: Optional[str] = None,
+    limit: int = 1000,
+) -> list[str]:
+    """Return only triage tasks carrying genuine decomposition intent.
+
+    The gateway uses this filtered sweep so bridge cards, human escalations,
+    and depth-exhausted descendants do not consume per-tick slots or generate
+    repeated skip noise. SQL applies every durable predicate before ``limit``
+    so ineligible rows cannot starve valid work. ``decompose_task`` re-checks
+    the same contract before any LLM call as a race-safe second gate.
+    """
+    cfg = _load_config()
+    max_depth = _positive_kanban_limit(
+        cfg,
+        "decomposition_max_depth",
+        kb.DEFAULT_DECOMPOSITION_MAX_DEPTH,
+    )
+    with kb.connect_closing() as conn:
+        rows = kb.list_auto_decompose_tasks(
+            conn,
+            max_depth=max_depth,
+            tenant=tenant,
+            limit=limit,
+        )
+    return [
+        row.id
+        for row in rows
+        if _auto_decompose_ineligibility_reason(row, cfg) is None
+    ]

@@ -2734,6 +2734,18 @@ DEFAULT_CONFIG = {
             "transport": "builtin",
             "transport_fallback": "deny",
         },
+        "tool_output_redaction": {
+            # Names only: matching never reads or resolves the named values.
+            "secret_names": [
+                "access_token", "api_key", "apikey", "auth_token",
+                "client_secret", "password", "passwd", "private_key",
+                "refresh_token", "secret", "secret_key", "token",
+            ],
+            "entropy_min_length": 48,
+            "entropy_floor": 4.5,
+            # Spill files older than 24 hours are swept on tool-result traffic.
+            "spill_max_age_seconds": 86400,
+        },
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
         # .cursorrules, project-local .hermes config) always require human
         # approval — even under auto-approve/yolo. Extra patterns are
@@ -2964,12 +2976,32 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        "decomposition_max_children": 6,
+        "decomposition_max_depth": 1,
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Dispatch reliability controls. Defaults preserve legacy behavior.
+        "validate_assignee_on_create": False,
+        "dispatcher_takeover_enabled": False,
+        # 0 = auto (5× dispatch interval, minimum 60 seconds).
+        "dispatcher_takeover_stale_seconds": 0,
+        # Linear -> Kanban bridge; inert unless explicitly enabled.
+        "linear_bridge": {
+            "enabled": False,
+            "dry_run": True,
+            "poll_interval_seconds": 300,
+            "team_keys": ["BUI"],
+            "status_types": ["unstarted"],
+            "api_key_env": "LINEAR_API_KEY",
+            "routing_label_prefix": "agent:",
+            "allowed_profiles": [],
+            "max_creates_per_tick": 1,
+            "issue_id_allowlist": [],
+        },
         # Orphaned-card reconciliation: each dispatcher tick, requeue
         # 'running' cards whose claim bookkeeping is broken (claim_lock or
         # claim_expires NULL with a dead/gone worker) — zombies invisible
@@ -3244,6 +3276,12 @@ DEFAULT_CONFIG = {
         # Optional named-profile allowlist for multiplex mode. None preserves
         # the historical serve-all behavior; [] serves only the default.
         "multiplex_profile_allowlist": None,
+        # Maximum characters the gateway will deliver from one final assistant
+        # response before replacing the tail with a visible truncation notice.
+        # This prevents runaway model turns from fanning out into hundreds of
+        # platform messages and bloating durable session history. Set to 0 to
+        # disable; env override: HERMES_GATEWAY_MAX_FINAL_RESPONSE_CHARS.
+        "max_final_response_chars": 120_000,
 
         # After an unexpected SIGTERM interrupts a running gateway agent,
         # wait this many seconds for it to unwind before adapter and database

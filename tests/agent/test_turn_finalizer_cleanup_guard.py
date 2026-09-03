@@ -84,6 +84,9 @@ class _StubAgent:
     def _handle_max_iterations(self, messages, n):
         return "PARTIAL SUMMARY FROM MODEL"
 
+    def _apply_gateway_final_response_guardrail(self, final_response, messages):
+        return final_response, False, len(final_response or ""), 0
+
     def _file_mutation_verifier_enabled(self):
         return False
 

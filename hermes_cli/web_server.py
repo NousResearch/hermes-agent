@@ -16551,9 +16551,13 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
 
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
-        # Non-web origin (packaged Electron: file://, null, app://). The
-        # upstream credential check is the real auth boundary; trust it.
-        # See _ws_host_origin_is_allowed for the full rationale.
+        # Packaged/file-backed desktop shells can send non-web origins
+        # (commonly ``Origin: null`` / ``file://`` / ``app://``).  At this
+        # point Host has already matched the configured bind and the WS route
+        # checks the session token / OAuth ticket before calling this guard.
+        # DNS-rebinding attackers are web pages and can only present http(s)
+        # origins, so keep non-web desktop origins allowed for loopback,
+        # explicit LAN/Tailscale binds, and OAuth-gated hosted gateways.
         return None
 
     if not parsed.netloc:

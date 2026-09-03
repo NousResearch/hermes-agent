@@ -152,18 +152,31 @@ describe('bot-relay gateway retention (#93594)', () => {
     expect(gatewayMocks.constructions).toBe(2)
   })
 
-  it('local routes are exempt: retention is a no-op so the idle reaper can reclaim spawned backends', () => {
-    // Pinning a local route would keep the secondaries touch-loop pinging its
-    // Electron-spawned backend forever, defeating the idle reaper
-    // (gateway.ts local-backend lifecycle). Both the null/legacy and explicit
-    // `local` source ids must decline the pin.
-    const releaseNull = retainGatewayForRelay(null, 'research')
+  it('retains a plain profile socket across recurring roster requests', async () => {
+    const release = retainGatewayForRelay(null, 'research')
+
+    for (let tick = 0; tick < 5; tick += 1) {
+      await requestGatewayForAgent(null, 'research', 'profiles.list', {})
+    }
+
+    expect(gatewayMocks.constructions).toBe(1)
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+
+    release()
+
+    await requestGatewayForAgent(null, 'research', 'profiles.list', {})
+    expect(gatewayMocks.constructions).toBe(2)
+  })
+
+  it('explicit registry-local routes remain exempt so the idle reaper can reclaim spawned backends', () => {
+    // Pinning an explicit local registry route would keep the secondaries
+    // touch-loop pinging its Electron-spawned backend forever, defeating the
+    // idle reaper (gateway.ts local-backend lifecycle).
     const releaseLocal = retainGatewayForRelay('local', 'research')
 
     // No entry was created or pinned — nothing dials, nothing retains.
     expect(gatewayMocks.constructions).toBe(0)
 
-    releaseNull()
     releaseLocal()
   })
 })

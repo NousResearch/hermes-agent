@@ -1028,25 +1028,23 @@ function drainPendingConnectionRedial(entry: Secondary): boolean {
 }
 
 /**
- * Pin the pooled socket for one relay route open across drain ticks. Returns
- * a once-only release. Local routes (null/empty or explicit `local` source)
- * are deliberately EXEMPT and get a no-op release: their Electron-spawned
- * backend answers to the idle reaper, and a relay pin would keep the
- * touch-loop pinging it forever, resurrecting backends the reaper is meant to
- * reclaim (see the retireLocalProfileGateways note). Local relay traffic is
- * either the primary socket (no churn) or a short-lived local dial — never
- * the remote reconnect flood this retention exists to stop.
+ * Pin one pooled socket open across recurring plugin polls. Returns a
+ * once-only release. A null connection id is the legacy/plain-profile pool,
+ * where background Bot roster requests otherwise dial and dispose the same
+ * socket every five seconds. Explicit registry-local routes remain exempt:
+ * their Electron-spawned backend answers to the idle reaper, and a pin would
+ * keep the touch-loop pinging it forever (see retireLocalProfileGateways).
  */
 export function retainGatewayForRelay(connectionId: null | string, profile: string): () => void {
   const key = normKey(profile)
   const connection = String(connectionId ?? '').trim()
 
-  if (!connection || connection === 'local') {
+  if (connection === 'local') {
     return () => undefined
   }
 
   const scope = registryBackendScopeKey(connection, key)
-  const entry = g.secondaries.get(scope) ?? createSecondary(key, connection)
+  const entry = g.secondaries.get(scope) ?? createSecondary(key, connection || null)
 
   if (!Number.isFinite(entry.relayRetainCount)) {
     entry.relayRetainCount = 0

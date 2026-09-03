@@ -99,6 +99,27 @@ class TestCommandExecutionProjection:
         assert "hello" in tool["content"]
 
 
+    def test_tool_output_is_normalized_before_projection(self) -> None:
+        incident = "Environment=DB_PASSWORD=s3cr3tValue123"
+        item = {
+            **COMMAND_EXEC_COMPLETED["params"]["item"],
+            "aggregatedOutput": incident,
+        }
+        notification = {
+            "method": "item/completed",
+            "params": {**COMMAND_EXEC_COMPLETED["params"], "item": item},
+        }
+        tool = CodexEventProjector().project(notification).messages[1]
+        assert incident not in tool["content"]
+        assert "[REDACTED:NAME:DB_PASSWORD]" in tool["content"]
+
+    def test_deterministic_call_id_across_replay(self) -> None:
+        # Same item id → same call_id (prefix cache must stay valid).
+        p1 = CodexEventProjector()
+        p2 = CodexEventProjector()
+        a = p1.project(COMMAND_EXEC_COMPLETED).messages
+        b = p2.project(COMMAND_EXEC_COMPLETED).messages
+        assert a[0]["tool_calls"][0]["id"] == b[0]["tool_calls"][0]["id"]
 
 
 class TestAgentMessageProjection:
@@ -200,6 +221,36 @@ class TestMcpToolCallProjection:
             {"method": "item/completed", "params": {"item": item}}
         ).messages
         assert "error" in msgs[1]["content"]
+
+    @pytest.mark.parametrize("item_type", ["mcpToolCall", "dynamicToolCall"])
+    def test_structured_tool_content_is_normalized(self, item_type) -> None:
+        incident = "Environment=DB_PASSWORD=s3cr3tValue123"
+        if item_type == "mcpToolCall":
+            item = {
+                "type": item_type,
+                "id": "secret-mcp",
+                "server": "synthetic",
+                "tool": "read",
+                "status": "completed",
+                "arguments": {},
+                "result": {"content": incident},
+                "error": None,
+            }
+        else:
+            item = {
+                "type": item_type,
+                "id": "secret-dynamic",
+                "tool": "synthetic",
+                "arguments": {},
+                "status": "completed",
+                "contentItems": [{"text": incident}],
+                "success": True,
+            }
+        tool = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages[1]
+        assert incident not in tool["content"]
+        assert "[REDACTED:NAME:DB_PASSWORD]" in tool["content"]
 
 
 class TestUserAndOpaqueProjection:

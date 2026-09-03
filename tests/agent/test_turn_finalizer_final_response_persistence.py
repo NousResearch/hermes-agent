@@ -39,6 +39,9 @@ class FakeAgent:
     def _handle_max_iterations(self, messages, api_call_count):
         raise AssertionError("not expected")
 
+    def _apply_gateway_final_response_guardrail(self, final_response, messages):
+        return final_response, False, len(final_response or ""), 0
+
     def _emit_status(self, *_args, **_kwargs):
         pass
 

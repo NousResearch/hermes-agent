@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.redact import normalize_tool_output
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -99,6 +100,11 @@ def _ensure_file_checkpoint(
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+
+
+def _normalized_tool_result_log_text(result: Any) -> str:
+    """Return tool output safe for verbose/debug log serialization."""
+    return normalize_tool_output(_multimodal_text_summary(result))
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -1813,7 +1819,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             if agent.verbose_logging:
                 logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
-                logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
+                _log_result = _normalized_tool_result_log_text(function_result)
+                logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         agent._current_tool = None
         _status_suffix = " (error)" if is_error else ""
@@ -2745,7 +2752,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if agent.verbose_logging:
             logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
-            _log_result = _multimodal_text_summary(function_result)
+            _log_result = _normalized_tool_result_log_text(function_result)
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result

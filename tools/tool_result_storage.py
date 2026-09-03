@@ -44,6 +44,7 @@ Defense against context-window overflow operates at three levels:
 
 import hashlib
 import logging
+import math
 import os
 import re
 import shlex
@@ -51,6 +52,11 @@ import threading
 import time
 import uuid
 
+from agent.redact import (
+    ToolOutputRedactionPolicy,
+    normalize_tool_output,
+    resolve_tool_output_redaction_policy,
+)
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
@@ -67,6 +73,8 @@ HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+_RETENTION_SWEEP_INTERVAL_SECONDS = 10 * 60
+_last_retention_sweep: dict[str, float] = {}
 
 _spillover_prune_lock = threading.Lock()
 _spillover_pruned_once = False
@@ -265,6 +273,49 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     return result.get("returncode", 1) == 0
 
 
+def sweep_expired_results(
+    env,
+    *,
+    storage_dir: str,
+    max_age_seconds: int,
+    force: bool = False,
+    now: float | None = None,
+) -> bool:
+    """Delete expired regular spill files, throttled per storage directory."""
+    if env is None:
+        return False
+    current = time.monotonic() if now is None else now
+    previous = _last_retention_sweep.get(storage_dir)
+    if (
+        not force
+        and previous is not None
+        and current - previous < _RETENTION_SWEEP_INTERVAL_SECONDS
+    ):
+        return False
+    _last_retention_sweep[storage_dir] = current
+
+    age_minutes = max(0, math.ceil(max_age_seconds / 60))
+    quoted_dir = shlex.quote(storage_dir)
+    command = (
+        f"if [ -d {quoted_dir} ]; then "
+        f"find {quoted_dir} -maxdepth 1 -type f -mmin +{age_minutes} -delete; "
+        "fi"
+    )
+    try:
+        result = env.execute(command, timeout=30)
+    except Exception as exc:
+        logger.warning("Tool-result retention sweep failed for %s: %s", storage_dir, exc)
+        return False
+    if result.get("returncode", 1) != 0:
+        logger.warning(
+            "Tool-result retention sweep failed for %s: %s",
+            storage_dir,
+            result.get("output", ""),
+        )
+        return False
+    return True
+
+
 def _build_persisted_message(
     preview: str,
     has_more: bool,
@@ -318,6 +369,7 @@ def maybe_persist_tool_result(
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
+    redaction_policy: ToolOutputRedactionPolicy | None = None,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -336,6 +388,9 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
+    policy = redaction_policy or resolve_tool_output_redaction_policy()
+    content = normalize_tool_output(content, policy=policy)
+
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
     if effective_threshold == float("inf"):

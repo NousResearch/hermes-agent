@@ -4468,6 +4468,55 @@ class TestDashboardPluginManifestExtensions:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard WebSocket Host/Origin guard
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardWebSocketOriginGuard:
+    def _fake_ws(self, host: str, origin: str):
+        from typing import Any, cast
+
+        class _Headers(dict):
+            def get(self, key, default=None):
+                return super().get(key.lower(), default)
+
+        return cast(Any, type("FakeWebSocket", (), {
+            "headers": _Headers({"host": host, "origin": origin}),
+        })())
+
+    def test_allows_desktop_null_origin_on_loopback_bound_dashboard(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+
+        assert ws._ws_host_origin_is_allowed(
+            self._fake_ws("127.0.0.1:9120", "null")
+        )
+
+    def test_allows_desktop_file_origin_on_loopback_bound_dashboard(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+
+        assert ws._ws_host_origin_is_allowed(
+            self._fake_ws("localhost:9120", "file://")
+        )
+
+    def test_allows_desktop_null_origin_on_non_loopback_bound_dashboard(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.67.239.114", raising=False)
+
+        # Non-web desktop origins (``null`` / ``file://`` / ``app://``) are
+        # not browser DNS-rebinding origins. Host validation still has to
+        # match the explicit LAN/Tailscale bind, and the WebSocket route checks
+        # the session token / OAuth ticket before applying this guard.
+        assert ws._ws_host_origin_is_allowed(
+            self._fake_ws("100.67.239.114:9119", "null")
+        )
+
+
+# ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
 #
 # These tests drive the endpoint with a tiny fake command (typically ``cat``
@@ -4475,9 +4524,6 @@ class TestDashboardPluginManifestExtensions:
 # endpoint resolves its argv through ``_resolve_chat_argv``, so tests
 # monkeypatch that hook.
 # ---------------------------------------------------------------------------
-
-import sys
-
 
 skip_on_windows = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"

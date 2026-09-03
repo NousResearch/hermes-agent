@@ -369,6 +369,24 @@ class TestRedactingFormatter:
         assert "abc123def456" not in result
         assert "sk-pro" in result
 
+    def test_formats_and_redacts_tool_output_only_shapes(self):
+        formatter = RedactingFormatter("%(message)s")
+        bcrypt = "$2b$12$" + "Q" * 53
+        record = logging.LogRecord(
+            name="test",
+            level=logging.DEBUG,
+            pathname="",
+            lineno=0,
+            msg=f"Tool result: {bcrypt}",
+            args=(),
+            exc_info=None,
+        )
+
+        result = formatter.format(record)
+
+        assert bcrypt not in result
+        assert "[REDACTED:BCRYPT_2B]" in result
+
 
 class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""

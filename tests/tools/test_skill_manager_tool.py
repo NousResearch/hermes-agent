@@ -158,6 +158,118 @@ class TestCreateSkill:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_create_injects_configured_required_author(self, tmp_path):
+        with _skill_dir(tmp_path), patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"required_author": "Example Author"}},
+        ):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        frontmatter, _ = parse_frontmatter(content)
+        assert frontmatter["author"] == "Example Author"
+        assert content.count("\nauthor:") == 1
+
+    def test_create_accepts_matching_required_author(self, tmp_path):
+        authored = VALID_SKILL_CONTENT.replace(
+            "description: A test skill for unit testing.\n",
+            "description: A test skill for unit testing.\nauthor: Example Author\n",
+        )
+        with _skill_dir(tmp_path), patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"required_author": "Example Author"}},
+        ):
+            result = _create_skill("my-skill", authored)
+
+        assert result["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert content.count("\nauthor:") == 1
+
+    def test_create_rejects_conflicting_required_author(self, tmp_path):
+        authored = VALID_SKILL_CONTENT.replace(
+            "description: A test skill for unit testing.\n",
+            "description: A test skill for unit testing.\nauthor: Someone Else\n",
+        )
+        with _skill_dir(tmp_path), patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"required_author": "Example Author"}},
+        ):
+            result = _create_skill("my-skill", authored)
+
+        assert result["success"] is False
+        assert "must use author 'Example Author'" in result["error"]
+        assert not (tmp_path / "my-skill").exists()
+
+    def test_skill_manage_stages_normalized_author(self):
+        captured = {}
+
+        def gate(_action, _name, **kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "staged": True})
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"required_author": "Example Author"}},
+        ), patch(
+            "tools.skill_manager_tool._apply_skill_write_gate",
+            side_effect=gate,
+        ):
+            result = json.loads(skill_manage("create", "my-skill", content=VALID_SKILL_CONTENT))
+
+        assert result["staged"] is True
+        frontmatter, _ = parse_frontmatter(captured["content"])
+        assert frontmatter["author"] == "Example Author"
+
+    def test_batch_stages_normalized_author_without_mutating_caller(self):
+        from tools import write_approval as wa
+
+        captured = {}
+        operations = [{
+            "action": "create",
+            "name": "my-skill",
+            "content": VALID_SKILL_CONTENT,
+        }]
+
+        def stage(_subsystem, payload, **_kwargs):
+            captured.update(payload)
+            return {"id": "pending-author"}
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"required_author": "Example Author"}},
+        ), patch.object(
+            wa,
+            "evaluate_gate",
+            return_value=wa.GateDecision(allow=False, blocked=False, message="review"),
+        ), patch.object(wa, "stage_write", side_effect=stage):
+            result = json.loads(skill_manage("", "", operations=operations))
+
+        assert result["staged"] is True
+        staged_content = captured["operations"][0]["content"]
+        frontmatter, _ = parse_frontmatter(staged_content)
+        assert frontmatter["author"] == "Example Author"
+        assert "\nauthor:" not in operations[0]["content"]
+
+    def test_batch_rejects_conflicting_author_before_staging(self):
+        from tools import write_approval as wa
+
+        authored = VALID_SKILL_CONTENT.replace(
+            "description: A test skill for unit testing.\n",
+            "description: A test skill for unit testing.\nauthor: Someone Else\n",
+        )
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"skills": {"required_author": "Example Author"}},
+        ), patch.object(wa, "stage_write") as stage:
+            result = json.loads(skill_manage("", "", operations=[{
+                "action": "create", "name": "my-skill", "content": authored,
+            }]))
+
+        assert result["success"] is False
+        assert "must use author 'Example Author'" in result["error"]
+        stage.assert_not_called()
+
     def test_create_duplicate_blocked(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

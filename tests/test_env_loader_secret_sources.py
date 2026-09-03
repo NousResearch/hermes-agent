@@ -400,6 +400,99 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     assert call_count["n"] == 2
 
 
+def _setup_envdump_source(tmp_path, monkeypatch):
+    """Register a neutral bulk source for the #102041 regression tests.
+
+    The var names are deliberately non-credential-shaped: these tests assert
+    apply/report/snapshot mechanics, not any provider's key handling."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TEST_ENVDUMP_VAR", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n"
+        "  testenvdump:\n"
+        "    enabled: true\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.base import FetchResult, SecretSource
+
+    class _EnvDumpSource(SecretSource):
+        name = "testenvdump"
+        label = "Test Env Dump"
+        shape = "bulk"
+
+        def fetch(self, cfg, home_path):
+            return FetchResult(secrets={"TEST_ENVDUMP_VAR": "src-a"})
+
+        def override_existing(self, cfg):
+            return False
+
+    from agent.secret_sources import registry as reg_module
+
+    reg_module._reset_registry_for_tests()
+    reg_module.register_source(_EnvDumpSource())
+    fetch_calls = {"n": 0}
+    original_fetch = _EnvDumpSource.fetch
+
+    def _counting_fetch(*args, **kwargs):
+        fetch_calls["n"] += 1
+        return original_fetch(*args, **kwargs)
+
+    monkeypatch.setattr(_EnvDumpSource, "fetch", _counting_fetch)
+    return fetch_calls
+
+
+def test_apply_external_secret_sources_repull_keeps_snapshot(tmp_path, monkeypatch):
+    """#102041: the cron prelude (cron/scheduler.py) runs
+    reset_secret_source_cache() -> load_hermes_dotenv() before every job.
+    The first apply's write-back into os.environ used to make the re-apply
+    classify every source-supplied var as skipped_existing, so the per-home
+    snapshot was never rebuilt — and every multiplex scope read (provider
+    credentials, authz) failed closed for the rest of the process lifetime."""
+
+    fetch_calls = _setup_envdump_source(tmp_path, monkeypatch)
+
+    # Startup apply: clean env, everything applies, write-back lands in
+    # os.environ, snapshot is populated.
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert env_loader.get_secret_source_values(tmp_path) == {
+        "TEST_ENVDUMP_VAR": "src-a"
+    }
+    assert os.environ.get("TEST_ENVDUMP_VAR") == "src-a"
+    assert fetch_calls["n"] == 1
+
+    # Cron prelude sequence: reset + re-apply.  The re-pull must rebuild the
+    # snapshot even though os.environ now holds the previous apply's
+    # write-back for every source-supplied var.
+    env_loader.reset_secret_source_cache()
+    env_loader._apply_external_secret_sources(tmp_path)
+    assert fetch_calls["n"] == 2
+    assert env_loader.get_secret_source_values(tmp_path) == {
+        "TEST_ENVDUMP_VAR": "src-a"
+    }
+    assert env_loader.get_secret_source("TEST_ENVDUMP_VAR") == "testenvdump"
+
+
+def test_apply_external_secret_sources_env_mirrored_boot_keeps_snapshot(
+    tmp_path, monkeypatch
+):
+    """#102041 harder variant: when the process env already carries the exact
+    source-supplied value at boot (e.g. a systemd EnvironmentFile exporting
+    the prefixed vars a bulk source mirrors), the very first apply used to
+    skip the var, record an empty snapshot, and still latch _APPLIED_HOMES —
+    so scope-sourced reads failed closed from the start."""
+
+    _setup_envdump_source(tmp_path, monkeypatch)
+    monkeypatch.setenv("TEST_ENVDUMP_VAR", "src-a")  # mirrored at exec time
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert env_loader.get_secret_source_values(tmp_path) == {
+        "TEST_ENVDUMP_VAR": "src-a"
+    }
+    assert env_loader.get_secret_source("TEST_ENVDUMP_VAR") == "testenvdump"
+
+
 def test_apply_external_secret_sources_status_line_suppresses_secret_names(
     tmp_path, monkeypatch, capsys
 ):

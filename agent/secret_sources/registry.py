@@ -434,7 +434,10 @@ def apply_all(secrets_cfg: dict, home_path: Path,
        wins for these, even against a source with ``override_existing: true``
        (escape hatch for profile-local platform secrets, #58073).
     2. Pre-existing env (.env / shell) — unless the winning source has
-       ``override_existing: true``.
+       ``override_existing: true``.  A pre-existing value that is byte-identical
+       to what the source supplies is not a conflict: the var counts as
+       applied so the per-home snapshot keeps the key across the cron
+       prelude's reset + re-pull (#102041).
     3. Mapped sources, in configured order.
     4. Bulk sources, in configured order.
 
@@ -533,8 +536,28 @@ def apply_all(secrets_cfg: dict, home_path: Path,
                 sr.skipped_existing.append(var)
                 return False
             if existed and not override:
-                sr.skipped_existing.append(var)
-                return False
+                if env.get(var) != value:
+                    sr.skipped_existing.append(var)
+                    return False
+                # Value equivalence (#102041): the pre-existing env value is
+                # byte-identical to what this source supplies — most often the
+                # write-back of an earlier apply pass (the cron prelude's
+                # reset + re-pull, or an EnvironmentFile mirroring the source).
+                # There is no conflict to honor, so count the var as applied
+                # without rewriting env: the per-home snapshot in
+                # hermes_cli.env_loader is rebuilt from provenance, and an
+                # all-skipped re-apply left it empty for the rest of the
+                # process lifetime.  A *different* pre-existing value still
+                # wins per the precedence rules above.
+                claimed[var] = source.name
+                sr.applied.append(var)
+                report.provenance[var] = AppliedVar(
+                    name=var,
+                    source=source.name,
+                    shape=source.shape,
+                    overrode_env=False,
+                )
+                return True
             env[var] = value
             claimed[var] = source.name
             sr.applied.append(var)

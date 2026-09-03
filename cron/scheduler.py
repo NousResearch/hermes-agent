@@ -726,6 +726,7 @@ from cron.jobs import (
     use_cron_store,
 )
 from cron.executions import (
+    _TERMINAL_STATES,
     create_execution,
     finish_execution,
     get_execution,
@@ -3222,8 +3223,15 @@ def _deliver_result(
     # Hand the send back through a durable queue so the current or replacement
     # gateway performs it with relay/E2EE parity.  The execution id is the
     # idempotency key; the queue never retries an uncertain claimed send.
+    # Match on this job's own attempt: a worker's script may itself dispatch
+    # another job in-process (``hermes cron run``), and that nested delivery
+    # must not be keyed under the outer execution id.
     external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER", "")
-    if external_execution and adapters is None:
+    if (
+        external_execution
+        and adapters is None
+        and external_execution == str(job.get("execution_id") or "")
+    ):
         from cron.delivery_queue import enqueue_and_wait
 
         return enqueue_and_wait(
@@ -8068,11 +8076,9 @@ def _wait_for_external_cron_worker_body(
     A gateway replacement may kill this waiter; it does not kill the scoped
     worker or change its ledger ownership.
     """
-    terminal_states = {"completed", "failed", "unknown"}
-
     def _is_terminal() -> bool:
         current = get_execution(execution_id)
-        return bool(current and current.get("status") in terminal_states)
+        return bool(current and current.get("status") in _TERMINAL_STATES)
 
     # The worker commits its terminal row before its process exits, so exit is
     # the correct wakeup.  Each ledger read opens a connection and re-runs

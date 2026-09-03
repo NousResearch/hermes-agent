@@ -175,7 +175,8 @@ def test_wait_timeout_leaves_unclaimed_delivery_queued_for_next_gateway(
 
     error = queue.enqueue_and_wait("exec-3", job, "result", timeout=0)
 
-    assert "timed out" in error and "still queued" in error
+    # Deferred, not failed: the worker must not record delivery_failed.
+    assert error is None
     status = queue.get_status("exec-3")
     assert status is not None
     assert status["status"] == "pending"

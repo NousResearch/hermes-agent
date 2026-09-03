@@ -10,6 +10,7 @@ possibly-completed send.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -24,6 +25,8 @@ from cron.executions import _owner_is_live, _process_start_time
 from hermes_cli.sqlite_util import add_column_if_missing
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+
+logger = logging.getLogger(__name__)
 
 DELIVERY_DB: Optional[Path] = None
 _PROCESS_ID = uuid.uuid4().hex
@@ -309,14 +312,12 @@ def _terminalize_wait_timeout(execution_id: str) -> str:
 
     A row still ``pending`` was provably never attempted, so it is left queued
     for whichever gateway comes up next (a restart that includes an update can
-    easily exceed the worker's wait budget).  Only a row caught mid-send is
+    easily exceed the worker's wait budget).  That is a deferral, not a
+    failure: report success so the job is not recorded ``delivery_failed`` for
+    a message the drain will still send.  Only a row caught mid-send is
     uncertain and gets fenced ``unknown``.
     """
     now = _hermes_now().isoformat()
-    pending_error = (
-        "timed out waiting for a live gateway; delivery is still queued and "
-        "will be sent by the next gateway"
-    )
     uncertain_error = (
         "timed out while gateway delivery was in progress; outcome is unknown and "
         "was not retried"
@@ -327,7 +328,12 @@ def _terminalize_wait_timeout(execution_id: str) -> str:
             (str(execution_id),),
         ).fetchone()
         if row is not None and row["status"] == "pending":
-            return pending_error
+            logger.warning(
+                "Cron delivery %s: no live gateway within the wait budget; "
+                "left queued for the next gateway",
+                execution_id,
+            )
+            return ""
         conn.execute(
             """UPDATE deliveries SET status='unknown', finished_at=?, error=?
                WHERE execution_id=? AND status='delivering'""",

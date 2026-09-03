@@ -358,6 +358,55 @@ def test_shutdown_does_not_interrupt_restart_safe_waiter():
         scheduler._interrupted_job_ids.discard(job_id)
 
 
+def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
+    monkeypatch, tmp_path
+):
+    """A nested in-process dispatch inside a worker (e.g. a script running
+    ``hermes cron run <other>``) must not queue under the OUTER execution id."""
+    import cron.scheduler as scheduler
+
+    queued = []
+    monkeypatch.setattr(
+        "cron.delivery_queue.enqueue_and_wait",
+        lambda execution_id, job, content, **kw: (
+            queued.append(execution_id) or "queued-marker"
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+    )
+
+    def _standalone(*_args, **_kwargs):
+        raise RuntimeError("standalone path reached")
+
+    # First call the standalone (non-queue) path makes after the guard; the
+    # failure is reported as the delivery error string.
+    monkeypatch.setattr("gateway.config.load_gateway_config", _standalone)
+    monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", "exec-outer")
+
+    # Own attempt: routed through the durable queue.
+    assert scheduler._deliver_result(
+        {"id": "job-1", "execution_id": "exec-outer", "deliver": "telegram:123"},
+        "done",
+        adapters=None,
+        loop=None,
+    ) == "queued-marker"
+    assert queued == ["exec-outer"]
+
+    # A different job's attempt: must NOT be queued under exec-outer; it falls
+    # through to the standalone path.
+    error = scheduler._deliver_result(
+        {"id": "job-2", "execution_id": "exec-inner", "deliver": "telegram:123"},
+        "done",
+        adapters=None,
+        loop=None,
+    )
+    assert error == "failed to load gateway config: standalone path reached"
+    assert queued == ["exec-outer"]
+
+
 def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
     import cron.scheduler as scheduler
 

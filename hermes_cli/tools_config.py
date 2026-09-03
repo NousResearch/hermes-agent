@@ -2923,6 +2923,39 @@ def _get_platform_tools(
         }
         enabled_toolsets -= disabled_set
 
+        # A deny list is security posture: an unrecognized name silently
+        # keeps the toolset enabled. Surface it here, where the subtraction
+        # happens, so a hand-edited/typo'd agent.disabled_toolsets is caught
+        # at runtime (#97111). _LEGACY_TOOLSET_MAP misspells are resolved by
+        # validate_toolset; anything else that fails validation is dead.
+        from toolsets import validate_toolset
+
+        for name in sorted(disabled_set):
+            if not validate_toolset(name):
+                logger.warning(
+                    "agent.disabled_toolsets entry '%s' is not a known toolset — "
+                    "the deny is ignored (typo or renamed toolset). Fix config.yaml.",
+                    name,
+                )
+
+    # Fail-loud for the two silent deny-declaration shapes that do nothing.
+    # An operator hardening a container writes HERMES_DISABLED_TOOLSETS or a
+    # root-level disabled_toolsets: (beside toolsets:) — either is a plausible
+    # spelling that nothing reads, so capability silently stays on. Warn once
+    # here so the misdeclaration is noticed (#97111).
+    env_deny = os.environ.get("HERMES_DISABLED_TOOLSETS", "").strip()
+    if env_deny:
+        logger.warning(
+            "HERMES_DISABLED_TOOLSETS env var is set but is not consulted — "
+            "use agent.disabled_toolsets in config.yaml to deny toolsets."
+        )
+    root_deny = config.get("disabled_toolsets")
+    if root_deny:
+        logger.warning(
+            "root-level disabled_toolsets: in config.yaml is not read — put it "
+            "under agent: (agent.disabled_toolsets) for it to take effect."
+        )
+
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of
     # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends

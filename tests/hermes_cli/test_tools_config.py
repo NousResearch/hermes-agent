@@ -33,8 +33,6 @@ from hermes_cli.tools_config import (
 )
 
 
-
-
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
     (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an
@@ -98,14 +96,6 @@ def test_scalar_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
-
-
-
-
-
-
-
-
 def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
     """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
 
@@ -158,12 +148,6 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     assert "discord_admin" not in enabled
 
 
-
-
-
-
-
-
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text(
@@ -205,26 +189,6 @@ def test_save_platform_tools_preserves_mcp_server_names():
     assert "web" in saved_toolsets
     assert "browser" in saved_toolsets
     assert "terminal" not in saved_toolsets
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_first_install_nous_auto_configures_video_gen(monkeypatch):
@@ -365,11 +329,6 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
-
-
-
-
-
 
 
 class TestAgentBrowserPostSetup:
@@ -806,10 +765,6 @@ class TestImagegenModelPicker:
         assert config["image_gen"]["model"] == "openai/gpt-5.4-image-2"
 
 
-
-
-
-
 def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     """Bundled plugins (plugins/spotify) share their toolset key with the
     built-in CONFIGURABLE_TOOLSETS entry. The effective list must not list
@@ -831,27 +786,13 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     assert spotify_rows[0][1] == "🎵 Spotify"
 
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # Inline Nous Portal login gate on managed-provider selection
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
 # ── Checklist diff scope: non-configurable toolsets (kanban) must not be
 #    reported as added/removed by `hermes tools` ──────────────────────────
-
-
 
 
 def test_kanban_not_reported_as_removed_in_diff():
@@ -878,10 +819,6 @@ def test_kanban_not_reported_as_removed_in_diff():
     assert ((current - new_enabled) & universe) == set()
 
 
-
-
-
-
 def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     """Custom endpoint writes base_url+model to config and the key to env."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -902,8 +839,6 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     # provider pinned to "custom" so the resolver routes through base_url.
     assert v.get("provider") == "custom"
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
-
-
 
 
 # ─── provider_readiness_status ────────────────────────────────────────────────
@@ -994,8 +929,6 @@ def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
     )
 
 
-
-
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────
 #
 # The desktop GUI runs post-setup hooks through a detached, console-less
@@ -1004,10 +937,6 @@ def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
 # new console window — the "terminal flash" reported on the Capabilities
 # browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
 # every hook spawn passes as `creationflags`.
-
-
-
-
 
 
 # ── Post-setup readiness predicates for the browser rows ─────────────────────
@@ -1291,3 +1220,75 @@ class TestLightpandaPostSetup:
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.
         assert "lightpanda" not in _POST_SETUP_INSTALLED
+
+
+# ---------------------------------------------------------------------------
+# #97111 — deny declarations that nothing reads must fail loud
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_agent_disabled_toolsets_entry_warns(caplog):
+    """An unrecognized name in agent.disabled_toolsets must warn, not silently
+    leave the toolset enabled (a deny list is security posture)."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": ["hermes-cli", "definitely-not-a-toolset"]},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("definitely-not-a-toolset" in m and "not a known toolset" in m for m in warnings), warnings
+    # the valid deny still applies
+    assert "hermes-cli" not in enabled
+
+
+def test_env_deny_var_warns_that_it_is_ignored(caplog, monkeypatch):
+    """HERMES_DISABLED_TOOLSETS env var is set but nothing reads it — warn."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    monkeypatch.setenv("HERMES_DISABLED_TOOLSETS", "terminal,memory")
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("HERMES_DISABLED_TOOLSETS" in m and "not consulted" in m for m in warnings), warnings
+
+
+def test_root_level_disabled_toolsets_warns_that_it_is_ignored(caplog):
+    """A root-level disabled_toolsets: (beside toolsets:) is not read — warn."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "disabled_toolsets": ["memory"],  # root, not agent.
+    }
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("root-level disabled_toolsets" in m and "not read" in m for m in warnings), warnings
+    # the root deny is ignored -> memory still not explicitly affected here
+    # (just assert resolution did not crash and the warn fired)
+    assert isinstance(enabled, set)
+
+
+def test_valid_disabled_toolsets_no_warning(caplog):
+    """A well-formed agent.disabled_toolsets emits none of the #97111 warnings."""
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = {
+        "platform_toolsets": {"cli": ["hermes-cli"]},
+        "agent": {"disabled_toolsets": []},
+    }
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "cli")
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("not a known toolset" in m or "not consulted" in m or "not read" in m for m in messages)

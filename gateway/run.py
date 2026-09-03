@@ -20206,7 +20206,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolve_skill_command_key,
                 )
                 skill_cmds = get_skill_commands()
-                cmd_key = resolve_skill_command_key(command)
+                cmd_key = resolve_skill_command_key(command, interactive=False)
                 if cmd_key is not None:
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled

@@ -8,6 +8,7 @@ Covers:
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -102,6 +103,153 @@ class TestPluginSkillRegistry:
 
         # Removing non-existent key is a no-op
         pm.remove_plugin_skill("p:x")
+
+
+class TestRegisteredPluginSkillCommands:
+    @pytest.fixture(autouse=True)
+    def _native_plugin(self, tmp_path, monkeypatch):
+        from agent import skill_commands
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / ".hermes"
+        plugin_dir = home / "plugins" / "slash-probe"
+        skill_dir = plugin_dir / "skills" / "guide"
+        skill_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: slash-probe\nversion: 0.1.0\n",
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from pathlib import Path\n"
+            "def register(ctx):\n"
+            "    ctx.register_skill(\n"
+            "        'guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md'\n"
+            "    )\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: guide\ndescription: Native plugin command probe.\n"
+            "platforms: [linux]\n---\n\nFollow the native plugin guide.\n",
+            encoding="utf-8",
+        )
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - slash-probe\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr("agent.skill_utils.sys.platform", "linux")
+        plugins_mod._reset_plugin_managers_for_tests()
+        skill_commands._skill_commands = {}
+        skill_commands._skill_commands_platform = None
+        skill_commands._skill_commands_home = None
+        yield
+        plugins_mod._reset_plugin_managers_for_tests()
+        skill_commands._skill_commands = {}
+        skill_commands._skill_commands_platform = None
+        skill_commands._skill_commands_home = None
+
+    def test_registered_skill_is_completable_invokable_and_preloadable(self):
+        from agent.skill_commands import (
+            build_preloaded_skills_prompt,
+            build_skill_invocation_message,
+            get_interactive_skill_commands,
+        )
+        from tui_gateway import server
+
+        commands = get_interactive_skill_commands()
+        assert commands["/slash-probe:guide"]["name"] == "slash-probe:guide"
+
+        from agent.skill_commands import resolve_skill_command_key
+
+        assert resolve_skill_command_key("slash-probe:guide") == "/slash-probe:guide"
+        assert resolve_skill_command_key(
+            "slash-probe:guide", interactive=False
+        ) is None
+
+        completed = server.handle_request(
+            {
+                "id": "complete",
+                "method": "complete.slash",
+                "params": {"text": "/slash-probe:"},
+            }
+        )
+        assert any(
+            item["text"] == "slash-probe:guide"
+            and item["kind"] == "skill"
+            for item in completed["result"]["items"]
+        )
+
+        dispatched = server.handle_request(
+            {
+                "id": "dispatch",
+                "method": "command.dispatch",
+                "params": {"name": "slash-probe:guide", "arg": "apply it"},
+            }
+        )
+        assert isinstance(dispatched, dict)
+        dispatch_result = dispatched["result"]
+        assert isinstance(dispatch_result, dict)
+        assert dispatch_result["type"] == "skill"
+        assert dispatch_result["name"] == "slash-probe:guide"
+
+        invoked = build_skill_invocation_message(
+            "/slash-probe:guide", "apply it"
+        )
+        assert invoked is not None
+        assert "Follow the native plugin guide." in invoked
+        assert "apply it" in invoked
+
+        prompt, loaded, missing = build_preloaded_skills_prompt(
+            ["slash-probe:guide"]
+        )
+        assert loaded == ["slash-probe:guide"]
+        assert missing == []
+        assert "Follow the native plugin guide." in prompt
+        assert str(
+            Path(commands["/slash-probe:guide"]["skill_dir"])
+        ) in prompt
+
+    def test_registered_skill_keeps_disabled_and_platform_gates(
+        self, monkeypatch
+    ):
+        from agent.skill_commands import (
+            build_preloaded_skills_prompt,
+            get_interactive_skill_commands,
+        )
+        from hermes_cli.plugins import get_plugin_manager
+
+        get_interactive_skill_commands()
+        skill_md = get_plugin_manager().find_plugin_skill("slash-probe:guide")
+        assert skill_md is not None
+
+        with monkeypatch.context() as disabled_patch:
+            disabled_patch.setattr(
+                "agent.skill_utils.get_disabled_skill_names",
+                lambda: {"slash-probe:guide"},
+            )
+            assert "/slash-probe:guide" not in get_interactive_skill_commands()
+
+        with monkeypatch.context() as disabled_patch:
+            disabled_patch.setattr(
+                "hermes_cli.plugins._get_disabled_plugins",
+                lambda: {"slash-probe"},
+            )
+            assert "/slash-probe:guide" not in get_interactive_skill_commands()
+
+        skill_md.write_text(
+            "---\nname: guide\ndescription: Native plugin command probe.\n"
+            "platforms: [windows]\n---\n\nFollow the native plugin guide.\n",
+            encoding="utf-8",
+        )
+        assert "/slash-probe:guide" not in get_interactive_skill_commands()
+        prompt, loaded, missing = build_preloaded_skills_prompt(
+            ["slash-probe:guide"]
+        )
+        assert prompt == ""
+        assert loaded == []
+        assert missing == ["slash-probe:guide"]
 
 
 class TestPluginContextRegisterSkill:

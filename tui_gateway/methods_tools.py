@@ -581,12 +581,12 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import (
-            scan_skill_commands,
             build_skill_invocation_message,
+            get_interactive_skill_commands,
         )
 
-        cmds = scan_skill_commands()
-        key = f"/{name}"
+        cmds = get_interactive_skill_commands()
+        key = f"/{name}".lower()
         if key in cmds:
             msg = build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""
@@ -1253,11 +1253,11 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
-        from agent.skill_commands import get_skill_commands
+        from agent.skill_commands import get_interactive_skill_commands
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        # Re-bind HERMES_HOME to the session's profile so get_skill_commands()
-        # sees that profile's skills.external_dirs rather than whatever the
+        # Re-bind HERMES_HOME to the session's profile so interactive skill discovery
+        # sees that profile's skills.external_dirs and registered plugins rather
         # process-level env happens to carry (#88023): dispatch() runs this
         # handler on the pool with a copied context, and nothing upstream of
         # here binds the override for slash.exec.
@@ -1267,7 +1267,7 @@ def _(rid, params: dict) -> dict:
         )
         try:
             _cmd_key = f"/{_cmd_base}"
-            if _cmd_key in get_skill_commands():
+            if _cmd_key in get_interactive_skill_commands():
                 return _err(
                     rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
                 )

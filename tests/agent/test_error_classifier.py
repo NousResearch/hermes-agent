@@ -441,6 +441,56 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
 
+    # ── Invalid message body surfaced as 5xx ──
+
+    def test_500_no_user_query_is_format_error_not_retryable(self):
+        """Ollama surfaces the Qwen template's "No user query found in
+        messages" as HTTP 500. Without the guard it falls through to
+        "5xx -> retryable server_error" and the identical request is sent
+        three times; the transcript cannot grow a user turn between
+        attempts, so every retry is spent on the same rejection."""
+        e = MockAPIError("no user query found in messages", status_code=500)
+        result = classify_api_error(e, provider="ollama")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_500_invalid_message_body_patterns_fail_fast(self):
+        """Every _INVALID_MESSAGE_BODY_PATTERNS entry is a request-shape
+        problem, so the status code it arrives under does not change the
+        verdict."""
+        for msg in (
+            "must have non-empty content",
+            "messages must have non-empty",
+            "invalid_request_body",
+            "text content blocks must be non-empty",
+            "content field is required",
+            "messages: at least one message is required",
+        ):
+            e = MockAPIError(msg, status_code=500)
+            result = classify_api_error(e, provider="ollama")
+            assert result.reason == FailoverReason.format_error, msg
+            assert result.retryable is False, msg
+
+    def test_500_without_body_pattern_stays_retryable(self):
+        """The guard must not swallow ordinary 500s — a genuine server
+        fault is still worth retrying."""
+        e = MockAPIError("Internal server error", status_code=500)
+        result = classify_api_error(e, provider="ollama")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_no_user_query_same_verdict_across_statuses(self):
+        """Providers disagree about which status a template rejection gets
+        (ollama says 500, the OpenAI-compatible path can surface 400, a
+        proxy in front can turn it into 502). The shape of the request is
+        what is wrong, so all three classify the same way."""
+        for code in (400, 500, 502):
+            e = MockAPIError("no user query found in messages", status_code=code)
+            result = classify_api_error(e, provider="ollama")
+            assert result.reason == FailoverReason.format_error, code
+            assert result.retryable is False, code
+
     def test_503_overloaded(self):
         e = MockAPIError("Service Unavailable", status_code=503)
         result = classify_api_error(e)

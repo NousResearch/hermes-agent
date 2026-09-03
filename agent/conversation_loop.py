@@ -1320,13 +1320,42 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "length limit. Continue exactly where you left off. Do not "
     "restart or repeat prior text. Finish the answer directly.]"
 )
+# Sent from the second continuation onward. The plain nudge above only says
+# "continue" — a model that just emitted a full-length chunk and got cut will
+# emit another full-length chunk and get cut again, and after four identical
+# attempts the turn is abandoned (observed: a long report task burned all four
+# and lost 47 minutes of work). Repeating the same instruction against the same
+# failure is not a retry strategy, so escalate to one that changes what the
+# model does: stop trying to emit the whole artifact in one response.
+_LENGTH_CONTINUATION_OUTPUT_LIMIT_ESCALATED = (
+    "[System: Your response was truncated by the output length limit "
+    "again — the previous continuation hit the same wall, so continuing "
+    "in the same shape will keep failing. Change approach now: if you are "
+    "producing a file, write it in several smaller tool calls that append "
+    "successive sections instead of emitting it all in one response; "
+    "otherwise make this response substantially shorter and finish the "
+    "remaining part in the next turn. Do not repeat text you already sent.]"
+)
 # The dropped-tools variant interpolates the tool name list right after this
 # prefix, so it can't be exact-matched — this stable prefix is what
 # _is_synthetic_compression_user_turn checks with str.startswith instead.
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
+def _get_continuation_prompt(
+    is_partial_stub: bool,
+    dropped_tools: Optional[List[str]] = None,
+    attempt: int = 1,
+) -> str:
+    """Build the nudge sent after a truncated response.
+
+    ``attempt`` is the continuation number (1-based). The first attempt keeps
+    the plain "continue where you left off" wording; from the second onward the
+    output-limit path escalates to strategy guidance, because repeating an
+    identical instruction against an identical failure just burns the budget.
+    The partial-stream paths already carry their own corrective advice and are
+    left alone.
+    """
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -1344,6 +1373,8 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
     elif is_partial_stub:
         return _LENGTH_CONTINUATION_NETWORK_STUB
+    elif attempt >= 2:
+        return _LENGTH_CONTINUATION_OUTPUT_LIMIT_ESCALATED
     else:
         return _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
@@ -2023,7 +2054,63 @@ def _notify_context_engine_turn_complete(
         )
 
 
-def run_conversation(
+def _record_unfinalized_turn(agent, how: str) -> None:
+    """Last-resort board annotation for a turn that skipped ``finalize_turn``.
+
+    ``_run_conversation_inner`` has ~25 ``return`` statements that leave before
+    the finalizer. Two of them annotate the card themselves with a precise
+    reason; the rest did not, so a dispatcher-spawned worker leaving through
+    one of those abandoned its card in silence and the orphan reconciler later
+    wrote ``crashed: pid N not alive`` — a label that describes the corpse and
+    sends the next investigation after a killer that never existed.
+
+    Patching each return site was rejected: every one has different local
+    state, a new return added later would not be covered, and the guarantee we
+    want is not "these particular exits record" but "no exit escapes without
+    recording". So the check lives here, once, where it cannot be forgotten.
+
+    Never raises — this runs on a path that is already failing.
+    """
+    try:
+        from agent.kanban_abandon import block_abandoned_kanban_task
+
+        block_abandoned_kanban_task(
+            getattr(agent, "_session_messages", None),
+            f"The turn ended without reaching finalize_turn ({how}) and without "
+            f"any kanban_complete/kanban_block call, so the card was left open. "
+            f"Work done before that point may still be on disk — check the "
+            f"workspace. No more specific reason was recorded, which means the "
+            f"exit path taken does not yet annotate the board itself.",
+        )
+    except Exception:
+        logger.debug("unfinalized-turn board annotation failed", exc_info=True)
+
+
+def run_conversation(agent, *args, **kwargs) -> Dict[str, Any]:
+    """Thin wrapper enforcing one invariant over the whole turn.
+
+    The invariant: a kanban worker must never leave ``run_conversation``
+    without either closing its card or recording why it could not. See
+    :func:`_record_unfinalized_turn` for why this is a wrapper rather than a
+    change at each exit.
+
+    Signature is deliberately ``*args, **kwargs`` so it stays correct as the
+    inner function's parameters evolve; callers are unaffected.
+    """
+    agent._turn_finalized = False
+    try:
+        result = _run_conversation_inner(agent, *args, **kwargs)
+    except BaseException:
+        # Includes KeyboardInterrupt / SystemExit: an interrupted worker has
+        # just as open a card as a crashed one.
+        _record_unfinalized_turn(agent, "raised")
+        raise
+    if not getattr(agent, "_turn_finalized", False):
+        _record_unfinalized_turn(agent, "early return")
+    return result
+
+
+def _run_conversation_inner(
     agent,
     user_message: Any,
     system_message: str = None,
@@ -4424,7 +4511,8 @@ def run_conversation(
                                     )
 
                                 _continue_content = _get_continuation_prompt(
-                                    _is_partial_stream_stub, _dropped_tools
+                                    _is_partial_stream_stub, _dropped_tools,
+                                    attempt=length_continue_retries,
                                 )
                                 continue_msg = {
                                     "role": "user",
@@ -4500,6 +4588,33 @@ def run_conversation(
                             agent._session_messages = messages
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
+                            # This return skips finalize_turn, so a kanban
+                            # worker leaving here abandons its card silently:
+                            # no terminal board call, clean exit, and the
+                            # orphan reconciler later writes "crashed: pid N
+                            # not alive" — a label that sends every later
+                            # investigation looking for a killer that does not
+                            # exist. Record the real reason on the card first.
+                            try:
+                                from agent.kanban_abandon import (
+                                    block_abandoned_kanban_task,
+                                )
+
+                                block_abandoned_kanban_task(
+                                    messages,
+                                    "Model output stayed truncated "
+                                    "(finish_reason='length') after 4 continuation "
+                                    "attempts, so the turn was abandoned before any "
+                                    "kanban_complete/kanban_block call. The work may "
+                                    "be partly done — check the workspace for files "
+                                    "written before the cut. Retrying is more likely "
+                                    "to succeed if the task asks for shorter output.",
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "abandoned-turn board annotation failed",
+                                    exc_info=True,
+                                )
                             return {
                                 "final_response": _ceiling_final,
                                 "messages": messages,
@@ -4570,6 +4685,41 @@ def run_conversation(
                             # never reaches finalize_turn (#48879 class).
                             close_interrupted_tool_sequence(messages, _final_response)
                             agent._persist_session(messages, conversation_history)
+                            # Second early return that skips finalize_turn. The
+                            # sibling path (a truncated response with no tool
+                            # calls) already records the abandonment; this one
+                            # is the branch a worker actually hits when it is
+                            # writing a long file, because the truncation lands
+                            # in the tool-call arguments rather than in prose.
+                            # Without this the card goes back to looking like
+                            # "crashed: pid N not alive".
+                            try:
+                                from agent.kanban_abandon import (
+                                    block_abandoned_kanban_task,
+                                )
+
+                                block_abandoned_kanban_task(
+                                    messages,
+                                    "Tool-call arguments stayed truncated after 4 "
+                                    "retries (output cap raised on each), so the "
+                                    "turn was abandoned before any "
+                                    "kanban_complete/kanban_block call and the tool "
+                                    "was never executed. Files written by earlier "
+                                    "successful calls are still on disk. A task that "
+                                    "emits one very large tool call is the usual "
+                                    "trigger — splitting the write into several "
+                                    "smaller calls avoids it."
+                                    if not _is_stub_stall else
+                                    "The stream dropped mid tool-call four times "
+                                    "(network, not an output cap), so the tool was "
+                                    "never executed and the turn was abandoned "
+                                    "before any kanban_complete/kanban_block call.",
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "abandoned-turn board annotation failed",
+                                    exc_info=True,
+                                )
                             return {
                                 "final_response": _final_response,
                                 "messages": messages,

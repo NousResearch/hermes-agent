@@ -1461,7 +1461,11 @@ CREATE TABLE IF NOT EXISTS task_runs (
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
-    -- status: running | done | blocked | crashed | timed_out | failed | released
+    -- status: see TASK_RUN_STATUSES — that frozenset is the definition, this
+    -- comment is not. The two drifted badly once already: the comment listed
+    -- "failed" and "released", neither of which any code path has ever
+    -- written, while omitting reclaimed / gave_up / stale / scheduled /
+    -- review / changes_requested / todo, all of which it does.
     claim_lock          TEXT,
     claim_expires       INTEGER,
     worker_pid          INTEGER,
@@ -4332,6 +4336,50 @@ def _append_event(
     )
 
 
+# Every value ``task_runs.status`` is allowed to hold. This frozenset is the
+# definition — the schema comment on the column points here rather than
+# restating the list, because the restated version drifted out of date and
+# nothing caught it.
+#
+# ``status`` and ``outcome`` are NOT the same axis and must not be conflated:
+# outcome is the semantic result, status is the row state. They coincide for
+# every value except ``completed`` -> ``done`` and ``review_requested`` ->
+# ``review``. ``_synthesize_ended_run`` used to pass ``outcome`` for both,
+# which put four rows into the table with status='completed' — invisible to
+# every consumer filtering on 'done', including the fleet board's review
+# coverage check.
+TASK_RUN_STATUSES = frozenset({
+    "running",            # set on INSERT when the run is claimed
+    "done",               # outcome=completed
+    "review",             # outcome=review_requested
+    "blocked",
+    "crashed",
+    "reclaimed",
+    "timed_out",
+    "gave_up",
+    "stale",
+    "scheduled",
+    "todo",
+    "changes_requested",
+})
+
+
+def _validate_run_status(status: Optional[str], where: str) -> None:
+    """Warn (never raise) when a write would put an unknown value in the column.
+
+    Deliberately non-fatal: a bad status is a bookkeeping problem, and raising
+    here would turn it into a lost turn. The warning is enough to catch drift
+    the next time someone adds a state without updating TASK_RUN_STATUSES.
+    """
+    if status is not None and status not in TASK_RUN_STATUSES:
+        _log.warning(
+            "task_runs.status=%r written by %s is not in TASK_RUN_STATUSES %s "
+            "— either add it there or fix the caller; consumers that filter on "
+            "a known status will silently skip this row",
+            status, where, sorted(TASK_RUN_STATUSES),
+        )
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4358,6 +4406,7 @@ def _end_run(
     if not row or not row["current_run_id"]:
         return None
     run_id = int(row["current_run_id"])
+    _validate_run_status(status or outcome, "_end_run")
     conn.execute(
         """
         UPDATE task_runs
@@ -4404,6 +4453,7 @@ def _synthesize_ended_run(
     summary: Optional[str] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
+    status: Optional[str] = None,
 ) -> int:
     """Insert a zero-duration, already-closed run row.
 
@@ -4419,6 +4469,15 @@ def _synthesize_ended_run(
     stats. Caller is responsible for leaving ``current_run_id`` NULL
     (or for clearing it elsewhere in the same txn) since this
     function does NOT touch the tasks row.
+
+    ``status`` defaults to ``outcome``, which is correct for every
+    outcome whose row status matches it (blocked / scheduled /
+    reclaimed / timed_out / gave_up / stale). Two outcomes diverge and
+    MUST pass ``status`` explicitly, exactly as ``_end_run`` does:
+    ``completed`` -> ``done`` and ``review_requested`` -> ``review``.
+    Getting this wrong is silent — the row looks fine, but consumers
+    that filter on ``status == "done"`` (the fleet board's review
+    coverage check does) skip it, so the run's metadata never counts.
     """
     now = int(time.time())
     trow = conn.execute(
@@ -4427,6 +4486,7 @@ def _synthesize_ended_run(
     ).fetchone()
     profile = trow["assignee"] if trow else None
     step_key = trow["current_step_key"] if trow else None
+    _validate_run_status(status or outcome, "_synthesize_ended_run")
     cur = conn.execute(
         """
         INSERT INTO task_runs (
@@ -4438,7 +4498,7 @@ def _synthesize_ended_run(
         """,
         (
             task_id, profile, step_key,
-            outcome, outcome,
+            status or outcome, outcome,
             summary, error,
             json.dumps(metadata, ensure_ascii=False) if metadata else None,
             now, now,
@@ -5523,6 +5583,7 @@ def complete_task(
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
+                status="done",
                 summary=synth_summary,
                 metadata=synth_metadata,
             )
@@ -6224,6 +6285,7 @@ def edit_completed_task_result(
             run_id = _synthesize_ended_run(
                 conn, task_id,
                 outcome="completed",
+                status="done",
                 summary=handoff_summary,
                 metadata=metadata,
             )
@@ -6641,6 +6703,7 @@ def request_review(
                 conn,
                 task_id,
                 outcome="review_requested",
+                status="review",
                 summary=summary,
                 metadata=metadata,
             )
@@ -8981,12 +9044,30 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
                 else:
-                    error_text = f"pid {pid} not alive"
+                    # ``unknown`` means the exit status was never captured —
+                    # the pid was not in the reap registry. Do NOT phrase this
+                    # as a kill. The registry is fed only by the
+                    # ``os.waitpid(-1, WNOHANG)`` reaper, which is Unix-only,
+                    # so on Windows *every* reclaim lands here and the old
+                    # "pid N not alive" wording made each one read as though
+                    # something had killed the process. It sent several
+                    # investigations hunting for a killer that did not exist
+                    # while the real cause (a worker that exited normally
+                    # without calling kanban_complete) went unrecorded.
+                    error_text = (
+                        f"pid {pid} gone without closing the task "
+                        f"(exit status not captured — cannot tell a crash "
+                        f"from a clean exit that skipped kanban_complete)"
+                    )
                 event_kind = "crashed"
                 event_payload = {"pid": pid, "claimer": row["claim_lock"]}
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                else:
+                    # Let consumers distinguish "we know it crashed" from
+                    # "we never learned why it ended".
+                    event_payload["exit_status_known"] = False
 
             retry_status = _retry_status_for_run(conn, row["id"])
             event_payload["retry_status"] = retry_status
@@ -12131,6 +12212,39 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+def latest_runs_by_state(
+    conn: sqlite3.Connection,
+    *,
+    state_type: str = "status",
+    state_name: str = "done",
+) -> dict[str, Run]:
+    """Board-wide counterpart to :func:`list_runs`: for every task, the most
+    recent run whose ``state_type`` column equals ``state_name``.
+
+    Exists so a consumer that needs one run per task does not have to launch
+    one process per task. The fleet board's ``/api/stage`` did exactly that —
+    ``_review_meta`` shelled out to ``hermes kanban runs <id> --json`` once per
+    card — and a 40-card board took 43-55 seconds to answer, past the ops
+    monitor's 45s probe timeout.
+
+    Ordering matches ``list_runs`` (``started_at ASC, id ASC``) and the last
+    row per task wins, so the result is identical to taking ``[-1]`` from a
+    per-task ``list_runs`` call. Tasks with no matching run are absent from
+    the mapping rather than mapped to ``None``.
+    """
+    if state_type not in ("status", "outcome"):
+        raise ValueError("state_type must be 'status' or 'outcome'")
+    rows = conn.execute(
+        f"SELECT * FROM task_runs WHERE {state_type} = ? "
+        "ORDER BY started_at ASC, id ASC",
+        (state_name,),
+    ).fetchall()
+    out: dict[str, Run] = {}
+    for row in rows:
+        out[row["task_id"]] = Run.from_row(row)
+    return out
 
 
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:

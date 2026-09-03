@@ -926,6 +926,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="With --state-type: keep runs whose column equals this value",
     )
 
+    # --- runs-latest (one run per task, board-wide, single process) ---
+    p_runs_latest = sub.add_parser(
+        "runs-latest",
+        help="For every task, the most recent run in a given state (default: "
+             "status=done). Read-only. Exists so dashboards can avoid one CLI "
+             "launch per card.",
+    )
+    p_runs_latest.add_argument("--json", action="store_true")
+    p_runs_latest.add_argument(
+        "--state-type",
+        choices=("status", "outcome"),
+        default="status",
+        help="task_runs column to match (default: status)",
+    )
+    p_runs_latest.add_argument(
+        "--state-name",
+        default="done",
+        metavar="VALUE",
+        help="Value that column must equal (default: done)",
+    )
+
     # --- heartbeat (worker liveness signal) ---
     p_hb = sub.add_parser(
         "heartbeat",
@@ -1180,6 +1201,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "stats":    _cmd_stats,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
+            "runs-latest": _cmd_runs_latest,
             "heartbeat": _cmd_heartbeat,
             "assignees": _cmd_assignees,
             "notify-subscribe":   _cmd_notify_subscribe,
@@ -3125,6 +3147,41 @@ def _cmd_log(args: argparse.Namespace) -> int:
     sys.stdout.write(content)
     if not content.endswith("\n"):
         sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_runs_latest(args: argparse.Namespace) -> int:
+    """Board-wide: the most recent run per task in a given state.
+
+    One process for the whole board instead of one per card. Output is keyed
+    by task id so a consumer can populate a cache in a single pass; tasks with
+    no matching run are simply absent.
+    """
+    with kb.connect_closing() as conn:
+        latest = kb.latest_runs_by_state(
+            conn,
+            state_type=args.state_type,
+            state_name=args.state_name,
+        )
+    if getattr(args, "json", False):
+        print(json.dumps({
+            task_id: {
+                "id": r.id, "profile": r.profile, "status": r.status,
+                "outcome": r.outcome, "started_at": r.started_at,
+                "ended_at": r.ended_at, "summary": r.summary,
+                "error": r.error, "metadata": r.metadata,
+                "worker_pid": r.worker_pid, "step_key": r.step_key,
+            } for task_id, r in latest.items()
+        }, indent=2, ensure_ascii=False))
+        return 0
+    if not latest:
+        print(f"(no runs with {args.state_type}={args.state_name})")
+        return 0
+    print(f"{'TASK':14s}  {'#':>5s}  {'OUTCOME':12s}  {'PROFILE':16s}  ENDED")
+    for task_id in sorted(latest):
+        r = latest[task_id]
+        print(f"{task_id:14s}  {r.id:5d}  {(r.outcome or '-'):12s}  "
+              f"{(r.profile or '-'):16s}  {_fmt_ts(r.ended_at) if r.ended_at else '-'}")
     return 0
 
 

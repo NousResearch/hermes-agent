@@ -3946,6 +3946,15 @@ _empty_heal_user_notified: set = set()
 # loop through ``consume_pending_sanitizer_heal_notice`` and delivered via
 # the status/warning callback (the normal delivery channel).
 _empty_heal_pending_notice: Dict[str, str] = {}
+# Substituted as a whole user turn when a request would otherwise carry none.
+# Worded as an instruction rather than a marker because the model does read
+# it: it lands where the original request would have been, so it has to leave
+# the agent pointed at the work already in the transcript instead of inviting
+# it to start something new.
+_MISSING_USER_TURN_PLACEHOLDER = (
+    "[System: the original request is no longer in this transcript. "
+    "Continue the task shown in the messages above.]"
+)
 
 
 def _msg_has_payload(msg: Dict[str, Any]) -> bool:
@@ -4678,6 +4687,74 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "tool_call function name (%s)",
             len(realigned),
             ", ".join(f"{was} -> {now}" for was, now in realigned),
+        )
+    # --- Guarantee at least one user turn -------------------------------
+    # Ollama's built-in renderers (routes.go) reject a request with HTTP 500
+    # "no user query found in messages" when no user turn *carries content*.
+    # Measured against qwen3.8:27b:
+    #
+    #     content="hi"                  OK
+    #     content=""                    OK     (empty string still counts)
+    #     content=[{"type":"text",...}] OK
+    #     content=[]                    500    <- counts as absent
+    #     content=None                  400    (different error entirely)
+    #
+    # So presence of the role is necessary but not sufficient: an empty
+    # content LIST reads as no user query even though an empty STRING does
+    # not. A first version of this guard tested the role alone and let a
+    # ``content: []`` user turn straight through — the 500 still fired in
+    # production with the guard silent.
+    #
+    # A transcript can arrive here without a user turn after compression folds
+    # the only one into the summary, after head truncation, or on a lineage
+    # resumed from an assistant/tool boundary. Rather than chase every
+    # producer, restore the invariant at the last point before the wire.
+    # This runs on the per-call copy, so the synthesized turn never enters the
+    # persisted transcript.
+    #
+    # Inserted after the leading system block rather than appended, because a
+    # ``tool`` message must keep following its assistant ``tool_calls`` — a
+    # trailing insert would break that pairing.
+    def _counts_as_user_query(m: Dict[str, Any]) -> bool:
+        if m.get("role") != "user":
+            return False
+        content = m.get("content")
+        # Mirrors the table above: None and [] do not register as a query;
+        # an empty string does. Anything else (str, non-empty list) counts.
+        if content is None:
+            return False
+        if isinstance(content, (list, tuple)) and not content:
+            return False
+        return True
+
+    if messages and not any(_counts_as_user_query(m) for m in messages):
+        insert_at = 0
+        while insert_at < len(messages) and messages[insert_at].get("role") == "system":
+            insert_at += 1
+        messages = list(messages)
+        messages.insert(insert_at, {
+            "role": "user",
+            "content": _MISSING_USER_TURN_PLACEHOLDER,
+        })
+        # Roles only — never content. The role sequence is what distinguishes
+        # the candidate upstream causes (a compression fold leaves
+        # system+tail, head truncation opens mid-sequence, a resumed lineage
+        # opens on assistant/tool), and it is the one thing the logs did not
+        # record when this was first investigated. Capped so a long transcript
+        # cannot flood the log.
+        _roles = [m.get("role") for m in messages if m.get("role") != "user"]
+        _role_sig = ",".join(_roles[:12]) + (f",…(+{len(_roles) - 12})" if len(_roles) > 12 else "")
+        _counts = {r: _roles.count(r) for r in dict.fromkeys(_roles)}
+        _ra().logger.warning(
+            "Pre-call sanitizer: request had no user turn — inserted a "
+            "placeholder at index %d. Without it Ollama rejects the call with "
+            "HTTP 500 'no user query found in messages', which is "
+            "deterministic (retrying sends the identical array). Upstream "
+            "cause is usually compression folding the only user message into "
+            "the summary, head truncation, or a resumed assistant/tool "
+            "lineage — the role sequence below tells which: "
+            "msgs=%d roles=%s counts=%s",
+            insert_at, len(messages) - 1, _role_sig, _counts,
         )
     return messages
 

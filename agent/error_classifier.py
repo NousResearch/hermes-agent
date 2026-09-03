@@ -1458,8 +1458,26 @@ def _classify_by_status(
         # the provider/proxy itself, so the rejection is not deterministic and
         # the generic retryable-5xx handling is correct. Mirrors the guard in
         # _classify_400 — see _is_server_injected_param_rejection.
+        #
+        # _INVALID_MESSAGE_BODY_PATTERNS belongs here for the same reason.
+        # Ollama surfaces the Qwen chat template's
+        # raise_exception("No user query found in messages") as HTTP 500, so
+        # without this the message-shape check further down (the 400 path) is
+        # unreachable and the request falls through to "5xx → retryable
+        # server_error" — the exact retry flood this branch exists to prevent.
+        # Measured over six days of worker logs: 162 occurrences, of which
+        # only 6 (3.7%) were followed by a successful call in the same
+        # session. Compression cannot invent a user turn the template already
+        # rejected, so the retries are near-always futile; fail fast and fall
+        # back instead of spending the budget on an identical rejection.
+        #
+        # The injected-parameter exception above does not reach these
+        # patterns: _SERVER_INJECTED_PARAM_SENDERS keys on
+        # "prompt_cache_retention", which no _INVALID_MESSAGE_BODY_PATTERNS
+        # entry contains, so the guard is a no-op for this route.
         if (
             any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS)
+            or any(p in error_msg for p in _INVALID_MESSAGE_BODY_PATTERNS)
             or error_code.lower() in {"invalid_request_error", "unknown_parameter",
                                       "unsupported_parameter"}
         ) and not _is_server_injected_param_rejection(error_msg, provider):

@@ -142,8 +142,12 @@ custom = CustomProfile(
     # Without this, no max_tokens is sent and Ollama falls back to its internal
     # num_predict=128, truncating responses after a few tokens (#39281). This is
     # only a floor used when the user hasn't set model.max_tokens — they can
-    # override per-model — so we set it generously rather than lowballing it.
-    default_max_tokens=65536,
+    # override per-model — so it must clear 128 with margin, but stay small:
+    # Ollama schedules prompt + num_predict against num_ctx, so a 65536
+    # predict demand on a 27k prompt overflows a 64k window and forces
+    # spill/reload slowness on VRAM-constrained GPUs (#82783). 8192 keeps
+    # long agent turns working while fitting real local windows.
+    default_max_tokens=8192,
 )
 
 register_provider(custom)

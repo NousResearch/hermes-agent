@@ -6836,6 +6836,24 @@ class AIAgent:
         if base_url_host_matches(_base, "azure.com"):
             return False
 
+        # Credential-pool selection owns pool-bound credentials.  A global
+        # resolver can otherwise replace the selected entry with an unrelated
+        # singleton or env credential before the request is sent.
+        if getattr(self, "_credential_pool_entry_id", None) is not None:
+            return False
+
+        from agent.anthropic_adapter import _is_oauth_token
+
+        current_token = getattr(self, "_anthropic_api_key", None)
+        # Native API keys are static.  Only an unpooled OAuth session may use
+        # the legacy global resolver to pick up a rotated bearer token.
+        if (
+            not getattr(self, "_is_anthropic_oauth", False)
+            or not isinstance(current_token, str)
+            or not _is_oauth_token(current_token)
+        ):
+            return False
+
         try:
             from agent.anthropic_adapter import resolve_anthropic_token, build_anthropic_client
 
@@ -6850,13 +6868,13 @@ class AIAgent:
         if new_token == self._anthropic_api_key:
             return False
 
-        try:
-            self._anthropic_client.close()
-        except Exception:
-            pass
+        # Preflight refresh must preserve the OAuth auth scheme.  Pool
+        # recovery is the only path allowed to choose a different credential.
+        if not _is_oauth_token(new_token):
+            return False
 
         try:
-            self._anthropic_client = build_anthropic_client(
+            replacement_client = build_anthropic_client(
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
@@ -6865,13 +6883,16 @@ class AIAgent:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
 
+        old_client = self._anthropic_client
+        try:
+            old_client.close()
+        except Exception:
+            pass
+
+        self.api_key = new_token
         self._anthropic_api_key = new_token
-        # Update OAuth flag — token type may have changed (API key ↔ OAuth).
-        # Only treat as OAuth on native Anthropic; third-party endpoints using
-        # the Anthropic protocol must not trip OAuth paths (#1739 & third-party
-        # identity-injection guard).
-        from agent.anthropic_adapter import _is_oauth_token
-        self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
+        self._is_anthropic_oauth = True
+        self._anthropic_client = replacement_client
         return True
 
     def _apply_client_headers_for_base_url(

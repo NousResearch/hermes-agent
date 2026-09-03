@@ -1218,6 +1218,255 @@ def test_load_pool_oauth_path_still_autodiscovers(tmp_path, monkeypatch):
     assert "claude_code" in sources
 
 
+@pytest.mark.parametrize(
+    ("source", "auth_type", "access_token", "refresh_token"),
+    [
+        ("manual", "api_key", "sk-ant-api03-manual", None),
+        ("manual:hermes_pkce", "oauth", "sk-ant-oat01-manual", "manual-refresh"),
+    ],
+)
+def test_adding_manual_anthropic_entry_removes_implicit_singletons(
+    tmp_path, monkeypatch, source, auth_type, access_token, refresh_token,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _pid: True)
+    future = int(time.time() * 1000) + 3_600_000
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: {
+            "accessToken": "sk-ant-oat01-singleton-pkce",
+            "refreshToken": "pkce-refresh",
+            "expiresAt": future,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "sk-ant-oat01-singleton-claude",
+            "refreshToken": "claude-refresh",
+            "expiresAt": future,
+        },
+    )
+
+    from agent.credential_pool import PooledCredential, load_pool
+
+    pool = load_pool("anthropic")
+    assert {entry.source for entry in pool.entries()} == {"hermes_pkce", "claude_code"}
+
+    pool.add_entry(PooledCredential(
+        provider="anthropic",
+        id="manual-entry",
+        label="manual",
+        auth_type=auth_type,
+        priority=0,
+        source=source,
+        access_token=access_token,
+        refresh_token=refresh_token,
+    ))
+
+    assert {entry.source for entry in pool.entries()} == {source}
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert {entry["source"] for entry in persisted["credential_pool"]["anthropic"]} == {source}
+
+
+def test_manual_anthropic_entries_prevent_singleton_reseed_after_reload(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    future = int(time.time() * 1000) + 3_600_000
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "manual-api",
+                        "label": "manual api",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api03-manual",
+                    },
+                    {
+                        "id": "manual-oauth",
+                        "label": "manual oauth",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:dashboard_pkce",
+                        "access_token": "sk-ant-oat01-manual",
+                        "refresh_token": "manual-refresh",
+                        "expires_at_ms": future,
+                    },
+                    {
+                        "id": "singleton-pkce",
+                        "label": "pkce",
+                        "auth_type": "oauth",
+                        "priority": 2,
+                        "source": "hermes_pkce",
+                        "access_token": "sk-ant-oat01-pkce",
+                        "refresh_token": "pkce-refresh",
+                        "expires_at_ms": future,
+                    },
+                    {
+                        "id": "singleton-claude",
+                        "label": "claude",
+                        "auth_type": "oauth",
+                        "priority": 3,
+                        "source": "claude_code",
+                        "access_token": "sk-ant-oat01-claude",
+                        "refresh_token": "claude-refresh",
+                        "expires_at_ms": future,
+                    },
+                ],
+            },
+        },
+    )
+    reads = []
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: reads.append("hermes_pkce") or None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_claude_code_credentials",
+        lambda: reads.append("claude_code") or None,
+    )
+
+    from agent.credential_pool import load_pool
+
+    first = load_pool("anthropic")
+    second = load_pool("anthropic")
+    expected_sources = {"manual", "manual:dashboard_pkce"}
+    assert {entry.source for entry in first.entries()} == expected_sources
+    assert {entry.source for entry in second.entries()} == expected_sources
+    assert reads == []
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert {entry["source"] for entry in persisted["credential_pool"]["anthropic"]} == expected_sources
+
+
+def test_expired_nonrefreshable_anthropic_oauth_is_not_seeded_or_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _pid: True)
+    within_refresh_skew = int(time.time() * 1000) + 60_000
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: {
+            "accessToken": "sk-ant-oat01-expiring-singleton",
+            "expiresAt": within_refresh_skew,
+        },
+    )
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import CredentialPool, PooledCredential, load_pool
+
+    seeded = load_pool("anthropic")
+    assert not seeded.entries()
+
+    expired = PooledCredential(
+        provider="anthropic",
+        id="expired",
+        label="expired",
+        auth_type="oauth",
+        priority=0,
+        source="hermes_pkce",
+        access_token="sk-ant-oat01-expiring-pool",
+        expires_at_ms=within_refresh_skew,
+    )
+    static_setup = PooledCredential(
+        provider="anthropic",
+        id="static",
+        label="static setup token",
+        auth_type="oauth",
+        priority=1,
+        source="manual",
+        access_token="sk-ant-oat01-static",
+    )
+    available, _pending = CredentialPool("anthropic", [expired, static_setup])._available_entries(
+        clear_expired=False,
+        refresh=False,
+    )
+    assert [entry.id for entry in available] == ["static"]
+
+
+def test_unknown_expiry_anthropic_oauth_without_refresh_is_seeded_and_selectable(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _pid: True)
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: {
+            "accessToken": "sk-ant-oat01-unknown-expiry",
+            "expiresAt": 0,
+        },
+    )
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    assert [entry.source for entry in pool.entries()] == ["hermes_pkce"]
+
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "hermes_pkce"
+
+
+def test_old_dead_manual_anthropic_oauth_prunes_before_singleton_reseed(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    now = time.time()
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "old-dead-manual",
+                        "label": "old dead manual",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-oat01-old-dead",
+                        "expires_at_ms": int(now * 1000) - 1,
+                        "last_status": "dead",
+                        "last_status_at": now - 24 * 60 * 60 - 1,
+                    },
+                ],
+            },
+        },
+    )
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda _pid: True)
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_hermes_oauth_credentials",
+        lambda: {
+            "accessToken": "sk-ant-oat01-reseeded-singleton",
+            "expiresAt": int(time.time() * 1000) + 3_600_000,
+        },
+    )
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    assert pool.select() is None
+    assert not pool.entries()
+
+    reloaded = load_pool("anthropic")
+    assert [entry.source for entry in reloaded.entries()] == ["hermes_pkce"]
+    assert reloaded.select() is not None
+
+
 def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     """least_used strategy should select the credential with the lowest request_count."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

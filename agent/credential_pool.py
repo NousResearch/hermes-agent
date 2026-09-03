@@ -114,6 +114,8 @@ AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 
 SOURCE_MANUAL = "manual"
+_ANTHROPIC_IMPLICIT_SINGLETON_SOURCES = frozenset({"claude_code", "hermes_pkce"})
+_ANTHROPIC_OAUTH_REFRESH_SKEW_MS = 120_000
 SOURCE_MANUAL_DEVICE_CODE = f"{SOURCE_MANUAL}:device_code"
 
 STRATEGY_FILL_FIRST = "fill_first"
@@ -323,6 +325,22 @@ def _next_priority(entries: List[PooledCredential]) -> int:
 def _is_manual_source(source: str) -> bool:
     normalized = (source or "").strip().lower()
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
+
+
+def _anthropic_oauth_expired_without_refresh(
+    expires_at_ms: Optional[int], refresh_token: Optional[str],
+) -> bool:
+    """Whether an Anthropic OAuth token is unusable without a refresh path."""
+    if expires_at_ms is None or str(refresh_token or "").strip():
+        return False
+    try:
+        expires_at_ms = int(expires_at_ms)
+    except (TypeError, ValueError):
+        return False
+    return (
+        expires_at_ms > 0
+        and expires_at_ms <= int(time.time() * 1000) + _ANTHROPIC_OAUTH_REFRESH_SKEW_MS
+    )
 
 
 def _exhausted_ttl(
@@ -2346,7 +2364,14 @@ class CredentialPool:
         if self.provider == "anthropic":
             if entry.expires_at_ms is None:
                 return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
+            try:
+                expires_at_ms = int(entry.expires_at_ms)
+            except (TypeError, ValueError):
+                return False
+            return (
+                expires_at_ms > 0
+                and expires_at_ms <= int(time.time() * 1000) + _ANTHROPIC_OAUTH_REFRESH_SKEW_MS
+            )
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(
                 entry.access_token,
@@ -2536,6 +2561,14 @@ class CredentialPool:
                     self._replace_entry(entry, cleared)
                     entry = cleared
                     cleared_any = True
+            if (
+                self.provider == "anthropic"
+                and entry.auth_type == AUTH_TYPE_OAUTH
+                and _anthropic_oauth_expired_without_refresh(
+                    entry.expires_at_ms, entry.refresh_token
+                )
+            ):
+                continue
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in ("openai-codex", "xai-oauth"):
                     # Defer single-use-token refresh to avoid holding the
@@ -2988,6 +3021,20 @@ class CredentialPool:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         with self._lock:
+            removed_ids: List[str] = []
+            if self.provider == "anthropic" and _is_manual_source(entry.source):
+                removed_ids = [
+                    existing.id
+                    for existing in self._entries
+                    if (existing.source or "").strip().lower()
+                    in _ANTHROPIC_IMPLICIT_SINGLETON_SOURCES
+                ]
+                self._entries = [
+                    existing
+                    for existing in self._entries
+                    if (existing.source or "").strip().lower()
+                    not in _ANTHROPIC_IMPLICIT_SINGLETON_SOURCES
+                ]
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
@@ -3005,7 +3052,7 @@ class CredentialPool:
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
                 self._borrowed_root_ids = set()
             else:
-                self._persist()
+                self._persist(removed_ids=removed_ids)
             return entry
 
 
@@ -3128,6 +3175,20 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             return False
 
     if provider == "anthropic":
+        # A manual credential is an explicit source choice.  Do not leave or
+        # re-seed implicit Claude Code / Hermes PKCE rows beside it.
+        if any(_is_manual_source(entry.source) for entry in entries):
+            retained = [
+                entry
+                for entry in entries
+                if (entry.source or "").strip().lower()
+                not in _ANTHROPIC_IMPLICIT_SINGLETON_SOURCES
+            ]
+            if len(retained) != len(entries):
+                entries[:] = retained
+                changed = True
+            return changed, active_sources
+
         # Only auto-discover external credentials (Claude Code, Hermes PKCE)
         # when the user has explicitly configured anthropic as their provider.
         # Without this gate, auxiliary client fallback chains silently read
@@ -3174,7 +3235,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             # transient 401 could revive them.
             retained = [
                 entry for entry in entries
-                if entry.source not in {"hermes_pkce", "claude_code"}
+                if entry.source not in _ANTHROPIC_IMPLICIT_SINGLETON_SOURCES
             ]
             if len(retained) != len(entries):
                 entries[:] = retained
@@ -3191,6 +3252,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             ("claude_code", read_claude_code_credentials()),
         ):
             if creds and creds.get("accessToken"):
+                if _anthropic_oauth_expired_without_refresh(
+                    creds.get("expiresAt"), creds.get("refreshToken")
+                ):
+                    continue
                 if _is_suppressed(provider, source_name):
                     continue
                 active_sources.add(source_name)

@@ -323,6 +323,8 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   ],
   'tts.kittentts.voice': ['Jasper'],
   'tts.piper.voice': ['en_US-lessac-medium', 'en_US-amy-medium', 'en_US-ryan-high', 'en_GB-alan-medium'],
+  // User-defined command-provider voices (see tts.providers.<name>.voice).
+  'tts.providers.breeze.voice': ['jo', 'narrator-female', 'news-male', 'assistant', 'upbeat'],
   'tts.neutts.model': ['neuphonic/neutts-air-q4-gguf', 'neuphonic/neutts-air-q8-gguf', 'neuphonic/neutts-air'],
   // Text-to-speech backends — kept in sync with the built-in source of truth
   // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
@@ -732,6 +734,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.kittentts.model',
       'tts.kittentts.voice',
       'tts.piper.voice',
+      'tts.providers.breeze.voice',
       'tts.deepinfra.model',
       'tts.deepinfra.voice',
       'stt.local.model',

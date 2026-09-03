@@ -162,7 +162,10 @@ export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConf
 // Voice renders only fields for the selected TTS/STT provider. Search and the
 // page share this rule so every indexed field can actually mount when opened.
 export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
-  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
+  // Built-in providers use the flat ``tts.<provider>.*`` path; user-defined
+  // command providers live at ``tts.providers.<name>.*``, so consume the
+  // optional ``providers.`` segment before capturing the provider name.
+  const match = /^(tts|stt)\.(?:providers\.)?([^.]+)\./.exec(key)
 
   if (!match) {
     return true

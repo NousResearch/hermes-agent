@@ -475,10 +475,11 @@ class TestStubSchemaDrift(unittest.TestCase):
         compile(src, "hermes_tools.py", "exec")
 
         # Verify specific parameter signatures are in the source
-        # search_files must accept context, offset, output_mode
+        # search_files must accept its pagination, output, and ordering controls
         self.assertIn("context", src)
         self.assertIn("offset", src)
         self.assertIn("output_mode", src)
+        self.assertIn("order", src)
 
         # patch must accept mode and patch params
         self.assertIn("mode", src)

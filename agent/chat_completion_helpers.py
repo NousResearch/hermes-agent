@@ -3270,6 +3270,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # tool_call was summarized away; Responses API rejects that as
         # "No tool call found for function call output".
         api_messages = agent._sanitize_api_messages(api_messages)
+        # Same send-path vision eviction as the main loop (#89296).
+        from agent.context_compressor import evict_stale_outbound_tool_images
+
+        evict_stale_outbound_tool_images(api_messages)
 
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.

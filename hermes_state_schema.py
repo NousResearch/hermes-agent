@@ -26,6 +26,7 @@ from hermes_state_common import (
     FTS_STALE_KEY,
     FTS_SQL,
     FTS_STORAGE_VERSION,
+    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
     FTS_TRIGRAM_SQL,
     LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL,
@@ -299,6 +300,83 @@ class SessionSchemaMixin:
         )
         return len(to_drop)
 
+    @staticmethod
+    def _execute_ddl_script_transactional(
+        cursor: sqlite3.Cursor, ddl: str
+    ) -> None:
+        """Execute a DDL script without ``executescript``'s implicit commit."""
+        statement = ""
+        for line in ddl.splitlines():
+            statement += line + "\n"
+            if sqlite3.complete_statement(statement):
+                cursor.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise sqlite3.OperationalError("incomplete FTS DDL statement")
+
+    def _migrate_bounded_tool_fts_triggers(
+        self, cursor: sqlite3.Cursor, *, legacy: bool
+    ) -> None:
+        """Replace FTS triggers without rebuilding historical indexes.
+
+        Existing rows keep their original full-content token stream. The
+        durable high-water id makes new tool rows use the bounded prefix in
+        both INSERT and matching external-content delete/update operations.
+        Trigger replacement is one savepoint so no concurrent writer can land
+        in a trigger gap.
+        """
+        marker = cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1",
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,),
+        ).fetchone()
+        if marker is not None:
+            return
+
+        trigram_present = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'messages_fts_trigram'"
+        ).fetchone() is not None
+        names = _FTS_BASE_TRIGGERS
+        if legacy and trigram_present:
+            names += _FTS_TRIGRAM_TRIGGERS
+        existing = self._fts_trigger_count(cursor, names)
+        has_messages = cursor.execute(
+            "SELECT 1 FROM messages LIMIT 1"
+        ).fetchone() is not None
+        table_present = cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'messages_fts'"
+        ).fetchone() is not None
+        self._fts_tool_prefix_migration_requires_rebuild = bool(
+            table_present and has_messages and existing < len(names)
+        )
+
+        cursor.execute("SAVEPOINT bounded_tool_fts")
+        try:
+            high_water = cursor.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages"
+            ).fetchone()[0]
+            cursor.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+            )
+            for name in names:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+            if legacy:
+                self._execute_ddl_script_transactional(cursor, LEGACY_FTS_SQL)
+                if trigram_present:
+                    self._execute_ddl_script_transactional(
+                        cursor, LEGACY_FTS_TRIGRAM_SQL
+                    )
+            else:
+                self._execute_ddl_script_transactional(cursor, FTS_SQL)
+            cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
+        except BaseException:
+            cursor.execute("ROLLBACK TO SAVEPOINT bounded_tool_fts")
+            cursor.execute("RELEASE SAVEPOINT bounded_tool_fts")
+            raise
+
     def _cjk_update_trigger_is_narrowed(self, cursor: sqlite3.Cursor) -> bool:
         """True when messages_fts_cjk_update exists with AFTER UPDATE OF."""
         row = cursor.execute(
@@ -336,6 +414,44 @@ class SessionSchemaMixin:
                 exc_info=True,
             )
 
+    def _migrate_trigram_cron_exclusion(self, cursor: sqlite3.Cursor) -> bool:
+        """Install the cron-filtered trigram view and purge historical rows.
+
+        Legacy inline indexes remain opt-in: their content is private to the
+        virtual table and cannot adopt this external-content view. For an
+        external layout, replacing the view and triggers is cheap, but the
+        existing inverted index still contains cron rows until FTS5 rebuilds
+        from the new view. Run that rebuild under the shared cross-process
+        admission gate used by every startup FTS repair.
+        """
+        if self._db_has_legacy_inline_fts(cursor):
+            return True
+        trigram_exists = self._fts_table_probe(cursor, "messages_fts_trigram")
+        if trigram_exists is not True:
+            # Let the normal ensure path create/backfill a missing optional
+            # trigram table. ``None`` means this runtime cannot safely inspect
+            # an existing one, so leave the schema version behind for retry.
+            return trigram_exists is False
+        for name in _FTS_TRIGRAM_TRIGGERS:
+            cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
+        cursor.execute("DROP VIEW IF EXISTS messages_fts_trigram_src")
+        if not self._ensure_fts_schema(
+            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+        ):
+            return False
+        # Always rebuild while schema_version is behind, even if the view
+        # already has the new predicate. A process can die after replacing the
+        # view but before rebuilding/stamping; view text alone cannot prove the
+        # old cron postings were purged.
+        self._run_admitted_startup_rebuild(
+            cursor,
+            lambda: cursor.execute(
+                "INSERT INTO messages_fts_trigram(messages_fts_trigram) "
+                "VALUES('rebuild')"
+            ),
+        )
+        return True
+
 
     @staticmethod
     def _rebuild_fts_indexes(
@@ -343,6 +459,14 @@ class SessionSchemaMixin:
         *,
         include_trigram: bool = True,
     ) -> None:
+        high_water = cursor.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM messages"
+        ).fetchone()[0]
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+        )
         # Both FTS tables are external-content (v23+): the special 'rebuild'
         # command wipes the inverted index and repopulates it from the
         # content source (messages for the standard index, the tool-row-
@@ -373,6 +497,14 @@ class SessionSchemaMixin:
         'rebuild' source, so we DELETE + reinsert the concatenated content
         the legacy triggers produced. Never touches the v23 shape.
         """
+        high_water = cursor.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM messages"
+        ).fetchone()[0]
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+        )
         cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
@@ -1396,6 +1528,15 @@ class SessionSchemaMixin:
                 # rows, but clear migrated rows so future writes do not keep
                 # one large prompt copy per session.
                 self._dedupe_legacy_system_prompts(cursor)
+            if current_version < 29 and fts5_available:
+                # v29 (was v27 in the original PR; main had already reached
+                # v28 with column-reconciliation bumps, so a `< 27` gate would
+                # never fire on existing installs): cron sessions remain canonical and stay in the standard
+                # word index, but no longer inflate the trigram substring index.
+                # Rebuild once so rows indexed by older trigger/view definitions
+                # do not survive indefinitely as stale matches and disk usage.
+                if not self._migrate_trigram_cron_exclusion(cursor):
+                    fts_migrations_complete = False
 
             # The FTS storage layout is versioned independently of the main
             # schema (see the v23 note above). Stamp the current layout so the
@@ -1488,6 +1629,10 @@ class SessionSchemaMixin:
             # v23 view/external tables entirely. Fresh installs and opted-in
             # DBs have no legacy inline FTS, so they get the v23 DDL.
             legacy_fts = self._db_has_legacy_inline_fts(cursor)
+            if not self._fts_stale:
+                self._migrate_bounded_tool_fts_triggers(
+                    cursor, legacy=legacy_fts
+                )
             if self._fts_stale:
                 if self._recover_stale_fts(cursor, legacy=legacy_fts):
                     # CJK was detached alongside the corrupt base indexes and
@@ -1506,6 +1651,8 @@ class SessionSchemaMixin:
                 base_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_BASE_TRIGGERS)
                     < len(_FTS_BASE_TRIGGERS)
+                ) or getattr(
+                    self, "_fts_tool_prefix_migration_requires_rebuild", False
                 )
                 trigram_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_TRIGRAM_TRIGGERS)
@@ -1533,6 +1680,8 @@ class SessionSchemaMixin:
                 base_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_BASE_TRIGGERS)
                     < len(_FTS_BASE_TRIGGERS)
+                ) or getattr(
+                    self, "_fts_tool_prefix_migration_requires_rebuild", False
                 )
                 trigram_triggers_missing = (
                     self._fts_trigger_count(cursor, _FTS_TRIGRAM_TRIGGERS)

@@ -1772,6 +1772,23 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
+def evict_stale_outbound_tool_images(
+    api_messages: List[Dict[str, Any]],
+    keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
+) -> int:
+    """Drop stale screenshot/vision payloads from the per-call API copy.
+
+    Compression's keep-newest pass only runs when prune/compress fires, and
+    the Anthropic adapter's screenshot eviction only sees nested
+    ``tool_result`` blocks. OpenAI-style ``image_url`` tool results
+    otherwise ride every subsequent request until a 413 forces the reactive
+    strip (#89286). Call this on the cloned ``api_messages`` list after
+    sanitization so older frames never leave the box (#89296). Do not pass
+    persisted history — the rewrite is send-path only.
+    """
+    return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string values inside a tool-call arguments JSON blob while
     preserving JSON validity.

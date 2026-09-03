@@ -22,6 +22,8 @@ from hermes_state_common import (
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
+    FTS_TOOL_CONTENT_PREFIX_CHARS,
+    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
     FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
@@ -152,18 +154,22 @@ class SessionSearchMixin:
                 lo, hi = hw - 1000, hw + 1000
                 conn.execute(
                     "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    "SELECT m.id, "
+                    "CASE WHEN m.role = 'tool' AND m.id > ? "
+                    "THEN substr(COALESCE(m.content, ''), 1, ?) "
+                    "ELSE m.content END, m.tool_name, m.tool_calls "
                     "FROM messages m "
                     "WHERE m.id > ? AND m.id <= ? "
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_docsize d WHERE d.id = m.id)",
-                    (lo, hi),
+                    (hw, FTS_TOOL_CONTENT_PREFIX_CHARS, lo, hi),
                 )
                 if include_trigram:
                     conn.execute(
                         "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
                         "SELECT m.id, m.content, m.tool_name, m.tool_calls "
-                        "FROM messages m "
+                        "FROM messages m JOIN sessions s ON s.id = m.session_id "
                         "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                        "AND s.source <> 'cron' "
                         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
                         (lo, hi),
                     )
@@ -320,8 +326,10 @@ class SessionSearchMixin:
                 conn.execute(
                     "INSERT INTO messages_fts_trigram"
                     "(rowid, content, tool_name, tool_calls) "
-                    "SELECT id, content, tool_name, tool_calls FROM messages "
-                    "WHERE id > ? AND id <= ? AND role <> 'tool'",
+                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    "FROM messages m JOIN sessions s ON s.id = m.session_id "
+                    "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                    "AND s.source <> 'cron'",
                     (progress, upper),
                 )
             # Publish progress in the same transaction as the rows it
@@ -568,6 +576,11 @@ class SessionSearchMixin:
                     "('fts_rebuild_progress', '0') "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                 )
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw)),
+            )
             return hw
 
         hw = conn.execute(
@@ -576,6 +589,7 @@ class SessionSearchMixin:
         for k, v in (
             ("fts_rebuild_high_water", str(hw)),
             ("fts_rebuild_progress", "0"),
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw)),
         ):
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
@@ -1760,6 +1774,24 @@ class SessionSearchMixin:
         if not query:
             return []
 
+        # New oversized tool results only index a bounded prefix to keep the
+        # foreground write transaction short. An explicit tool-role search is
+        # the opt-in full-body path and scans canonical rows via LIKE.
+        if role_filter and "tool" in role_filter:
+            matches = self._search_messages_like_fallback(
+                query,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+                limit=limit,
+                offset=offset,
+                sort=sort,
+                include_inactive=include_inactive,
+            )
+            return self._finalize_search_matches(
+                matches, result_fields=result_fields
+            )
+
         self._refresh_fts_stale_state()
         if self._fts_stale:
             matches = self._search_messages_like_fallback(
@@ -1876,6 +1908,7 @@ class SessionSearchMixin:
             # query explicitly filtering on role='tool' must therefore use
             # the LIKE fallback, which scans the base table directly.
             _wants_tool_rows = bool(role_filter) and "tool" in role_filter
+            _wants_cron_rows = bool(source_filter) and "cron" in source_filter
 
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ──────
             # When the bigram index is available it serves EVERY CJK query
@@ -1890,6 +1923,7 @@ class SessionSearchMixin:
             if (
                 self._fts_cjk_available
                 and not _wants_tool_rows
+                and not _wants_cron_rows
                 and not self._has_lone_cjk_run(raw_query)
             ):
                 tokens = raw_query.split()
@@ -1963,6 +1997,7 @@ class SessionSearchMixin:
                 and not _any_short_cjk
                 and self._trigram_available
                 and not _wants_tool_rows
+                and not _wants_cron_rows
             ):
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
@@ -2398,6 +2433,14 @@ class SessionSearchMixin:
                 )
                 return 0
             with self._lock:
+                high_water = self._conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM messages"
+                ).fetchone()[0]
+                self._conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+                )
                 for tbl in self._FTS_TABLES:
                     if not self._fts_table_exists(tbl):
                         continue

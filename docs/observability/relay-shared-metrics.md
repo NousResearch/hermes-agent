@@ -18,17 +18,21 @@ as a no-op compatibility alias for existing installation commands.
 > longer activate exporters. Without the new variable, Hermes does not run
 > Relay plugin discovery, configuration layering, middleware, or exporters.
 
-Hermes requires NeMo Relay 0.7.1 or later within the 0.7 release line. That
-release establishes the lossless provider-codec contract used for Anthropic
-Messages, OpenAI Chat Completions, and OpenAI Responses requests.
+Hermes requires NeMo Relay 0.8.3 or later within the 0.8 release line. That
+line provides the provider-codec and canonical tool-result contracts Hermes
+uses for managed provider and tool calls.
 
 ## Runtime Dependency and Data Boundary
 
 Hermes installs the platform-specific `nemo-relay` native wheel from the
-bounded `>=0.7.1,<0.8` dependency range. The published package is built from
+bounded `>=0.8.3,<0.9` dependency range. The published package is built from
 the [NVIDIA NeMo Relay repository](https://github.com/NVIDIA/NeMo-Relay).
 Unsupported platforms use the explicit no-op runtime described above rather
 than downloading a different implementation.
+
+Operator-supplied typed native plugins must be rebuilt for Relay 0.8. `grpc-v1`
+workers must be regenerated and rebuilt when they use tool callbacks, tool
+execution intercepts, or manual tool-end APIs.
 
 When Relay managed execution is active, the provider request and response pass
 through that native module in the Hermes process so configured interceptors can
@@ -59,12 +63,12 @@ opt-in. Set `HERMES_NEMO_RELAY_PLUGINS_TOML` to a selected `plugins.toml` to
 activate configured middleware, exporters, or dynamic plugins. When the
 variable is unset, Hermes does not invoke Relay's plugin initializer, so Relay
 does not perform plugin configuration discovery or layering. When it is set
-and the selected file loads successfully, Relay performs its normal static
-`plugins.toml` discovery and layers the selected static configuration over the
-discovered configuration. Dynamic `[[plugins.dynamic]]` records are loaded
-from the selected file only. If the selected file cannot be loaded, Hermes
-reports the error and does not invoke Relay initialization or fall back to
-ambient discovery.
+and the selected file loads successfully, Relay discovers supported user and
+system `plugins.toml` files and layers the selected static configuration over
+them. Repository-local `.nemo-relay/plugins.toml` files are ignored. Dynamic
+`[[plugins.dynamic]]` records are loaded from the selected file only. If the
+selected file cannot be loaded, Hermes reports the error and does not invoke
+Relay initialization or fall back to ambient discovery.
 
 ## Session-Span Segmentation for Continuous Sessions
 

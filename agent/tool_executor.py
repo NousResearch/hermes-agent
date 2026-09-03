@@ -771,6 +771,7 @@ def _run_agent_tool_execution_middleware(
         function_args,
         _hermes_pipeline,
         session_id=str(getattr(agent, "session_id", "") or ""),
+        tool_call_id=tool_call_id or None,
         metadata={
             "task_id": effective_task_id or "",
             "turn_id": getattr(agent, "_current_turn_id", "") or "",

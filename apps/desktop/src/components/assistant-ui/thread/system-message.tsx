@@ -43,7 +43,8 @@ export const SystemMessage: FC = () => {
         </span>
         {detail && (
           <span className={cn(SCAFFOLD_LABEL_CLASS, 'tool-memory-legendary-meta min-w-0 wrap-anywhere')}>{detail}</span>
-        )}
+        )}{' '}
+        <MessageTimelineTimestamp className="self-center" />
       </MessagePrimitive.Root>
     )
   }

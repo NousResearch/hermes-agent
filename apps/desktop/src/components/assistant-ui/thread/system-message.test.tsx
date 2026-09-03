@@ -64,4 +64,10 @@ describe('system message timestamp text separation', () => {
 
     expectTimestampSeparated(container, 'rerun tests')
   })
+
+  it('shows a timestamp on review rows', () => {
+    const { container } = render(<Harness text="review:Saved: memory updated" />)
+
+    expectTimestampSeparated(container, 'memory updated')
+  })
 })

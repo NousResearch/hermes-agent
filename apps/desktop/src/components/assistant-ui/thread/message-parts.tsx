@@ -111,14 +111,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   return <ToolFallback {...props} />
 }
 
-type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
-
-const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
-  <>
-    <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
-  </>
-)
+const TimelineMarkdownText: FC<TextMessagePartProps> = () => <MarkdownText />
 
 const ThinkingDisclosure: FC<{
   children: ReactNode

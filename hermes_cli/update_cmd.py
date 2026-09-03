@@ -2659,13 +2659,31 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         else:
             # No stash entry was created: the changes were NOT saved.  This
             # is a real failure — bail out before the update touches HEAD.
-            print("✗ Could not stash local changes — update aborted.")
-            if push.stderr.strip():
-                print(f"  {push.stderr.strip().splitlines()[0]}")
-            print(
-                "  Commit, stash, or clean up your local changes manually, "
-                "then re-run `hermes update`."
-            )
+            stderr = push.stderr.strip()
+            stdout = push.stdout.strip()
+            combined = f"{stderr}\n{stdout}".lower()
+
+            # Detect git permission errors on .git/objects (common when the
+            # repo was initialized by root but hermes runs as a different user).
+            if "insufficient permission" in combined and ".git/objects" in combined:
+                print("✗ Could not stash local changes — git permission error on .git/objects")
+                print()
+                print("  The git repository's .git/objects directory has incorrect ownership.")
+                print("  This typically happens when the repo was cloned/initialized as root")
+                print("  but hermes update is running as a different user.")
+                print()
+                print("  Fix: chown -R $(whoami):$(whoami) <repo>/.git")
+                print("  Or run: sudo chown -R \$USER:\$USER ~/.hermes/hermes-agent/.git")
+                print()
+            else:
+                print("✗ Could not stash local changes — update aborted.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                print(
+                    "  Commit, stash, or clean up your local changes manually, "
+                    "then re-run `hermes update`."
+                )
+
             raise subprocess.CalledProcessError(
                 push.returncode, push.args, output=push.stdout, stderr=push.stderr
             )

@@ -1,36 +1,86 @@
 """Regression test: Discord /model picker must surface ALL models for a
 provider whose list exceeds 25 entries (e.g. Nous curated + Portal free
-recommendations), not silently truncate the tail at 25 options.
+recommendations), not silently truncate the tail.
 
-Discord caps a single Select at 25 options and a View at 5 action rows. The
-picker keeps 2 rows for Back/Cancel, so it must partition the model list
-across up to 3 select menus. This is what makes free-tier ``:free`` Portal
-picks (appended after the curated list) appear on Discord — they previously
-fell off the 25-option cliff.
+The picker is a paginated button grid: 4 rows × 5 buttons per page (20
+models/page) with a persistent 5th row for Prev/Next navigation. A select-menu
+picker caps at 3 dropdowns × 25 options (75 models) inside Discord's 5-row
+View limit — anything past that clips. Buttons page arbitrarily deep, so even
+providers with hundreds of models (NVIDIA NIM: 139) are fully reachable.
+
+The :free Portal tail is the original regression: it used to fall off the
+25-option cliff, and the multi-select partition that replaced it capped at 75.
 """
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import asyncio
 
 from gateway.platforms.base import utf16_len
 from plugins.platforms.discord.adapter import ModelPickerView
 
 
-def _all_options(view: "ModelPickerView"):
-    """Flatten every model select menu's options into (label, value).
+def _model_buttons(view: "ModelPickerView"):
+    """Return (label, value) for every model button in the grid.
 
-    Detect selects by their ``model_model_select*`` custom_id (and presence of
-    ``.options``) rather than class name — the discord mock in conftest uses a
-    ``_FakeSelect`` class, while the real library uses ``discord.ui.Select``.
+    Model buttons carry their model id in the callback default arg; nav/action
+    buttons (row 4) are excluded because they use bound methods instead.
     """
     out = []
     for child in view.children:
-        custom_id = getattr(child, "custom_id", "")
-        if isinstance(custom_id, str) and custom_id.startswith("model_model_select"):
-            out.extend((opt.label, opt.value) for opt in getattr(child, "options", []))
+        row = getattr(child, "row", None)
+        if row is None or row >= 4:
+            continue
+        cb = getattr(child, "callback", None)
+        defaults = getattr(cb, "__defaults__", None) or ()
+        if defaults:
+            out.append((child.label, defaults[0]))
     return out
 
 
-def test_nous_free_models_render_across_partitioned_selects():
+def _nav_labels(view: "ModelPickerView"):
+    """Labels of the row-4 action buttons (Prev/Next/Free/Back/Cancel)."""
+    return [
+        child.label
+        for child in view.children
+        if getattr(child, "row", None) == 4 and getattr(child, "label", None)
+    ]
+
+
+def _make_view(models, *, free_models=None, current="tencent/hy3"):
+    view = ModelPickerView(
+        providers=[
+            {
+                "slug": "nous",
+                "name": "Nous Portal",
+                "models": list(models),
+                **({"free_models": list(free_models)} if free_models else {}),
+                "total_models": len(models),
+                "is_current": True,
+            }
+        ],
+        current_model=current,
+        current_provider="nous",
+        session_key="session-1",
+        on_model_selected=lambda *a, **k: None,
+        allowed_user_ids={"123"},
+    )
+    view._selected_provider = "nous"
+    return view
+
+
+def _collect_all(view, total_pages):
+    """Walk every page and collect all rendered model ids."""
+    rendered = []
+    for page in range(total_pages):
+        view._model_page = page
+        view._build_model_select("nous")
+        rendered.extend(v for _label, v in _model_buttons(view))
+    return rendered
+
+
+def test_nous_free_models_render_across_pages():
     # 37 models: 32 curated + 5 free Portal recommendations appended at the tail
     # (the real-world shape that was getting clipped at 25 on Discord).
     models = [
@@ -75,83 +125,166 @@ def test_nous_free_models_render_across_partitioned_selects():
     ]
     assert len(models) == 37
 
-    view = ModelPickerView(
-        providers=[
-            {
-                "slug": "nous",
-                "name": "Nous Portal",
-                "models": list(models),
-                "total_models": len(models),
-                "is_current": True,
-            }
-        ],
-        current_model="tencent/hy3",
-        current_provider="nous",
-        session_key="session-1",
-        on_model_selected=lambda *a, **k: None,
-        allowed_user_ids={"123"},
-    )
-    view._selected_provider = "nous"
+    view = _make_view(models)
+    view._model_page = 0
     view._build_model_select("nous")
 
-    # The tail must render — this is the regression that was failing before
-    # multi-select partitioning.
-    rendered = [v for _label, v in _all_options(view)]
+    # Page 1 shows 20 of 37; the tail lives on page 2.
+    assert len(_model_buttons(view)) == 20
+    assert view._model_pages == 2
+
+    # Every model must be reachable across pages — the original regression.
+    rendered = _collect_all(view, view._model_pages)
+    assert len(rendered) == 37
     assert "tencent/hy3:free" in rendered
     assert "stepfun/step-3.7-flash:free" in rendered
     assert "poolside/laguna-s-2.1:free" in rendered
     assert "inclusionai/ling-3.0-flash:free" in rendered
     assert "poolside/laguna-xs-2.1:free" in rendered
 
-    # Every model must appear exactly once (no truncation, no dupes).
+    # No truncation, no dupes.
     assert sorted(rendered) == sorted(models)
-    assert len(rendered) == 37
 
-    # 37 models => 2 select rows of 25 + 12, plus Back/Cancel = 4 action rows.
-    select_rows = [
-        c for c in view.children
-        if isinstance(getattr(c, "custom_id", ""), str)
-        and c.custom_id.startswith("model_model_select")
+    # Navigation buttons present on page 1 of a multi-page provider.
+    view._model_page = 0
+    view._build_model_select("nous")
+    nav = _nav_labels(view)
+    assert "◀ Prev" not in nav  # first page: nothing to go back to
+    assert "Next ▶" in nav
+
+    # ... and on the last page, Next disappears but Prev remains.
+    view._model_page = view._model_pages - 1
+    view._build_model_select("nous")
+    nav = _nav_labels(view)
+    assert "◀ Prev" in nav
+    assert "Next ▶" not in nav
+
+    # Each button label respects Discord's 80-char limit.
+    for label, _value in _model_buttons(view):
+        assert utf16_len(label) <= 80
+
+
+def test_models_sorted_alphabetically_and_deduped():
+    # Deliberately unsorted + containing a duplicate (NVIDIA NIM returns
+    # duplicate entries; duplicate button values cause HTTP 400 on submit).
+    models = [
+        "z-ai/glm-5.2",
+        "openai/gpt-5.6-sol",
+        "deepseek/deepseek-v4-flash",
+        "openai/gpt-5.6-sol",
+        "anthropic/claude-fable-5",
+        "openai/gpt-5.6-sol",
     ]
-    assert len(select_rows) == 2
-    assert len(select_rows[0].options) == 25
-    assert len(select_rows[1].options) == 12
+    view = _make_view(models)
+    view._model_page = 0
+    view._build_model_select("nous")
 
-    # Each option still respects Discord's 100-char utf16 field limit.
-    for _label, value in _all_options(view):
-        assert utf16_len(value) <= 100
-
-    # No single select exceeds Discord's 25-option hard cap.
-    for sel in select_rows:
-        assert len(sel.options) <= 25
-
-
-def test_small_provider_single_select_unchanged():
-    """A <25-model provider still renders as a single select menu."""
-    models = [f"m/{i}" for i in range(10)]
-    view = ModelPickerView(
-        providers=[
-            {
-                "slug": "emoji",
-                "name": "Emoji",
-                "models": models,
-                "total_models": len(models),
-                "is_current": False,
-            }
-        ],
-        current_model="m/0",
-        current_provider="emoji",
-        session_key="session-1",
-        on_model_selected=lambda *a, **k: None,
-        allowed_user_ids={"123"},
+    rendered = [v for _label, v in _model_buttons(view)]
+    assert rendered == sorted(
+        ["anthropic/claude-fable-5", "deepseek/deepseek-v4-flash",
+         "openai/gpt-5.6-sol", "z-ai/glm-5.2"]
     )
-    view._selected_provider = "emoji"
-    view._build_model_select("emoji")
+    assert len(rendered) == 4  # deduped from 6
+    assert view._model_pages == 1
 
-    select_rows = [
-        c for c in view.children
-        if isinstance(getattr(c, "custom_id", ""), str)
-        and c.custom_id.startswith("model_model_select")
+
+def test_small_provider_single_page_no_nav():
+    """A <20-model provider renders one page with no pagination buttons."""
+    models = [f"m/{i}" for i in range(10)]
+    view = _make_view(models)
+    view._build_model_select("nous")
+
+    assert len(_model_buttons(view)) == 10
+    assert view._model_pages == 1
+    nav = _nav_labels(view)
+    assert "◀ Prev" not in nav
+    assert "Next ▶" not in nav
+    assert "◀ Back" in nav
+    assert "Cancel" in nav
+
+
+def test_free_toggle_shows_free_subset_first():
+    """Free-only mode (default) shows the free subset; toggling shows all."""
+    models = [
+        "anthropic/claude-fable-5",
+        "openai/gpt-5.6-sol",
+        "tencent/hy3:free",
+        "stepfun/step-3.7-flash:free",
     ]
-    assert len(select_rows) == 1
-    assert len(select_rows[0].options) == 10
+    free = ["tencent/hy3:free", "stepfun/step-3.7-flash:free"]
+    view = _make_view(models, free_models=free)
+    view._model_page = 0
+    view._build_model_select("nous")
+
+    # Default is free-only.
+    rendered = [v for _label, v in _model_buttons(view)]
+    assert rendered == sorted(free)
+    nav = _nav_labels(view)
+    assert "🆓 Free" in nav
+
+    # Toggle to all models.
+    view._free_only = False
+    view._build_model_select("nous")
+    rendered = [v for _label, v in _model_buttons(view)]
+    assert rendered == sorted(models)
+    nav = _nav_labels(view)
+    assert "💳 All" in nav
+
+
+def test_free_filter_note_in_embed():
+    """The embed reports 'showing N free of M' so the filter is self-explanatory."""
+    models = [
+        "anthropic/claude-fable-5",
+        "openai/gpt-5.6-sol",
+        "tencent/hy3:free",
+        "stepfun/step-3.7-flash:free",
+    ]
+    free = ["tencent/hy3:free", "stepfun/step-3.7-flash:free"]
+    view = _make_view(models, free_models=free)
+
+    captured = {}
+
+    async def edit_message(**kwargs):
+        captured["description"] = kwargs["embed"].description
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=123),
+        channel_id=456,
+        data={"values": ["nous"]},
+        response=SimpleNamespace(
+            defer=AsyncMock(),
+            send_message=AsyncMock(),
+            edit_message=AsyncMock(side_effect=edit_message),
+        ),
+        edit_original_response=AsyncMock(),
+    )
+
+    # Free-only default: "showing 2 free of 4 models"
+    view._free_only = True
+    view._model_page = 0
+    view._selected_provider = "nous"
+    asyncio.get_event_loop().run_until_complete(
+        view._render_model_page(interaction)
+    )
+    assert "Showing 2 free of 4 models" in captured["description"]
+
+    # All-models toggle: "All 4 models"
+    view._free_only = False
+    asyncio.get_event_loop().run_until_complete(
+        view._render_model_page(interaction)
+    )
+    assert "All 4 models" in captured["description"]
+
+
+def test_139_model_provider_fully_reachable():
+    """NVIDIA NIM returns 139 models — the case the 75-cap partition clips."""
+    models = [f"nvidia/nim-model-{i:03d}" for i in range(139)]
+    view = _make_view(models)
+    view._model_page = 0
+    view._build_model_select("nous")
+
+    assert view._model_pages == 7  # ceil(139/20)
+    rendered = _collect_all(view, view._model_pages)
+    assert len(rendered) == 139
+    assert rendered[0] == "nvidia/nim-model-000"
+    assert rendered[-1] == "nvidia/nim-model-138"

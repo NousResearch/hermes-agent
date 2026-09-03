@@ -84,6 +84,51 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
+def test_claude_opus_5_pricing_entry_exists():
+    """Regression test: claude-opus-5 must have a pricing entry.
+
+    Before this fix, claude-opus-5 sessions showed as unknown cost / $0 in
+    /usage, the dashboard, and cost aggregation because the
+    _OFFICIAL_DOCS_PRICING table had no entry for the model.  See #100848.
+    Rates track Anthropic's published Opus 5 pricing ($5/$25 per MTok,
+    $0.50 cache reads; cache writes use the schema's 5-minute bucket at
+    1.25x input).
+    """
+    entry = get_pricing_entry(
+        "claude-opus-5",
+        provider="anthropic",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 5.00
+    assert float(entry.output_cost_per_million) == 25.00
+    assert float(entry.cache_read_cost_per_million) == 0.50
+    assert float(entry.cache_write_cost_per_million) == 6.25
+
+
+def test_claude_opus_5_session_estimates_cost_not_unknown():
+    """A direct-Anthropic claude-opus-5 session must produce a dollar
+    estimate, not ``unknown`` — the user-visible symptom in #100848.
+    """
+    usage = SimpleNamespace(
+        input_tokens=55,
+        output_tokens=7113,
+        cache_read_input_tokens=1369379,
+        cache_creation_input_tokens=42135,
+    )
+    canonical = normalize_usage(
+        usage, provider="anthropic", api_mode="anthropic_messages"
+    )
+
+    result = estimate_usage_cost(
+        "claude-opus-5",
+        canonical,
+        provider="anthropic",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+
+
 def test_deepseek_v4_pro_pricing_entry_exists():
     """Regression test: deepseek-v4-pro must have a pricing entry.
 

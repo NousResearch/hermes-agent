@@ -584,7 +584,8 @@ export async function runGroupChatMemberTurn(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  source?: string
 ): Promise<null | string> {
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
@@ -593,7 +594,7 @@ export async function runGroupChatMemberTurn(
   const releaseTurnLease = await retainGroupTurnRoute(member)
 
   try {
-    return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images)
+    return await runGroupChatMemberTurnLeased(group, member, prompt, thread, images, source)
   } finally {
     releaseTurnLease()
   }
@@ -604,7 +605,8 @@ async function runGroupChatMemberTurnLeased(
   member: GroupMember,
   prompt: string,
   thread: string,
-  images?: Attachment[]
+  images?: Attachment[],
+  source?: string
 ): Promise<null | string> {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
@@ -619,6 +621,7 @@ async function runGroupChatMemberTurnLeased(
   recordGroupActivity(group, {
     kind: 'working',
     member: member.name,
+    source,
     thread
   })
 
@@ -753,6 +756,7 @@ async function runGroupChatMemberTurnLeased(
         recordGroupActivity(group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
           member: member.name,
+          source,
           thread
         })
 
@@ -762,6 +766,7 @@ async function runGroupChatMemberTurnLeased(
       recordGroupActivity(group, {
         kind: 'passed',
         member: member.name,
+        source,
         thread
       })
 
@@ -783,6 +788,7 @@ async function runGroupChatMemberTurnLeased(
   recordGroupActivity(group, {
     kind: 'timed-out',
     member: member.name,
+    source,
     thread
   })
   syncGroupClarify(group, member, null)
@@ -791,6 +797,7 @@ async function runGroupChatMemberTurnLeased(
       ...(r.stranded || {}),
       [groupMemberKey(member)]: {
         before,
+        source,
         thread
       }
     }
@@ -811,6 +818,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   // Markers were a bare number before threads; normalize both shapes.
   const strandedBefore = typeof marker === 'number' ? marker : marker?.before
   const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
+  const strandedSource = typeof marker === 'object' ? marker?.source : undefined
 
   if (typeof strandedBefore !== 'number') {
     return
@@ -861,6 +869,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     recordGroupActivity(group, {
       kind: 'delivered',
       member: member.name,
+      source: strandedSource,
       thread: strandedThread
     })
     appendGroupChatEntry(

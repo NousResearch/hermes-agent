@@ -2,12 +2,12 @@
  * The per-room activity feed: a bounded, runtime-only record of turn events
  * for the room view's collapsible Activity list.
  *
- * Depends on the room store (for the epoch it tags events with and the
- * speaker label it renders) and on nothing else, so the coordination engine
- * can record into it without a cycle.
+ * Depends on the room store for epoch/speaker truth and mirrors live member
+ * turns into the shared Agents store. The transcript remains authoritative;
+ * this module only projects its already-recorded activity lifecycle.
  */
 
-import { atom } from '@hermes/plugin-sdk'
+import { atom, host } from '@hermes/plugin-sdk'
 
 import { $groupChats, groupSpeakerLabel } from './group-chat'
 import type { GroupActivityEvent, GroupActivityKind } from './types'
@@ -31,6 +31,157 @@ export interface GroupActivityEntry extends Omit<GroupActivityEvent, 'group' | '
   thread?: null | string
 }
 export const $groupActivity = atom<Record<string, { events: GroupActivityEntry[] }>>({})
+
+const groupAgentTurns = new Map<string, { id: string; source?: string }>()
+let groupAgentTurnSequence = 0
+
+const groupAgentScope = (group: string, roomId?: null | string) => {
+  const room = $groupChats.get()[group]
+
+  return `bot-group:${roomId || room?.roomId || group}`
+}
+
+const groupAgentTurnKey = (scope: string, thread: null | string | undefined, member: string) =>
+  `${scope}:${thread || 'room'}:${member}`
+
+/** Remove the Agents-panel projection for a room without touching native
+ * subagents or another room. Used on a new room run and on disband. */
+export function clearGroupAgentActivity(group: string, roomId?: null | string) {
+  const scope = groupAgentScope(group, roomId)
+  host.agentActivity?.clear(scope)
+
+  for (const key of groupAgentTurns.keys()) {
+    if (key.startsWith(`${scope}:`)) {
+      groupAgentTurns.delete(key)
+    }
+  }
+}
+
+function mirrorGroupActivityToAgents(group: string, entry: GroupActivityEntry) {
+  const scope = groupAgentScope(group)
+
+  if (entry.kind === 'queued' && entry.member === 'You') {
+    clearGroupAgentActivity(group)
+
+    return
+  }
+
+  const member = entry.member && entry.member !== 'You' ? entry.member : null
+
+  if (!member) {
+    if (entry.kind === 'stopped') {
+      for (const [key, turn] of groupAgentTurns) {
+        if (!key.startsWith(`${scope}:`)) {
+          continue
+        }
+
+        host.agentActivity?.update(
+          scope,
+          {
+            createIfMissing: false,
+            id: turn.id,
+            status: 'interrupted',
+            summary: `Stopped in ${group}`
+          }
+        )
+        groupAgentTurns.delete(key)
+      }
+    }
+
+    return
+  }
+
+  const turnKey = groupAgentTurnKey(scope, entry.thread, member)
+  let turn = groupAgentTurns.get(turnKey)
+
+  if (entry.kind === 'working') {
+    // Manual/history-only activity rows are presentation data; only an actual
+    // live room drive belongs in the global Agents activity panel.
+    if (!$groupChats.get()[group]?.running) {
+      return
+    }
+
+    const source = entry.source || undefined
+    turn = {
+      id: `${turnKey}:${++groupAgentTurnSequence}`,
+      source
+    }
+    groupAgentTurns.set(turnKey, turn)
+    host.agentActivity?.update(
+      scope,
+      {
+        goal: `${source ? `${source} → ` : ''}${member} · ${group}`,
+        id: turn.id,
+        status: 'running',
+        text: `${member} started work in ${group}`
+      }
+    )
+
+    return
+  }
+
+  if (!turn) {
+    return
+  }
+
+  if (entry.kind === 'timed-out') {
+    host.agentActivity?.update(
+      scope,
+      {
+        createIfMissing: false,
+        id: turn.id,
+        status: 'running',
+        text: `${member} is still working; the reply will be delivered when ready`
+      }
+    )
+
+    return
+  }
+
+  let terminal: { status: 'cancelled' | 'completed' | 'failed'; summary: string } | undefined
+
+  switch (entry.kind) {
+    case 'cancelled':
+      terminal = { status: 'cancelled', summary: `Turn superseded in ${group}` }
+
+      break
+
+    case 'delivered':
+      terminal = { status: 'completed', summary: `Delivered a late reply in ${group}` }
+
+      break
+
+    case 'failed':
+      terminal = { status: 'failed', summary: `Failed in ${group}` }
+
+      break
+
+    case 'passed':
+      terminal = { status: 'completed', summary: `Reviewed ${group}; no reply needed` }
+
+      break
+
+    case 'replied':
+      terminal = { status: 'completed', summary: `Replied in ${group}` }
+
+      break
+  }
+
+  if (!terminal) {
+    return
+  }
+
+  host.agentActivity?.update(
+    scope,
+    {
+      createIfMissing: false,
+      id: turn.id,
+      status: terminal.status === 'cancelled' ? 'interrupted' : terminal.status,
+      summary: terminal.summary
+    }
+  )
+  groupAgentTurns.delete(turnKey)
+}
 
 export function recordGroupActivity(group: string, event: Omit<GroupActivityEntry, 'at' | 'epoch'>) {
   const room = $groupChats.get()[group]
@@ -57,6 +208,7 @@ export function recordGroupActivity(group: string, event: Omit<GroupActivityEntr
       events
     }
   })
+  mirrorGroupActivityToAgents(group, entry)
 
   return entry
 }

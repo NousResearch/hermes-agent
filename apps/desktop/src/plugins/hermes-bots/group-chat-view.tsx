@@ -51,6 +51,7 @@ import {
 } from './data'
 import {
   $groupActivity,
+  clearGroupAgentActivity,
   currentGroupActivity,
   GROUP_ACTIVITY_GLYPHS,
   groupActivityLabel,
@@ -102,6 +103,19 @@ import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+
+export function groupMessageCardPresentation(isUser: boolean) {
+  return isUser
+    ? {
+        className: 'border-(--ui-stroke-secondary) bg-(--chrome-action-hover)',
+        slot: 'bot-group-user-card'
+      }
+    : {
+        className:
+          'border-(--ui-stroke-tertiary) border-l-4 border-l-(--ui-stroke-secondary) bg-(--ui-chat-bubble-opaque-background) hover:shadow-[0_0_18px_color-mix(in_srgb,var(--ui-accent,#6e9fc5)_14%,transparent)]',
+        slot: 'bot-group-agent-card'
+      }
+}
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -177,6 +191,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   delete needs[group]
   $groupNeedsYou.set(needs)
   clearGroupClarify(group)
+  clearGroupAgentActivity(group, prior.roomId)
 
   // Persist the room map WITHOUT the disbanded room so it can't come back
   // on the next window load.
@@ -935,7 +950,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </Button>
   )
 
-  // One log entry, rendered exactly as before conversation folding existed.
+  // One room entry. Member replies use the same quiet, bordered flashcard
+  // language as the main assistant transcript so a long group conversation
+  // remains scannable; user prompts keep their stronger selected tint.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
     const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
@@ -980,13 +997,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const appearance = isUser ? null : botAppearance(entry.from.name, meta)
     const image = appearance?.image ?? null
     const photo = Boolean(image && !isBackfilledFacePng(image))
+    const card = groupMessageCardPresentation(isUser)
 
     return (
       <div
         className={cn(
-          'group flex items-start gap-2',
-          isUser ? 'rounded-md bg-(--chrome-action-hover) px-2 py-1.5' : 'px-2 py-1'
+          'group flex items-start gap-2 rounded-xl border px-2.5 py-2 shadow-sm transition-shadow',
+          card.className
         )}
+        data-slot={card.slot}
         key={entryKey}
       >
         {appearance ? (

@@ -15,6 +15,7 @@ import type { GroupMember } from './types'
 // The transcript stays the only durable record — activity is never persisted.
 
 const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+const agentActivity = vi.hoisted(() => ({ clear: vi.fn(), update: vi.fn() }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
@@ -49,6 +50,7 @@ async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
   }
 
   Object.assign(host, gateway.host)
+  host.agentActivity = agentActivity
 
   const [activity, chat, data, rounds, shared] = await Promise.all([
     import('./group-activity'),
@@ -69,9 +71,77 @@ function feed(room: Room, group: string): ActivityRow[] {
 
 beforeEach(() => {
   runTimersInline()
+  agentActivity.clear.mockReset()
+  agentActivity.update.mockReset()
 })
 
 describe('turn arc', () => {
+  it('mirrors a bot-to-bot handoff into the shared Agents activity tree', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Leadership', current => {
+      current.epoch = 1
+      current.log = []
+      current.roomId = 'leadership-room'
+      current.running = true
+
+      return current
+    })
+
+    room.activity.recordGroupActivity('Leadership', {
+      kind: 'queued',
+      member: 'You',
+      thread: 'thread-1'
+    })
+    room.activity.recordGroupActivity('Leadership', {
+      kind: 'working',
+      member: 'cto',
+      source: 'ceo',
+      thread: 'thread-1'
+    })
+
+    expect(agentActivity.clear).toHaveBeenCalledWith('bot-group:leadership-room')
+    expect(agentActivity.update).toHaveBeenLastCalledWith(
+      'bot-group:leadership-room',
+      expect.objectContaining({ goal: 'ceo → cto · Leadership', status: 'running' })
+    )
+
+    room.activity.recordGroupActivity('Leadership', {
+      kind: 'replied',
+      member: 'cto',
+      source: 'ceo',
+      thread: 'thread-1'
+    })
+
+    expect(agentActivity.update).toHaveBeenLastCalledWith(
+      'bot-group:leadership-room',
+      expect.objectContaining({ status: 'completed', summary: 'Replied in Leadership' })
+    )
+  })
+
+  it('keeps a timed-out room turn active until its late reply is delivered', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Slow', current => {
+      current.log = []
+      current.running = true
+
+      return current
+    })
+    room.activity.recordGroupActivity('Slow', { kind: 'working', member: 'cto', source: 'ceo', thread: 't' })
+    room.activity.recordGroupActivity('Slow', { kind: 'timed-out', member: 'cto', source: 'ceo', thread: 't' })
+
+    expect(agentActivity.update).toHaveBeenLastCalledWith(
+      'bot-group:Slow',
+      expect.objectContaining({ status: 'running', text: expect.stringContaining('still working') })
+    )
+
+    room.activity.recordGroupActivity('Slow', { kind: 'delivered', member: 'cto', source: 'ceo', thread: 't' })
+
+    expect(agentActivity.update).toHaveBeenLastCalledWith(
+      'bot-group:Slow',
+      expect.objectContaining({ status: 'completed', summary: 'Delivered a late reply in Slow' })
+    )
+  })
+
   it('a settled turn records the full truthful arc: queued, working, replies and passes, settled', async () => {
     const room = await loadRoom({
       turn: ({ profile, prompt }) =>

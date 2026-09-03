@@ -1444,26 +1444,30 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    already_enabled = key in enabled and key not in disabled
+    # The loader denies on the canonical key, the bare leaf, OR the manifest
+    # name, so this guard must consider every alias too. Checking only the key
+    # made a stale alias (for example ``superpowers`` left behind when an
+    # install moved the plugin to ``superpowers/.hermes-plugin``) report
+    # "already enabled" and skip the cleanup below, so the documented remedy
+    # `hermes plugins enable <name>` could never clear the deny entry.
+    aliases = {key, key.split("/")[-1]}
+    for entry in _discover_all_plugins():
+        # entry = (name, version, description, source, dir_path, key)
+        if entry[5] == key:
+            aliases.add(entry[0])
+            break
+
+    already_enabled = key in enabled and not (aliases & disabled)
 
     if not already_enabled:
         enabled.add(key)
-        disabled.discard(key)
         # Drop every alias of this plugin from the disabled list so an
         # explicit disable under a different form can't keep it off. The
         # loader's disable check matches on BOTH the canonical key
         # (``web/firecrawl``) AND the manifest name (``web-firecrawl``);
         # a stale entry under either form makes "explicit disable wins"
-        # (plugins.py) silently veto this enable. Discard the key, its
-        # bare leaf, and the manifest name. (#40190 follow-up.)
-        bare = key.split("/")[-1]
-        if bare != key:
-            disabled.discard(bare)
-        for entry in _discover_all_plugins():
-            # entry = (name, version, description, source, dir_path, key)
-            if entry[5] == key:
-                disabled.discard(entry[0])
-                break
+        # (plugins.py) silently veto this enable. (#40190 follow-up.)
+        disabled -= aliases
         _save_enabled_set(enabled)
         _save_disabled_set(disabled)
         console.print(

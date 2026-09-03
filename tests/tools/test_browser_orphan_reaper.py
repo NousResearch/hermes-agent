@@ -596,7 +596,7 @@ class TestPeriodicOrphanReap:
                        side_effect=lambda: reap_calls.append(1)), \
                  patch("tools.browser_tool._cleanup_inactive_browser_sessions",
                        side_effect=fake_cleanup), \
-                 patch("tools.browser_tool.time.sleep"):
+                 patch("tools.browser_tool._idle_between_sweeps"):
                 bt._browser_cleanup_thread_worker()
         finally:
             bt._cleanup_running = orig_running

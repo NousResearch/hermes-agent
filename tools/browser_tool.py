@@ -2277,6 +2277,10 @@ def _browser_session_backend(session_key: str) -> _BrowserSessionBackend:
 # Background cleanup thread state
 _cleanup_thread = None
 _cleanup_running = False
+#: Seconds the cleanup daemon idles between sweeps.
+_CLEANUP_CYCLE_SECONDS = 30.0
+#: Set to wake the cleanup daemon for shutdown; doubles as its idle timer.
+_cleanup_stop = threading.Event()
 # Protects _session_last_activity AND _active_sessions for thread safety
 # (subagents run concurrently via ThreadPoolExecutor)
 _cleanup_lock = threading.Lock()
@@ -2802,7 +2806,7 @@ def _browser_cleanup_thread_worker():
     at any point in a long-lived process, and a startup-only reap can never
     recover from that.
     """
-    reap_every_cycles = max(1, round(BROWSER_ORPHAN_REAP_INTERVAL / 30))
+    reap_every_cycles = max(1, round(BROWSER_ORPHAN_REAP_INTERVAL / _CLEANUP_CYCLE_SECONDS))
     cycle = 0
 
     while _cleanup_running:
@@ -2819,11 +2823,27 @@ def _browser_cleanup_thread_worker():
         except Exception as e:
             logger.warning("Cleanup thread error: %s", e)
 
-        # Sleep in 1-second intervals so we can stop quickly if needed
-        for _ in range(30):
-            if not _cleanup_running:
-                break
-            time.sleep(1)
+        _idle_between_sweeps(_CLEANUP_CYCLE_SECONDS)
+
+
+def _idle_between_sweeps(seconds: float) -> None:
+    """Block for up to *seconds* unless the daemon is told to stop first.
+
+    Idles on the stop Event, not on ``time.sleep()``: ``Event.wait`` is a
+    C-level timed wait that patching in another module cannot turn into a
+    no-op. The previous ``for _ in range(30): time.sleep(1)`` could — this
+    daemon outlives the test that started it, and ``patch("<mod>.time.sleep")``
+    rebinds the attribute on the shared ``time`` module, i.e. process-wide.
+    The twin of this loop in ``tools/terminal_tool.py`` spun at full CPU that
+    way and grew a MagicMock's call log to ~14 GB before the OOM killer took
+    the test run down.
+
+    Still polls ``_cleanup_running`` once a second so callers that only flip
+    the flag keep working; ``_cleanup_stop`` makes shutdown immediate.
+    """
+    for _ in range(max(1, int(seconds))):
+        if not _cleanup_running or _cleanup_stop.wait(1.0):
+            return
 
 
 def _start_browser_cleanup_thread():
@@ -2832,6 +2852,7 @@ def _start_browser_cleanup_thread():
 
     with _cleanup_lock:
         if _cleanup_thread is None or not _cleanup_thread.is_alive():
+            _cleanup_stop.clear()
             _cleanup_running = True
             _cleanup_thread = threading.Thread(
                 target=_browser_cleanup_thread_worker,
@@ -2846,6 +2867,7 @@ def _stop_browser_cleanup_thread():
     """Stop the background cleanup thread."""
     global _cleanup_running
     _cleanup_running = False
+    _cleanup_stop.set()
     if _cleanup_thread is not None:
         _cleanup_thread.join(timeout=5)
 

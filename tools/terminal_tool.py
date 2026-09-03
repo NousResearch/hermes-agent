@@ -1161,6 +1161,10 @@ _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox cr
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
 _cleanup_thread = None
 _cleanup_running = False
+#: Seconds the cleanup daemon idles between sweeps.
+_CLEANUP_INTERVAL_SECONDS = 60.0
+#: Set to wake the cleanup daemon for shutdown; doubles as its idle timer.
+_cleanup_stop = threading.Event()
 
 # Once-per-process guard for the docker orphan reaper (issue #20561).
 # Set when _maybe_reap_docker_orphans first runs; concurrent _create_environment
@@ -2271,10 +2275,27 @@ def _cleanup_thread_worker():
         except Exception as e:
             logger.warning("Error in cleanup thread: %s", e, exc_info=True)
 
-        for _ in range(60):
-            if not _cleanup_running:
-                break
-            time.sleep(1)
+        _idle_between_sweeps(_CLEANUP_INTERVAL_SECONDS)
+
+
+def _idle_between_sweeps(seconds: float) -> None:
+    """Block for up to *seconds* unless the daemon is told to stop first.
+
+    Idles on the stop Event, not on ``time.sleep()``: ``Event.wait`` is a
+    C-level timed wait that patching in another module cannot turn into a
+    no-op. The previous ``for _ in range(60): time.sleep(1)`` could — this
+    daemon outlives the test that started it, so once any later test did
+    ``patch("<somemodule>.time.sleep")`` (which rebinds the attribute on the
+    shared ``time`` module, i.e. process-wide) the loop spun at full CPU speed
+    and the MagicMock recorded a call per turn; about two minutes of that is
+    ~14 GB of RSS and an OOM kill of the whole test run.
+
+    Still polls ``_cleanup_running`` once a second so callers that only flip
+    the flag keep working; ``_cleanup_stop`` makes shutdown immediate.
+    """
+    for _ in range(max(1, int(seconds))):
+        if not _cleanup_running or _cleanup_stop.wait(1.0):
+            return
 
 
 def _start_cleanup_thread():
@@ -2283,6 +2304,7 @@ def _start_cleanup_thread():
 
     with _env_lock:
         if _cleanup_thread is None or not _cleanup_thread.is_alive():
+            _cleanup_stop.clear()
             _cleanup_running = True
             _cleanup_thread = threading.Thread(target=_cleanup_thread_worker, daemon=True)
             _cleanup_thread.start()
@@ -2292,6 +2314,7 @@ def _stop_cleanup_thread():
     """Stop the background cleanup thread."""
     global _cleanup_running
     _cleanup_running = False
+    _cleanup_stop.set()
     if _cleanup_thread is not None:
         try:
             _cleanup_thread.join(timeout=5)

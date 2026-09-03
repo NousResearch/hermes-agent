@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SessionMessage } from '@/types/hermes'
+
 import { chatMessageText, toChatMessages } from './chat-messages'
 
 // #68321 / GregKM 2026-09-02 v0.21.0 DB-level evidence: an assistant row

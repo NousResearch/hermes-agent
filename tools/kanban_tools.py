@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_TASK_ENV = "HERMES_KANBAN_TASK"
 
 
 def _profile_has_kanban_toolset() -> bool:
@@ -114,7 +115,7 @@ def _check_kanban_mode() -> bool:
     """
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
+    if os.environ.get(KANBAN_TASK_ENV) and _is_dispatcher_owned_worker():
         return True
     return _profile_has_kanban_toolset()
 
@@ -130,7 +131,7 @@ def _check_kanban_orchestrator_mode() -> bool:
     """
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
+    if os.environ.get(KANBAN_TASK_ENV) and _is_dispatcher_owned_worker():
         return False
     return _profile_has_kanban_toolset()
 
@@ -149,13 +150,13 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         # A cron job fired in-process from a worker must never inherit the
         # worker's task id as an implicit default.
         return None
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = os.environ.get(KANBAN_TASK_ENV)
     return env_tid or None
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
     """Return this worker's dispatcher run id when it is scoped to task_id."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+    if os.environ.get(KANBAN_TASK_ENV) != task_id:
         return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if not raw:
@@ -170,7 +171,7 @@ def _stamp_worker_session_metadata(
     task_id: str, metadata: Optional[dict]
 ) -> Optional[dict]:
     """Add trusted worker session id metadata for this worker's own task."""
-    if os.environ.get("HERMES_KANBAN_TASK") != task_id:
+    if os.environ.get(KANBAN_TASK_ENV) != task_id:
         return metadata
     session_id = os.environ.get("HERMES_SESSION_ID")
     if not session_id:
@@ -199,7 +200,7 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     when it must be rejected. Callers should ``return`` the error
     verbatim.
     """
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = os.environ.get(KANBAN_TASK_ENV)
     if not env_tid:
         # Orchestrator or CLI context — no task-scope restriction.
         return None
@@ -326,7 +327,7 @@ def heartbeat_current_worker_from_env() -> bool:
     the worst case is one extra DB write per race, which is harmless.
     """
     global _auto_heartbeat_last_attempt
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = os.environ.get(KANBAN_TASK_ENV)
     if not tid:
         return False
     import time as _time
@@ -387,7 +388,7 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     the run started are injected. The worker's own authored comments (matched
     by ``HERMES_PROFILE``) are skipped to avoid echoing itself.
     """
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = os.environ.get(KANBAN_TASK_ENV)
     if not tid or agent is None or not hasattr(agent, "steer"):
         return False
     global _comment_poll_last_attempt
@@ -479,7 +480,7 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get(KANBAN_TASK_ENV):
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
@@ -1380,22 +1381,8 @@ def _handle_create(args: dict, **kw) -> str:
         )
     body = args.get("body")
     parents = args.get("parents") or []
-    tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
-    # Stamp the originating session id when the agent loop runs under
-    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
-    # CLI / dashboard paths and on legacy hosts that don't set the env.
-    # Prefer the request-scoped api_server origin binding: HERMES_SESSION_ID
-    # is clobbered with a subagent's internal id whenever a child agent is
-    # constructed in-process (agent_init calls set_current_session_id), which
-    # would stamp — and later wake — the wrong session.
-    from tools.async_delegation import _current_origin_session_id
-
-    session_id = (
-        args.get("session_id")
-        or _current_origin_session_id()
-        or os.environ.get("HERMES_SESSION_ID")
-    )
     priority = args.get("priority")
+    tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Resolve workspace. Workspace sharing is always explicit: omitted fields
     # mean a fresh scratch workspace, even when a dispatcher-spawned worker
     # creates the task. Reusing a parent's literal path would let a child
@@ -1443,16 +1430,28 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Explicit tool args win. For dispatcher workers, the durable
+            # parent session on the worker task wins over request-origin and
+            # process-global session bindings. Orchestrator/API callers then
+            # use the request origin before the legacy environment fallback.
+            from tools.async_delegation import _current_origin_session_id
+
+            _self_tid = os.environ.get(KANBAN_TASK_ENV)
+            _self_task = kb.get_task(conn, _self_tid) if _self_tid else None
+            session_id: Optional[str] = args.get("session_id")
+            if not session_id and _self_task is not None:
+                session_id = _self_task.session_id
+            if not session_id:
+                session_id = _current_origin_session_id()
+            if not session_id:
+                session_id = os.environ.get("HERMES_SESSION_ID")
             # A project link is safe to inherit because ``create_task`` turns
             # it into a fresh per-task worktree. Never inherit the parent's
             # literal workspace kind/path; directory sharing must be explicit.
             if _inherit_project and project_id is None:
-                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
-                if _self_tid:
-                    _self_task = kb.get_task(conn, _self_tid)
-                    if _self_task is not None and _self_task.project_id:
-                        project_id = _self_task.project_id
-                        project_source_task_id = _self_task.id
+                if _self_task is not None and _self_task.project_id:
+                    project_id = _self_task.project_id
+                    project_source_task_id = _self_task.id
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),

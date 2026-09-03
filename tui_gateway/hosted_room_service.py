@@ -152,8 +152,14 @@ class HostedRoomService:
         profiles = {"default"}
         profiles_dir = self.root / "profiles"
         if profiles_dir.is_dir():
+            # Hidden directories (e.g. the `.deleted` tombstone created by
+            # `hermes profile delete`) are not addressable profiles: profile
+            # identifiers must start alphanumeric, so listing them would make
+            # every roster validation fail with "invalid local profile".
             profiles.update(
-                path.name for path in profiles_dir.iterdir() if path.is_dir()
+                path.name
+                for path in profiles_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".")
             )
         return tuple(sorted(profiles))
 

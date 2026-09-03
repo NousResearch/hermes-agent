@@ -315,6 +315,30 @@ def _wait_for(predicate, timeout=2.0):
     raise AssertionError("condition was not reached")
 
 
+def test_local_profiles_hides_tombstone_so_roster_validation_survives(tmp_path):
+    """A deleted profile must not brick roster validation install-wide.
+
+    ``hermes profile delete`` leaves a hidden ``.deleted`` tombstone directory
+    under ``profiles/``. Profile identifiers must start alphanumeric, so
+    listing the tombstone would make roster validation reject its own
+    known-profile set with "invalid local profile" before even looking at the
+    requested members.
+    """
+    (tmp_path / "profiles" / "ops").mkdir(parents=True)
+    (tmp_path / "profiles" / ".deleted" / "ops").mkdir(parents=True)
+    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+
+    assert service.local_profiles() == ("default", "ops")
+    members = discussion.validate_roster(
+        [
+            {"member_id": "m1", "profile": "default", "handle": "alice"},
+            {"member_id": "m2", "profile": "ops", "handle": "bob"},
+        ],
+        local_profiles=service.local_profiles(),
+    )
+    assert [member.profile for member in members] == ["default", "ops"]
+
+
 def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_path):
     """One running task must not be counted again after it becomes stopping."""
 

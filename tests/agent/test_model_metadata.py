@@ -1458,6 +1458,18 @@ class TestParseContextLimitFromError:
         fell through to None."""
         assert parse_context_limit_from_error(msg) == expected
 
+    def test_vllm_total_window_cap_format(self):
+        """vLLM's max_tokens rejection embeds the limit behind a descriptor —
+        "max_model_len=max_total_tokens=262144" — and the intervening
+        "=max_total_tokens=" is not in the delimiter set, so the parser
+        returned None (#102494)."""
+        msg = (
+            "max_tokens=393216 cannot be greater than "
+            "max_model_len=max_total_tokens=262144. Please request fewer "
+            "output tokens. (parameter=max_tokens, value=393216)"
+        )
+        assert parse_context_limit_from_error(msg) == 262144
+
     @pytest.mark.parametrize("msg,expected", [
         # Google Gemini/Gemma overflow phrasing (#57275): the limit follows
         # "supports up to"; the larger input count before it must NOT win.

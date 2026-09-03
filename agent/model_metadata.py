@@ -1786,6 +1786,10 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
+        # vLLM max_tokens rejection names the limit with an intervening
+        # descriptor: "max_model_len=max_total_tokens=262144" — the generic
+        # max_model_len pattern below cannot cross "=max_total_tokens=".
+        r'max_model_len\s*=\s*max_total_tokens\s*=\s*(\d{4,})',
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
@@ -1882,6 +1886,16 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # This is independent of the input context window.
         "exceeds model" in error_lower
         and "maximum output tokens" in error_lower
+    ) or (
+        # vLLM enforces input + max_tokens <= max_model_len and rejects an
+        # oversized output cap by naming the total window, e.g.
+        #   "max_tokens=393216 cannot be greater than
+        #    max_model_len=max_total_tokens=262144. Please request fewer
+        #    output tokens. (parameter=max_tokens, value=393216)"
+        # The rejection is on the max_tokens PARAMETER, so the input itself
+        # fits — reduce max_tokens and retry; do NOT compress.
+        "cannot be greater than" in error_lower
+        and "max_model_len" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -1985,6 +1999,22 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         if _available >= 1:
             return _available
 
+    # vLLM total-window form: "max_tokens=393216 cannot be greater than
+    # max_model_len=max_total_tokens=262144".  The message names the total
+    # window (input + output combined) but not the input size, so return the
+    # window itself as the upper bound — the caller clamps it against its own
+    # input estimate (conversation_loop keeps
+    # min(available_out, old_ctx - request_input_estimate) - 64), which yields
+    # exactly window - input - margin: the cap vLLM's
+    # input + max_tokens <= max_model_len rule demands.
+    _m_vllm_total = re.search(
+        r'max_model_len\s*=\s*max_total_tokens\s*=\s*(\d+)', error_lower
+    )
+    if _m_vllm_total:
+        _window = int(_m_vllm_total.group(1))
+        if _window >= 1:
+            return _window
+
     return None
 
 
@@ -2035,6 +2065,8 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "must be" in error_lower
         or ("exceeds model" in error_lower
             and "maximum output tokens" in error_lower)
+        or ("cannot be greater than" in error_lower         # vLLM: "max_tokens=N cannot
+            and "max_model_len" in error_lower)             # be greater than max_model_len=..."
     )
     if not output_cap_signal:
         return False

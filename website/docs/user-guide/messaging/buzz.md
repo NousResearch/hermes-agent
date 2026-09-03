@@ -10,11 +10,71 @@ Inbound messages arrive over a persistent NIP-42-authenticated Nostr WebSocket s
 
 > Run `hermes gateway setup` and pick **Buzz** for a guided walk-through.
 
+## Recommended path (what actually works)
+
+Path ③ keeps full Hermes (memory, skills, approvals, cron, multi-platform gateway). The chicken-and-egg is community membership: the agent key must already be allowed on the relay, and most community relays also want a NIP-OA auth tag.
+
+**Practical order:**
+
+1. **Mint identity in Buzz Desktop**
+
+   Create the agent in Desktop so the community issues the Nostr keypair and NIP-OA auth tag. This is the easy membership step.
+
+2. **Stop Desktop ACP on that key**
+
+   Stop the worker and turn off start-on-launch. Do **not** leave Desktop ACP and the Hermes gateway running on the same agent key.
+
+3. **Hand the secrets to Hermes**
+   ```bash
+   hermes gateway setup   # pick Buzz
+   ```
+   Paste:
+   - relay URL (`https://your-community.communities.buzz.xyz`)
+   - agent `nsec` from Desktop create
+   - NIP-OA `BUZZ_AUTH_TAG` JSON from Desktop create
+   - owner allowlist (your pubkey)
+   - `require_mention=true` (recommended)
+
+4. **Join channels + publish profile**
+
+   Auth alone is not enough. If the agent is not a **channel member**, humans cannot DM or `@mention` it in Desktop search. The setup wizard can join all visible channels and set a display name. You can also:
+   ```bash
+   buzz users set-profile --name "Your Agent"
+   buzz channels join --channel <uuid>
+   ```
+
+5. **Reload the Hermes gateway process** (from a terminal outside the running gateway), then smoke-test:
+   - untagged DM → replies
+   - channel without mention → silence (when `require_mention=true`)
+   - `@Agent` in channel → replies
+
+:::tip Field failure modes
+- **Connected but unfindable in DM/@ search** → not a channel member yet (join channels, set profile).
+- **Weird double replies / auth flaps** → Desktop ACP still running on the same key.
+- **`relay_membership_required` / AUTH rejected** → missing or wrong `BUZZ_AUTH_TAG`, or identity never finished Desktop create.
+:::
+
 ## Prerequisites
 
 - The `buzz` CLI binary on your `PATH` (or point `BUZZ_CLI_PATH` at it) — build it from the [Buzz repo](https://github.com/block/buzz) with `cargo build --release -p buzz-cli`
 - A Buzz community relay URL (e.g. `https://mycommunity.communities.buzz.xyz`)
 - A Nostr private key (nsec or hex) whose identity is already a **member** of that community
+
+### Hermes Cloud: install the CLI without Rust
+
+The Buzz Desktop Debian package includes the self-contained `buzz` CLI. On an x86-64 Hermes Cloud instance, extract only that binary to the persistent volume. The commands below pin the current verified Buzz release, [v0.5.2](https://github.com/block/buzz/releases/tag/v0.5.2):
+
+```bash
+cd /tmp
+curl -fsSL -o buzz.deb https://github.com/block/buzz/releases/download/v0.5.2/Buzz_0.5.2_amd64.deb
+mkdir -p /opt/data/.local/bin
+dpkg-deb --fsys-tarfile buzz.deb | tar -xO usr/bin/buzz > /opt/data/.local/bin/buzz
+chmod +x /opt/data/.local/bin/buzz
+rm buzz.deb
+buzz --version
+```
+
+`/opt/data/.local/bin` is already on the Hermes Cloud image `PATH`, and `/opt/data` persists across restarts and image updates.
 
 ## Configure Hermes
 
@@ -51,6 +111,7 @@ BUZZ_PRIVATE_KEY=nsec1...
 |----------|:--------:|-------------|
 | `BUZZ_RELAY_URL` | ✅ | Base URL of the community relay |
 | `BUZZ_PRIVATE_KEY` | ✅ | Nostr private key (nsec or hex) — the only secret |
+| `BUZZ_AUTH_TAG` | — | NIP-OA four-string auth tag JSON from Desktop create (required on many community relays) |
 | `BUZZ_CHANNELS` | — | Comma-separated channel UUIDs to watch (default: all joined channels) |
 | `BUZZ_HOME_CHANNEL` | — | Channel UUID for cron / notification delivery (defaults to the first watched channel) |
 | `BUZZ_ALLOWED_USERS` | — | Comma-separated npubs or hex pubkeys allowed to talk to the agent |
@@ -152,6 +213,17 @@ hermes gateway start
 ```
 
 Check status with `hermes gateway status` — Buzz connection state is reported there, including for env-only setups.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| Gateway skips Buzz | Missing `BUZZ_RELAY_URL` or key | Re-run setup; confirm `.env` |
+| AUTH / membership errors | Missing Desktop mint or auth tag | Create agent in Desktop, copy tag, stop ACP |
+| Connected, 0 channels | Not a channel member | `buzz channels join` or setup join-all |
+| DM search: no matching users | No profile / not in channels | `set-profile` + join channels |
+| Double replies | Desktop ACP + Hermes same key | Stop Desktop worker |
+| CLI not found | `buzz` off PATH | Install CLI or set `BUZZ_CLI_PATH` |
 
 ## Notes and limitations
 

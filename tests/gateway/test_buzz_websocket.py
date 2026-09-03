@@ -680,3 +680,66 @@ async def test_ws_discovery_task_cancelled_when_connection_exits(monkeypatch):
 
     assert started, "discovery task was never started with the connection"
     assert all(t.done() for t in started), "discovery task outlived its connection"
+
+
+def test_build_typing_event_channel_only():
+    sk = "22" * 32
+    channel = "58795faa-d93e-42c0-a070-d87511a89484"
+    event = nostr_auth.build_typing_event(
+        private_key=sk, channel_id=channel, created_at=1_700_000_000
+    )
+    assert event["kind"] == 20002
+    assert event["tags"] == [["h", channel]]
+    assert event["content"] == ""
+    assert len(event["id"]) == 64
+    assert len(event["sig"]) == 128
+
+
+def test_build_typing_event_with_thread_refs():
+    sk = "33" * 32
+    channel = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    parent = "a" * 64
+    root = "b" * 64
+    event = nostr_auth.build_typing_event(
+        private_key=sk,
+        channel_id=channel,
+        parent_event_id=parent,
+        root_event_id=root,
+        created_at=1_700_000_001,
+    )
+    assert ["h", channel] in event["tags"]
+    assert ["e", root, "", "root"] in event["tags"]
+    assert ["e", parent, "", "reply"] in event["tags"]
+
+
+@pytest.mark.asyncio
+async def test_send_typing_publishes_kind_20002_on_live_ws():
+    adapter = _make_adapter()
+    sent = []
+
+    class FakeWs:
+        async def send(self, payload):
+            sent.append(payload)
+
+    adapter._ws = FakeWs()
+    adapter._ws_active = True
+
+    await adapter.send_typing(CHANNEL, metadata={"reply_to": "aa" * 32})
+
+    assert len(sent) == 1
+    frame = json.loads(sent[0])
+    assert frame[0] == "EVENT"
+    event = frame[1]
+    assert event["kind"] == 20002
+    assert ["h", CHANNEL] in event["tags"]
+    assert ["e", "aa" * 32, "", "reply"] in event["tags"]
+
+
+@pytest.mark.asyncio
+async def test_send_typing_is_noop_when_websocket_is_down():
+    adapter = _make_adapter()
+    adapter._ws = None
+    adapter._ws_active = False
+    await adapter.send_typing(CHANNEL)
+    adapter._ws_active = True
+    await adapter.send_typing(CHANNEL)

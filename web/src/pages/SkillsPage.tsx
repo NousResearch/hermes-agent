@@ -28,6 +28,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -42,6 +43,7 @@ import type {
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -260,6 +262,30 @@ export default function SkillsPage() {
     },
     [selectedProfile, showToast],
   );
+
+  /* ---- Skill delete (port of paradigmxyz/centaur#1393) ---- */
+  // Only agent-authored / hand-made skills get the delete affordance;
+  // bundled and hub skills are managed by their manifests (hub uninstall
+  // lives in the Hub tab; bundled skills are re-seeded on update).
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const handleDeleteSkill = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.deleteSkill(deleteTarget, selectedProfile || undefined);
+      setSkills((prev) => prev.filter((s) => s.name !== deleteTarget));
+      showToast(
+        (t.skills.skillDeleted ?? "{name} deleted").replace("{name}", deleteTarget),
+        "success",
+      );
+      setDeleteTarget(null);
+    } catch (e) {
+      showToast(String(e), "error");
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleteTarget, selectedProfile, showToast, t]);
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -497,6 +523,8 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => setDeleteTarget(skill.name)}
+                        deleteLabel={t.skills.deleteSkill ?? "Delete skill"}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -559,6 +587,8 @@ export default function SkillsPage() {
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
                         onEdit={() => openEditEditor(skill.name)}
+                        onDelete={() => setDeleteTarget(skill.name)}
+                        deleteLabel={t.skills.deleteSkill ?? "Delete skill"}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -670,6 +700,20 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
+      <DeleteConfirmDialog
+        open={deleteTarget !== null}
+        loading={deleting}
+        title={(t.skills.deleteSkillConfirmTitle ?? "Delete skill \u201c{name}\u201d?").replace(
+          "{name}",
+          deleteTarget ?? "",
+        )}
+        description={
+          t.skills.deleteSkillConfirmMessage ??
+          "This permanently deletes the skill's folder (SKILL.md plus any scripts and references). Cannot be undone."
+        }
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={handleDeleteSkill}
+      />
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -738,6 +782,8 @@ function SkillRow({
   toggling,
   onToggle,
   onEdit,
+  onDelete,
+  deleteLabel,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -773,6 +819,21 @@ function SkillRow({
       >
         <Pencil />
       </Button>
+      {/* Delete: only user/agent-authored skills (port of centaur#1393).
+          Bundled skills are re-seeded by updates; hub skills uninstall
+          through the Hub tab so the installed-manifest stays consistent. */}
+      {skill.provenance === "agent" && onDelete && (
+        <Button
+          ghost
+          size="icon"
+          className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-destructive"
+          title={deleteLabel}
+          aria-label={`${deleteLabel}: ${skill.name}`}
+          onClick={onDelete}
+        >
+          <Trash2 />
+        </Button>
+      )}
     </div>
   );
 }
@@ -802,7 +863,9 @@ interface PanelItemProps {
 }
 
 interface SkillRowProps {
+  deleteLabel: string;
   noDescriptionLabel: string;
+  onDelete?: () => void;
   onToggle: () => void;
   onEdit: () => void;
   skill: SkillInfo;

@@ -458,6 +458,10 @@ export interface Translations {
     profileSelector?: string;
     currentProfile?: string;
     managingProfile?: string;
+    deleteSkill?: string;
+    deleteSkillConfirmTitle?: string;
+    deleteSkillConfirmMessage?: string;
+    skillDeleted?: string;
   };
 
   // ── Config page ──

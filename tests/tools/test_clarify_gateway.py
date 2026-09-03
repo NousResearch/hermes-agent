@@ -460,3 +460,79 @@ class TestNativeRejectClassification:
         )
         assert value is None
         assert reason == "prose"
+
+
+class TestLetterSelection:
+    """Typed single-letter replies ("A" / "B") map to the same choices the
+    letter buttons on QQ/Feishu clarify prompts resolve to.
+
+    Prompt rendering lists choices as ``A. … / B. …`` with matching letter
+    buttons, so a user who types the letter instead of tapping must land on
+    the same option.  Letters are 0-based in ``cl:<id>:<i>`` payloads and the
+    dispatcher resolves numeric answers; the text path must understand both.
+    """
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_letter_uppercase_maps_to_choice(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("L1", "sk-L1", "Pick one", ["Apple", "Banana", "Cherry"])
+        value, reason = cm._coerce_text_response_detailed(entry, "B")
+        assert value == "Banana"
+        assert reason is None
+
+    def test_letter_lowercase_maps_to_choice(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("L2", "sk-L2", "Pick one", ["Apple", "Banana"])
+        value, _ = cm._coerce_text_response_detailed(entry, "a")
+        assert value == "Apple"
+
+    def test_letter_out_of_range_is_invalid_selection(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("L3", "sk-L3", "Pick one", ["Apple", "Banana"])
+        value, reason = cm._coerce_text_response_detailed(entry, "E")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session("sk-L3", "E") == (
+            cm.TEXT_REJECTED_SELECTION
+        )
+
+    def test_letter_resolves_via_session_text_intercept(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("L4", "sk-L4", "Pick one", ["Red", "Green", "Blue"])
+        outcome = cm.attempt_text_response_for_session("sk-L4", "C")
+        assert outcome == cm.TEXT_RESOLVED
+
+    def test_letter_in_multi_select(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "L5", "sk-L5", "Pick some", ["Red", "Green", "Blue"],
+            multi_select=True,
+        )
+        value, reason = cm._coerce_text_response_detailed(entry, "A,C")
+        assert reason is None
+        assert value is not None
+        import json as _json
+
+        assert _json.loads(value) == ["Red", "Blue"]
+
+    def test_selection_attempt_tokens_recognizes_letter(self):
+        from tools import clarify_gateway as cm
+
+        assert cm._selection_attempt_tokens("b") == ["b"]
+        assert cm._selection_attempt_tokens("Z") == ["Z"]
+
+    def test_letter_not_confused_with_free_prose_word(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("L6", "sk-L6", "Pick one", ["Apple", "Banana"])
+        # A multi-character word is not a letter selection and stays prose
+        value, reason = cm._coerce_text_response_detailed(entry, "banana")
+        assert value == "Banana"  # exact label match still works
+        assert reason is None

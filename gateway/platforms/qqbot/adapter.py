@@ -131,8 +131,10 @@ from gateway.platforms.qqbot.keyboards import (
     InlineKeyboard,
     InteractionEvent,
     build_approval_keyboard,
+    build_clarify_keyboard,
     build_update_prompt_keyboard,
     parse_approval_button_data,
+    parse_clarify_button_data,
     parse_interaction_event,
     parse_update_prompt_button_data,
 )
@@ -1132,7 +1134,13 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # QQ C2C messages surface as chat_type="dm" in session keys (build_source
+        # uses "dm" for private chats) even though the platform API calls them
+        # c2c. Treat both identically: the chat_id is the user's openid, so an
+        # authorized operator must equal it. (2026-09-04: without "dm" here,
+        # every private-chat clarify button click was rejected as unauthorized
+        # after the authorize-by-session change landed.)
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:
@@ -1165,6 +1173,103 @@ class QQAdapter(BasePlatformAdapter):
         """
         button_data = event.button_data
         if not button_data:
+            return
+
+        # ── clarify (option buttons) ────────────────────────────────
+        # We check this BEFORE approval/update_prompt because all three
+        # prefixes share the ":" delimiter; clarification prefix is the
+        # only one with 3 colon-delimited parts (``cl:id:N``) so the
+        # regex is unambiguous, but we want a single dispatch site to
+        # keep the routing logic auditable.
+        clarify = parse_clarify_button_data(button_data)
+        if clarify is not None:
+            clarify_id, marker = clarify
+            try:
+                # Lazy import keeps adapter importable in tests that don't
+                # exercise the clarify subsystem.
+                from tools.clarify_gateway import (
+                    mark_awaiting_text,
+                    resolve_gateway_clarify,
+                    session_key_for_clarify,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] clarify dispatch: cannot import clarify_gateway: %s",
+                    self._log_tag, exc,
+                )
+                return
+
+            # Authorize the click: resolve the session the clarify was
+            # sent to and require the operator to be the same party the
+            # session was opened with (mirrors approval/update-prompt
+            # callback handling). Without this, any button recipient in a
+            # group could answer someone else's pending clarify.
+            clarify_session = session_key_for_clarify(clarify_id)
+            if clarify_session is None:
+                logger.warning(
+                    "[%s] clarify dispatch: unknown clarify_id %s "
+                    "(expired or already resolved)",
+                    self._log_tag, clarify_id,
+                )
+                return
+            if not self._is_authorized_interaction_for_session(
+                    event, clarify_session):
+                logger.warning(
+                    "[%s] clarify dispatch: unauthorized operator=%s "
+                    "for clarify_id=%s",
+                    self._log_tag, event.operator_openid, clarify_id,
+                )
+                return
+
+            if marker == "other":
+                # "自己写" — flip into text-capture mode so the gateway
+                # captures the user's next message as the answer.
+                ok = mark_awaiting_text(clarify_id)
+                logger.info(
+                    "[%s] Clarify 'Other' click → mark_awaiting_text(%s) = %s "
+                    "(operator=%s)",
+                    self._log_tag, clarify_id, ok, event.operator_openid,
+                )
+                if not ok:
+                    logger.warning(
+                        "[%s] clarify dispatch: mark_awaiting_text failed "
+                        "for already-resolved clarify_id=%s",
+                        self._log_tag, clarify_id,
+                    )
+                return
+
+            try:
+                idx = int(marker)
+            except ValueError:
+                logger.warning(
+                    "[%s] clarify dispatch: bad marker %r (clarify_id=%s)",
+                    self._log_tag, marker, clarify_id,
+                )
+                return
+
+            # The user picked choice idx+1 (letters are 0-based in the
+            # payload; the user-facing label is "B. xxx" at index 1). We
+            # resolve with the numeric answer — the gateway's text-intercept
+            # logic understands numeric replies AND letter replies ("B" →
+            # same choice), so the fallback path also handles the case where
+            # the user later types free text.
+            response = str(idx + 1)
+            ok = resolve_gateway_clarify(clarify_id, response)
+            logger.info(
+                "[%s] Clarify button click: idx=%d response=%r "
+                "resolved=%s clarify_id=%s operator=%s",
+                self._log_tag, idx, response, ok, clarify_id,
+                event.operator_openid,
+            )
+            if not ok:
+                # Expired / already resolved / never existed: do NOT report
+                # a fake success to the user (the gateway's resolve already
+                # returned False, so the agent never received this answer).
+                logger.warning(
+                    "[%s] clarify dispatch: resolve returned False for "
+                    "clarify_id=%s (expired or stale click)",
+                    self._log_tag, clarify_id,
+                )
             return
 
         approval = parse_approval_button_data(button_data)
@@ -2665,6 +2770,126 @@ class QQAdapter(BasePlatformAdapter):
                 "[%s] send_with_keyboard failed: %s", self._log_tag, exc
             )
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
+
+    # ------------------------------------------------------------------
+    # clarify (option-button prompt) — BasePlatformAdapter contract
+    # ------------------------------------------------------------------
+
+    async def send_clarify(
+            self,
+            chat_id: str,
+            question: str,
+            choices: Optional[list],
+            clarify_id: str,
+            session_key: str,
+            metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a ``clarify`` prompt as native QQ inline buttons.
+
+        Mirrors :meth:`BasePlatformAdapter.send_clarify` contract:
+
+        - 1-4 choices → :func:`build_clarify_keyboard` (N numbered buttons
+          + "自己写" escape hatch). ``click_limit=1`` prevents double-tap.
+        - 5+ choices → falls back to the base text list (numbered list +
+          text-capture), because QQ's inline-keyboard 5-row cap means we
+          can't render more buttons inline without ugliness. The fallback
+          uses ``mark_awaiting_text`` so the gateway still intercepts the
+          user's typed reply.
+        - 0 choices (open-ended) → plain text question, gateway captures
+          the next message.
+
+        The user-visible question gets prepended with ``❓`` and the
+        numbered choice list (mirrors the base text fallback) so the
+        button labels aren't the only signal — mobile clients sometimes
+        fold long button rows.
+
+        ``clarify_id`` is generated by the gateway and MUST be opaque to
+        us; we embed it in each button's ``button_data`` so the dispatcher
+        in :meth:`_default_interaction_dispatch` can route the click back
+        to the right pending entry.
+        """
+        # Lazy import — keeps adapter importable for tests that don't
+        # exercise the clarify path.
+        try:
+            from tools.clarify_gateway import mark_awaiting_text
+        except Exception as exc:
+            logger.error(
+                "[%s] send_clarify: cannot import clarify_gateway: %s",
+                self._log_tag, exc,
+            )
+            return SendResult(success=False, error="clarify_gateway unavailable")
+
+        question = (question or "").strip()
+        if not question:
+            return SendResult(success=False, error="question is empty")
+
+        # Open-ended: just send the question, gateway captures next msg.
+        # register() already arms text-capture for empty choices, but call
+        # mark_awaiting_text explicitly so the intent survives if the
+        # register default ever changes.
+        if not choices:
+            mark_awaiting_text(clarify_id)
+            return await self.send_with_keyboard(
+                chat_id=chat_id,
+                content=f"❓ {question}",
+                keyboard=InlineKeyboard(),  # empty keyboard — sends plain text
+            )
+
+        # Coerce + cap choices. Build a numbered list for the body text
+        # so the user can still read the full choice (button labels are
+        # truncated to ~20 chars by the mobile client).
+        choices_list = [str(c).strip() for c in choices if str(c).strip()]
+        if not choices_list:
+            return await self.send_with_keyboard(
+                chat_id=chat_id,
+                content=f"❓ {question}",
+                keyboard=InlineKeyboard(),
+            )
+
+        numbered = "\n".join(
+            f"  {chr(ord('A') + i)}. {c}" for i, c in enumerate(choices_list)
+        )
+        body = f"❓ {question}\n\n{numbered}"
+
+        # 5+ choices → fall back to text list (no inline buttons). We
+        # still call mark_awaiting_text so the text-intercept path works.
+        if len(choices_list) > 4:
+            logger.info(
+                "[%s] send_clarify: %d choices (>4), using text fallback "
+                "(QQ inline keyboard caps at 5 rows)",
+                self._log_tag, len(choices_list),
+            )
+            result = await self.send(chat_id=chat_id, content=body)
+            if result.success:
+                mark_awaiting_text(clarify_id)
+            return result
+
+        # 1-4 choices → native inline button keyboard.
+        try:
+            keyboard = build_clarify_keyboard(clarify_id, choices_list)
+        except ValueError as exc:
+            logger.error(
+                "[%s] send_clarify: invalid clarify_id: %s",
+                self._log_tag, exc,
+            )
+            return SendResult(success=False, error=str(exc))
+
+        # Also enable text-capture as a safety net: if the user ignores
+        # the buttons and types a number or the choice text, the text
+        # intercept still resolves correctly.
+        mark_awaiting_text(clarify_id)
+
+        logger.info(
+            "[%s] Sending clarify with %d buttons to %s "
+            "(clarify_id=%s, session=%.20s…)",
+            self._log_tag, len(choices_list), chat_id,
+            clarify_id, session_key,
+        )
+        return await self.send_with_keyboard(
+            chat_id=chat_id,
+            content=body,
+            keyboard=keyboard,
+        )
 
     async def send_approval_request(
             self,

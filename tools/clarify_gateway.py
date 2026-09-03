@@ -104,6 +104,20 @@ def register(
     return entry
 
 
+def session_key_for_clarify(clarify_id: str) -> Optional[str]:
+    """Return the gateway session key bound to ``clarify_id``, or None.
+
+    Lets platform adapters authorize button clicks against the session the
+    clarify was originally sent to — mirrors how approval/update-prompt
+    callbacks bind ``event.operator`` to the session key before acting.
+    """
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None:
+            return None
+        return entry.session_key
+
+
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     """Block on the entry's event until resolved or timeout fires.
 
@@ -214,6 +228,24 @@ def _label_matches(text: str, choice: object) -> bool:
     return strip_recommended(text).casefold() == strip_recommended(str(choice)).casefold()
 
 
+def _letter_to_index(text: str) -> Optional[int]:
+    """Map a single (case-insensitive) letter A–Z to a 0-based choice index.
+
+    QQ/Feishu clarify bodies list choices as ``A. …`` / ``B. …`` with matching
+    single-letter inline buttons, so a user who types the letter instead of
+    tapping (or replies to the 5+ text fallback with a letter) resolves the
+    same option the button would. Returns ``None`` for anything that is not a
+    single letter.
+    """
+    t = str(text).strip()
+    if len(t) != 1 or not t.isalpha():
+        return None
+    idx = ord(t.upper()) - ord("A")
+    if 0 <= idx < 26:
+        return idx
+    return None
+
+
 # Outcomes for typed clarify replies. Gateway uses these to decide whether to
 # cancel a pending prompt (free prose deadlock break) or keep it armed so the
 # user can retry a selection-like invalid reply (out-of-range / bad list).
@@ -274,6 +306,13 @@ def _selection_attempt_tokens(
 
     # Bare integer (in-range or out-of-range) is always a selection attempt.
     if stripped.isdigit() or (stripped.startswith("-") and stripped[1:].isdigit()):
+        return [stripped]
+
+    # Single letter (A–Z) is a selection attempt too — QQ/Feishu clarify
+    # bodies list choices as "A. … / B. …", so a typed letter must reach the
+    # coerce step (which maps it to the matching choice) instead of being
+    # classified as free prose and released.
+    if _letter_to_index(stripped) is not None:
         return [stripped]
 
     try:
@@ -357,6 +396,16 @@ def _coerce_text_response_detailed(
     if is_int and 0 <= idx < len(entry.choices):
         return entry.choices[idx], None
 
+    # Try single-letter selection ("A" → choices[0], "B" → choices[1], …).
+    # QQ/Feishu clarify prompts render choices as "A. … / B. …" with matching
+    # letter buttons, so a user who types the letter instead of tapping the
+    # button must resolve the same option. Only applies when the letter maps
+    # in range; a standalone "Z" on a 4-choice prompt falls through to the
+    # label/prose handling below.
+    letter_idx = _letter_to_index(text)
+    if letter_idx is not None and 0 <= letter_idx < len(entry.choices):
+        return entry.choices[letter_idx], None
+
     # Try exact choice label match (always valid for multi-choice)
     for choice in entry.choices:
         if _label_matches(text, choice):
@@ -369,6 +418,11 @@ def _coerce_text_response_detailed(
 
     # Out-of-range / non-canonical integer is a failed selection, not prose.
     if is_int:
+        return None, "invalid_selection"
+    # Same for a single letter that maps beyond the available choices
+    # ("E" on a 4-choice prompt): keep the clarify armed so the user can
+    # retry rather than silently treating it as loose chat.
+    if _letter_to_index(text) is not None:
         return None, "invalid_selection"
     return None, "prose"
 
@@ -409,6 +463,14 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
                     selected.append(label)
                 continue
             return None  # out-of-range number → reject whole reply
+        # Single-letter selection ("A" → choices[0], "B" → choices[1], …);
+        # mirrors the letter buttons/body format on QQ/Feishu clarify.
+        letter_idx = _letter_to_index(token)
+        if letter_idx is not None and 0 <= letter_idx < len(choices):
+            label = str(choices[letter_idx]).strip()
+            if label not in selected:
+                selected.append(label)
+            continue
         # Exact label match (case-insensitive)
         matched = None
         for choice in choices:

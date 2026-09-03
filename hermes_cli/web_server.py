@@ -13041,6 +13041,28 @@ def _normalize_dashboard_cron_updates(
     return normalized
 
 
+def _validate_dashboard_cron_bot_chat_deliver(updates: Dict[str, Any]) -> None:
+    """Reject an unresolvable bot-chat profile in ``deliver``/``failure_deliver``.
+
+    The CLI and the ``cronjob`` tool both run every create/update through
+    ``tools.cronjob_tools._validate_bot_chat_deliver`` — a named bot-chat
+    profile must exist on this machine, or the update is rejected up front
+    rather than only failing per-run at ``last_delivery_error`` time. The
+    dashboard's PUT /api/cron/jobs/{job_id} never went through that check
+    for either field (a pre-existing gap the ``deliver`` field already had
+    before ``failure_deliver`` inherited it) — wire it in here so a
+    dashboard-edited job gets the same fail-loud guarantee.
+    """
+    from tools.cronjob_tools import _validate_bot_chat_deliver
+
+    for field in ("deliver", "failure_deliver"):
+        if field not in updates:
+            continue
+        error = _validate_bot_chat_deliver(updates[field])
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+
+
 def _validate_dashboard_cron_context_from(
     refs: Optional[List[str]],
     profile_name: str,
@@ -13416,6 +13438,7 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
             body.updates,
             profile_home,
         )
+        _validate_dashboard_cron_bot_chat_deliver(updates)
         if "context_from" in updates:
             _validate_dashboard_cron_context_from(
                 updates.get("context_from"),

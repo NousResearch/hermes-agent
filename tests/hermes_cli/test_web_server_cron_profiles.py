@@ -1099,6 +1099,86 @@ async def test_update_cron_job_rejects_id_mutation(isolated_profiles, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_update_cron_job_rejects_unknown_bot_chat_failure_deliver(
+    isolated_profiles, monkeypatch
+):
+    """The dashboard update lane must reject an unresolvable bot-chat
+    ``failure_deliver`` profile up front, the same as the CLI/tool ``cronjob``
+    update path (tools.cronjob_tools._validate_bot_chat_deliver) already does
+    — not silently persist it and only discover the bad name at 3am when a
+    failure needs to route through it."""
+    from hermes_cli import web_server
+
+    notified_profiles = []
+    monkeypatch.setattr(
+        web_server,
+        "_notify_cron_provider_for_profile",
+        notified_profiles.append,
+    )
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="bad-bot-chat-failure-deliver-job",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(
+                updates={"failure_deliver": "bot-chat:definitely-not-a-real-profile"}
+            ),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "bot-chat delivery profile" in exc.value.detail
+    assert "not found" in exc.value.detail
+    assert notified_profiles == []
+    persisted = web_server._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert persisted.get("failure_deliver") is None
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_rejects_unknown_bot_chat_deliver(
+    isolated_profiles, monkeypatch
+):
+    """Same rejection for the older ``deliver`` field — this gap predates
+    failure_deliver, so deliver must be covered too."""
+    from hermes_cli import web_server
+
+    notified_profiles = []
+    monkeypatch.setattr(
+        web_server,
+        "_notify_cron_provider_for_profile",
+        notified_profiles.append,
+    )
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="bad-bot-chat-deliver-job",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            job["id"],
+            web_server.CronJobUpdate(
+                updates={"deliver": "bot-chat:definitely-not-a-real-profile"}
+            ),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "bot-chat delivery profile" in exc.value.detail
+    assert notified_profiles == []
+    persisted = web_server._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert persisted.get("deliver") == "local"
+
+
+@pytest.mark.asyncio
 async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_profiles):
     from hermes_cli import web_server
 

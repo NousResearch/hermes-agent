@@ -1569,6 +1569,31 @@ def _agent_browser_argv(browser_cmd: str) -> list:
     return [browser_cmd]
 
 
+def _run_agent_browser_cli(argv: list, timeout: float) -> subprocess.CompletedProcess:
+    """Run an agent-browser CLI command, capturing output through temp files.
+
+    The CLI spawns a resident daemon on first use that inherits the caller's
+    stdio and outlives the CLI itself. With pipe capture (``capture_output``)
+    the daemon keeps the stdout/stderr write ends open, so the CLI can exit
+    while its output never reaches EOF: on POSIX the read burns the whole
+    timeout even on success; on Windows ``subprocess.run``'s TimeoutExpired
+    cleanup re-drains the pipes with no timeout and blocks past the outer
+    420s tool deadline (#96731). Temp files make run() wait only for the CLI
+    process — a grandchild holding inherited file handles is harmless.
+    """
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as out_fh, \
+         tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err_fh:
+        proc = subprocess.run(
+            argv, stdout=out_fh, stderr=err_fh, text=True,
+            timeout=timeout, env=_build_browser_env(),
+        )
+        out_fh.seek(0)
+        err_fh.seek(0)
+        return subprocess.CompletedProcess(
+            argv, proc.returncode, stdout=out_fh.read(), stderr=err_fh.read()
+        )
+
+
 def _cdp_http_ready(http_cdp: str) -> bool:
     """True when an ``http://host:port`` CDP discovery root answers."""
     try:
@@ -1592,9 +1617,9 @@ def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
     except FileNotFoundError:
         return None
     try:
-        proc = subprocess.run(
+        proc = _run_agent_browser_cli(
             [*_agent_browser_argv(browser_cmd), "--session", session_name, "get", "cdp-url"],
-            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
+            timeout=15,
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("real-profile get cdp-url failed: %s", e)
@@ -1632,9 +1657,9 @@ def _agent_browser_close_session(session_name: str) -> None:
     except FileNotFoundError:
         return
     try:
-        subprocess.run(
+        _run_agent_browser_cli(
             [*_agent_browser_argv(browser_cmd), "--session", session_name, "close"],
-            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
+            timeout=15,
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("real-profile session close failed: %s", e)
@@ -1876,10 +1901,9 @@ def _real_profile_cdp() -> tuple:
             "open", "about:blank",
         ]
         try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True,
+            proc = _run_agent_browser_cli(
+                argv,
                 timeout=_get_open_command_timeout(first_open=True),
-                env=_build_browser_env(),
             )
         except subprocess.TimeoutExpired:
             return None, (

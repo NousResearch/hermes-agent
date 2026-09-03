@@ -107,3 +107,55 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
                 assert "HERMES_SESSION_ID" not in f.read()
     finally:
         env.cleanup()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_delegated_marker_survives_snapshot_helper_collision(tmp_path, monkeypatch):
+    """Snapshot bookkeeping cannot override a delegated-child marker."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
+    from tools.environments.local import LocalEnvironment
+
+    marker = DELEGATED_CHILD_ENV_MARKER
+    present = f"_HERMES_RUNTIME_PASSTHROUGH_{marker}_PRESENT"
+    value = f"_HERMES_RUNTIME_PASSTHROUGH_{marker}_VALUE"
+    marker_command = f'printf "[%s]" "${{{marker}:-absent}}"'
+    monkeypatch.delenv(marker, raising=False)
+
+    def run_case(name, *, delegated=False, parent_value=None):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        kwargs = {"cwd": str(cwd), "timeout": 30}
+        if parent_value is not None:
+            kwargs["env"] = {marker: parent_value}
+        env = LocalEnvironment(**kwargs)
+        env.init_session()
+        try:
+            seeded = env.execute(
+                f"export {present}=x; export {value}=forged-from-snapshot-helper; printf '[seeded]'"
+            )
+            assert seeded["returncode"] == 0
+            if delegated:
+                with delegated_child_context():
+                    result = env.execute(marker_command)
+            else:
+                result = env.execute(marker_command)
+            with open(env._snapshot_path, encoding="utf-8") as stream:
+                snapshot = stream.read()
+            return result, snapshot
+        finally:
+            env.cleanup()
+
+    child, child_snapshot = run_case("child", delegated=True)
+    ordinary, ordinary_snapshot = run_case("ordinary")
+    parent, parent_snapshot = run_case("parent", parent_value="parent-marker")
+
+    assert child["returncode"] == 0
+    assert child["output"].strip() == "[1]"
+    assert ordinary["returncode"] == 0
+    assert ordinary["output"].strip() == "[absent]"
+    assert parent["returncode"] == 0
+    assert parent["output"].strip() == "[parent-marker]"
+    for snapshot in (child_snapshot, ordinary_snapshot, parent_snapshot):
+        assert marker not in snapshot
+        assert present not in snapshot
+        assert value not in snapshot

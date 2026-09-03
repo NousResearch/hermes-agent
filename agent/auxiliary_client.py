@@ -6181,6 +6181,22 @@ def _candidate_context_window(
     return None
 
 
+def _task_has_configured_fallback_chain(task: Optional[str]) -> bool:
+    """True when the user wrote a non-empty ``auxiliary.<task>.fallback_chain``.
+
+    Used by the explicit-provider gate. That gate exists to respect a user who
+    pinned ``auxiliary.<task>.provider`` — but writing a ``fallback_chain``
+    under the same task is itself explicit intent to fail over, so honouring
+    the pin by ignoring the chain inverts what the config asks for.
+
+    Cheap: ``_get_auxiliary_task_config`` reads the process-cached config.
+    """
+    if not task:
+        return False
+    chain = _get_auxiliary_task_config(task).get("fallback_chain")
+    return bool(chain) and isinstance(chain, list)
+
+
 def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
@@ -11075,7 +11091,18 @@ def _call_llm_impl(
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
-        if should_fallback and (is_auto or is_capacity_error):
+        # A configured fallback_chain is itself explicit failover intent, so it
+        # also bypasses the pin. Without this an auth/validation failure on a
+        # pinned aux provider aborts the task with a fully-populated chain of
+        # healthy candidates sitting unused — for compression that means the
+        # transcript stays over threshold and the session keeps growing
+        # (aggregator relaying an upstream 401 as
+        # ``{'error': 'Invalid API key: HTTP 401'}``, telemetry
+        # ``fallback_used: false``).
+        honours_configured_chain = _task_has_configured_fallback_chain(task)
+        if should_fallback and (
+            is_auto or is_capacity_error or honours_configured_chain
+        ):
             if _is_auth_error(first_err):
                 reason = "auth error"
             elif _is_payment_error(first_err):
@@ -11833,7 +11860,18 @@ async def _async_call_llm_impl(
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
         )
-        if should_fallback and (is_auto or is_capacity_error):
+        # A configured fallback_chain is itself explicit failover intent, so it
+        # also bypasses the pin. Without this an auth/validation failure on a
+        # pinned aux provider aborts the task with a fully-populated chain of
+        # healthy candidates sitting unused — for compression that means the
+        # transcript stays over threshold and the session keeps growing
+        # (aggregator relaying an upstream 401 as
+        # ``{'error': 'Invalid API key: HTTP 401'}``, telemetry
+        # ``fallback_used: false``).
+        honours_configured_chain = _task_has_configured_fallback_chain(task)
+        if should_fallback and (
+            is_auto or is_capacity_error or honours_configured_chain
+        ):
             if _is_auth_error(first_err):
                 reason = "auth error"
             elif _is_payment_error(first_err):

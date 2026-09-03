@@ -1833,6 +1833,91 @@ class TestAuxiliaryFallbackLayering:
 
 
 
+    def test_explicit_provider_auth_error_uses_configured_chain(self, monkeypatch):
+        """401 on a pinned aux provider must still consult fallback_chain.
+
+        Auth is deliberately absent from ``is_capacity_error`` (a 401 says
+        nothing about capacity), so before this fix an explicit-provider route
+        re-raised and the task aborted with a fully-populated chain of healthy
+        candidates unused. For compression that is the worst place to stop: the
+        transcript stays over threshold and the session keeps growing.
+
+        Writing ``auxiliary.<task>.fallback_chain`` IS explicit failover intent,
+        so it opens the gate the provider pin closes. The chain is declared
+        through the real config seam, not by stubbing the predicate, so this
+        exercises the gate itself.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        auth_err = Exception(
+            "Error code: 401 - {'error': 'Invalid API key: HTTP 401'}")
+        auth_err.status_code = 401
+        primary_client.chat.completions.create.side_effect = auth_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="from fallback chain"))])
+
+        task_config = {
+            "provider": "pinned-provider",
+            "model": "primary-model",
+            "fallback_chain": [
+                {"provider": "chain-provider", "model": "chain-model"},
+            ],
+        }
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("pinned-provider", "primary-model",
+                                 None, None, None)), \
+             patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value=task_config), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "chain-model",
+                                 "fallback_chain[0](chain-provider)")) as mock_chain:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "compress this"}],
+            )
+
+        mock_chain.assert_called()
+        assert result.choices[0].message.content == "from fallback chain"
+
+    def test_explicit_provider_auth_error_without_chain_still_raises(self, monkeypatch):
+        """Without a configured chain, the provider pin still holds on 401.
+
+        The gate must open for a declared chain and stay shut otherwise —
+        an unconfigured task has expressed no failover intent, so a 401 has
+        to surface instead of silently rerouting to another provider.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        auth_err = Exception(
+            "Error code: 401 - {'error': 'Invalid API key: HTTP 401'}")
+        auth_err.status_code = 401
+        primary_client.chat.completions.create.side_effect = auth_err
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("pinned-provider", "primary-model",
+                                 None, None, None)), \
+             patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value={"provider": "pinned-provider",
+                                 "model": "primary-model"}), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            with pytest.raises(Exception, match="401"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "compress this"}],
+                )
+
     def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit on an explicit provider must trigger fallback (not be ignored).
 

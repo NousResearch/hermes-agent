@@ -47,14 +47,45 @@ def test_clean_skill_has_no_findings():
     assert lint_content(CLEAN) == []
 
 
-def test_description_too_long_is_warning():
+def test_description_too_long_is_error():
     long_desc = "x" * 80
     content = CLEAN.replace(
         "Search arXiv papers by keyword, author, or ID.", long_desc
     )
     findings = lint_content(content)
     assert "description-length" in _rules(findings)
-    assert all(f.severity == WARNING for f in findings)
+    assert has_errors(findings)
+
+
+def test_content_over_size_limit_is_error():
+    from tools.skill_manager_tool import MAX_SKILL_CONTENT_CHARS
+
+    content = CLEAN + ("x" * (MAX_SKILL_CONTENT_CHARS + 1))
+    findings = lint_content(content)
+    assert "content-size" in _rules(findings)
+    assert has_errors(findings)
+
+
+def test_shipped_skills_obey_skill_manage_hard_limits():
+    """Ship-time gate for #87502: seeded skills must meet write-path caps.
+
+    skill_manage enforces MAX_SKILL_CONTENT_CHARS and SKILL_PROMPT_DESC_LIMIT on
+    create/edit; bundled and optional skills are copied in without that path.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    hard_rules = {"content-size", "description-length"}
+    offenders: list[str] = []
+    for root_name in ("skills", "optional-skills"):
+        root = repo_root / root_name
+        if not root.is_dir():
+            continue
+        for skill_md in sorted(root.rglob("SKILL.md")):
+            hard = [f for f in lint_skill(skill_md) if f.rule in hard_rules]
+            if hard:
+                rel = skill_md.relative_to(repo_root).as_posix()
+                detail = "; ".join(f"{f.rule}: {f.message}" for f in hard)
+                offenders.append(f"{rel}: {detail}")
+    assert offenders == []
 
 
 def test_marketing_words_flagged():

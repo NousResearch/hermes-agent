@@ -11,6 +11,10 @@ instead of native tools, a missing author/license/metadata block, a
 marketing words in the description, ``platforms:`` gating vs POSIX-only
 primitives, and forbidden scaffolding files.
 
+Two write-path caps are also ERROR here (``content-size``, ``description-length``)
+so CI / ``python -m tools.skill_linter skills optional-skills`` catches seeded
+skills that never pass through ``skill_manage``.
+
 Design contract (matches the Hermes "no lazy-reading escape hatches / don't
 destroy the feature" posture):
 
@@ -152,6 +156,16 @@ def _check_name_format(frontmatter: Dict[str, Any]) -> List[LintFinding]:
     return []
 
 
+def _check_content_size(content: str) -> List[LintFinding]:
+    # Local import: skill_manager_tool imports this module only inside helpers.
+    from tools.skill_manager_tool import _validate_content_size
+
+    err = _validate_content_size(content)
+    if err is None:
+        return []
+    return [LintFinding(ERROR, "content-size", err)]
+
+
 def _check_description(frontmatter: Dict[str, Any]) -> List[LintFinding]:
     findings: List[LintFinding] = []
     # Raw description as authored — extract_skill_description() applies the
@@ -163,7 +177,7 @@ def _check_description(frontmatter: Dict[str, Any]) -> List[LintFinding]:
     if len(desc) > SKILL_PROMPT_DESC_LIMIT:
         findings.append(
             LintFinding(
-                WARNING,
+                ERROR,
                 "description-length",
                 f"description is {len(desc)} chars; the skill index truncates "
                 f"past {SKILL_PROMPT_DESC_LIMIT} chars + '...', losing routing "
@@ -383,6 +397,7 @@ def lint_content(
     """
     frontmatter, body = parse_frontmatter(content)
     findings: List[LintFinding] = []
+    findings += _check_content_size(content)
     findings += _check_name_format(frontmatter)
     findings += _check_name_matches_dir(frontmatter, skill_dir)
     findings += _check_description(frontmatter)

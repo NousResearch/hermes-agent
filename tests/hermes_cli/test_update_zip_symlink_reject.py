@@ -141,5 +141,5 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # The fake README from the ZIP should have landed in our sandbox root,
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
-    assert (fake_root / "README.md").read_text() == "ok\n"
+    assert (fake_root / "README.md").read_text(encoding="utf-8") == "ok\n"
     assert guarded_tokens == [gateway_resume]

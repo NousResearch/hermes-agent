@@ -1321,6 +1321,7 @@ class TestPreToolCallDirective:
                     "turn_id": "",
                     "api_request_id": "",
                     "middleware_trace": [],
+                    "route_metadata": {},
                 },
             )
         ]

@@ -1109,3 +1109,228 @@ class TestTeamsMediaAttachments:
         adapter._app.send.assert_awaited_once()
 
 
+class TestTeamsEmojiUnicode:
+    """Teams sends emoji as 20x20 CDN sprites plus a text/html body mirror
+    carrying the real character in the img's ``alt``. The adapter must restore
+    the character into the text and drop the sprite attachment: forwarding it
+    loses the meaning and 400s on providers with a minimum image size."""
+
+    # Captured verbatim from production on 2026-08-19 (Teams, DM, 👍).
+    REAL_MIRROR = (
+        '<p>OK <span title="Oui" type="(yes)" class="animated-emoticon-20-yes" itemscope="">'
+        '<img itemscope="" itemtype="http://schema.skype.com/Emoji" itemid="yes" '
+        'src="https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v2/'
+        'assets/emoticons/yes/default/20_f.png" title="Oui" alt="\U0001F44D" '
+        'style="width:20px; height:20px"></span>&nbsp;Pas grave; merci d\'avoir cherché.</p>'
+    )
+    REAL_SRC = (
+        "https://statics.teams.cdn.office.net/evergreen-assets/personal-expressions/v2/"
+        "assets/emoticons/yes/default/20_f.png"
+    )
+
+    # -- _teams_html_to_text --------------------------------------------
+
+    def test_real_production_mirror(self):
+        text, chars, srcs = _teams_mod._teams_html_to_text(self.REAL_MIRROR)
+        assert text == "OK \U0001F44D Pas grave; merci d'avoir cherché."
+        assert chars == ["\U0001F44D"]
+        assert srcs == {self.REAL_SRC}
+
+    def test_emoji_position_is_preserved(self):
+        html_body = (
+            '<p>avant <img itemtype="http://schema.skype.com/Emoji" itemid="yes" '
+            'src="https://cdn/y.png" alt="\U0001F44D"> apres</p>'
+        )
+        text, _, _ = _teams_mod._teams_html_to_text(html_body)
+        assert text == "avant \U0001F44D apres"
+
+    def test_custom_emoji_without_alt_falls_back_to_shortcode(self):
+        html_body = (
+            '<p>ship it <img itemtype="http://schema.skype.com/Emoji" '
+            'itemid="tenantrocket" src="https://cdn/custom.png" alt=""></p>'
+        )
+        text, chars, srcs = _teams_mod._teams_html_to_text(html_body)
+        assert text == "ship it :tenantrocket:"
+        assert chars == [":tenantrocket:"]
+        # Custom emoji live off the Teams CDN — matching on itemtype, not on
+        # the hostname, is what makes them work.
+        assert srcs == {"https://cdn/custom.png"}
+
+    def test_pasted_image_is_not_treated_as_emoji(self):
+        html_body = '<p>regarde <img src="https://smba.trafficmanager.net/x/views/original"></p>'
+        text, chars, srcs = _teams_mod._teams_html_to_text(html_body)
+        assert text == "regarde"
+        assert chars == []
+        assert srcs == set()  # stays in attachments, real content
+
+    def test_multiple_emoji_in_order(self):
+        html_body = (
+            '<p><img itemtype="http://schema.skype.com/Emoji" itemid="yes" src="https://c/a.png" '
+            'alt="\U0001F44D"> et <img itemtype="http://schema.skype.com/Emoji" itemid="think" '
+            'src="https://c/b.png" alt="\U0001F914"></p>'
+        )
+        text, chars, srcs = _teams_mod._teams_html_to_text(html_body)
+        assert text == "\U0001F44D et \U0001F914"
+        assert chars == ["\U0001F44D", "\U0001F914"]
+        assert srcs == {"https://c/a.png", "https://c/b.png"}
+
+    def test_entities_and_breaks(self):
+        html_body = '<p>a&nbsp;&amp;&nbsp;b<br>ligne 2</p>'
+        text, _, _ = _teams_mod._teams_html_to_text(html_body)
+        assert text == "a & b\nligne 2"
+
+    def test_mention_span_is_dropped(self):
+        html_body = (
+            '<p><span itemtype="http://schema.skype.com/Mention" itemid="0"><at>Hermes</at></span>'
+            ' salut <img itemtype="http://schema.skype.com/Emoji" itemid="yes" '
+            'src="https://c/a.png" alt="\U0001F44D"></p>'
+        )
+        text, chars, _ = _teams_mod._teams_html_to_text(html_body)
+        assert text == "salut \U0001F44D"
+        assert chars == ["\U0001F44D"]
+
+    # -- end to end through _on_message ---------------------------------
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _html_attachment(self, content):
+        att = MagicMock()
+        att.content_type = "text/html"
+        att.content_url = None
+        att.content = content
+        att.name = ""
+        return att
+
+    def _sprite_attachment(self, content_url):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = content_url
+        att.name = "20_f.png"
+        return att
+
+    def _make_activity(self, attachments, text):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = "activity-emoji-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        return activity
+
+    @pytest.mark.anyio
+    async def test_sprite_dropped_and_emoji_restored_in_text(self, monkeypatch):
+        adapter = self._make_adapter()
+        # The sprite lives on the Teams CDN (not a Bot Framework host), so it
+        # would take the anonymous ``cache_image_from_url`` path; both fetch
+        # paths are probed so a sprite that slips through fails loudly.
+        fetch = AsyncMock(return_value=b"never-called")
+        monkeypatch.setattr(adapter, "_fetch_attachment_bytes", fetch)
+        cache_url = AsyncMock(return_value="/cache/sprite.png")
+        monkeypatch.setattr(_teams_mod, "cache_image_from_url", cache_url)
+
+        activity = self._make_activity(
+            [self._html_attachment(self.REAL_MIRROR), self._sprite_attachment(self.REAL_SRC)],
+            text="OK  Pas grave; merci d'avoir cherché.",
+        )
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "OK \U0001F44D Pas grave; merci d'avoir cherché."
+        assert not (event.media_urls or [])
+        fetch.assert_not_awaited()  # the sprite was never fetched
+        cache_url.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_real_pasted_image_still_attached(self, monkeypatch):
+        adapter = self._make_adapter()
+        # The pasted image is Bot-Framework-hosted: it goes through the
+        # authenticated fetch and ``cache_media_bytes``. The sprite is on the
+        # CDN and must be skipped before it reaches ``cache_image_from_url``.
+        monkeypatch.setattr(
+            adapter, "_fetch_attachment_bytes", AsyncMock(return_value=b"\x89PNG-bytes"),
+        )
+        monkeypatch.setattr(
+            _teams_mod,
+            "cache_media_bytes",
+            lambda *a, **k: SimpleNamespace(
+                path="/cache/img_1.png", media_type="image/png", kind="image"
+            ),
+        )
+        cache_url = AsyncMock(return_value="/cache/sprite.png")
+        monkeypatch.setattr(_teams_mod, "cache_image_from_url", cache_url)
+
+        pasted = "https://smba.trafficmanager.net/fr/v3/attachments/abc/views/original"
+        mirror = (
+            '<p>vois <img itemtype="http://schema.skype.com/Emoji" itemid="yes" '
+            f'src="{self.REAL_SRC}" alt="\U0001F44D"> ca <img src="{pasted}"></p>'
+        )
+        activity = self._make_activity(
+            [
+                self._html_attachment(mirror),
+                self._sprite_attachment(self.REAL_SRC),
+                self._sprite_attachment(pasted),
+            ],
+            text="vois  ca",
+        )
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "vois \U0001F44D ca"
+        assert event.media_urls == ["/cache/img_1.png"]  # sprite out, real image in
+        cache_url.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_mismatched_mirror_appends_rather_than_dropping(self, monkeypatch):
+        """When the two renderings disagree the emoji must still survive."""
+        adapter = self._make_adapter()
+        monkeypatch.setattr(adapter, "_fetch_attachment_bytes", AsyncMock(return_value=b""))
+        monkeypatch.setattr(
+            _teams_mod, "cache_image_from_url", AsyncMock(return_value="/cache/sprite.png"),
+        )
+
+        mirror = (
+            '<p>un corps qui ne correspond pas <img itemtype="http://schema.skype.com/Emoji" '
+            f'itemid="yes" src="{self.REAL_SRC}" alt="\U0001F44D"></p>'
+        )
+        activity = self._make_activity(
+            [self._html_attachment(mirror), self._sprite_attachment(self.REAL_SRC)],
+            text="texte totalement different",
+        )
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "texte totalement different \U0001F44D"
+
+    @pytest.mark.anyio
+    async def test_message_without_emoji_is_untouched(self, monkeypatch):
+        adapter = self._make_adapter()
+        activity = self._make_activity(
+            [self._html_attachment("<p>rien de special</p>")],
+            text="rien de special",
+        )
+        ctx = MagicMock()
+        ctx.activity = activity
+        await adapter._on_message(ctx)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "rien de special"

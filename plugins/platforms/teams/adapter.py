@@ -28,6 +28,7 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
@@ -149,6 +150,88 @@ _MAX_BODY_BYTES = 1_048_576
 # (d542894ad). Pin a host via TEAMS_HOST or extra.host.
 _DEFAULT_HOST = None
 _WEBHOOK_PATH = "/api/messages"
+# ── Teams emoji → Unicode ────────────────────────────────────────────────
+# Teams never sends an emoji as a Unicode character. It sends a 20x20 PNG
+# from its CDN as an ordinary image attachment, and mirrors the message body
+# as a ``text/html`` attachment where the emoji carries the real character in
+# the ``alt`` of an ``<img itemtype="http://schema.skype.com/Emoji">``.
+#
+# Reading only ``activity.text`` therefore drops the emoji outright and hands
+# the model an unreadable 20x20 "screenshot" in its place. It also breaks the
+# turn on providers that enforce a minimum image size: xAI rejects anything
+# under 512 total pixels with a 400 ``invalid_image``, which the retry loop
+# escalates into a model failover the fallback provider cannot "fix" — the
+# request is malformed, not the provider.
+#
+# The HTML mirror is authoritative: ``alt`` carries the character, ``itemid``
+# the shortcode fallback for tenant-custom emoji that have no Unicode
+# equivalent, and ``src`` identifies exactly which image attachments to drop
+# (no CDN-hostname heuristic, so custom emoji hosted elsewhere are covered).
+_TEAMS_EMOJI_ITEMTYPE = "http://schema.skype.com/Emoji"
+_TEAMS_MENTION_ITEMTYPE = "http://schema.skype.com/Mention"
+
+_HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_ATTR_RE = re.compile(r'''([\w:-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')''')
+_HTML_BREAK_RE = re.compile(r"</p\s*>|<br\s*/?>", re.IGNORECASE)
+_HTML_MENTION_RE = re.compile(
+    r"<span\b[^>]*itemtype=[\"\']" + re.escape(_TEAMS_MENTION_ITEMTYPE)
+    + r"[\"\'][^>]*>.*?</span\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _html_tag_attrs(tag: str) -> Dict[str, str]:
+    """Parse the attributes of a single HTML tag into a lowercased-key dict."""
+    return {
+        m.group(1).lower(): (m.group(2) if m.group(2) is not None else m.group(3))
+        for m in _HTML_ATTR_RE.finditer(tag)
+    }
+
+
+def _teams_html_to_text(html_body: str) -> tuple[str, list, set]:
+    """Flatten a Teams ``text/html`` body mirror, restoring emoji as Unicode.
+
+    Returns ``(text, emoji_chars, emoji_srcs)``:
+    - ``text`` — the body as plain text, each emoji back **in place**;
+    - ``emoji_chars`` — the substituted characters, in document order;
+    - ``emoji_srcs`` — the ``src`` URLs of the emoji images, so the caller can
+      drop the matching attachments instead of forwarding 20x20 sprites.
+
+    Non-emoji ``<img>`` tags (genuinely pasted images) are removed from the
+    text and deliberately left in ``attachments`` — they are real content and
+    the existing inline-image path already handles them.
+    """
+    emoji_chars: list = []
+    emoji_srcs: set = set()
+
+    def _swap_img(match: "re.Match") -> str:
+        attrs = _html_tag_attrs(match.group(0))
+        if attrs.get("itemtype", "").strip().lower() != _TEAMS_EMOJI_ITEMTYPE.lower():
+            return ""
+        src = (attrs.get("src") or "").strip()
+        if src:
+            emoji_srcs.add(src)
+        char = html.unescape(attrs.get("alt") or "").strip()
+        if not char:
+            itemid = (attrs.get("itemid") or "").strip()
+            char = f":{itemid}:" if itemid else ""
+        if char:
+            emoji_chars.append(char)
+        return char
+
+    body = _HTML_MENTION_RE.sub("", html_body)
+    body = _HTML_IMG_RE.sub(_swap_img, body)
+    body = _HTML_BREAK_RE.sub("\n", body)
+    body = _HTML_TAG_RE.sub("", body)
+    text = html.unescape(body).replace("\u00a0", " ")
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    return "\n".join(lines).strip(), emoji_chars, emoji_srcs
+
+
+def _collapse_ws(value: str) -> str:
+    """Whitespace-insensitive form, for comparing two renderings of one body."""
+    return " ".join((value or "").split())
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -1037,8 +1120,38 @@ class TeamsAdapter(BasePlatformAdapter):
             text = activity.text
         # Strip <at>BotName</at> HTML tags that Teams prepends for @mentions
         if "<at>" in text:
-            import re
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+
+        # Restore Teams emoji as Unicode from the text/html body mirror that
+        # Teams attaches to every message (see _teams_html_to_text). Without
+        # this the emoji is lost from the text and forwarded as an unreadable
+        # 20x20 sprite attachment instead.
+        emoji_srcs: set = set()
+        html_mirror = ""
+        for att in getattr(activity, "attachments", None) or []:
+            att_type = (getattr(att, "content_type", None) or "").lower()
+            if att_type.startswith("text/html") and not getattr(att, "content_url", None):
+                content = getattr(att, "content", None)
+                if isinstance(content, str):
+                    html_mirror = content
+                break
+
+        if html_mirror and _TEAMS_EMOJI_ITEMTYPE.lower() in html_mirror.lower():
+            html_text, emoji_chars, emoji_srcs = _teams_html_to_text(html_mirror)
+            if emoji_chars:
+                without_emoji = html_text
+                for char in emoji_chars:
+                    without_emoji = without_emoji.replace(char, "", 1)
+                if _collapse_ws(without_emoji) == _collapse_ws(text):
+                    # The mirror is a faithful rendering of activity.text, so
+                    # adopting it puts every emoji back at its exact position.
+                    text = html_text
+                else:
+                    # The two renderings disagree — an unhandled Teams
+                    # construct, or formatting that survives in one and not
+                    # the other. Never drop the emoji over a position we
+                    # cannot place with confidence: append it instead.
+                    text = f"{text} {''.join(emoji_chars)}".strip()
 
         # Determine chat type from conversation
         conv = activity.conversation
@@ -1074,6 +1187,13 @@ class TeamsAdapter(BasePlatformAdapter):
             content_url = getattr(att, "content_url", None)
             content_type = (getattr(att, "content_type", None) or "").lower()
             att_name = getattr(att, "name", None) or ""
+
+            # Teams emoji sprite: already restored as a Unicode character in
+            # the message text above. Forwarding the 20x20 PNG would hand the
+            # model an unreadable "screenshot" and trips providers that
+            # enforce a minimum image size.
+            if content_url and content_url in emoji_srcs:
+                continue
 
             # Skip non-file payloads: Teams mirrors the message body as a
             # text/html attachment on every message, and adaptive/hero cards

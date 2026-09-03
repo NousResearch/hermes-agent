@@ -73,6 +73,20 @@ from agent.message_sanitization import (
 # DEFAULT_DB_PATH = get_hermes_home() / "state.db" breaks tests that
 # monkeypatch get_hermes_home to return a str).
 _STALE_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
+
+
+def _is_streaming_method_not_allowed(exc: BaseException) -> bool:
+    """Return whether a streaming request was rejected with HTTP 405."""
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+    if str(status_code) == "405":
+        return True
+    error_text = str(exc).lower()
+    return "error code: 405" in error_text or "http 405" in error_text
+
+
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     _estimate_tools_tokens_rough,
@@ -3626,17 +3640,13 @@ def run_conversation(
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
 
-                def _perform_api_call(next_api_kwargs):
+                def _perform_non_streaming_api_call(next_api_kwargs):
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                             sanitize_harmony_tokens=agent._is_codex_backend(),
-                        )
-                    if _use_streaming:
-                        return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
                         )
                     from agent import relay_llm
 
@@ -3660,6 +3670,29 @@ def run_conversation(
                         },
                         defer_logical_completion=True,
                     )
+
+                def _perform_api_call(next_api_kwargs):
+                    if _use_streaming:
+                        try:
+                            return agent._interruptible_streaming_api_call(
+                                next_api_kwargs, on_first_delta=_stop_spinner
+                            )
+                        except Exception as exc:
+                            # Some OpenAI-compatible gateways accept ordinary
+                            # chat completions but reject stream=true with 405.
+                            # Retry the same request non-streaming and remember
+                            # the capability for the rest of this session.
+                            if _is_streaming_method_not_allowed(exc):
+                                agent._disable_streaming = True
+                                logger.info(
+                                    "Provider rejected streaming with HTTP 405; "
+                                    "retrying %s/%s non-streaming for this session.",
+                                    agent.provider or "unknown",
+                                    agent.model or "unknown",
+                                )
+                                return _perform_non_streaming_api_call(next_api_kwargs)
+                            raise
+                    return _perform_non_streaming_api_call(next_api_kwargs)
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 

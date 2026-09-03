@@ -27,6 +27,40 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.conversation_loop import _is_streaming_method_not_allowed
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code=None, response=None, message=""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = response
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _StatusError(status_code=405),
+        _StatusError(response=SimpleNamespace(status_code=405)),
+        _StatusError(message="Error code: 405 - Method Not Allowed"),
+        _StatusError(message="HTTP 405: Method Not Allowed"),
+    ],
+)
+def test_streaming_405_is_detected_across_error_shapes(error):
+    assert _is_streaming_method_not_allowed(error) is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _StatusError(status_code=400),
+        _StatusError(status_code=404),
+        _StatusError(status_code=500),
+        _StatusError(message="HTTP 200: completed response"),
+    ],
+)
+def test_other_statuses_do_not_trigger_streaming_405_fallback(error):
+    assert _is_streaming_method_not_allowed(error) is False
 
 
 # ---------------------------------------------------------------------------

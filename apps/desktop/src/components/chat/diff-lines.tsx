@@ -1,8 +1,9 @@
 'use client'
 
 import * as React from 'react'
-import type { BundledLanguage, ShikiTransformer, ThemedToken } from 'shiki'
+import type { BundledLanguage, GrammarState, ShikiTransformer, ThemedToken } from 'shiki'
 
+import { DiffHighlightCache } from '@/components/chat/diff-highlight-cache'
 import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -56,6 +57,42 @@ const PREVIEW_DIFF_LINE_BASE = 'block h-5 min-w-max whitespace-pre px-2.5 leadin
 const PREVIEW_CHUNK_LINES = 200
 const PREVIEW_LINE_PX = 20
 const PREVIEW_OVERSCAN_LINES = 400
+
+function importShiki() {
+  return import('shiki')
+}
+
+let shikiModulePromise: null | ReturnType<typeof importShiki> = null
+
+async function loadShiki() {
+  shikiModulePromise ??= importShiki()
+
+  return shikiModulePromise
+}
+
+function throwIfHighlightAborted(signal: AbortSignal) {
+  if (signal.aborted) {
+    const error = new Error('Highlight request no longer has an observer')
+
+    error.name = 'AbortError'
+    throw error
+  }
+}
+
+const diffHighlightCache = new DiffHighlightCache({
+  highlight: async ({ code, grammarState, language, theme }, signal) => {
+    // Keep Shiki's multi-MB runtime out of the cold-start bundle. Cache work is
+    // scheduled, so even the first import yields to the browser before starting.
+    const { codeToTokens } = await loadShiki()
+
+    throwIfHighlightAborted(signal)
+
+    const result = await codeToTokens(code, { grammarState, lang: language as BundledLanguage, theme })
+
+    return result
+  },
+  maxCompleted: 64
+})
 
 // Bleed out of the tool-card body's `p-1.5` so tints/borders run flush to the
 // card edges (rounded corners clip via the card's overflow); compact height
@@ -325,12 +362,12 @@ function PreviewDiffRows({
   afterLines = 0,
   beforeLines = 0,
   chunks,
-  tokens
+  tokensByChunk
 }: {
   afterLines?: number
   beforeLines?: number
   chunks: Array<LineChunk<DiffLine>>
-  tokens?: ThemedToken[][] | null
+  tokensByChunk?: ReadonlyMap<number, ThemedToken[][]>
 }) {
   return (
     <>
@@ -339,7 +376,7 @@ function PreviewDiffRows({
         <div className="block" key={chunk.start}>
           {chunk.lines.map((line, offset) => {
             const index = chunk.start + offset
-            const rowTokens = tokens?.[index] ?? []
+            const rowTokens = tokensByChunk?.get(chunk.start)?.[offset] ?? []
 
             return (
               <span className={cn(PREVIEW_DIFF_LINE_BASE, DIFF_KIND_TINT[line.kind])} key={`${index}-${line.text}`}>
@@ -360,6 +397,21 @@ function PreviewDiffRows({
   )
 }
 
+interface TokenizedChunksState {
+  chunks: Array<LineChunk<DiffLine>> | null
+  language: string | null
+  theme: string | null
+  tokens: ReadonlyMap<number, ThemedToken[][]>
+}
+
+function newGrammarBoundaryMap(
+  _language: string,
+  _lines: DiffLine[],
+  _theme: string
+): Map<number, GrammarState | undefined> {
+  return new Map([[0, undefined]])
+}
+
 function TokenizedDiffBody({
   afterLines,
   beforeLines,
@@ -375,45 +427,114 @@ function TokenizedDiffBody({
   language: string
   lines: DiffLine[]
 }) {
-  const code = React.useMemo(() => lines.map(line => line.text).join('\n'), [lines])
+  const highlightedChunks = React.useMemo<Array<LineChunk<DiffLine>>>(
+    () => (chunked ? (chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)) : [{ lines, start: 0 }]),
+    [chunked, chunks, lines]
+  )
+
   const theme = useThemeName()
-  const [tokens, setTokens] = React.useState<ThemedToken[][] | null>(null)
+
+  // The map is mutable continuation state. Replacing the source, language, or
+  // theme resets it; moving the visible window does not, so cached boundaries
+  // can seed the next overscan window.
+  const grammarBoundaries = React.useMemo(
+    () => newGrammarBoundaryMap(language, lines, theme),
+    [language, lines, theme]
+  )
+
+  const generationRef = React.useRef(0)
+
+  const [highlighted, setHighlighted] = React.useState<TokenizedChunksState>(() => ({
+    chunks: null,
+    language: null,
+    theme: null,
+    tokens: new Map()
+  }))
+
+  // Effects run after paint. Refuse tokens from the previous render even in
+  // that pre-effect gap, before its cleanup can invalidate the old generation.
+  const tokensByChunk =
+    highlighted.chunks === highlightedChunks && highlighted.language === language && highlighted.theme === theme
+      ? highlighted.tokens
+      : undefined
 
   React.useEffect(() => {
-    let cancelled = false
+    const generation = generationRef.current + 1
+    const activeRequests = new Set<ReturnType<typeof diffHighlightCache.request>>()
 
-    setTokens(null)
-    // Dynamic import so the multi-MB shiki chunk stays off the cold-start
-    // path — this effect only runs once a highlightable diff is on screen.
-    void import('shiki')
-      .then(({ codeToTokens }) => codeToTokens(code, { lang: language as BundledLanguage, theme }))
-      .then(result => {
-        if (!cancelled) {
-          setTokens(result.tokens)
+    generationRef.current = generation
+    setHighlighted({ chunks: highlightedChunks, language, theme, tokens: new Map() })
+
+    const highlightChunks = async () => {
+      const firstChunkStart = highlightedChunks[0]?.start ?? 0
+
+      // Starting Shiki with an unknown continuation can mis-color multiline
+      // strings/comments. A hard jump therefore stays plain until a prior
+      // overscan window has established this exact grammar boundary.
+      if (firstChunkStart > 0 && !grammarBoundaries.has(firstChunkStart)) {
+        return
+      }
+
+      let grammarState = grammarBoundaries.get(firstChunkStart)
+
+      for (const chunk of highlightedChunks) {
+        if (generationRef.current !== generation) {
+          return
         }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setTokens([])
+
+        const request = diffHighlightCache.request({
+          code: chunk.lines.map(line => line.text).join('\n'),
+          grammarState,
+          language,
+          theme
+        })
+
+        activeRequests.add(request)
+
+        try {
+          const result = await request.promise
+
+          if (generationRef.current !== generation) {
+            return
+          }
+
+          grammarState = result.grammarState
+          grammarBoundaries.set(chunk.start + chunk.lines.length, grammarState)
+
+          setHighlighted(current => {
+            if (current.chunks !== highlightedChunks || current.language !== language || current.theme !== theme) {
+              return current
+            }
+
+            const next = new Map(current.tokens)
+
+            next.set(chunk.start, result.tokens)
+
+            return { ...current, tokens: next }
+          })
+        } catch {
+          // A failed grammar/import stays plain. The result cache retains no
+          // failure; Chromium itself may retain a failed module URL.
+          return
+        } finally {
+          activeRequests.delete(request)
+          request.release()
         }
-      })
+      }
+    }
+
+    void highlightChunks()
 
     return () => {
-      cancelled = true
-    }
-  }, [code, language, theme])
+      if (generationRef.current === generation) {
+        generationRef.current += 1
+      }
 
-  if (!tokens) {
-    return chunked ? (
-      <PreviewDiffRows
-        afterLines={afterLines}
-        beforeLines={beforeLines}
-        chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
-      />
-    ) : (
-      <DiffBody lines={lines} />
-    )
-  }
+      for (const request of activeRequests) {
+        request.release()
+      }
+    }
+  }, [grammarBoundaries, highlightedChunks, language, theme])
 
   if (chunked) {
     return (
@@ -421,9 +542,15 @@ function TokenizedDiffBody({
         afterLines={afterLines}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
-        tokens={tokens}
+        tokensByChunk={tokensByChunk}
       />
     )
+  }
+
+  const tokens = tokensByChunk?.get(0)
+
+  if (!tokens) {
+    return <DiffBody lines={lines} />
   }
 
   return (
@@ -602,7 +729,10 @@ export function FileDiffPanel({
     totalRows: lines.length
   })
 
-  const visibleLineChunks = lineChunks.slice(startChunk, endChunk + 1)
+  const visibleLineChunks = React.useMemo(
+    () => lineChunks.slice(startChunk, endChunk + 1),
+    [endChunk, lineChunks, startChunk]
+  )
 
   const language = shikiLanguageForFilename(path)
   const canHighlight = Boolean(language) && !exceedsHighlightBudget(fullText ?? diff)

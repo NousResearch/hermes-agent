@@ -4829,6 +4829,50 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= _RECONNECT_ATTENTION_AFTER_SECONDS
 
 
+def _build_interim_media_delivery_payload(
+    interim_responses: list[str],
+    final_response: str,
+    adapter,
+) -> tuple[str | None, str]:
+    """Merge current-turn interim and final MEDIA directives for one delivery.
+
+    Interim commentary is cleaned before display, so its raw MEDIA directives
+    otherwise disappear before the gateway's normal final-response attachment
+    pass. A payload is built only when an interim response contains at least
+    one valid directive. Final-response directives are folded into the same
+    payload and deduplicated by expanded path, preventing an attachment repeated
+    in both phases from being uploaded twice.
+
+    Returns ``(delivery_payload, cleaned_final_response)``. When no interim
+    media exists, ``delivery_payload`` is ``None`` and the final response is
+    returned unchanged so the established final-only rail remains untouched.
+    """
+    interim_media: list[tuple[str, bool]] = []
+    for text in interim_responses:
+        media, _cleaned = adapter.extract_media(text)
+        interim_media.extend(media)
+    if not interim_media:
+        return None, final_response
+
+    final_media, cleaned_final = adapter.extract_media(final_response)
+    combined = [*interim_media, *final_media]
+    seen_paths: set[str] = set()
+    unique_media: list[tuple[str, bool]] = []
+    for path, is_voice in combined:
+        if path not in seen_paths:
+            seen_paths.add(path)
+            unique_media.append((path, is_voice))
+
+    source_payloads = [*interim_responses, final_response]
+    lines: list[str] = []
+    if any("[[audio_as_voice]]" in text for text in source_payloads):
+        lines.append("[[audio_as_voice]]")
+    if any("[[as_document]]" in text for text in source_payloads):
+        lines.append("[[as_document]]")
+    lines.extend(f"MEDIA:{path}" for path, _is_voice in unique_media)
+    return "\n".join(lines), cleaned_final
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -6082,6 +6126,8 @@ class TurnRunner:
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if "MEDIA:" in text:
+                ctx.interim_media_responses.append(text)
             display_text = text
             if _stream_consumer is not None:
                 if already_streamed:
@@ -7346,6 +7392,7 @@ class TurnRunner:
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "context_length": _context_length,
+                "interim_media_responses": list(ctx.interim_media_responses),
             }
 
         # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -7435,6 +7482,7 @@ class TurnRunner:
             # self-persisted (it didn't — see codex_runtime.py).  Default
             # True preserves the skip-db behaviour for the standard runtime.
             "agent_persisted": (ctx.result_holder[0].get("agent_persisted", True) if ctx.result_holder[0] else True),
+            "interim_media_responses": list(ctx.interim_media_responses),
         }
 
 
@@ -23767,6 +23815,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_entry.session_id,
                 )
                 response = ""
+
+            # Interim commentary is display-cleaned before it reaches the
+            # platform, so preserve and deliver any explicit MEDIA: directives
+            # captured by TurnRunner. Fold final-response directives into the
+            # same current-turn payload to avoid duplicate uploads when the
+            # model repeats a path in both phases. Failed/interrupted turns do
+            # not publish interim attachments.
+            _interim_media_payloads = agent_result.get("interim_media_responses") or []
+            if (
+                _interim_media_payloads
+                and not agent_result.get("failed")
+                and not agent_result.get("interrupted")
+                and agent_result.get("completed") is not False
+            ):
+                _media_adapter = self._adapter_for_source(source)
+                if _media_adapter:
+                    _media_payload, _cleaned_response = (
+                        _build_interim_media_delivery_payload(
+                            _interim_media_payloads,
+                            response,
+                            _media_adapter,
+                        )
+                    )
+                    if _media_payload:
+                        await self._deliver_media_from_response(
+                            _media_payload,
+                            event,
+                            _media_adapter,
+                        )
+                        response = _cleaned_response
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))

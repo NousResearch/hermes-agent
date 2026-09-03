@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
+import type { NavigateFunction } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
@@ -19,6 +20,7 @@ import {
   type SessionResumeResponse,
   setSessionArchived
 } from '@/hermes'
+import * as chatMessages from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -69,13 +71,21 @@ import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-r
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
 import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
+import { clearTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
+import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import * as transcriptTailCache from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
 import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { applyRewindOptimistic } from './use-prompt-actions/rewind'
+import { clearSingleFlightSessionResumeState } from './use-prompt-actions/single-flight-resume'
 import { useSessionActions } from './use-session-actions'
+import * as authoritativeMessageReconciliation from './use-session-actions/authoritative-message-reconciliation'
+import { SESSION_OPEN_MARKS } from './use-session-actions/session-open-marks'
+import { runSessionOpenPerfFixture, setSessionOpenPerfFixtureRunner } from './use-session-actions/session-open-perf-fixture'
 import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async importOriginal => ({
@@ -961,6 +971,9 @@ describe('createBackendSessionForSend profile routing', () => {
 // (b) arm $resumeFailedSessionId so use-route-resume can retry. A resume that
 // succeeds must NOT leave the flag armed.
 function ResumeHarness({
+  getRouteToken = () => 'token',
+  getRoutedStoredSessionId = () => null,
+  navigate = vi.fn() as unknown as NavigateFunction,
   onStateUpdate,
   onViewSync,
   onReady,
@@ -969,6 +982,9 @@ function ResumeHarness({
   selectedStoredSessionId = null,
   sessionStateByRuntimeIdRef
 }: {
+  getRouteToken?: () => string
+  getRoutedStoredSessionId?: () => string | null
+  navigate?: NavigateFunction
   onStateUpdate?: (sessionId: string, state: ClientSessionState) => void
   onViewSync?: (sessionId: string, state: ClientSessionState) => void
   onReady: (
@@ -979,24 +995,29 @@ function ResumeHarness({
   selectedStoredSessionId?: string | null
   sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
 }) {
-  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
-  const runtimeMapRef = runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>())
-  const stateMapRef = sessionStateByRuntimeIdRef ?? ref(new Map<string, ClientSessionState>())
+  const activeSessionIdRef = useRef<string | null>(null)
+  const busyRef = useRef(false)
+  const creatingSessionRef = useRef(false)
+  const fallbackRuntimeMapRef = useRef(new Map<string, string>())
+  const fallbackStateMapRef = useRef(new Map<string, ClientSessionState>())
+  const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
+  const runtimeMapRef = runtimeIdByStoredSessionIdRef ?? fallbackRuntimeMapRef
+  const stateMapRef = sessionStateByRuntimeIdRef ?? fallbackStateMapRef
 
   const actions = useSessionActions({
     activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
-    busyRef: ref(false),
-    creatingSessionRef: ref(false),
+    activeSessionIdRef,
+    busyRef,
+    creatingSessionRef,
     ensureSessionState: () => ({}) as ClientSessionState,
-    getRouteToken: () => 'token',
-    getRoutedStoredSessionId: () => null,
-    navigate: vi.fn() as never,
+    getRouteToken,
+    getRoutedStoredSessionId,
+    navigate,
     requestGateway,
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: runtimeMapRef,
     selectedStoredSessionId,
-    selectedStoredSessionIdRef: ref<string | null>(selectedStoredSessionId),
+    selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: stateMapRef,
     syncSessionStateToView: (sessionId, state) => onViewSync?.(sessionId, state),
     updateSessionState: (sessionId, updater, storedSessionId) => {
@@ -1007,6 +1028,56 @@ function ResumeHarness({
 
       stateMapRef.current.set(sessionId, next)
       onStateUpdate?.(sessionId, next)
+
+      return next
+    }
+  })
+
+  useEffect(() => {
+    onReady(actions.resumeSession)
+  }, [actions.resumeSession, onReady])
+
+  return null
+}
+
+function RouteReaderHarness({
+  getRouteToken,
+  onReady,
+  requestGateway,
+  sessionStateByRuntimeIdRef
+}: {
+  getRouteToken: () => string
+  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+}) {
+  const activeSessionIdRef = useRef<string | null>(null)
+  const busyRef = useRef(false)
+  const creatingSessionRef = useRef(false)
+  const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
+  const selectedStoredSessionIdRef = useRef<string | null>(null)
+  const actions = useSessionActions({
+    activeSessionId: null,
+    activeSessionIdRef,
+    busyRef,
+    creatingSessionRef,
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken,
+    getRoutedStoredSessionId: () => null,
+    navigate: vi.fn() as never,
+    requestGateway,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef,
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      const current =
+        sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState(storedSessionId ?? null)
+      const next = updater(current)
+
+      sessionStateByRuntimeIdRef.current.set(sessionId, next)
 
       return next
     }
@@ -1066,16 +1137,35 @@ function ResumeTimerHarness({
 }
 
 describe('resumeSession failure recovery', () => {
+  beforeEach(() => {
+    clearSingleFlightSessionResumeState()
+    for (const name of SESSION_OPEN_MARKS) {
+      performance.clearMarks(name)
+    }
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback: FrameRequestCallback) => {
+      callback(0)
+
+      return null as unknown as number
+    })
+  })
+
   afterEach(() => {
+    clearSingleFlightSessionResumeState()
+    setSessionOpenPerfFixtureRunner(null)
     cleanup()
+    window.localStorage.clear()
     setActiveSessionId(null)
     setResumeFailedSessionId(null)
+    setSelectedStoredSessionId(null)
     setMessages([])
     setSessions([])
     $removedSessionIds.set(new Set())
     $sessionMutationsInFlight.set(new Set())
     clearClarifyRequest()
     vi.restoreAllMocks()
+    for (const name of SESSION_OPEN_MARKS) {
+      performance.clearMarks(name)
+    }
   })
 
   async function runResume(
@@ -1090,6 +1180,1827 @@ describe('resumeSession failure recovery', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
   }
+
+  it('marks selection, settled resume, and the authoritative history publication', async () => {
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 1,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'synthetic persisted answer', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'stored-1',
+      session_id: 'stored-1'
+    })
+
+    await runResume(async method => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await waitFor(() => expect(performance.getEntriesByName('hermes.session.history.ready')).toHaveLength(1))
+    expect(performance.getEntriesByName('hermes.session.select')).toHaveLength(1)
+    expect(performance.getEntriesByName('hermes.session.resume.ready')).toHaveLength(1)
+    expect(performance.getEntriesByName('hermes.session.rest.commit')).toHaveLength(1)
+  })
+
+  it('drives the controlled perf fixture through the mounted production resume orchestration', async () => {
+    const authority = {
+      connectionId: '',
+      displayRevision: 1,
+      lineageRootId: 'perf-root',
+      profile: 'default',
+      resolvedTipId: 'perf-session'
+    }
+    const outerGateway = vi.fn(async () => ({}) as never)
+    let routedSessionId: string | null = null
+    let resumeFromRoute:
+      | ((storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>)
+      | null = null
+    const navigateSpy = vi.fn(() => {
+      window.setTimeout(() => {
+        routedSessionId = 'perf-session'
+        void resumeFromRoute?.('perf-session', true)
+      }, 25)
+    })
+    const navigate = navigateSpy as unknown as NavigateFunction
+    const fixtureGateway = vi.fn(async (method: string) => {
+      expect(method).toBe('session.resume')
+
+      return {
+        info: {},
+        messages: [],
+        messages_omitted: true,
+        resumed: 'perf-session',
+        session_id: 'perf-runtime',
+        session_key: 'perf-session'
+      } as never
+    })
+
+    vi.mocked(ensureGatewayProfile).mockClear()
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: authority.lineageRootId,
+        display_revision: authority.displayRevision,
+        id: authority.resolvedTipId,
+        message_count: 1,
+        profile: authority.profile
+      })
+    ])
+    saveTranscriptTail(
+      'perf-session',
+      [{ id: 'cached', parts: [{ type: 'text', text: 'cached answer' }], role: 'assistant' }],
+      authority
+    )
+    render(
+      <ResumeHarness
+        getRoutedStoredSessionId={() => routedSessionId}
+        navigate={navigate}
+        onReady={resume => {
+          resumeFromRoute = resume
+        }}
+        requestGateway={outerGateway}
+      />
+    )
+    await waitFor(() => expect(resumeFromRoute).not.toBeNull())
+
+    // ResumeHarness mounts the same hook used by Desktop. Its DEV-only private
+    // registration makes this invocation exercise that real orchestration.
+    await runSessionOpenPerfFixture({
+      delayRuntimeMs: 0,
+      fetchLatest: async () => ({
+        display_revision: authority.displayRevision,
+        lineage_root_id: authority.lineageRootId,
+        messages: [{ content: 'persisted answer', role: 'assistant', timestamp: 1 }],
+        resolved_tip_id: authority.resolvedTipId,
+        session_id: 'perf-session'
+      }),
+      requestGateway: fixtureGateway,
+      storedSessionId: 'perf-session'
+    })
+
+    await waitFor(() => expect(performance.getEntriesByName('hermes.session.history.ready')).toHaveLength(1))
+    await new Promise(resolve => window.setTimeout(resolve, 50))
+    expect(performance.getEntriesByName('hermes.session.select')).toHaveLength(1)
+    expect(performance.getEntriesByName('hermes.session.cache.commit').length).toBeGreaterThanOrEqual(1)
+    expect(performance.getEntriesByName('hermes.session.rest.commit')).toHaveLength(1)
+    expect(performance.getEntriesByName('hermes.session.resume.ready')).toHaveLength(1)
+    expect(fixtureGateway).toHaveBeenCalledWith('session.resume', expect.anything())
+    expect(fixtureGateway).toHaveBeenCalledTimes(1)
+    expect(navigateSpy).toHaveBeenCalledWith(sessionRoute('perf-session'), { replace: true })
+    expect(outerGateway).not.toHaveBeenCalled()
+    expect(ensureGatewayProfile).not.toHaveBeenCalled()
+  })
+
+  it('cleans exact synthetic session state between controlled fixture rounds', async () => {
+    const runtimeMapRef: MutableRefObject<Map<string, string>> = { current: new Map() }
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const originalMessages: ReturnType<typeof $messages.get> = [
+      { id: 'baseline-message', parts: [{ type: 'text', text: 'baseline' }], role: 'assistant' }
+    ]
+    const originalSessions = [storedSession({ id: 'baseline-session', message_count: 1 })]
+
+    setSessions(originalSessions)
+    setMessages(originalMessages)
+    setActiveSessionId('baseline-runtime')
+    setSelectedStoredSessionId('baseline-session')
+    let routedSessionId: string | null = 'baseline-session'
+    let resumeFromRoute:
+      | ((storedSessionId: string, replaceRoute?: boolean, ownerRoute?: SessionProfileRoute) => Promise<unknown>)
+      | null = null
+    let routedPerfRound = 0
+    const navigate = vi.fn(() => {
+      routedPerfRound += 1
+      routedSessionId = `perf-session-${routedPerfRound}`
+      window.setTimeout(() => {
+        void resumeFromRoute?.(routedSessionId!, true)
+      }, 0)
+    }) as unknown as NavigateFunction
+    const PerfTranscriptDomMirror = () => {
+      const messages = useStore($messages)
+      const selectedStoredSessionId = useStore($selectedStoredSessionId)
+
+      return (
+        <main data-hermes-perf-session={selectedStoredSessionId ?? undefined}>
+          {messages.map(message => (
+            <article data-message-id={message.id} key={message.id}>
+              {message.parts.map(part => (part.type === 'text' ? part.text : '')).join('')}
+            </article>
+          ))}
+        </main>
+      )
+    }
+    render(
+      <>
+        <ResumeHarness
+          getRoutedStoredSessionId={() => routedSessionId}
+          navigate={navigate}
+          onReady={resume => {
+            resumeFromRoute = resume
+          }}
+          requestGateway={vi.fn(async () => ({}) as never)}
+          runtimeIdByStoredSessionIdRef={runtimeMapRef}
+          selectedStoredSessionId="baseline-session"
+          sessionStateByRuntimeIdRef={stateMapRef}
+        />
+        <PerfTranscriptDomMirror />
+      </>
+    )
+
+    await import('../../chat/perf-probe')
+
+    const drive = window.__PERF_DRIVE__
+    expect(drive).toBeDefined()
+
+    for (let round = 0; round < 2; round += 1) {
+      await drive!.sessionSwitch({ verifiedCache: true })
+
+      expect($messages.get()).toBe(originalMessages)
+      expect($sessions.get()).toBe(originalSessions)
+      expect($activeSessionId.get()).toBe('baseline-runtime')
+      expect($selectedStoredSessionId.get()).toBe('baseline-session')
+      expect([...runtimeMapRef.current.keys()].some(id => id.startsWith('perf-session-'))).toBe(false)
+      expect([...stateMapRef.current.keys()].some(id => id.startsWith('perf-runtime-'))).toBe(false)
+      expect(
+        Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index)).some(key =>
+          key?.includes('perf-session-')
+        )
+      ).toBe(false)
+    }
+  })
+
+  it('attaches exact persisted-display provenance after a cold revisioned REST hydrate', async () => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const expectedProof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-2'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-2',
+        message_count: 2
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [
+        { content: 'hello', role: 'user', timestamp: 1 },
+        { content: 'hi', role: 'assistant', timestamp: 2 }
+      ],
+      resolved_tip_id: 'tip-2',
+      session_id: 'tip-2'
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'tip-2',
+          session_id: 'runtime-1',
+          session_key: 'tip-2'
+        } as never
+      }
+
+      return {} as never
+    })
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+
+    await waitFor(() =>
+      expect(stateMapRef.current.get('runtime-1')?.transcriptProvenance).toEqual({
+        ...expectedProof,
+        coverage: 'latest-page',
+        source: 'persisted-display',
+        storedSessionId: 'stored-1'
+      })
+    )
+    expect(loadTranscriptTail('stored-1', expectedProof)?.messages[1]).toMatchObject({
+      parts: [{ text: 'hi', type: 'text' }],
+      role: 'assistant'
+    })
+  })
+
+  it('does not cache or attach a hydrated proof after the route invalidates while resume is deferred', async () => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const deferredResume = deferred<SessionResumeResponse>()
+    const proof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-1'
+    }
+    let routeToken = 'route-before'
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 2
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [
+        { content: 'question', role: 'user', timestamp: 1 },
+        { content: 'answer', role: 'assistant', timestamp: 2 }
+      ],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1'
+    })
+
+    const requestGateway = vi.fn(<T,>(method: string, _params?: Record<string, unknown>): Promise<T> => {
+      if (method === 'session.resume') {
+        return deferredResume.promise as Promise<T>
+      }
+
+      return Promise.resolve({} as T)
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        getRouteToken={() => routeToken}
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway as <T,>(method: string, params?: Record<string, unknown>) => Promise<T>}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect($messages.get()).toHaveLength(2))
+
+    routeToken = 'route-after'
+    deferredResume.resolve({
+      info: {},
+      message_count: 2,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'tip-1',
+      session_id: 'runtime-1',
+      session_key: 'tip-1'
+    })
+    await pending
+
+    expect(loadTranscriptTail('stored-1', proof)).toBeNull()
+    expect(stateMapRef.current.get('runtime-1')?.transcriptProvenance).toBeUndefined()
+  })
+
+  it('rejects a changed cold hydration after the accepted runtime is optimistically edited', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const proof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-1'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+    const serialize = vi.spyOn(transcriptTailCache, 'saveTranscriptTail')
+
+    serialize.mockClear()
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [{ content: 'runtime baseline', role: 'assistant', timestamp: 0 }],
+          resumed: 'tip-1',
+          session_id: 'runtime-optimistic-changed',
+          session_key: 'tip-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+    const runtimeState = stateMapRef.current.get('runtime-optimistic-changed')!
+    const optimistic = applyRewindOptimistic(
+      {
+        ...runtimeState,
+        messages: [{ id: 'optimistic-edit', parts: [{ text: 'optimistic edit', type: 'text' }], role: 'user' }]
+      },
+      0
+    )
+
+    stateMapRef.current.set('runtime-optimistic-changed', optimistic)
+    setMessages(optimistic.messages)
+    expect(runtimeState.transcriptAuthorityEpoch ?? 0).toBe(0)
+    expect(stateMapRef.current.get('runtime-optimistic-changed')?.transcriptAuthorityEpoch).toBe(1)
+    persisted.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'stale durable answer', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1'
+    })
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+
+    expect(JSON.stringify($messages.get())).toContain('optimistic edit')
+    expect(JSON.stringify($messages.get())).not.toContain('stale durable answer')
+    expect(stateMapRef.current.get('runtime-optimistic-changed')?.transcriptProvenance).toBeUndefined()
+    expect(loadTranscriptTail('stored-1', proof)).toBeNull()
+    expect(serialize).not.toHaveBeenCalled()
+  })
+
+  it('does not restore unchanged cache proof after the accepted runtime is optimistically edited', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const proof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-1'
+    }
+    const cached = [
+      { id: 'cached-before-edit', parts: [{ text: 'cached before edit', type: 'text' as const }], role: 'assistant' as const }
+    ]
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 1
+      })
+    ])
+    saveTranscriptTail('stored-1', cached, proof)
+    const serialize = vi.spyOn(transcriptTailCache, 'saveTranscriptTail')
+
+    serialize.mockClear()
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'tip-1',
+          session_id: 'runtime-optimistic-unchanged',
+          session_key: 'tip-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+    const runtimeState = stateMapRef.current.get('runtime-optimistic-unchanged')!
+    const optimistic = applyRewindOptimistic(
+      {
+        ...runtimeState,
+        messages: [{ id: 'optimistic-edit', parts: [{ text: 'optimistic edit', type: 'text' }], role: 'user' }]
+      },
+      0
+    )
+
+    stateMapRef.current.set('runtime-optimistic-unchanged', optimistic)
+    setMessages(optimistic.messages)
+    persisted.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1',
+      unchanged: true
+    })
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+
+    expect(JSON.stringify($messages.get())).toContain('optimistic edit')
+    expect(JSON.stringify($messages.get())).not.toContain('cached before edit')
+    expect(stateMapRef.current.get('runtime-optimistic-unchanged')?.transcriptProvenance).toBeUndefined()
+    expect(serialize).not.toHaveBeenCalled()
+  })
+
+  it('uses the latest route-token reader after the harness rerenders', async () => {
+    const deferredResume = deferred<SessionResumeResponse>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    let currentRouteToken = 'route-before'
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    const onReady = (value: typeof resume) => {
+      resume = value
+    }
+
+    const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) =>
+      method === 'session.resume' ? deferredResume.promise : Promise.resolve({})
+    )
+
+    const requestGateway = <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+      requestGatewayMock(method, params) as Promise<T>
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 0 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' })
+
+    const mounted = render(
+      <RouteReaderHarness
+        getRouteToken={() => 'stale-reader'}
+        onReady={onReady}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    mounted.rerender(
+      <RouteReaderHarness
+        getRouteToken={() => currentRouteToken}
+        onReady={onReady}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+
+    const pending = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGatewayMock).toHaveBeenCalledWith('session.resume', expect.anything()))
+    currentRouteToken = 'route-after'
+
+    deferredResume.resolve({
+      info: {},
+      message_count: 0,
+      messages: [],
+      resumed: 'stored-1',
+      session_id: 'runtime-stale-route',
+      session_key: 'stored-1'
+    })
+    await pending
+
+    expect(stateMapRef.current.has('runtime-stale-route')).toBe(false)
+  })
+
+  it('invalidates a pending resume when stored-id rotation removes the old reverse mapping', async () => {
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    const activate = deferred<SessionResumeResponse>()
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-1', 'runtime-before-rotation']])
+    }
+    const stateBeforeRotation = createClientSessionState('stored-1')
+
+    stateBeforeRotation.messages = [
+      { id: 'before', parts: [{ text: 'before rotation', type: 'text' }], role: 'assistant' }
+    ]
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-before-rotation', stateBeforeRotation]])
+    }
+
+    const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) =>
+      method === 'session.activate' ? activate.promise : Promise.resolve({})
+    )
+
+    const requestGateway = <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+      requestGatewayMock(method, params) as Promise<T>
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [{ content: 'stale pre-rotation transcript', role: 'assistant', timestamp: 1 }],
+      session_id: 'stored-1'
+    })
+
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    vi.mocked(getLatestSessionMessages).mockClear()
+
+    const pending = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGatewayMock).toHaveBeenCalledWith('session.activate', expect.anything()))
+
+    act(() => {
+      // Mirror useSessionStateCache.ensureSessionState's real rotation order:
+      // remove the obsolete reverse key, install the next id, and invalidate
+      // the same runtime state's transcript authority generation.
+      runtimeIdByStoredSessionIdRef.current.delete('stored-1')
+      runtimeIdByStoredSessionIdRef.current.set('stored-1-next', 'runtime-before-rotation')
+      sessionStateByRuntimeIdRef.current.set('runtime-before-rotation', {
+        ...stateBeforeRotation,
+        storedSessionId: 'stored-1-next',
+        transcriptAuthorityEpoch: 1,
+        transcriptProvenance: undefined
+      })
+    })
+    expect(runtimeIdByStoredSessionIdRef.current.has('stored-1')).toBe(false)
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-1-next')).toBe('runtime-before-rotation')
+
+    activate.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'stored-1',
+      running: false,
+      session_id: 'runtime-before-rotation',
+      session_key: 'stored-1'
+    })
+    await pending
+
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(JSON.stringify($messages.get())).not.toContain('stale pre-rotation transcript')
+  })
+
+  it('publishes runtime liveness before a deferred persisted-display read settles', async () => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          inflight: { assistant: 'working', streaming: true, user: 'question' },
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-live',
+          session_key: 'stored-1',
+          todo_state: { items: [] }
+        } as never
+      }
+
+      return {} as never
+    })
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway as <T,>(method: string, params?: Record<string, unknown>) => Promise<T>}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const pending = resume!('stored-1', true)
+
+    try {
+      await waitFor(() =>
+        expect(stateMapRef.current.get('runtime-live')).toMatchObject({
+          awaitingResponse: true,
+          busy: true,
+          turnLive: true
+        })
+      )
+    } finally {
+      persisted.resolve({ messages: [], session_id: 'stored-1' })
+      await pending
+    }
+  })
+
+  it('publishes an unproven remote legacy transcript before its deferred resume settles', async () => {
+    const deferredResume = deferred<SessionResumeResponse>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'remote-legacy',
+        id: 'tip-remote',
+        message_count: 2,
+        profile: 'coder'
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'remote legacy question', role: 'user', timestamp: 1 },
+        { content: 'remote legacy answer', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'tip-remote'
+    })
+
+    const requestGateway = vi.fn((method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return deferredResume.promise
+      }
+
+      return Promise.resolve({})
+    })
+    vi.mocked(requestGatewayForAgent).mockImplementation((_connectionId, _profile, method, params) =>
+      requestGateway(method, params) as never
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway as <T,>(method: string, params?: Record<string, unknown>) => Promise<T>}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('remote legacy answer'))
+    expect(
+      Array.from({ length: window.localStorage.length }, (_value, index) => window.localStorage.key(index)).filter(key =>
+        key?.startsWith('hermes.transcript-tail.v3')
+      )
+    ).toEqual([])
+
+    deferredResume.resolve({
+      info: {},
+      message_count: 2,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'tip-remote',
+      session_id: 'runtime-remote',
+      session_key: 'tip-remote'
+    })
+    await pending
+
+    await waitFor(() => expect(stateMapRef.current.get('runtime-remote')?.transcriptProvenance).toBeUndefined())
+  })
+
+  it('keeps a verified cached transcript when a listed session returns a legacy empty page', async () => {
+    const proof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-1'
+    }
+    const cached = [
+      {
+        id: 'cached-history',
+        parts: [{ text: 'cached history remains visible', type: 'text' as const }],
+        role: 'assistant' as const
+      }
+    ]
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 1
+      })
+    ])
+    saveTranscriptTail('stored-1', cached, proof)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'tip-1' })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'tip-1',
+          session_id: 'runtime-legacy-empty',
+          session_key: 'tip-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(JSON.stringify($messages.get())).toContain('cached history remains visible')
+    expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('reuses an exact unchanged cache array without converting or serializing history', async () => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    const proof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-1'
+    }
+    const cached = [
+      {
+        id: 'cached-unchanged',
+        parts: [{ text: 'same persisted array', type: 'text' as const }],
+        role: 'assistant' as const
+      }
+    ]
+    const resumeDeferred = deferred<SessionResumeResponse>()
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 1
+      })
+    ])
+    saveTranscriptTail('stored-1', cached, proof)
+
+    const convert = vi.spyOn(chatMessages, 'toChatMessages')
+    const reconcile = vi.spyOn(authoritativeMessageReconciliation, 'reconcileAuthoritativeChatMessages')
+    const serialize = vi.spyOn(transcriptTailCache, 'saveTranscriptTail')
+    convert.mockClear()
+    reconcile.mockClear()
+    serialize.mockClear()
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1',
+      unchanged: true
+    })
+
+    const requestGateway = <T,>(method: string): Promise<T> =>
+      (method === 'session.resume' ? resumeDeferred.promise : Promise.resolve({})) as Promise<T>
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('same persisted array'))
+    const painted = $messages.get()
+
+    resumeDeferred.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'tip-1',
+      session_id: 'runtime-unchanged',
+      session_key: 'tip-1'
+    })
+    await pending
+
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(convert).not.toHaveBeenCalled()
+    expect(serialize).not.toHaveBeenCalled()
+    expect($messages.get()).toBe(painted)
+    await waitFor(() =>
+      expect(stateMapRef.current.get('runtime-unchanged')?.transcriptProvenance).toEqual({
+        ...proof,
+        coverage: 'latest-page',
+        source: 'persisted-display',
+        storedSessionId: 'stored-1'
+      })
+    )
+  })
+
+  it('drops an exact unchanged cache paint when resume accepts a different tip', async () => {
+    const proof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-a'
+    }
+    const cached = [
+      {
+        id: 'cached-tip-a',
+        parts: [{ text: 'cached transcript from tip A', type: 'text' as const }],
+        role: 'assistant' as const
+      }
+    ]
+    const resumeDeferred = deferred<SessionResumeResponse>()
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-a',
+        message_count: 1
+      })
+    ])
+    saveTranscriptTail('stored-1', cached, proof)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [],
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a',
+      unchanged: true
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={method =>
+          (method === 'session.resume' ? resumeDeferred.promise : Promise.resolve({})) as Promise<never>
+        }
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('cached transcript from tip A'))
+    resumeDeferred.resolve({
+      info: {},
+      message_count: 1,
+      messages: [],
+      messages_omitted: true,
+      resumed: 'tip-b',
+      session_id: 'runtime-tip-b',
+      session_key: 'tip-b'
+    })
+    await pending
+
+    expect(JSON.stringify($messages.get())).not.toContain('cached transcript from tip A')
+  })
+
+  it('uses the persisted-display reconciler when a changed REST page is accepted', async () => {
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    const reconcile = vi.spyOn(authoritativeMessageReconciliation, 'reconcileAuthoritativeChatMessages')
+    reconcile.mockClear()
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [{ content: 'changed persisted history', role: 'assistant', timestamp: 1 }],
+      session_id: 'stored-1'
+    })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          session_id: 'runtime-changed',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    await waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1))
+    expect(JSON.stringify($messages.get())).toContain('changed persisted history')
+  })
+
+  it('accepts a revisioned authoritative empty transcript without writing a tail entry', async () => {
+    const proof = {
+      connectionId: '',
+      displayRevision: 8,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-1'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 8,
+      lineage_root_id: 'stored-1',
+      messages: [],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1'
+    })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'tip-1',
+          session_id: 'runtime-authoritative-empty',
+          session_key: 'tip-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect($messages.get()).toEqual([])
+    expect($activeSessionId.get()).toBe('runtime-authoritative-empty')
+    expect(loadTranscriptTail('stored-1', proof)).toBeNull()
+    expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('uses the same remote legacy scope for a resume-failure REST fallback', async () => {
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'remote-legacy',
+        id: 'tip-remote',
+        message_count: 2,
+        profile: 'coder'
+      })
+    ])
+    vi.mocked(requestGatewayForAgent).mockRejectedValue(new Error('remote resume unavailable'))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [{ content: 'remote fallback history', role: 'assistant', timestamp: 1 }],
+      session_id: 'tip-remote'
+    })
+
+    await runResume(vi.fn())
+
+    expect(JSON.stringify($messages.get())).toContain('remote fallback history')
+    expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('accepts a revisioned fallback response after independent hydration is unavailable', async () => {
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 2,
+        profile: 'coder'
+      })
+    ])
+    vi.mocked(requestGatewayForAgent).mockRejectedValue(new Error('resume unavailable'))
+    vi.mocked(getLatestSessionMessages)
+      .mockRejectedValueOnce(new Error('hydration unavailable'))
+      .mockResolvedValueOnce({
+        display_revision: 7,
+        lineage_root_id: 'stored-1',
+        messages: [{ content: 'revisioned fallback history', role: 'assistant', timestamp: 1 }],
+        resolved_tip_id: 'tip-1',
+        session_id: 'tip-1'
+      })
+
+    await runResume(vi.fn())
+
+    expect(JSON.stringify($messages.get())).toContain('revisioned fallback history')
+    expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('caches an accepted revisioned hydration when resume fails without refetching it', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const deferredResume = deferred<SessionResumeResponse>()
+    const proof = {
+      connectionId: 'conn-fallback',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'coder',
+      resolvedTipId: 'tip-1'
+    }
+
+    window.localStorage.clear()
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-fallback',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 2,
+        profile: 'coder'
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(requestGatewayForAgent).mockClear()
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+    vi.mocked(requestGatewayForAgent).mockReturnValue(deferredResume.promise as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={vi.fn()} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
+
+    persisted.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'revisioned fallback history', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1'
+    })
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('revisioned fallback history'))
+
+    deferredResume.reject(new Error('resume unavailable'))
+    await pending
+
+    expect(JSON.stringify($messages.get())).toContain('revisioned fallback history')
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+    expect(loadTranscriptTail('stored-1', proof)?.messages[0]).toMatchObject({
+      parts: [{ text: 'revisioned fallback history', type: 'text' }],
+      role: 'assistant'
+    })
+    expect($resumeFailedSessionId.get()).toBeNull()
+  })
+
+  it('drops a deferred REST result when the same stored id moves to another connection/profile', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const oldProof = {
+      connectionId: 'conn-old',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'old-profile',
+      resolvedTipId: 'tip-old'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-old',
+        display_revision: 7,
+        id: 'tip-old',
+        message_count: 2,
+        profile: 'old-profile'
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          messages: [{ content: 'runtime fallback', role: 'assistant', timestamp: 1 }],
+          resumed: 'tip-old',
+          session_id: 'runtime-old',
+          session_key: 'tip-old'
+        } as never
+      }
+
+      return {} as never
+    })
+    vi.mocked(requestGatewayForAgent).mockImplementation((_connectionId, _profile, method, params) =>
+      requestGateway(method, params) as never
+    )
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-new',
+        display_revision: 8,
+        id: 'tip-new',
+        message_count: 2,
+        profile: 'new-profile'
+      })
+    ])
+    await act(async () => {
+      persisted.resolve({
+        display_revision: 7,
+        lineage_root_id: 'stored-1',
+        messages: [{ content: 'stale old connection transcript', role: 'assistant', timestamp: 2 }],
+        resolved_tip_id: 'tip-old',
+        session_id: 'tip-old'
+      })
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+    await pending
+
+    expect(loadTranscriptTail('stored-1', oldProof)).toBeNull()
+    expect(JSON.stringify($messages.get())).not.toContain('stale old connection transcript')
+  })
+
+  it.each([
+    ['an older response revision', 7],
+    ['an unproven response', undefined]
+  ])('drops a deferred REST result when the current same-scope row has a newer display revision than %s', async (_case, responseRevision) => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const deferredResume = deferred<SessionResumeResponse>()
+    const oldProof = {
+      connectionId: 'conn-1',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'coder',
+      resolvedTipId: 'tip-1'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-1',
+        display_revision: 7,
+        id: 'tip-1',
+        message_count: 2,
+        profile: 'coder'
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+    vi.mocked(requestGatewayForAgent).mockReturnValue(deferredResume.promise)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={vi.fn()} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-1',
+        display_revision: 8,
+        id: 'tip-1',
+        message_count: 2,
+        profile: 'coder'
+      })
+    ])
+    persisted.resolve({
+      display_revision: responseRevision,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'stale old revision transcript', role: 'assistant', timestamp: 2 }],
+      resolved_tip_id: 'tip-1',
+      session_id: 'tip-1'
+    })
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+    expect(JSON.stringify($messages.get())).not.toContain('stale old revision transcript')
+    deferredResume.resolve({
+      info: {},
+      message_count: 2,
+      messages: [],
+      resumed: 'tip-1',
+      session_id: 'runtime-1',
+      session_key: 'tip-1'
+    })
+    await pending
+
+    expect(loadTranscriptTail('stored-1', oldProof)).toBeNull()
+    expect(JSON.stringify($messages.get())).not.toContain('stale old revision transcript')
+  })
+
+  it('does not let the resume-failure REST fallback paint after a same-id scope swap', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-old',
+        id: 'tip-old',
+        message_count: 2,
+        profile: 'old-profile'
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+    vi.mocked(requestGatewayForAgent).mockRejectedValue(new Error('old connection unavailable'))
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={value => (resume = value)} requestGateway={vi.fn()} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-1', true)
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        connection_id: 'conn-new',
+        id: 'tip-new',
+        message_count: 2,
+        profile: 'new-profile'
+      })
+    ])
+    persisted.resolve({
+      messages: [{ content: 'stale fallback transcript', role: 'assistant', timestamp: 2 }],
+      session_id: 'tip-old'
+    })
+    await pending
+
+    expect(JSON.stringify($messages.get())).not.toContain('stale fallback transcript')
+  })
+
+  it('clears stale provenance when a cold REST hydrate comes from an old backend', async () => {
+    const stale = createClientSessionState('stored-1')
+    stale.transcriptProvenance = {
+      connectionId: '',
+      coverage: 'latest-page',
+      displayRevision: 6,
+      lineageRootId: 'root-1',
+      profile: 'default',
+      resolvedTipId: 'tip-old',
+      source: 'persisted-display',
+      storedSessionId: 'stored-1'
+    }
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-1', stale]])
+    }
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'hello', role: 'user', timestamp: 1 },
+        { content: 'legacy reply', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-1'
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          session_id: 'runtime-1',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+
+    await waitFor(() => expect(stateMapRef.current.get('runtime-1')?.transcriptProvenance).toBeUndefined())
+  })
+
+  it('rejects REST proof and cache writes when a cold resume resolves a different tip', async () => {
+    const stale = createClientSessionState('stored-1')
+    stale.transcriptProvenance = {
+      connectionId: '',
+      coverage: 'latest-page',
+      displayRevision: 6,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-stale',
+      source: 'persisted-display',
+      storedSessionId: 'stored-1'
+    }
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-1', stale]])
+    }
+    const rejectedProof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-a'
+    }
+
+    window.localStorage.clear()
+    setSessions([storedSession({ _lineage_root_id: 'stored-1', id: 'tip-b', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'REST tip A', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a'
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [{ content: 'resume tip B', role: 'assistant', timestamp: 2 }],
+          resumed: 'tip-b',
+          session_id: 'runtime-1',
+          session_key: 'tip-b'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    try {
+      await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+
+      expect(stateMapRef.current.get('runtime-1')?.messages).toMatchObject([
+        { parts: [{ text: 'resume tip B', type: 'text' }], role: 'assistant' }
+      ])
+      expect(stateMapRef.current.get('runtime-1')?.transcriptProvenance).toBeUndefined()
+      expect(loadTranscriptTail('stored-1', rejectedProof)).toBeNull()
+    } finally {
+      window.localStorage.clear()
+    }
+  })
+
+  it('rejects a revisioned cold response whose own tip identity differs from the captured row', async () => {
+    const mismatchedProof = {
+      connectionId: '',
+      displayRevision: 8,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-a'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 8,
+        id: 'tip-b',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 8,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'response from tip A', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a'
+    })
+    const requestGateway = vi.fn(async () => {
+      throw new Error('resume unavailable')
+    })
+
+    await runResume(requestGateway)
+
+    expect(JSON.stringify($messages.get())).not.toContain('response from tip A')
+    expect(loadTranscriptTail('stored-1', mismatchedProof)).toBeNull()
+  })
+
+  it('rejects a legacy cold response whose own tip differs from the captured row', async () => {
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        id: 'tip-b',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'legacy response from tip A', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a'
+    })
+
+    const saveTail = vi.spyOn(transcriptTailCache, 'saveTranscriptTail')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('resume unavailable')
+    })
+
+    await runResume(requestGateway)
+
+    expect(JSON.stringify($messages.get())).not.toContain('legacy response from tip A')
+    expect(saveTail).not.toHaveBeenCalled()
+  })
+
+  it('accepts a legacy cold response that echoes the requested lineage id', async () => {
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        id: 'tip-b',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [{ content: 'legacy response for requested lineage', role: 'assistant', timestamp: 1 }],
+      session_id: 'stored-1'
+    })
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('resume unavailable')
+    })
+
+    await runResume(requestGateway)
+
+    expect(JSON.stringify($messages.get())).toContain('legacy response for requested lineage')
+  })
+
+  it('clears a published legacy tip when deferred resume accepts another tip', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const deferredResume = deferred<SessionResumeResponse>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        id: 'tip-a',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+    const requestGateway = <T,>(method: string): Promise<T> =>
+      (method === 'session.resume' ? deferredResume.promise : Promise.resolve({})) as Promise<T>
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        sessionStateByRuntimeIdRef={stateMapRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-1', true)
+
+    persisted.resolve({
+      messages: [{ content: 'legacy transcript from tip A', role: 'assistant', timestamp: 1 }],
+      session_id: 'tip-a'
+    })
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('legacy transcript from tip A'))
+    deferredResume.resolve({
+      info: {},
+      message_count: 1,
+      messages: [{ content: 'runtime transcript from tip B', role: 'assistant', timestamp: 2 }],
+      resumed: 'tip-b',
+      session_id: 'runtime-tip-b',
+      session_key: 'tip-b'
+    })
+    await pending
+
+    expect(JSON.stringify($messages.get())).toContain('runtime transcript from tip B')
+    expect(JSON.stringify($messages.get())).not.toContain('legacy transcript from tip A')
+    expect(stateMapRef.current.get('runtime-tip-b')?.transcriptProvenance).toBeUndefined()
+  })
+
+  it('does not let a deferred REST transcript replace a runtime-resolved different tip', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const mismatchedProof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-a'
+    }
+
+    setSessions([storedSession({ _lineage_root_id: 'stored-1', display_revision: 7, id: 'tip-b', message_count: 2 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [{ content: 'runtime tip B', role: 'assistant', timestamp: 2 }],
+          resumed: 'tip-b',
+          session_id: 'runtime-b',
+          session_key: 'tip-b'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+    expect(JSON.stringify($messages.get())).toContain('runtime tip B')
+
+    persisted.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'deferred REST tip A', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a'
+    })
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    })
+
+    expect(JSON.stringify($messages.get())).toContain('runtime tip B')
+    expect(JSON.stringify($messages.get())).not.toContain('deferred REST tip A')
+    expect(stateMapRef.current.get('runtime-b')?.transcriptProvenance).toBeUndefined()
+    expect(loadTranscriptTail('stored-1', mismatchedProof)).toBeNull()
+  })
+
+  it('rebinds a runtime-resolved tip, fetches its transcript once, and rejects the stale original tip', async () => {
+    const staleTipA = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+    const runtimeMapRef: MutableRefObject<Map<string, string>> = { current: new Map() }
+    const tipAProof = {
+      connectionId: '',
+      displayRevision: 7,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'tip-a'
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-a',
+        message_count: 2
+      })
+    ])
+    saveTranscriptTail(
+      'stored-1',
+      [{ id: 'cached-tip-a', parts: [{ text: 'cached tip A transcript', type: 'text' }], role: 'assistant' }],
+      tipAProof
+    )
+    vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async id => {
+      if (id === 'stored-1') {
+        return staleTipA.promise
+      }
+
+      expect(id).toBe('tip-b')
+
+      return {
+        display_revision: 8,
+        lineage_root_id: 'stored-1',
+        messages: [{ content: 'authoritative tip B transcript', role: 'assistant', timestamp: 2 }],
+        pagination: { limit: 120, offset: 0, order: 'latest', returned: 1 },
+        resolved_tip_id: 'tip-b',
+        session_id: 'tip-b'
+      }
+    })
+    const requestGateway = vi.fn(async method => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'tip-b',
+          session_id: 'runtime-b',
+          session_key: 'tip-b'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway, {
+      runtimeIdByStoredSessionIdRef: runtimeMapRef,
+      sessionStateByRuntimeIdRef: stateMapRef
+    })
+
+    expect(vi.mocked(getLatestSessionMessages).mock.calls.filter(([id]) => id === 'tip-b')).toHaveLength(1)
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('authoritative tip B transcript'))
+    expect($activeSessionId.get()).toBe('runtime-b')
+    expect(stateMapRef.current.has('runtime-b')).toBe(true)
+
+    staleTipA.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'stale tip A transcript', role: 'assistant', timestamp: 1 }],
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a'
+    })
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 25))
+    })
+
+    expect(JSON.stringify($messages.get())).toContain('authoritative tip B transcript')
+    expect(JSON.stringify($messages.get())).not.toContain('stale tip A transcript')
+    expect(stateMapRef.current.get('runtime-b')?.transcriptProvenance?.resolvedTipId).toBe('tip-b')
+    expect(loadTranscriptTail('stored-1', tipAProof)).toBeNull()
+  })
+
+  it('activates a live runtime before the rebound tip transcript finishes loading', async () => {
+    const reboundTipB = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-a',
+        message_count: 2
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(getLatestSessionMessages).mockImplementation(id =>
+      id === 'tip-b' ? reboundTipB.promise : new Promise(() => undefined)
+    )
+
+    let resumeSettled = false
+    const resume = runResume(
+      async method => {
+        if (method === 'session.resume') {
+          return {
+            info: {},
+            message_count: 2,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'tip-b',
+            running: true,
+            session_id: 'runtime-b',
+            session_key: 'tip-b'
+          } as never
+        }
+
+        return {} as never
+      },
+      { sessionStateByRuntimeIdRef: stateMapRef }
+    ).then(() => {
+      resumeSettled = true
+    })
+
+    await waitFor(() =>
+      expect(vi.mocked(getLatestSessionMessages).mock.calls.filter(([id]) => id === 'tip-b')).toHaveLength(1)
+    )
+    await act(async () => Promise.resolve())
+
+    expect(resumeSettled).toBe(true)
+    expect($activeSessionId.get()).toBe('runtime-b')
+    expect(stateMapRef.current.get('runtime-b')).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnLive: true
+    })
+    expect($resumeFailedSessionId.get()).not.toBe('stored-1')
+
+    reboundTipB.resolve({
+      display_revision: 8,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'late tip B history', role: 'assistant', timestamp: 2 }],
+      resolved_tip_id: 'tip-b',
+      session_id: 'tip-b'
+    })
+    await resume
+    await waitFor(() => expect(JSON.stringify($messages.get())).toContain('late tip B history'))
+    expect(stateMapRef.current.get('runtime-b')?.busy).toBe(true)
+  })
+
+  it.each([
+    ['full A / short B', { limit: 120, offset: 0, order: 'latest' as const, returned: 1 }, false],
+    ['short A / full B', { limit: 1, offset: 0, order: 'latest' as const, returned: 1 }, true]
+  ])('keeps pagination bookkeeping bound to accepted tip B for %s', async (_case, tipBPagination, expectedTruncated) => {
+    const staleTipA = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    clearTranscriptTail('stored-1')
+    clearTranscriptTail('tip-a')
+    clearTranscriptTail('tip-b')
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-a',
+        message_count: 2
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async id => {
+      if (id === 'stored-1') {
+        return staleTipA.promise
+      }
+
+      return {
+        display_revision: 8,
+        lineage_root_id: 'stored-1',
+        messages: [{ content: 'accepted B', role: 'assistant', timestamp: 2 }],
+        pagination: tipBPagination,
+        resolved_tip_id: 'tip-b',
+        session_id: 'tip-b'
+      }
+    })
+
+    await runResume(async method =>
+      method === 'session.resume'
+        ? ({
+            info: {},
+            message_count: 2,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'tip-b',
+            session_id: 'runtime-b',
+            session_key: 'tip-b'
+          } as never)
+        : ({} as never)
+    )
+    await waitFor(() =>
+      expect(transcriptTailState('stored-1')?.possiblyTruncated).toBe(expectedTruncated)
+    )
+
+    staleTipA.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-1',
+      messages: [{ content: 'late A', role: 'assistant', timestamp: 1 }],
+      pagination: expectedTruncated
+        ? { limit: 120, offset: 0, order: 'latest', returned: 1 }
+        : { limit: 1, offset: 0, order: 'latest', returned: 1 },
+      resolved_tip_id: 'tip-a',
+      session_id: 'tip-a'
+    })
+    await act(async () => new Promise(resolve => setTimeout(resolve, 25)))
+
+    expect(transcriptTailState('stored-1')?.possiblyTruncated).toBe(expectedTruncated)
+    expect(transcriptTailState('tip-b')?.possiblyTruncated).toBe(expectedTruncated)
+    expect(transcriptTailState('tip-a')).toBeUndefined()
+  })
+
+  it('keeps an accepted runtime usable when its rebound tip transcript read fails', async () => {
+    const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 7,
+        id: 'tip-a',
+        message_count: 2
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async id => {
+      if (id === 'tip-b') {
+        throw new Error('tip B read unavailable')
+      }
+
+      return new Promise(() => undefined)
+    })
+
+    await runResume(
+      async method => {
+        if (method === 'session.resume') {
+          return {
+            info: {},
+            message_count: 2,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'tip-b',
+            session_id: 'runtime-b',
+            session_key: 'tip-b'
+          } as never
+        }
+
+        return {} as never
+      },
+      { sessionStateByRuntimeIdRef: stateMapRef }
+    )
+
+    expect(vi.mocked(getLatestSessionMessages).mock.calls.filter(([id]) => id === 'tip-b')).toHaveLength(1)
+    expect($activeSessionId.get()).toBe('runtime-b')
+    expect($resumeFailedSessionId.get()).not.toBe('stored-1')
+    expect(stateMapRef.current.has('runtime-b')).toBe(true)
+  })
 
   it('does not resume a tombstoned session after delete', async () => {
     $removedSessionIds.set(new Set(['stored-1']))
@@ -1149,14 +3060,18 @@ describe('resumeSession failure recovery', () => {
 
     await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
 
+    await waitFor(() =>
+      expect(
+        stateMapRef.current
+          .get('runtime-1')
+          ?.messages.filter(message => message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify'))
+      ).toHaveLength(1)
+    )
     const state = stateMapRef.current.get('runtime-1')
+    const clarifyMessages = state?.messages.filter(message =>
+      message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
+    ) ?? []
 
-    const clarifyMessages =
-      state?.messages.filter(message =>
-        message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify')
-      ) ?? []
-
-    expect(clarifyMessages).toHaveLength(1)
     expect(clarifyMessages[0].pending).toBe(true)
     expect(state?.streamId).toBe(clarifyMessages[0].id)
     expect($clarifyRequests.get()['runtime-1']).toMatchObject({ requestId: 'req-resumed', question: 'Which path?' })
@@ -1214,6 +3129,7 @@ describe('resumeSession failure recovery', () => {
 
     await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
 
+    await waitFor(() => expect($clarifyRequests.get()['runtime-1']).toBeDefined())
     const state = stateMapRef.current.get('runtime-1')
     const request = $clarifyRequests.get()['runtime-1']
     expect(request).toMatchObject({
@@ -1251,6 +3167,46 @@ describe('resumeSession failure recovery', () => {
     expect($resumeFailedSessionId.get()).toBe('stored-1')
   })
 
+  it('keeps verified cached history visible when both REST and resume fail', async () => {
+    const proof = {
+      connectionId: '',
+      displayRevision: 4,
+      lineageRootId: 'stored-1',
+      profile: 'default',
+      resolvedTipId: 'stored-1'
+    }
+    const cached = [
+      {
+        id: 'cached-question',
+        parts: [{ text: 'cached verified question', type: 'text' as const }],
+        role: 'user' as const
+      }
+    ]
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-1',
+        display_revision: 4,
+        id: 'stored-1',
+        message_count: 1
+      })
+    ])
+    saveTranscriptTail('stored-1', cached, proof)
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('REST unavailable'))
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('request timed out: session.resume')
+      }
+
+      return {} as never
+    })
+
+    await runResume(requestGateway)
+
+    expect(JSON.stringify($messages.get())).toContain('cached verified question')
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+  })
+
   it('does NOT arm the failure latch when the resume RPC fails but the REST fallback paints history', async () => {
     // session.resume rejects, but the REST transcript fallback succeeds and
     // hydrates a readable transcript — the window is NOT stranded.
@@ -1269,6 +3225,7 @@ describe('resumeSession failure recovery', () => {
       ],
       session_id: 'stored-1'
     } as never)
+    setSessions([storedSession({ message_count: 2 })])
 
     await runResume(requestGateway)
 
@@ -1379,6 +3336,7 @@ describe('resumeSession failure recovery', () => {
 
     const compressedRuntimeMessages = storedMessages.slice(-2)
 
+    setSessions([storedSession({ message_count: storedMessages.length })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1416,6 +3374,7 @@ describe('resumeSession failure recovery', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
 
+    await waitFor(() => expect(JSON.stringify(resumedState?.messages)).toContain('older question removed by compression'))
     const renderedMessages = JSON.stringify(resumedState?.messages)
     expect(renderedMessages).toContain('older question removed by compression')
     expect(renderedMessages).toContain('current prompt')
@@ -1436,6 +3395,7 @@ describe('resumeSession failure recovery', () => {
       { content: 'recent answer', role: 'assistant', timestamp: 4 }
     ]
 
+    setSessions([storedSession({ message_count: 4 })])
     vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -1500,6 +3460,7 @@ describe('resumeSession failure recovery', () => {
       await resumePromise
     })
 
+    await waitFor(() => expect(JSON.stringify(resumedState?.messages)).toContain('older question removed by compression'))
     const renderedText = JSON.stringify(resumedState?.messages)
 
     const streamingAssistantRows = resumedState?.messages.filter(message => message.id.startsWith('assistant-stream-'))
@@ -1702,8 +3663,8 @@ describe('resumeSession failure recovery', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('session.usage', { session_id: 'runtime-stale' })
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-1')).toBe(false)
     expect(sessionStateByRuntimeIdRef.current.has('runtime-stale')).toBe(false)
-    expect($activeSessionId.get()).toBe('runtime-1')
-    expect($messages.get().length).toBe(1)
+    await waitFor(() => expect($activeSessionId.get()).toBe('runtime-1'))
+    await waitFor(() => expect($messages.get().length).toBe(1))
   })
 })
 
@@ -2607,15 +4568,21 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(getSession).toHaveBeenCalledWith('stored-warm', restScope)
     expect(getSession).toHaveBeenCalledWith('stored-cold', restScope)
     expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-warm', restScope)
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-cold', restScope)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-cold', restScope, {
+      deferTailBookkeeping: true
+    })
     expect(getSession).toHaveBeenCalledWith('stored-cold', {
       connectionId: 'source-b',
       profile: 'backend-b'
     })
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-cold', {
-      connectionId: 'source-b',
-      profile: 'backend-b'
-    })
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(
+      'stored-cold',
+      {
+        connectionId: 'source-b',
+        profile: 'backend-b'
+      },
+      { deferTailBookkeeping: true }
+    )
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       'source-a',
       'default',
@@ -2667,7 +4634,9 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resume!('stored-registry', true)
 
     const restScope = { connectionId: 'test-amnezia', profile: 'default' }
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-registry', restScope)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-registry', restScope, {
+      deferTailBookkeeping: true
+    })
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
       'test-amnezia',
       'default',
@@ -2720,7 +4689,9 @@ describe('resumeSession warm-cache mapping integrity', () => {
       defer_history: true,
       session_id: 'stored-A'
     })
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined, {
+      deferTailBookkeeping: true
+    })
 
     // The corrupt mapping was purged so it can't mis-resolve again.
     expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
@@ -2761,7 +4732,9 @@ describe('resumeSession warm-cache mapping integrity', () => {
     const resumePromise = resume!('stored-A', true)
 
     await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledTimes(1))
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined, {
+      deferTailBookkeeping: true
+    })
     await waitFor(() => expect($messages.get()).toHaveLength(500))
     const paintedTranscript = $messages.get()
     expect(requestGatewayMock).toHaveBeenCalledWith(
@@ -2838,6 +4811,175 @@ describe('resumeSession warm-cache mapping integrity', () => {
       expect.objectContaining({ omit_messages: true, session_id: 'rt-A' })
     )
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
+  })
+
+  it('rejects a warm persisted response after the current row advances its display revision', async () => {
+    const proof = {
+      connectionId: '',
+      coverage: 'latest-page' as const,
+      displayRevision: 7,
+      lineageRootId: 'stored-A',
+      profile: 'default',
+      resolvedTipId: 'stored-A',
+      source: 'persisted-display' as const,
+      storedSessionId: 'stored-A'
+    }
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+    const state = clientState('stored-A')
+
+    state.messages = [
+      { id: 'warm-current', parts: [{ text: 'current warm transcript', type: 'text' }], role: 'assistant' }
+    ]
+    state.transcriptProvenance = proof
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-A',
+        display_revision: 7,
+        id: 'stored-A',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-A',
+          running: false,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    const pending = resume!('stored-A', true)
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-A',
+        display_revision: 8,
+        id: 'stored-A',
+        message_count: 1
+      })
+    ])
+    persisted.resolve({
+      display_revision: 7,
+      lineage_root_id: 'stored-A',
+      messages: [{ content: 'stale revision 7 transcript', role: 'assistant', timestamp: 2 }],
+      resolved_tip_id: 'stored-A',
+      session_id: 'stored-A'
+    })
+    await pending
+
+    expect(JSON.stringify(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages)).toContain('current warm transcript')
+    expect(JSON.stringify(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages)).not.toContain(
+      'stale revision 7 transcript'
+    )
+    expect(loadTranscriptTail('stored-A', proof)).toBeNull()
+  })
+
+  it('rejects a revisioned warm response whose own tip identity differs from the captured row', async () => {
+    const currentProof = {
+      connectionId: '',
+      coverage: 'latest-page' as const,
+      displayRevision: 8,
+      lineageRootId: 'stored-A',
+      profile: 'default',
+      resolvedTipId: 'tip-b',
+      source: 'persisted-display' as const,
+      storedSessionId: 'stored-A'
+    }
+    const mismatchedProof = { ...currentProof, resolvedTipId: 'tip-a' }
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+    const state = clientState('stored-A')
+
+    state.messages = [
+      { id: 'warm-tip-b', parts: [{ text: 'warm transcript from tip B', type: 'text' }], role: 'assistant' }
+    ]
+    state.transcriptProvenance = currentProof
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    setSessions([
+      storedSession({
+        _lineage_root_id: 'stored-A',
+        display_revision: 8,
+        id: 'tip-b',
+        message_count: 1
+      })
+    ])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      display_revision: 8,
+      lineage_root_id: 'stored-A',
+      messages: [{ content: 'wrong warm response from tip A', role: 'assistant', timestamp: 2 }],
+      resolved_tip_id: 'tip-a',
+      session_id: 'stored-A'
+    })
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-A',
+          running: false,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={value => (resume = value)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect(JSON.stringify(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages)).toContain(
+      'warm transcript from tip B'
+    )
+    expect(JSON.stringify(sessionStateByRuntimeIdRef.current.get('rt-A')?.messages)).not.toContain(
+      'wrong warm response from tip A'
+    )
+    expect(loadTranscriptTail('stored-A', mismatchedProof)).toBeNull()
   })
 
   it('re-arms a pending clarify in place on the warm session.activate path', async () => {

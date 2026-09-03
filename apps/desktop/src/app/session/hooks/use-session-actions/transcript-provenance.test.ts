@@ -11,29 +11,79 @@ import {
 } from './transcript-provenance'
 
 const expected = createPersistedDisplayTranscriptProvenance({
+  displayRevision: 7,
   lineageRootId: 'root-1',
+  resolvedTipId: 'tip-2',
   scope: { connectionId: 'conn-1', profile: 'coder' },
   storedSessionId: 'stored-1'
-})
+})!
 
 describe('transcript provenance', () => {
-  it('matches only the same connection, profile, stored id, and lineage', () => {
+  it.each([
+    ['source', 'other'],
+    ['connectionId', 'conn-2'],
+    ['profile', 'default'],
+    ['storedSessionId', 'stored-2'],
+    ['lineageRootId', 'root-2'],
+    ['resolvedTipId', 'tip-3'],
+    ['displayRevision', 8],
+    ['coverage', 'other-page']
+  ] as const)('rejects a %s mismatch', (field, value) => {
+    const state = createClientSessionState('stored-1')
+    state.transcriptProvenance = { ...expected, [field]: value } as never
+
+    expect(hasPersistedDisplayTranscriptProvenance(state, expected)).toBe(false)
+  })
+
+  it('matches the exact persisted-display proof', () => {
     const state = createClientSessionState('stored-1')
     state.transcriptProvenance = expected
 
     expect(hasPersistedDisplayTranscriptProvenance(state, expected)).toBe(true)
+  })
+
+  it.each([
+    ['lineageRootId', null],
+    ['lineageRootId', ''],
+    ['resolvedTipId', null],
+    ['resolvedTipId', ''],
+    ['displayRevision', Number.NaN],
+    ['displayRevision', Number.POSITIVE_INFINITY],
+    ['displayRevision', -1],
+    ['displayRevision', 1.5],
+    ['displayRevision', '7']
+  ] as const)('does not create proven provenance with invalid %s=%s', (field, value) => {
+    const candidate = createPersistedDisplayTranscriptProvenance({
+      displayRevision: 7,
+      lineageRootId: 'root-1',
+      resolvedTipId: 'tip-2',
+      scope: { connectionId: 'conn-1', profile: 'coder' },
+      storedSessionId: 'stored-1',
+      [field]: value
+    } as never)
+
+    expect(candidate).toBeNull()
+  })
+
+  it('normalizes scope and identity values before creating proof', () => {
     expect(
-      hasPersistedDisplayTranscriptProvenance(state, {
-        ...expected,
-        lineageRootId: 'root-2'
+      createPersistedDisplayTranscriptProvenance({
+        displayRevision: 7,
+        lineageRootId: ' root-1 ',
+        resolvedTipId: ' tip-2 ',
+        scope: { connectionId: ' conn-1 ', profile: ' ' },
+        storedSessionId: ' stored-1 '
       })
-    ).toBe(false)
-    expect(
-      hasPersistedDisplayTranscriptProvenance(state, {
-        ...expected,
-        profile: 'default'
-      })
-    ).toBe(false)
+    ).toEqual({
+      connectionId: 'conn-1',
+      coverage: 'latest-page',
+      displayRevision: 7,
+      lineageRootId: 'root-1',
+      profile: 'default',
+      resolvedTipId: 'tip-2',
+      source: 'persisted-display',
+      storedSessionId: 'stored-1'
+    })
   })
 
   it('strips proof and bumps the authority epoch on invalidation', () => {

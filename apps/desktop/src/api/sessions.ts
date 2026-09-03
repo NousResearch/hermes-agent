@@ -396,7 +396,13 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
+  page: {
+    limit?: number
+    offset?: number
+    order?: 'latest' | 'oldest'
+    includeCompacted?: boolean
+    knownDisplayRevision?: number
+  } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -422,6 +428,15 @@ export function getSessionMessages(
     query.set('include_compacted', String(page.includeCompacted))
   }
 
+  if (
+    typeof page.knownDisplayRevision === 'number' &&
+    Number.isFinite(page.knownDisplayRevision) &&
+    Number.isInteger(page.knownDisplayRevision) &&
+    page.knownDisplayRevision >= 0
+  ) {
+    query.set('known_display_revision', String(page.knownDisplayRevision))
+  }
+
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return hermesApi<SessionMessagesResponse>({
@@ -439,23 +454,45 @@ export function getSessionMessages(
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
 
-export function getLatestSessionMessages(id: string, profile?: ProfileScope): Promise<SessionMessagesResponse> {
+export function recordLatestSessionMessagesPage(
+  id: string,
+  page: SessionMessagesResponse,
+  profile?: ProfileScope
+): void {
+  if (page.unchanged === true) {
+    return
+  }
+
+  recordTranscriptTail(id, page, profile)
+
+  if (page.session_id && page.session_id !== id) {
+    recordTranscriptTail(page.session_id, page, profile)
+  }
+}
+
+export function getLatestSessionMessages(
+  id: string,
+  profile?: ProfileScope,
+  options: { deferTailBookkeeping?: boolean; knownDisplayRevision?: number } = {}
+): Promise<SessionMessagesResponse> {
   // includeCompacted: durable display history must include rows preserved by
   // in-place compaction (active=0, compacted=1); without them the transcript
   // silently ends at the compaction boundary and earlier turns are unreachable.
   return getSessionMessages(id, profile, {
     limit: LATEST_SESSION_MESSAGES_LIMIT,
     order: 'latest',
-    includeCompacted: true
+    includeCompacted: true,
+    knownDisplayRevision: options.knownDisplayRevision
   }).then(page => {
-    // Record whether the tail was truncated (page came back full) and where
-    // the next older page starts, so "Show earlier" can backfill over REST
-    // (app/chat/transcript-backfill). Keyed under both the requested id and
-    // the resolved id — callers hold either.
-    recordTranscriptTail(id, page, profile)
+    if (page.unchanged === true) {
+      return page
+    }
 
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, profile)
+    // Session-open callers defer this side effect until their route/tip/epoch
+    // authority gate accepts the response. Ordinary callers retain the
+    // historical eager bookkeeping behavior.
+    if (!options.deferTailBookkeeping) {
+      recordLatestSessionMessagesPage(id, page, profile)
     }
 
     return page

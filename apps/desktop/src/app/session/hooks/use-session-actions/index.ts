@@ -4,6 +4,10 @@ import type { NavigateFunction } from 'react-router'
 
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import {
+  getActiveSessionOpenPerfFixture,
+  setSessionOpenPerfFixtureRunner
+} from '@/app/session/hooks/use-session-actions/session-open-perf-fixture'
 import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import {
@@ -11,6 +15,7 @@ import {
   fetchStoredTranscriptAcrossBackends,
   getAllSessionMessages,
   getLatestSessionMessages,
+  recordLatestSessionMessagesPage,
   setSessionArchived
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -19,7 +24,6 @@ import {
   preserveLocalAssistantErrors,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
-  stripPendingClarifyProjectionForCache,
   toChatMessages
 } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -129,18 +133,33 @@ import {
   saveTranscriptTail
 } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionMessagesResponse,
+  SessionResumeResponse,
+  UsageStats
+} from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
-import type { ClientSessionState, SidebarNavItem } from '../../../types'
+import type { ClientSessionState, PersistedDisplayTranscriptProvenance, SidebarNavItem } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import * as authoritativeMessageReconciliation from './authoritative-message-reconciliation'
+import {
+  paintVerifiedTranscriptTail,
+  type PersistedDisplayHydrationResult,
+  type PersistedDisplayHydrationTarget,
+  startPersistedDisplayHydration
+} from './persisted-display-hydration'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
+import { markSessionOpen } from './session-open-marks'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
   suppressTranscriptForView,
+  type TranscriptProvenanceScope,
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
@@ -159,7 +178,6 @@ import {
   patchSessionWorkspace,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
-  reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
@@ -171,6 +189,216 @@ import {
   toBranchMessages,
   upsertOptimisticSession
 } from './utils'
+
+function cleanupSessionOpenPerfFixtureState({
+  activeSessionIdBeforeFixture,
+  activeSessionIdRef,
+  busyBeforeFixture,
+  busyRef,
+  runtimeIdByStoredSessionIdRef,
+  selectedStoredSessionIdBeforeFixture,
+  selectedStoredSessionIdRef,
+  sessionStateByRuntimeIdRef,
+  storedSessionId
+}: {
+  activeSessionIdBeforeFixture: string | null
+  activeSessionIdRef: MutableRefObject<string | null>
+  busyBeforeFixture: boolean
+  busyRef: MutableRefObject<boolean>
+  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
+  selectedStoredSessionIdBeforeFixture: string | null
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+  storedSessionId: string
+}): () => void {
+  return () => {
+    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+    runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+
+    if (runtimeId) {
+      sessionStateByRuntimeIdRef.current.delete(runtimeId)
+    }
+
+    for (const [sessionId, state] of sessionStateByRuntimeIdRef.current) {
+      if (state.storedSessionId === storedSessionId) {
+        sessionStateByRuntimeIdRef.current.delete(sessionId)
+      }
+    }
+
+    activeSessionIdRef.current = activeSessionIdBeforeFixture
+    busyRef.current = busyBeforeFixture
+    selectedStoredSessionIdRef.current = selectedStoredSessionIdBeforeFixture
+  }
+}
+
+function provenanceFromSessionInfo(
+  session: SessionInfo | null | undefined,
+  storedSessionId: string,
+  scope: TranscriptProvenanceScope
+): PersistedDisplayTranscriptProvenance | null {
+  if (!session || typeof session.display_revision !== 'number') {
+    return null
+  }
+
+  return createPersistedDisplayTranscriptProvenance({
+    displayRevision: session.display_revision,
+    lineageRootId: session._lineage_root_id ?? session.id,
+    resolvedTipId: session.id,
+    scope,
+    storedSessionId
+  })
+}
+
+function provenanceFromMessagesResponse(
+  response: SessionMessagesResponse | null | undefined,
+  storedSessionId: string,
+  scope: TranscriptProvenanceScope
+): PersistedDisplayTranscriptProvenance | null {
+  if (!response || typeof response.display_revision !== 'number') {
+    return null
+  }
+
+  return createPersistedDisplayTranscriptProvenance({
+    displayRevision: response.display_revision,
+    lineageRootId: response.lineage_root_id ?? null,
+    resolvedTipId: response.resolved_tip_id ?? null,
+    scope,
+    storedSessionId
+  })
+}
+
+interface CapturedDisplayScope {
+  connectionId: string
+  lineageRootId: string | null
+  profile: string
+  resolvedTipId: string | null
+}
+
+function responseDisplayTipIdentity(
+  response: SessionMessagesResponse | null,
+  requestedStoredSessionId: string,
+  capturedResolvedTipId: string | null
+): string | null {
+  const resolvedTipId = response?.resolved_tip_id?.trim()
+
+  if (resolvedTipId) {
+    return resolvedTipId
+  }
+
+  const responseSessionId = response?.session_id?.trim()
+
+  // Older backends may echo the requested lineage/root id instead of exposing
+  // a separately resolved tip. In that shape, retain the list-captured tip;
+  // a different returned id is an actual tip identity and must be tracked.
+  return !responseSessionId || responseSessionId === requestedStoredSessionId
+    ? capturedResolvedTipId
+    : responseSessionId
+}
+
+function responseMatchesCurrentDisplayAuthority(
+  sessions: SessionInfo[],
+  storedSessionId: string,
+  captured: CapturedDisplayScope,
+  response: SessionMessagesResponse | null
+): boolean {
+  const currentRows = sessions.filter(session => sessionMatchesStoredId(session, storedSessionId))
+
+  // Multiple current aliases are unsafe: the same lineage may exist on several
+  // registry backends, so fail closed rather than selecting first.
+  if (currentRows.length > 1) {
+    return false
+  }
+
+  // A direct/deep-link resume can resolve and route a durable id before the
+  // sidebar list contains its row. In that shape the request route token and
+  // selected id still guard staleness; accept only a response that names (or
+  // legacy-echoes) that exact requested id. Once a list row exists, the
+  // connection/profile/root/tip checks below remain authoritative.
+  if (currentRows.length === 0) {
+    if (captured.lineageRootId !== storedSessionId || captured.resolvedTipId !== storedSessionId) {
+      return false
+    }
+
+    if (!response) {
+      return true
+    }
+
+    const responseTipId = responseDisplayTipIdentity(response, storedSessionId, captured.resolvedTipId)
+    const responseLineageRootId = response.lineage_root_id?.trim()
+    const responseResolvedTipId = response.resolved_tip_id?.trim()
+
+    return Boolean(
+      responseTipId === storedSessionId &&
+        (!responseLineageRootId || responseLineageRootId === storedSessionId) &&
+        (!responseResolvedTipId || responseResolvedTipId === storedSessionId)
+    )
+  }
+
+  const current = currentRows[0]
+  const currentDisplayRevision = current.display_revision
+  const responseDisplayRevision = response?.display_revision
+
+  const hasCurrentDisplayRevision =
+    typeof currentDisplayRevision === 'number' &&
+    Number.isInteger(currentDisplayRevision) &&
+    currentDisplayRevision >= 0
+
+  const hasResponseDisplayRevision =
+    typeof responseDisplayRevision === 'number' &&
+    Number.isInteger(responseDisplayRevision) &&
+    responseDisplayRevision >= 0
+
+  if (response) {
+    const responseTipId = responseDisplayTipIdentity(response, storedSessionId, captured.resolvedTipId)
+    const responseLineageRootId = response.lineage_root_id?.trim()
+    const responseResolvedTipId = response.resolved_tip_id?.trim()
+
+    // Legacy responses may omit durable revision proof, but any identity they
+    // do provide is still authoritative. Preserve the older requested-id echo
+    // shape while rejecting a response that explicitly names another tip/root.
+    if (
+      responseTipId !== captured.resolvedTipId ||
+      (responseLineageRootId && responseLineageRootId !== captured.lineageRootId) ||
+      (responseResolvedTipId && responseResolvedTipId !== captured.resolvedTipId)
+    ) {
+      return false
+    }
+  }
+
+  if (hasResponseDisplayRevision) {
+    const responseLineageRootId = response?.lineage_root_id?.trim() || null
+    const responseResolvedTipId = response?.resolved_tip_id?.trim() || null
+    const responseSessionId = response?.session_id?.trim() || null
+
+    // A revision is meaningful only together with the identity whose display
+    // state it versions. Modern responses must self-prove the captured
+    // lineage/tip; accepting a high revision from another tip would still
+    // publish the wrong conversation. Legacy responses have no revision and
+    // retain the requested-id compatibility path below.
+    if (
+      responseLineageRootId !== captured.lineageRootId ||
+      responseResolvedTipId !== captured.resolvedTipId ||
+      responseSessionId !== captured.resolvedTipId
+    ) {
+      return false
+    }
+  }
+
+  // A response captured before the list advanced is an older durable
+  // transcript even when scope/root/tip are unchanged. Revisioned rows fail
+  // closed on an unproven response; legacy rows retain compatibility.
+  if (hasCurrentDisplayRevision && (!hasResponseDisplayRevision || responseDisplayRevision < currentDisplayRevision)) {
+    return false
+  }
+
+  return (
+    (current.connection_id ?? '').trim() === captured.connectionId &&
+    (current.profile ?? 'default').trim() === captured.profile &&
+    (current._lineage_root_id ?? current.id) === captured.lineageRootId &&
+    current.id === captured.resolvedTipId
+  )
+}
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -251,27 +479,16 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
   setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
 }
 
-function reconcileAuthoritativeChatMessages(
-  authoritativeMessages: ChatMessage[],
-  previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
-): ChatMessage[] {
-  const withLiveProjection = liveProjection
-    ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
-    : authoritativeMessages
-
-  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
-
-  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
-}
-
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResponse['messages'],
   previousMessages: ChatMessage[],
   liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
-  return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
+  return authoritativeMessageReconciliation.reconcileRuntimeAuthoritativeChatMessages(
+    toChatMessages(authoritativeMessages),
+    previousMessages,
+    liveProjection
+  )
 }
 
 // `session.create` params from the current profile + sticky-UI model/effort/fast,
@@ -872,13 +1089,59 @@ export function useSessionActions({
         return
       }
 
+      const perfFixture = getActiveSessionOpenPerfFixture()
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
+      const resumeRouteToken = getRouteToken()
+      markSessionOpen('hermes.session.select')
+
+      const authorityRuntimeIdAtStart = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+      const authorityStateAtStart = authorityRuntimeIdAtStart
+        ? sessionStateByRuntimeIdRef.current.get(authorityRuntimeIdAtStart)
+        : undefined
+
+      let transcriptAuthorityRuntimeId = authorityStateAtStart ? (authorityRuntimeIdAtStart ?? null) : null
+      let transcriptAuthorityEpoch = authorityStateAtStart?.transcriptAuthorityEpoch ?? 0
+      let enforceCapturedTranscriptAuthority = Boolean(authorityStateAtStart)
+      let isCurrentDisplayScope = (_response: SessionMessagesResponse | null = null) => true
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
-      const isCurrentResume = () =>
-        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
+      const isCurrentResume = () => {
+        // Stored-id rotation deliberately removes the old reverse-map key.
+        // Validate the generation against the runtime state captured by this
+        // resume instead of looking the obsolete stored id up again (where a
+        // missing key would otherwise fall back to epoch zero).
+        const authorityState = transcriptAuthorityRuntimeId
+          ? sessionStateByRuntimeIdRef.current.get(transcriptAuthorityRuntimeId)
+          : undefined
+
+        const transcriptAuthorityStillCurrent = enforceCapturedTranscriptAuthority
+          ? Boolean(
+              authorityState &&
+                (authorityState.transcriptAuthorityEpoch ?? 0) === transcriptAuthorityEpoch
+            )
+          : true
+
+        return (
+          resumeRequestRef.current === requestId &&
+          selectedStoredSessionIdRef.current === storedSessionId &&
+          getRouteToken() === resumeRouteToken &&
+          transcriptAuthorityStillCurrent
+        )
+      }
+
+      const releaseCapturedTranscriptAuthority = (runtimeId: string) => {
+        if (runtimeId === transcriptAuthorityRuntimeId) {
+          enforceCapturedTranscriptAuthority = false
+        }
+      }
+      const captureRuntimeTranscriptAuthority = (runtimeId: string, state: ClientSessionState) => {
+        transcriptAuthorityRuntimeId = runtimeId
+        transcriptAuthorityEpoch = state.transcriptAuthorityEpoch ?? 0
+        enforceCapturedTranscriptAuthority = true
+      }
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -935,6 +1198,7 @@ export function useSessionActions({
         }
 
         if (state.storedSessionId !== storedSessionId) {
+          releaseCapturedTranscriptAuthority(runtimeId)
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(runtimeId)
           dropSessionState(runtimeId)
@@ -945,6 +1209,54 @@ export function useSessionActions({
         return { runtimeId, state }
       }
 
+      // A v3 tail is already proven against the row's exact lineage/tip/revision,
+      // so paint it before *any* owner lookup or gateway switch can yield. The
+      // later REST request is still authoritative; this only eliminates the
+      // blank interval while the route resolves its backend.
+      let cachedTailPaint: ChatMessage[] | null = null
+      const listedForImmediateCache = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const ownerRouteForImmediateCache = capturedOwner || getSessionOwnerHint(storedSessionId)
+      const immediateConnectionId =
+        ownerRouteForImmediateCache?.connectionId || listedForImmediateCache?.connection_id || $connection.get()?.connectionId || ''
+      const immediateScope = {
+        connectionId: immediateConnectionId,
+        profile:
+          ownerRouteForImmediateCache?.targetProfile ||
+          ownerRouteForImmediateCache?.profile ||
+          listedForImmediateCache?.profile ||
+          'default'
+      }
+      const immediateProof = provenanceFromSessionInfo(listedForImmediateCache, storedSessionId, immediateScope)
+
+      if (!resumedSameSelectedSession && $messages.get().length === 0 && immediateProof) {
+        const immediateTarget: PersistedDisplayHydrationTarget = {
+          connectionId: immediateProof.connectionId,
+          displayRevision: immediateProof.displayRevision,
+          lineageRootId: immediateProof.lineageRootId,
+          profile: immediateProof.profile,
+          resolvedTipId: immediateProof.resolvedTipId,
+          storedSessionId
+        }
+        const immediatePaint = paintVerifiedTranscriptTail(immediateTarget, {
+          commit: messages => setMessages(messages),
+          loadVerifiedTranscriptTail: () => {
+            const cached = loadTranscriptTail(storedSessionId, immediateProof)
+
+            return cached
+              ? {
+                  messages: cached.messages,
+                  pagination: cached.pagination,
+                  provenance: { ...immediateProof, coverage: cached.coverage }
+                }
+              : null
+          }
+        })
+
+        if (immediatePaint.hit) {
+          cachedTailPaint = $messages.get()
+        }
+      }
+
       if (!takeWarmCache()) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
@@ -953,7 +1265,7 @@ export function useSessionActions({
         busyRef.current = false
         setBusy(false)
 
-        if (!resumedSameSelectedSession) {
+        if (!resumedSameSelectedSession && cachedTailPaint === null) {
           setMessages([])
         }
       }
@@ -974,7 +1286,9 @@ export function useSessionActions({
       const ambientConnectionId =
         ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
 
-      const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
+      const storedForProfile = perfFixture
+        ? $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+        : await resolveStoredSession(storedSessionId, ownerRoute)
       const sessionProfile = storedForProfile?.profile
 
       if (resumeRequestRef.current !== requestId) {
@@ -999,16 +1313,18 @@ export function useSessionActions({
 
       // All-profiles / plugin navigation must not steal chrome API-home:
       // dial the owning backend without moving $activeGatewayProfile.
-      if ($showAllProfiles.get()) {
-        if (resolvedConnectionId) {
-          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
-        } else if (sessionProfile) {
-          await openGatewayForProfile(normalizeProfileKey(sessionProfile))
+      if (!perfFixture) {
+        if ($showAllProfiles.get()) {
+          if (resolvedConnectionId) {
+            await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
+          } else if (sessionProfile) {
+            await openGatewayForProfile(normalizeProfileKey(sessionProfile))
+          }
+        } else if (resolvedConnectionId) {
+          await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
+        } else {
+          await ensureGatewayProfile(sessionProfile)
         }
-      } else if (resolvedConnectionId) {
-        await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
-      } else {
-        await ensureGatewayProfile(sessionProfile)
       }
 
       // Request-time routing guard for every session-scoped RPC below. The
@@ -1024,7 +1340,9 @@ export function useSessionActions({
       // own backend is healthy one port over (#89206: local pool AND SSH).
       // requestForSessionProfile re-resolves the route at each call.
       const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
-        requestForSessionProfile<T>(sessionOwner, requestGateway, method, params)
+        perfFixture
+          ? (perfFixture.requestGateway(method, params) as Promise<T>)
+          : requestForSessionProfile<T>(sessionOwner, requestGateway, method, params)
 
       const sessionRestScope = resolvedConnectionId
         ? {
@@ -1071,13 +1389,22 @@ export function useSessionActions({
           publishSessionState(cachedRuntimeId, cachedViewState)
         }
 
-        const expectedProvenance = stored
-          ? createPersistedDisplayTranscriptProvenance({
-              lineageRootId: stored._lineage_root_id ?? null,
-              scope: sessionRestScope,
-              storedSessionId
-            })
-          : null
+        const expectedProvenance = provenanceFromSessionInfo(stored, storedSessionId, sessionRestScope)
+
+        const capturedWarmDisplayScope: CapturedDisplayScope = {
+          connectionId:
+            expectedProvenance?.connectionId ??
+            (typeof sessionRestScope === 'object' && sessionRestScope
+              ? sessionRestScope.connectionId?.trim() ?? ''
+              : stored?.connection_id?.trim() ?? ''),
+          lineageRootId: expectedProvenance?.lineageRootId ?? stored?._lineage_root_id ?? stored?.id ?? null,
+          profile:
+            expectedProvenance?.profile ??
+            (typeof sessionRestScope === 'string'
+              ? sessionRestScope.trim() || 'default'
+              : sessionRestScope?.profile?.trim() || stored?.profile?.trim() || 'default'),
+          resolvedTipId: expectedProvenance?.resolvedTipId ?? stored?.id ?? null
+        }
 
         const hasValidProvenance = Boolean(
           expectedProvenance && hasPersistedDisplayTranscriptProvenance(cachedViewState, expectedProvenance)
@@ -1088,6 +1415,7 @@ export function useSessionActions({
         }
 
         if (sessionShouldHaveTranscript(stored) && cachedViewState.messages.length === 0) {
+          releaseCapturedTranscriptAuthority(cachedRuntimeId)
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           dropSessionState(cachedRuntimeId)
@@ -1180,6 +1508,7 @@ export function useSessionActions({
             }
 
             if (activated.session_key && activated.session_key !== storedSessionId) {
+              releaseCapturedTranscriptAuthority(cachedRuntimeId)
               runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
               sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
               dropSessionState(cachedRuntimeId)
@@ -1294,7 +1623,9 @@ export function useSessionActions({
               // which is intentionally smaller than the user-visible conversation.
               // Reconcile its in-flight/queued tail onto the complete transcript
               // instead of replacing durable history while the turn is running.
-              let acceptedPersistedDisplayTranscript = false
+              let acceptedPersistedProvenance: PersistedDisplayTranscriptProvenance | null = null
+              let acceptedPersistedMessagesForCache: ChatMessage[] | null = null
+              let acceptedPersistedPagination: SessionMessagesResponse['pagination'] | undefined
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
@@ -1310,6 +1641,13 @@ export function useSessionActions({
                   !activatedStoredSessionId ||
                   persisted.session_id === activatedStoredSessionId
 
+                const persistedMatchesCurrentDisplayAuthority = responseMatchesCurrentDisplayAuthority(
+                  $sessions.get(),
+                  storedSessionId,
+                  capturedWarmDisplayScope,
+                  persisted
+                )
+
                 // An empty REST page is not proof the transcript is empty — it's
                 // also what a backend respawn returns while its state.db read
                 // races the activate response. Reconciling against it anyway
@@ -1319,15 +1657,24 @@ export function useSessionActions({
                 if (
                   persisted &&
                   persistedMatchesActivatedSession &&
+                  (!stored || persistedMatchesCurrentDisplayAuthority) &&
                   (persisted.messages.length || !activatedMessages.length)
                 ) {
-                  acceptedPersistedDisplayTranscript = Boolean(expectedProvenance)
+                  acceptedPersistedProvenance = provenanceFromMessagesResponse(
+                    persisted,
+                    storedSessionId,
+                    sessionRestScope
+                  )
+                  const persistedTailMessages = toChatMessages(persisted.messages)
+
+                  acceptedPersistedMessagesForCache = acceptedPersistedProvenance ? persistedTailMessages : null
+                  acceptedPersistedPagination = persisted.pagination
 
                   // The REST hydration is a newest-tail page; graft it onto any
                   // older pages the previous view already backfilled so
                   // re-activating a scrolled-back session keeps its history.
                   const persistedMessages = graftRefreshedTailOntoBackfill(
-                    toChatMessages(persisted.messages),
+                    persistedTailMessages,
                     cachedViewState.messages
                   )
 
@@ -1340,7 +1687,7 @@ export function useSessionActions({
                     activated
                   )
 
-                  activatedMessages = reconcileAuthoritativeChatMessages(
+                  activatedMessages = authoritativeMessageReconciliation.reconcileRuntimeAuthoritativeChatMessages(
                     persistedMessages,
                     previousMessages,
                     liveProjection
@@ -1391,9 +1738,8 @@ export function useSessionActions({
                     ...state,
                     messages,
                     transcriptProvenance:
-                      acceptedPersistedDisplayTranscript || hasValidProvenance
-                        ? (expectedProvenance ?? undefined)
-                        : undefined,
+                      acceptedPersistedProvenance ??
+                      (hasValidProvenance ? (expectedProvenance ?? undefined) : undefined),
                     ...(pendingClarifyProjection
                       ? {
                           awaitingResponse: false,
@@ -1415,16 +1761,11 @@ export function useSessionActions({
               // Cache backend transcript truth only. The pending/running bit and
               // any synthetic clarify row are a live resume projection and must
               // not survive after the server-side request expires.
-              saveTranscriptTail(
-                storedSessionId,
-                stripPendingClarifyProjectionForCache(
-                  activatedMessages,
-                  pendingClarify?.requestId ??
-                    pendingClarifyState.cleared?.requestId ??
-                    $clarifyRequests.get()[cachedRuntimeId]?.requestId
-                ),
-                sessionRestScope
-              )
+              if (acceptedPersistedProvenance && acceptedPersistedMessagesForCache) {
+                saveTranscriptTail(storedSessionId, acceptedPersistedMessagesForCache, acceptedPersistedProvenance, {
+                  pagination: acceptedPersistedPagination
+                })
+              }
 
               return
             }
@@ -1446,6 +1787,7 @@ export function useSessionActions({
               return
             }
 
+            releaseCapturedTranscriptAuthority(cachedRuntimeId)
             runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
             sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
             dropSessionState(cachedRuntimeId)
@@ -1463,15 +1805,15 @@ export function useSessionActions({
       // warm path can still bail down to here — an empty-transcript drop, or the
       // cache getting purged during the profile-swap await — so the PREVIOUS
       // session's transcript would leak into this cold resume ("switching
-      // sessions shows the same messages"). Clear it so the loader/prefetch
-      // paints fresh; guarded so the normal cold path (already cleared) no-ops.
+      // sessions shows the same messages"). Clear it so the loader/display
+      // hydration paints fresh; guarded so the normal cold path (already cleared) no-ops.
       if (!resumedSameSelectedSession && $messages.get().length > 0) {
         setMessages([])
       }
 
       // Instant paint from the durable tail cache: a cold resume (fresh app
       // launch, reaped/respawned backend) otherwise shows a loader until the
-      // REST prefetch lands — which on a cold multi-profile boot waits behind
+      // REST display hydration lands — which on a cold multi-profile boot waits behind
       // a backend spawn. Painting the persisted tail here makes the wake
       // visually complete at ~0ms (and satisfies the paint-first hydration
       // wait). The paint is DISPLAY-ONLY: reconciliation below must treat the
@@ -1479,14 +1821,20 @@ export function useSessionActions({
       // onto a stale cached tail would duplicate or misorder rows — the
       // authoritative transcript REPLACES the cached paint when it lands.
       // Same-selected re-resumes skip it — their transcript is already live.
-      let cachedTailPaint: ChatMessage[] | null = null
+      let persistedDisplayPublished = false
+      let persistedDisplayProvenance: PersistedDisplayTranscriptProvenance | null = null
+      let persistedDisplayPublishedTipId: string | null = null
+      const storedForCache =
+        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+      const cachedTailProvenance = provenanceFromSessionInfo(storedForCache, storedSessionId, sessionRestScope)
 
-      if (!resumedSameSelectedSession && $messages.get().length === 0) {
-        const cachedTail = loadTranscriptTail(storedSessionId, sessionRestScope)
+      if (!resumedSameSelectedSession && cachedTailPaint === null && $messages.get().length === 0 && cachedTailProvenance) {
+        const cachedTail = loadTranscriptTail(storedSessionId, cachedTailProvenance)
 
         if (cachedTail && selectedStoredSessionIdRef.current === storedSessionId) {
-          cachedTailPaint = cachedTail
-          setMessages(cachedTail)
+          cachedTailPaint = cachedTail.messages
+          setMessages(cachedTail.messages)
+          markSessionOpen('hermes.session.cache.commit')
         }
       }
 
@@ -1496,7 +1844,7 @@ export function useSessionActions({
       const viewMessagesForReconcile = (): ChatMessage[] => {
         const current = $messages.get()
 
-        return cachedTailPaint !== null && current === cachedTailPaint ? [] : current
+        return cachedTailPaint !== null && current === cachedTailPaint && !persistedDisplayPublished ? [] : current
       }
 
       // A history load is not a live turn. Do not mark the incoming session
@@ -1509,8 +1857,7 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
 
-      const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+      const stored = storedForCache
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
 
@@ -1523,24 +1870,189 @@ export function useSessionActions({
       // it resumes into the streaming state rather than the "awaiting first
       // token" spinner.
       let recoveredInFlightTail = false
+      let persistedDisplayHydration: Promise<PersistedDisplayHydrationResult | null> | null = null
+      // Written by the REST fetch before either hydration authority gate runs.
+      // Keep it outside the gate closure's setup so the response/revision
+      // relationship is explicit rather than relying on a later declaration.
+      let hydrationResponseForCurrentGate: SessionMessagesResponse | null = null
+      let finalizePersistedDisplayHydration: (
+        result: PersistedDisplayHydrationResult | null
+      ) => 'accepted' | 'settled' | 'unavailable' = () => 'unavailable'
 
       try {
         const watchWindow = isWatchWindow()
 
-        let localSnapshot = resumedSameSelectedSession
-          ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
-          : viewMessagesForReconcile()
+        // Scope identity is independent from v3 proof availability. Older
+        // remote backends have no display revision, but their connection,
+        // profile, lineage, and tip still identify the only safe REST route.
+        const displayConnectionId =
+          cachedTailProvenance?.connectionId ??
+          (typeof sessionRestScope === 'object' && sessionRestScope ? sessionRestScope.connectionId?.trim() ?? '' :
+            storedForCache?.connection_id?.trim() ?? '')
+        const displayProfile =
+          cachedTailProvenance?.profile ??
+          (typeof sessionRestScope === 'string'
+            ? sessionRestScope.trim() || 'default'
+            : sessionRestScope?.profile?.trim() || storedForCache?.profile?.trim() || 'default')
+        const displayLineageRootId =
+          cachedTailProvenance?.lineageRootId ??
+          storedForCache?._lineage_root_id ??
+          storedForCache?.id ??
+          storedSessionId
+        const displayResolvedTipId = cachedTailProvenance?.resolvedTipId ?? storedForCache?.id ?? storedSessionId
+        const displayHydrationTarget: PersistedDisplayHydrationTarget = {
+          connectionId: displayConnectionId,
+          displayRevision: cachedTailProvenance?.displayRevision ?? null,
+          expectsPersistedHistory: sessionShouldHaveTranscript(storedForCache),
+          lineageRootId: displayLineageRootId,
+          profile: displayProfile,
+          resolvedTipId: displayResolvedTipId,
+          storedSessionId
+        }
 
-        let prefetchApplied = false
-        let prefetchedStoredSessionId: string | null = null
-        let prefetchedTranscriptMessages: ChatMessage[] | null = null
+        // Route URLs identify a stored session id, but the same id can exist
+        // on two registry backends/profiles. Bind the display read to the
+        // complete row authority, not only path/search/hash, so a re-home that
+        // retains the URL cannot publish the previous backend's transcript.
+        const capturedDisplayScope = {
+          connectionId: displayConnectionId,
+          lineageRootId: displayLineageRootId,
+          profile: displayProfile,
+          resolvedTipId: displayResolvedTipId
+        }
+        isCurrentDisplayScope = (response = null) =>
+          responseMatchesCurrentDisplayAuthority($sessions.get(), storedSessionId, capturedDisplayScope, response)
 
-        // REST transcript prefetch and the gateway resume RPC are independent
-        // — run them concurrently so a big session's wall time is
-        // max(prefetch, resume) instead of their sum. The prefetch paints the
-        // transcript as soon as it lands; the RPC binds the runtime id.
-        // Watch windows skip the prefetch — lazy resume attaches the live mirror.
-        const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionRestScope)
+        // Start durable-display hydration now, independently of the runtime
+        // resume. Its coordinator owns the one-frame publish gate; resume is
+        // allowed to stay deferred while the transcript becomes readable.
+        const persistedDisplayPaint = paintVerifiedTranscriptTail(displayHydrationTarget, {
+          commit: messages => {
+            cachedTailPaint = messages
+            setMessages(messages)
+          },
+          loadVerifiedTranscriptTail: () => {
+            if (!cachedTailProvenance) {
+              return null
+            }
+
+            const cached = loadTranscriptTail(storedSessionId, cachedTailProvenance)
+
+            return cached
+              ? {
+                  messages: cached.messages,
+                  pagination: cached.pagination,
+                  provenance: { ...cachedTailProvenance, coverage: cached.coverage }
+                }
+              : null
+          }
+        })
+
+        // A REST response can reach its final frame after the runtime has
+        // already resolved a continuation tip. Keep the last response in the
+        // coordinator gate so it cannot commit a different tip over that
+        // newly accepted runtime identity.
+        let acceptedRuntimeTipId: string | null = null
+        const hydrationMatchesAcceptedRuntime = (response: SessionMessagesResponse | null): boolean => {
+          if (!acceptedRuntimeTipId) {
+            return true
+          }
+
+          const responseTip = responseDisplayTipIdentity(response, storedSessionId, displayResolvedTipId)
+
+          return !responseTip || responseTip === acceptedRuntimeTipId
+        }
+
+        persistedDisplayHydration = watchWindow
+          ? null
+          : startPersistedDisplayHydration(
+              displayHydrationTarget,
+              {
+                commit: (messages, provenance) => {
+                  persistedDisplayPublished = true
+                  persistedDisplayProvenance = provenance
+                  persistedDisplayPublishedTipId = responseDisplayTipIdentity(
+                    hydrationResponseForCurrentGate,
+                    storedSessionId,
+                    displayResolvedTipId
+                  )
+                  cachedTailPaint = messages
+                  setMessages(messages)
+                },
+                fetchLatest: async (_target, knownDisplayRevision) => {
+                  const response =
+                    perfFixture
+                      ? await perfFixture.fetchLatest(knownDisplayRevision)
+                      : await getLatestSessionMessages(storedSessionId, sessionRestScope, {
+                          deferTailBookkeeping: true,
+                          ...(knownDisplayRevision === undefined ? {} : { knownDisplayRevision })
+                        })
+
+                  hydrationResponseForCurrentGate = response
+                  return response
+                },
+                isCurrent: () =>
+                  isCurrentResume() &&
+                  isCurrentDisplayScope(hydrationResponseForCurrentGate) &&
+                  hydrationMatchesAcceptedRuntime(hydrationResponseForCurrentGate),
+                loadVerifiedTranscriptTail: () => null,
+                nextFrame: () => new Promise(resolve => window.requestAnimationFrame(() => resolve())),
+                readCurrentMessages: () => $messages.get(),
+                reconcile: (response, current) =>
+                  authoritativeMessageReconciliation.reconcileAuthoritativeChatMessages(
+                    toChatMessages(response.messages),
+                    current,
+                    cachedTailPaint !== null && current === cachedTailPaint ? [] : current
+                  )
+              },
+              persistedDisplayPaint
+            )
+
+        // One authority finalizer serves both the successful runtime
+        // continuation and the resume-failure recovery. A changed, proven
+        // response is cached only after route/scope/current-tip validation;
+        // a legacy response remains display-only because its provenance is
+        // null. An exact-cache unchanged response is already authoritative.
+        finalizePersistedDisplayHydration = (
+          result: PersistedDisplayHydrationResult | null
+        ): 'accepted' | 'settled' | 'unavailable' => {
+          if (!result) {
+            return 'unavailable'
+          }
+
+          const responseForScope = result.kind === 'published' ? result.response : hydrationResponseForCurrentGate
+
+          if (!isCurrentResume() || !isCurrentDisplayScope(responseForScope)) {
+            return 'settled'
+          }
+
+          if (result.kind === 'unchanged') {
+            // A normal unchanged response reuses the already verified cache
+            // paint; no conversion, cache write, or fallback read is needed.
+            // It still belongs to the request's original tip, so a runtime
+            // continuation that resolved elsewhere must reject it.
+            return hydrationMatchesAcceptedRuntime(responseForScope) ? 'accepted' : 'settled'
+          }
+
+          if (result.kind !== 'published' || !hydrationMatchesAcceptedRuntime(result.response)) {
+            return 'settled'
+          }
+
+          const verifiedProvenance =
+            result.provenance ?? provenanceFromMessagesResponse(result.response, storedSessionId, sessionRestScope)
+
+          if (!perfFixture) {
+            recordLatestSessionMessagesPage(storedSessionId, result.response, sessionRestScope)
+          }
+
+          if (verifiedProvenance) {
+            saveTranscriptTail(storedSessionId, result.rawPageMessages, verifiedProvenance, {
+              pagination: result.response.pagination
+            })
+          }
+
+          return 'accepted'
+        }
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
         const resumeStartedAt = Date.now() / 1000
@@ -1557,7 +2069,7 @@ export function useSessionActions({
             // gets the gateway's default deferred build: the RPC returns the
             // transcript immediately instead of blocking the switch on _make_agent
             // (MCP discovery / prompt build), and the agent pre-warms in the
-            // background while the prefetch above paints the transcript.
+            // background while independent display hydration paints the transcript.
             ...(watchWindow ? { lazy: true } : { omit_messages: true }),
             ...(sessionProfile ? { profile: sessionProfile } : {})
           })
@@ -1569,106 +2081,140 @@ export function useSessionActions({
         })
 
         // The rejection is consumed by the `await` below; this guard only
-        // keeps it from surfacing as unhandled while the prefetch settles.
+        // keeps it from surfacing as unhandled while display hydration settles.
         resumePromise.catch(() => undefined)
-
-        let prefetchedResult: { messages: SessionMessage[]; session_id?: string } | null = null
-
-        try {
-          if (prefetchPromise) {
-            prefetchedResult = await prefetchPromise
-          }
-        } catch {
-          // Non-fatal: gateway resume below can still hydrate the session.
-        }
-
-        // Paint the persisted transcript as soon as REST returns instead of
-        // holding it until the runtime resume settles. A cold profile build
-        // (skills, MCP, memory) can keep `session.resume` pending far longer
-        // than the hydration budget while the complete history is already in
-        // hand — holding it stranded Bot Chats on the loader (#90130). The
-        // runtime path below grafts only its live projection onto this same
-        // snapshot, so an unchanged acknowledgement keeps reference identity
-        // and never rebuilds the transcript a second time.
-        if (prefetchedResult && isCurrentResume()) {
-          const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
-            : viewMessagesForReconcile()
-
-          // Tail page + previously backfilled prefix (same-session re-resume).
-          const graftedPrefetch = graftRefreshedTailOntoBackfill(
-            toChatMessages(prefetchedResult.messages),
-            previousMessages
-          )
-
-          prefetchedTranscriptMessages = graftedPrefetch
-          localSnapshot = reconcileAuthoritativeChatMessages(graftedPrefetch, previousMessages)
-          prefetchApplied = true
-          prefetchedStoredSessionId = prefetchedResult.session_id || storedSessionId
-
-          if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
-            setMessages(localSnapshot)
-          }
-        }
 
         const resumed = await resumePromise
 
+        // Runtime liveness, approvals, and todos are independent from a slow
+        // durable display read. Apply them now; a later display result layers
+        // verified history beneath this live projection through the continuation
+        // installed after the runtime state exists.
         if (!isCurrentResume()) {
           return
         }
 
+        markSessionOpen('hermes.session.resume.ready')
+
+        const resumedStoredSessionId = resumed.session_key || resumed.resumed
+        acceptedRuntimeTipId = resumedStoredSessionId?.trim() || null
+
+        // Live events can create the resumed runtime state before its RPC
+        // snapshot settles. If so, bind the in-flight tip read to that exact
+        // epoch now so a concurrent edit/rewind invalidates its publish/cache.
+        const runtimeAuthorityAtAcceptance = sessionStateByRuntimeIdRef.current.get(resumed.session_id)
+
+        if (runtimeAuthorityAtAcceptance) {
+          captureRuntimeTranscriptAuthority(resumed.session_id, runtimeAuthorityAtAcceptance)
+        }
+
+        // The display coordinator may finish before the runtime tells us that
+        // the stored session advanced to another tip. Do not retain a proven
+        // transcript from that different tip under the newly resumed runtime;
+        // this is an identity switch, not a runtime rebuild of the same
+        // persisted display.
+        const publishedDisplayProvenance = (): PersistedDisplayTranscriptProvenance | null =>
+          persistedDisplayProvenance
+        const displayedTipId =
+          publishedDisplayProvenance()?.resolvedTipId ??
+          persistedDisplayPublishedTipId ??
+          (cachedTailPaint !== null ? cachedTailProvenance?.resolvedTipId ?? null : null)
+        const acceptedRuntimeChangedDisplayTip = Boolean(
+          displayResolvedTipId && resumedStoredSessionId && displayResolvedTipId !== resumedStoredSessionId
+        )
+        const persistedDisplayMatchesResumedSession =
+          !displayedTipId ||
+          !resumedStoredSessionId ||
+          displayedTipId === resumedStoredSessionId
+
+        if ((displayedTipId && !persistedDisplayMatchesResumedSession) || acceptedRuntimeChangedDisplayTip) {
+          if (
+            acceptedRuntimeChangedDisplayTip &&
+            cachedTailProvenance &&
+            cachedTailProvenance.resolvedTipId !== resumedStoredSessionId
+          ) {
+            dropTranscriptTail(storedSessionId, cachedTailProvenance)
+          }
+
+          persistedDisplayPublished = false
+          persistedDisplayProvenance = null
+          persistedDisplayPublishedTipId = null
+          cachedTailPaint = null
+          setMessages([])
+        }
+
+        // A continuation can advance the durable tip while the original REST
+        // read is still proving the list-captured tip. Start one read for that
+        // exact accepted tip, but do not await it here: runtime liveness must be
+        // committed independently of a slow or unavailable display endpoint.
+        const acceptedRuntimeTipHydration =
+          acceptedRuntimeChangedDisplayTip && resumedStoredSessionId
+            ? getLatestSessionMessages(resumedStoredSessionId, sessionRestScope, {
+                deferTailBookkeeping: true
+              })
+                .then(rebound => {
+                  const reboundTipId = responseDisplayTipIdentity(
+                    rebound,
+                    resumedStoredSessionId,
+                    resumedStoredSessionId
+                  )
+                  const reboundLineageRootId = rebound.lineage_root_id?.trim() || null
+                  const reboundMatchesAcceptedRuntime =
+                    reboundTipId === resumedStoredSessionId &&
+                    (!reboundLineageRootId ||
+                      !displayLineageRootId ||
+                      reboundLineageRootId === displayLineageRootId)
+
+                  if (!reboundMatchesAcceptedRuntime) {
+                    return null
+                  }
+
+                  const provenance = provenanceFromMessagesResponse(
+                    rebound,
+                    storedSessionId,
+                    sessionRestScope
+                  )
+                  const rawPageMessages = toChatMessages(rebound.messages)
+
+                  // A proven revision may authoritatively describe an empty
+                  // page. A legacy empty page remains inconclusive.
+                  return rawPageMessages.length > 0 || provenance
+                    ? { provenance, rawPageMessages, response: rebound }
+                    : null
+                })
+                .catch(() => null)
+            : null
+
         const currentMessages = viewMessagesForReconcile()
 
-        // Keep the local snapshot when resume would only reshuffle runtime
-        // projection. When the REST prefetch already hydrated the transcript,
-        // skip converting/reconciling the resume payload entirely — on a
-        // 1000+-message session that second conversion plus the deep
-        // equivalence compare costs over a second of main-thread time.
-        const resumedStoredSessionId = resumed.session_key || resumed.resumed
-
-        const prefetchMatchesResumedSession =
-          !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
-
-        const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
-
         const preferredMessages = (() => {
-          if (prefetchApplied && prefetchMatchesResumedSession) {
-            if (hasLiveProjection && prefetchedTranscriptMessages) {
-              const runtimeMessages = toChatMessages(resumed.messages)
-              const previousMessages = removeRepresentedLocalLiveProjection(currentMessages, resumed)
+          // A published persisted transcript is display authority. Runtime
+          // snapshots may omit messages, be empty, or contain only compressed
+          // context; they may add liveness, never rebuild durable history.
+          if (persistedDisplayPublished) {
+            const withLiveProjection = appendLiveSessionProjection(currentMessages, resumed)
 
-              // Omitted-messages resumes stay safe here: `resumed.messages`
-              // is empty, so `runtimeMessages` has no anchor and the dedupe
-              // helper returns the projection unchanged, while the REST
-              // prefetch below remains the authoritative transcript — the
-              // same "graft, don't rebuild" outcome the pre-restructure
-              // messages_omitted branch produced.
-              const liveProjection = dedupeInflightUserAgainstTranscript(
-                prefetchedTranscriptMessages,
-                runtimeMessages,
-                resumed
-              )
+            return chatMessageArraysEquivalent(currentMessages, withLiveProjection)
+              ? currentMessages
+              : withLiveProjection
+          }
 
-              const resumedMessages = reconcileAuthoritativeChatMessages(
-                prefetchedTranscriptMessages,
-                previousMessages,
-                liveProjection
-              )
+          // Keep an exact v3 cache paint while the runtime deliberately omits
+          // history and the concurrent REST read is unavailable or
+          // inconclusive. In particular, an older backend's empty response is
+          // not proof that a list row with history became empty. A later
+          // proven REST page may still replace this provisional display.
+          if (
+            cachedTailPaint !== null &&
+            $messages.get() === cachedTailPaint &&
+            resumed.messages_omitted &&
+            resumed.messages.length === 0
+          ) {
+            const withLiveProjection = appendLiveSessionProjection(cachedTailPaint, resumed)
 
-              const withConcurrentChanges = overlayConcurrentMessageChanges(
-                resumedMessages,
-                localSnapshot,
-                currentMessages
-              )
-
-              return chatMessageArraysEquivalent(currentMessages, withConcurrentChanges)
-                ? currentMessages
-                : withConcurrentChanges
-            }
-
-            if (!hasLiveProjection) {
-              return localSnapshot
-            }
+            return chatMessageArraysEquivalent(cachedTailPaint, withLiveProjection)
+              ? cachedTailPaint
+              : withLiveProjection
           }
 
           const previousMessages = resumedSameSelectedSession
@@ -1712,8 +2258,8 @@ export function useSessionActions({
 
         recoveredInFlightTail = inFlightRecovery.applied
 
-        // Prefetch-hit fast path: reuse the live array when neither runtime
-        // changes nor in-flight recovery changed the reconciled transcript.
+        // Reuse the live array when neither runtime changes nor in-flight
+        // recovery changed the reconciled transcript.
         const messagesForView =
           inFlightRecovery.messages === currentMessages
             ? currentMessages
@@ -1723,14 +2269,27 @@ export function useSessionActions({
         // must not mask a lost transcript (a retry that reloads real history
         // is safer than surfacing the in-flight turn alone). Recovery only
         // ever appends, so this matches the final transcript's emptiness.
-        if (sessionShouldHaveTranscript(stored) && preferredMessages.length === 0) {
+        // A revisioned REST response that matched this route's root/tip is
+        // authoritative even when it proves the transcript is now empty. Do
+        // not let stale list metadata turn that explicit empty result into a
+        // failed resume. Legacy empty pages remain inconclusive and still take
+        // the ordinary missing-history recovery below.
+        const acceptedAuthoritativeEmptyPersistedDisplay =
+          persistedDisplayPublished && persistedDisplayProvenance !== null && preferredMessages.length === 0
+
+        if (
+          sessionShouldHaveTranscript(stored) &&
+          preferredMessages.length === 0 &&
+          !acceptedAuthoritativeEmptyPersistedDisplay &&
+          !acceptedRuntimeChangedDisplayTip
+        ) {
           // Roll back a provisional cached-tail paint and drop its entry: the
           // authoritative sources say this session has no transcript, so the
           // cache no longer reflects backend truth and must not survive to
           // mislead the retry (or the next wake).
           if (cachedTailPaint !== null && $messages.get() === cachedTailPaint) {
             setMessages([])
-            dropTranscriptTail(storedSessionId, sessionRestScope)
+            dropTranscriptTail(storedSessionId, cachedTailProvenance ?? undefined)
           }
 
           setActiveSessionId(null)
@@ -1781,25 +2340,13 @@ export function useSessionActions({
         const visibleMessagesForView =
           pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? messagesForView
 
-        // The eagerly painted REST page is persisted-display authority: stamp
-        // its provenance so the next warm switch to this session paints it
-        // immediately instead of holding it as an unproven runtime tail.
-        const transcriptProvenance =
-          prefetchApplied && prefetchMatchesResumedSession && stored
-            ? createPersistedDisplayTranscriptProvenance({
-                lineageRootId: stored._lineage_root_id ?? null,
-                scope: sessionRestScope,
-                storedSessionId
-              })
-            : undefined
-
-        updateSessionState(
+        const resumedRuntimeState = updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: visibleMessagesForView,
-            transcriptProvenance,
+            transcriptProvenance: persistedDisplayPublished ? (persistedDisplayProvenance ?? undefined) : undefined,
             busy: resumedRunning,
             awaitingResponse: resumedRunning && !recoveredInFlightTail,
             // Backend reported this turn running at resume time — live proof.
@@ -1834,26 +2381,150 @@ export function useSessionActions({
           storedSessionId
         )
 
+        // A cold resume starts without a runtime generation to guard. Once the
+        // backend runtime is accepted, take over its current epoch so edits,
+        // restores, or regenerations that invalidate authority also invalidate
+        // every still-pending hydration publish/finalize/cache/proof write.
+        captureRuntimeTranscriptAuthority(resumed.session_id, resumedRuntimeState)
+
         // updateSessionState stages its view sync through requestAnimationFrame.
-        // Commit the final, already-reconciled transcript now so resume has one
-        // additive DOM build instead of an eager prefetch build plus a later
-        // runtime projection build.
+        // Commit the final runtime projection now; independent display hydration
+        // later grafts verified persisted history beneath it when available.
         if (!chatMessageArraysEquivalent($messages.get(), visibleMessagesForView)) {
           setMessages(visibleMessagesForView)
         }
 
-        // Refresh the durable tail cache with backend transcript truth only;
-        // the live pending clarify projection expires with the server request.
-        saveTranscriptTail(
-          storedSessionId,
-          stripPendingClarifyProjectionForCache(
-            messagesForView,
-            pendingClarify?.requestId ??
-              pendingClarifyState.cleared?.requestId ??
-              $clarifyRequests.get()[resumed.session_id]?.requestId
-          ),
-          sessionRestScope
-        )
+        // A runtime-resolved tip owns its own asynchronous display hydration.
+        // Runtime state above is already active/live; this continuation can
+        // only add durable history after re-checking the captured epoch/tip.
+        if (acceptedRuntimeTipHydration && resumedStoredSessionId) {
+          void (async () => {
+            const result = await acceptedRuntimeTipHydration
+
+            if (!result || !isCurrentResume() || acceptedRuntimeTipId !== resumedStoredSessionId) {
+              return
+            }
+
+            const latestRuntimeMessages = sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? []
+            const persistedWithLiveProjection = overlayConcurrentMessageChanges(
+              appendLiveSessionProjection(result.rawPageMessages, resumed),
+              resumeRuntimeBaselineMessages,
+              latestRuntimeMessages
+            )
+            const persistedWithClarifyProjection = pendingClarify
+              ? restorePendingClarifyToolCall(
+                  persistedWithLiveProjection,
+                  pendingClarifyToolPayload(pendingClarify)
+                ).messages
+              : clarifyAuthoritativelyAbsent
+                ? settlePendingClarifyToolCall(
+                    persistedWithLiveProjection,
+                    pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+                    resumedRunning
+                  ).messages
+                : persistedWithLiveProjection
+
+            // Pagination/backfill bookkeeping is authority-sensitive. Commit
+            // it under the durable root (and resolved tip) only after B wins;
+            // the rejected A request was fetched with bookkeeping deferred.
+            recordLatestSessionMessagesPage(storedSessionId, result.response, sessionRestScope)
+
+            persistedDisplayPublished = true
+            persistedDisplayProvenance = result.provenance
+            persistedDisplayPublishedTipId = resumedStoredSessionId
+            cachedTailPaint = result.rawPageMessages
+
+            if (result.provenance && result.rawPageMessages.length > 0) {
+              saveTranscriptTail(storedSessionId, result.rawPageMessages, result.provenance, {
+                pagination: result.response.pagination
+              })
+            }
+
+            const acceptedState = updateSessionState(
+              resumed.session_id,
+              state => ({
+                ...state,
+                messages: preserveLocalPendingTurnMessages(persistedWithClarifyProjection, state.messages),
+                transcriptProvenance: result.provenance ?? undefined
+              }),
+              storedSessionId
+            )
+
+            if (!chatMessageArraysEquivalent($messages.get(), acceptedState.messages)) {
+              setMessages(acceptedState.messages)
+            }
+            markSessionOpen('hermes.session.history.ready')
+          })().catch(() => undefined)
+        }
+
+        // The independent hydration intentionally remains un-awaited: it may
+        // finish after the runtime state above. Re-check the captured route and
+        // authority before every late cache/proof/state write, then graft only
+        // the runtime's live tail onto the persisted transcript.
+        void (async () => {
+          const result = await persistedDisplayHydration
+
+          if (!result || finalizePersistedDisplayHydration(result) !== 'accepted') {
+            return
+          }
+
+          if (!isCurrentResume()) {
+            return
+          }
+
+          if (result.kind === 'unchanged') {
+            if (!cachedTailProvenance || cachedTailPaint === null) {
+              return
+            }
+
+            updateSessionState(
+              resumed.session_id,
+              state => ({ ...state, transcriptProvenance: cachedTailProvenance }),
+              storedSessionId
+            )
+            markSessionOpen('hermes.session.history.ready')
+
+            return
+          }
+
+          if (result.kind !== 'published') {
+            return
+          }
+
+          if (!isCurrentDisplayScope(result.response)) {
+            return
+          }
+
+          const latestRuntimeMessages = sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? []
+          const persistedWithLiveProjection = overlayConcurrentMessageChanges(
+            appendLiveSessionProjection(result.messages, resumed),
+            resumeRuntimeBaselineMessages,
+            latestRuntimeMessages
+          )
+          const persistedWithClarifyProjection = pendingClarify
+            ? restorePendingClarifyToolCall(
+                persistedWithLiveProjection,
+                pendingClarifyToolPayload(pendingClarify)
+              ).messages
+            : clarifyAuthoritativelyAbsent
+              ? settlePendingClarifyToolCall(
+                  persistedWithLiveProjection,
+                  pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+                  resumedRunning
+                ).messages
+              : persistedWithLiveProjection
+
+          updateSessionState(
+            resumed.session_id,
+            state => ({
+              ...state,
+              messages: preserveLocalPendingTurnMessages(persistedWithClarifyProjection, state.messages),
+              transcriptProvenance: result.provenance ?? undefined
+            }),
+            storedSessionId
+          )
+          markSessionOpen('hermes.session.history.ready')
+        })().catch(() => undefined)
       } catch (err) {
         if (!isCurrentResume()) {
           return
@@ -1870,26 +2541,40 @@ export function useSessionActions({
         let fallbackError: unknown = null
 
         try {
-          const fallback = await getLatestSessionMessages(storedSessionId, sessionRestScope)
+          // Reuse an accepted coordinator result rather than issuing a second
+          // REST read. This also lets a revisioned result save its verified
+          // v3 tail even though no runtime id was recovered.
+          const hydrationResult = await persistedDisplayHydration
 
-          if (!isCurrentResume()) {
+          const hydrationFinalization = finalizePersistedDisplayHydration(hydrationResult)
+
+          if (hydrationFinalization === 'accepted') {
             return
           }
 
-          const previousMessages = resumedSameSelectedSession
-            ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
-            : viewMessagesForReconcile()
+          if (hydrationFinalization === 'settled') {
+            fallbackError = new Error('persisted display hydration was inconclusive')
+          } else {
+            const fallback = await getLatestSessionMessages(storedSessionId, sessionRestScope)
 
-          // Resume failed, so there is no live projection — the journal is the
-          // only carrier of a crashed turn's progress on this path.
-          const fallbackRecovery = recoverInFlightTurnJournal(
-            storedSessionId,
-            reconcileAuthoritativeMessages(fallback.messages, previousMessages)
-          )
+            if (!isCurrentResume() || !isCurrentDisplayScope(fallback)) {
+              return
+            }
 
-          // The eager prefetch paint above may already show this transcript.
-          if (!chatMessageArraysEquivalent($messages.get(), fallbackRecovery.messages)) {
-            setMessages(fallbackRecovery.messages)
+            const previousMessages = resumedSameSelectedSession
+              ? preserveLocalPendingTurnMessages(viewMessagesForReconcile(), resumeStartMessages)
+              : viewMessagesForReconcile()
+
+            // Resume failed, so there is no live projection — the journal is the
+            // only carrier of a crashed turn's progress on this path.
+            const fallbackRecovery = recoverInFlightTurnJournal(
+              storedSessionId,
+              reconcileAuthoritativeMessages(fallback.messages, previousMessages)
+            )
+
+            if (!chatMessageArraysEquivalent($messages.get(), fallbackRecovery.messages)) {
+              setMessages(fallbackRecovery.messages)
+            }
           }
         } catch (e) {
           // Fallback also failed: nothing to paint. Leave whatever messages are
@@ -2022,6 +2707,7 @@ export function useSessionActions({
       activeSessionIdRef,
       busyRef,
       copy,
+      getRouteToken,
       holdSessionTranscriptView,
       requestGateway,
       resetViewSync,
@@ -2033,6 +2719,85 @@ export function useSessionActions({
       updateSessionState
     ]
   )
+
+  useEffect(() => {
+    if (!(import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1')) {
+      return
+    }
+
+    setSessionOpenPerfFixtureRunner(async fixture => {
+      const activeSessionIdBeforeFixture = activeSessionIdRef.current
+      const busyBeforeFixture = busyRef.current
+      const selectedStoredSessionIdBeforeFixture = selectedStoredSessionIdRef.current
+
+      navigate(sessionRoute(fixture.storedSessionId), { replace: true })
+      await new Promise<void>((resolve, reject) => {
+        const deadline = performance.now() + 15_000
+
+        const inspect = () => {
+          if (getRoutedStoredSessionId() === fixture.storedSessionId) {
+            resolve()
+
+            return
+          }
+
+          if (performance.now() >= deadline) {
+            reject(new Error(`session-open perf route did not select ${fixture.storedSessionId}`))
+
+            return
+          }
+
+          window.setTimeout(inspect, 0)
+        }
+
+        inspect()
+      })
+      await new Promise<void>((resolve, reject) => {
+        const deadline = performance.now() + 15_000
+
+        const inspect = () => {
+          const runtimeId = runtimeIdByStoredSessionIdRef.current.get(fixture.storedSessionId)
+          const selectedFixtureActive =
+            selectedStoredSessionIdRef.current === fixture.storedSessionId && activeSessionIdRef.current !== null
+
+          if ((runtimeId && activeSessionIdRef.current === runtimeId) || (!runtimeId && selectedFixtureActive)) {
+            resolve()
+
+            return
+          }
+
+          if (performance.now() >= deadline) {
+            reject(
+              new Error(
+                `session-open perf route did not activate ${fixture.storedSessionId} ` +
+                  `(runtime=${runtimeId ?? 'none'}, active=${activeSessionIdRef.current ?? 'none'})`
+              )
+            )
+
+            return
+          }
+
+          window.setTimeout(inspect, 0)
+        }
+
+        inspect()
+      })
+
+      return cleanupSessionOpenPerfFixtureState({
+        activeSessionIdBeforeFixture,
+        activeSessionIdRef,
+        busyBeforeFixture,
+        busyRef,
+        runtimeIdByStoredSessionIdRef,
+        selectedStoredSessionIdBeforeFixture,
+        selectedStoredSessionIdRef,
+        sessionStateByRuntimeIdRef,
+        storedSessionId: fixture.storedSessionId
+      })
+    })
+
+    return () => setSessionOpenPerfFixtureRunner(null)
+  }, [activeSessionIdRef, getRoutedStoredSessionId, navigate, resumeSession, runtimeIdByStoredSessionIdRef])
 
   // Shared fork: create a child session seeded with `branchMessages`, linked to
   // `parentStoredId` so it nests under its parent, then open it as its own tab

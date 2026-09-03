@@ -2686,7 +2686,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "message_count", "tool_call_count", "input_tokens", "output_tokens",
             "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
             "actual_cost_usd", "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id", "pinned", "archived", "hidden")
+            "_lineage_root_id", "display_revision", "pinned", "archived",
+            "hidden",
+        )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # SQLite stores the flags as 0/1.
         payload.update(
@@ -2778,6 +2780,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Back-filled pins arrive PAST the limit, so counting them would report
         # another page that doesn't exist. Only the recency window decides.
         windowed = sum(1 for s in sessions if not s.get("pinned"))
+        if sessions:
+            roots = [s.get("_lineage_root_id") or s["id"] for s in sessions]
+            revisions = await asyncio.to_thread(db.get_display_revisions, roots)
+            for session, root_id in zip(sessions, roots):
+                session["display_revision"] = revisions[root_id]
         return web.json_response({
             "object": "list", "data": [self._session_response(s) for s in sessions],
             "limit": limit, "offset": offset, "has_more": windowed >= limit})
@@ -2915,9 +2922,34 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if err:
             return err
         db = await self._ensure_session_db_async()
-        resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
-        raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
+        raw_limit = request.query.get("limit")
+        raw_offset = request.query.get("offset", "0")
         order = request.query.get("order")
+        include_compacted = _coerce_request_bool(
+            request.query.get("include_compacted"), default=False
+        )
+        raw_known_revision = request.query.get("known_display_revision")
+        known_display_revision = None
+        if raw_known_revision is not None:
+            max_display_revision = (1 << 63) - 1
+            valid_revision = bool(raw_known_revision) and len(raw_known_revision) <= 19
+            if valid_revision:
+                valid_revision = all(
+                    "0" <= character <= "9" for character in raw_known_revision
+                )
+            try:
+                parsed_revision = int(raw_known_revision) if valid_revision else None
+            except (TypeError, ValueError):
+                parsed_revision = None
+            if parsed_revision is None or parsed_revision > max_display_revision:
+                return web.json_response(
+                    _openai_error(
+                        "known_display_revision must be a non-negative integer",
+                        code="invalid_pagination",
+                    ),
+                    status=400,
+                )
+            known_display_revision = parsed_revision
         if order not in (None, "oldest", "latest"):
             return _error_response("order must be one of: oldest, latest", 400, code="invalid_pagination")
         try:
@@ -2930,15 +2962,45 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)
-        messages = await asyncio.to_thread(
-            db.get_messages, resolved_id, limit=limit, offset=offset, latest=latest_page)
+        try:
+            page = await asyncio.to_thread(
+                db.get_display_message_page,
+                session_id,
+                limit=limit,
+                offset=offset,
+                latest=latest_page,
+                include_compacted=include_compacted,
+                known_display_revision=known_display_revision,
+            )
+        except KeyError:
+            return web.json_response(
+                _openai_error(
+                    f"Session not found: {session_id}", code="session_not_found"
+                ),
+                status=404,
+            )
+        from agent.compaction_display import (
+            suppress_redundant_compaction_projection_sources,
+        )
+
+        display_messages = suppress_redundant_compaction_projection_sources(
+            page["messages"]
+        )
+        messages = (
+            []
+            if page["unchanged"]
+            else [self._message_response(message) for message in display_messages]
+        )
         return web.json_response({
-            "object": "list", "session_id": resolved_id,
-            "data": [self._message_response(m) for m in messages],
-            "pagination": {
-                "limit": limit, "offset": offset,
-                "order": order or ("latest" if default_page else "oldest"),
-                "returned": len(messages)}})
+            "object": "list",
+            "session_id": page["session_id"],
+            "lineage_root_id": page["lineage_root_id"],
+            "resolved_tip_id": page["resolved_tip_id"],
+            "display_revision": page["display_revision"],
+            "unchanged": page["unchanged"],
+            "data": messages,
+            "pagination": page["pagination"],
+        })
 
     @_require_auth
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":

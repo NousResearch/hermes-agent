@@ -23,7 +23,7 @@ from utils import safe_json_loads
 from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
-    LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
+    LEGACY_FTS_TRIGRAM_SQL, MESSAGE_CLONE_LINEAGE_LEGACY_CEILING_KEY, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, fts_rebuild_admission,
 )
 
@@ -798,7 +798,32 @@ class SessionSchemaMixin:
         # loops for a rare failure mode.
         report_startup_progress(600.0, phase="state_db_init_schema")
         cursor = self._conn.cursor()
+
+        # Preserve the exact boundary between legacy inferred clones and rows
+        # written after durable source-to-clone provenance became available.
+        had_clone_lineage_table = cursor.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'message_clone_lineage'"
+        ).fetchone() is not None
+        legacy_clone_ceiling: Optional[int] = None
+        if not had_clone_lineage_table:
+            had_messages_table = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+            ).fetchone() is not None
+            legacy_clone_ceiling = (
+                int(cursor.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0])
+                if had_messages_table
+                else 0
+            )
+
         cursor.executescript(SCHEMA_SQL)
+
+        if legacy_clone_ceiling is not None:
+            cursor.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (MESSAGE_CLONE_LINEAGE_LEGACY_CEILING_KEY, str(legacy_clone_ceiling)),
+            )
 
         # Column reconciliation, then the two table-shape repairs ADD COLUMN cannot express.
         self._reconcile_columns(cursor)

@@ -248,7 +248,7 @@ class SessionCompressionMixin:
                     f"{' AND id <= ?' if bounded else ''} ORDER BY id",
                     [parent_session_id, int(watermark), *([int(watermark_ceiling)] if bounded else [])])
                 if tail_ids:
-                    self._clone_message_rows(conn, tail_ids, session_id=child_session_id)
+                    self._clone_message_rows_with_lineage(conn, tail_ids, child_session_id)
                     total_messages += len(tail_ids)
                     total_tool_calls += tail_tool_calls
             conn.execute(
@@ -259,6 +259,7 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
+            self._bump_display_revision(conn, parent_session_id)
         self._execute_write(_do)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
@@ -603,25 +604,14 @@ class SessionCompressionMixin:
         written, while a stale websocket later creates a sibling that passes it). Instead exclude
         branch/delegate/tool children and prefer children that continue the chain or are still live over
         stale closed siblings such as ``ws_orphan_reap``."""
-        current = session_id
-        chain = [current] if current else []
-        seen = set(chain)
-        for _ in range(100):  # defensive bound; chains this deep are pathological
-            with self._read_ctx() as conn:
-                row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
-            child_id = row["id"] if row is not None else None
-            if not child_id or child_id in seen:
-                return chain
-            seen.add(child_id)
-            current = child_id
-            chain.append(child_id)
-        return chain
+        with self._read_ctx() as conn:
+            return self._get_compression_chain_from_conn(conn, session_id)
 
     def get_compression_tip(self, session_id: str) -> Optional[str]:
         """Live tip of a compression chain (``get_compression_chain`` semantics); the input
         id when no continuation exists."""
-        chain = self.get_compression_chain(session_id)
-        return chain[-1] if chain else session_id
+        with self._read_ctx() as conn:
+            return self._get_compression_tip_from_conn(conn, session_id)
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")

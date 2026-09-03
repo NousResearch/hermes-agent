@@ -22,6 +22,12 @@ npm run perf -- stream --cpuprofile --tokens 800
 # Representative PRODUCTION numbers (minified React, not the ~3x-slower dev build):
 npm run perf -- cold-start stream keystroke transcript --spawn --prod
 
+# Controlled session-open proof. These use only an isolated renderer, a
+# synthetic transcript, and the local v3 cache fixture — no real sessions,
+# LLM credits, or network telemetry.
+npm run perf -- session-switch --spawn --prod --verified-cache --rounds 20
+npm run perf -- session-switch --spawn --prod --delay-runtime 2000 --rounds 5
+
 # Re-capture the baseline on your reference device, then commit baseline.json:
 npm run perf -- cold-start stream keystroke transcript --spawn --prod --update-baseline
 ```
@@ -57,7 +63,7 @@ directly via `window.__PERF_DRIVE__`, so no LLM credits are spent.
 | `cold-start` | cold | launch → CDP → driver → first paint (fresh spawn/run) | (new) |
 | `first-token` | backend | Enter → first assistant token painted (TTFT) | (new) |
 | `submit` | backend | Enter → cleared → user msg painted, scroll jump | measure-submit, measure-jump |
-| `session-switch` | backend | route → first-paint → settle | profile-session-switch |
+| `session-switch` | backend / controlled | real route → first-paint → settle, or cache/REST/runtime open timing | profile-session-switch |
 | `session-load` | backend | how far a session's transcript moves after first paint | (new) |
 | `profile-switch` | backend | rail click → sidebar settled | measure-profile-switch |
 
@@ -69,6 +75,29 @@ backend (and `--spawn` or a real session/credits) and are report-only.
 CPU profiling is a cross-cutting `--cpuprofile` flag on any scenario (it wraps
 the run in `Profiler.start/stop` and prints a top-self-time table), replacing
 every standalone `profile-*` script.
+
+### Controlled session-open modes
+
+`session-switch` keeps its ordinary backend mode: provide `--a` and `--b` for
+two real stored sessions, and it reports route-to-paint/settle timing. The two
+controlled modes above do not need those ids. They run only in the isolated
+`--spawn --prod` renderer and seed a valid v3 transcript-tail entry plus a
+matching listed-row revision with deterministic mixed-markdown content. It
+then drives the mounted production `useSessionActions.resumeSession` path; the
+fixture injects only local gateway/REST responses and never calls a backend or
+sends telemetry.
+
+- `--verified-cache` records 20 (or more) cache-open rounds and fails when
+  `cache_first_paint_p95_ms` exceeds 100 ms.
+- `--delay-runtime <ms>` holds the synthetic `session.resume` response while
+  real display hydration proceeds, then fails unless every round records REST
+  commit strictly before resume readiness.
+
+The output also includes REST/resume percentiles and `rest_before_resume_count`.
+`agent_ready_p95_ms` is reported as unavailable when the active backend protocol
+does not report deferred agent-prewarm completion; the fixture never invents a
+timer-based agent-ready value. These controlled checks are explicit hard gates,
+not additions to the cross-device `baseline.json` comparison.
 
 ## Adding a scenario
 

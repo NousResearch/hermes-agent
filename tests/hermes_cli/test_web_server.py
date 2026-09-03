@@ -435,6 +435,41 @@ class TestWebServerEndpoints:
         assert response.json()["sessions"] == []
         assert response.json()["total"] == 0
 
+    def test_get_sessions_includes_display_revisions_from_one_batch_lookup(
+        self, monkeypatch
+    ):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("revision-visible", source="desktop")
+            db.append_message("revision-visible", "user", "hello")
+            db.create_session("revision-empty", source="desktop")
+        finally:
+            db.close()
+
+        batch_calls = []
+        original_batch = SessionDB.get_display_revisions
+
+        def record_batch(self, roots):
+            batch_calls.append(list(roots))
+            return original_batch(self, roots)
+
+        def reject_single(*args, **kwargs):
+            raise AssertionError("session lists must not perform N+1 revision reads")
+
+        monkeypatch.setattr(SessionDB, "get_display_revisions", record_batch)
+        monkeypatch.setattr(SessionDB, "get_display_revision", reject_single)
+
+        response = self.client.get("/api/sessions?limit=50&offset=0")
+
+        assert response.status_code == 200
+        rows = {row["id"]: row for row in response.json()["sessions"]}
+        assert rows["revision-visible"]["display_revision"] == 1
+        assert rows["revision-empty"]["display_revision"] == 0
+        assert len(batch_calls) == 1
+        assert set(batch_calls[0]) == {"revision-visible", "revision-empty"}
+
     @pytest.mark.parametrize(
         "missing_column", ["archived", "pinned", "last_activity_at"]
     )
@@ -2248,19 +2283,28 @@ class TestWebServerEndpoints:
                 "compacted-carrier-display",
                 [{"role": "user", "content": carrier, "timestamp": 123.0}],
             )
-            db.append_message(
+            handoff_id = db.append_message(
                 "compacted-carrier-display",
                 "user",
                 handoff,
                 timestamp=124.0,
             )
-            db.append_message(
+            assistant_id = db.append_message(
                 "compacted-carrier-display",
                 "assistant",
                 assistant_carrier,
                 timestamp=125.0,
             )
             active_id = db.get_messages("compacted-carrier-display")[0]["id"]
+            raw_page = db.get_display_message_page(
+                "compacted-carrier-display",
+                limit=120,
+                latest=False,
+                include_compacted=True,
+            )
+            assert len(raw_page["messages"]) == 4
+            assert raw_page["messages"][0]["content"] == "REAL ASK"
+            assert raw_page["messages"][1]["content"] == carrier
         finally:
             db.close()
 
@@ -2279,6 +2323,31 @@ class TestWebServerEndpoints:
         assert messages[1]["display_kind"] == "hidden"
         assert messages[2]["content"] == assistant_carrier
         assert messages[2]["display_content"] == "real completed answer"
+
+        first_page = self.client.get(
+            "/api/sessions/compacted-carrier-display/messages"
+            "?include_compacted=true&limit=2&offset=0&order=oldest"
+        ).json()
+        second_page = self.client.get(
+            "/api/sessions/compacted-carrier-display/messages"
+            "?include_compacted=true&limit=2&offset=2&order=oldest"
+        ).json()
+        assert [message["id"] for message in first_page["messages"]] == [
+            active_id
+        ]
+        assert [message["id"] for message in second_page["messages"]] == [
+            handoff_id,
+            assistant_id,
+        ]
+        assert not {
+            message["id"] for message in first_page["messages"]
+        } & {message["id"] for message in second_page["messages"]}
+        assert first_page["pagination"] == {
+            "limit": 2,
+            "offset": 0,
+            "order": "oldest",
+            "returned": 2,
+        }
 
     def test_get_session_messages_latest_page_with_compacted_rows(self):
         """The desktop's real read path (getLatestSessionMessages: limit +
@@ -2318,6 +2387,154 @@ class TestWebServerEndpoints:
         # Newest-first window of 2, skipping the newest (live a):
         # summary, live q — chronological order, matching the non-compacted path.
         assert contents == ["summary", "live q"]
+
+    def test_get_session_messages_returns_conditional_display_page_identity(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("root", source="desktop")
+            db.append_message("root", "user", "hello")
+        finally:
+            db.close()
+
+        response = self.client.get(
+            "/api/sessions/root/messages"
+            "?include_compacted=true&limit=120&order=latest"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["session_id"] == "root"
+        assert payload["lineage_root_id"] == "root"
+        assert payload["resolved_tip_id"] == "root"
+        assert payload["display_revision"] == 1
+        assert payload["unchanged"] is False
+        assert [message["content"] for message in payload["messages"]] == ["hello"]
+        assert payload["pagination"] == {
+            "limit": 120,
+            "offset": 0,
+            "order": "latest",
+            "returned": 1,
+        }
+
+    def test_get_session_messages_known_revision_skips_display_projection(
+        self, monkeypatch
+    ):
+        from agent import compaction_display, context_compressor
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("conditional-root", source="desktop")
+            db.append_message("conditional-root", "user", "hello")
+            revision = db.get_display_revision("conditional-root")
+        finally:
+            db.close()
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("unchanged pages must not project messages")
+
+        monkeypatch.setattr(
+            compaction_display, "project_compaction_message_for_display", unexpected
+        )
+        monkeypatch.setattr(
+            context_compressor, "is_compaction_summary_message", unexpected
+        )
+
+        response = self.client.get(
+            "/api/sessions/conditional-root/messages"
+            f"?include_compacted=true&limit=120&order=latest"
+            f"&known_display_revision={revision}"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["display_revision"] == revision
+        assert payload["unchanged"] is True
+        assert payload["messages"] == []
+        assert payload["pagination"] == {
+            "limit": 120,
+            "offset": 0,
+            "order": "latest",
+            "returned": 0,
+        }
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "-1",
+            "not-an-int",
+            "",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "\u0661",
+            "9223372036854775808",
+        ],
+    )
+    def test_get_session_messages_rejects_invalid_known_display_revision(self, value):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("validation-root", source="desktop")
+        finally:
+            db.close()
+
+        response = self.client.get(
+            "/api/sessions/validation-root/messages",
+            params={"known_display_revision": value},
+        )
+
+        assert response.status_code == 400
+
+    def test_get_session_messages_from_compression_root_returns_tip_identity(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session("compression-root", source="desktop")
+            db.end_session("compression-root", "compression")
+            db.create_session(
+                "compression-tip",
+                source="desktop",
+                parent_session_id="compression-root",
+            )
+            db.append_messages_batch(
+                "compression-tip",
+                [
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                ],
+            )
+            db.archive_and_compact(
+                "compression-tip",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live question"},
+                ],
+            )
+        finally:
+            db.close()
+
+        response = self.client.get(
+            "/api/sessions/compression-root/messages"
+            "?include_compacted=true&limit=120&order=oldest"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["session_id"] == "compression-tip"
+        assert payload["lineage_root_id"] == "compression-root"
+        assert payload["resolved_tip_id"] == "compression-tip"
+        assert [message["content"] for message in payload["messages"]] == [
+            "old question",
+            "old answer",
+            "summary",
+            "live question",
+        ]
 
     def test_get_session_messages_omitted_limit_defaults_to_500(self):
         """The dashboard must never load an entire unbounded transcript."""

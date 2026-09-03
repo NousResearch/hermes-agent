@@ -34,6 +34,7 @@ MERGED_CARRIER = (
     f"{STANDALONE_SUMMARY}"
 )
 REAL_USER = "test the browser controller again"
+USER_CARRIER = f"{STANDALONE_SUMMARY}\n\n{REAL_USER}"
 
 
 def _row(role: str, content, **extra) -> dict:
@@ -193,6 +194,105 @@ class TestTurnTranscriptProjection:
 
 class TestMessagesEndpointProjection:
     @pytest.mark.asyncio
+    async def test_messages_endpoint_dedupes_projected_compaction_carrier(
+        self,
+        adapter,
+        session_db,
+    ):
+        session_id = session_db.create_session(
+            "projection-dedupe", "api_server"
+        )
+        session_db.append_message(
+            session_id, "user", REAL_USER, timestamp=123.0
+        )
+        session_db.archive_and_compact(
+            session_id,
+            [{"role": "user", "content": USER_CARRIER, "timestamp": 123.0}],
+        )
+        carrier_id = session_db.get_messages(session_id)[0]["id"]
+        later_id = session_db.append_message(
+            session_id, "assistant", "later answer", timestamp=124.0
+        )
+        raw_page = session_db.get_display_message_page(
+            session_id,
+            limit=120,
+            latest=False,
+            include_compacted=True,
+        )
+        assert [message["content"] for message in raw_page["messages"]] == [
+            REAL_USER,
+            USER_CARRIER,
+            "later answer",
+        ]
+
+        async with TestClient(TestServer(_messages_app(adapter))) as client:
+            first_response = await client.get(
+                f"/api/sessions/{session_id}/messages"
+                "?include_compacted=true&limit=2&offset=0&order=oldest"
+            )
+            second_response = await client.get(
+                f"/api/sessions/{session_id}/messages"
+                "?include_compacted=true&limit=2&offset=2&order=oldest"
+            )
+            assert first_response.status == 200
+            assert second_response.status == 200
+            payload = await first_response.json()
+            second_payload = await second_response.json()
+
+        assert len(payload["data"]) == 1
+        assert payload["data"][0]["id"] == carrier_id
+        assert payload["data"][0]["content"] == REAL_USER
+        assert [message["id"] for message in second_payload["data"]] == [
+            later_id
+        ]
+        assert not {
+            message["id"] for message in payload["data"]
+        } & {message["id"] for message in second_payload["data"]}
+        assert payload["pagination"] == {
+            "limit": 2,
+            "offset": 0,
+            "order": "oldest",
+            "returned": 2,
+        }
+
+    @pytest.mark.asyncio
+    async def test_messages_endpoint_preserves_reasoning_distinct_projection(
+        self,
+        adapter,
+        session_db,
+    ):
+        session_id = session_db.create_session(
+            "projection-reasoning-distinct", "api_server"
+        )
+        session_db.append_message(
+            session_id,
+            "assistant",
+            "Refactor complete.",
+            reasoning="source reasoning",
+            timestamp=123.0,
+        )
+        session_db.archive_and_compact(
+            session_id,
+            [{"role": "assistant", "content": MERGED_CARRIER, "timestamp": 123.0}],
+        )
+
+        async with TestClient(TestServer(_messages_app(adapter))) as client:
+            response = await client.get(
+                f"/api/sessions/{session_id}/messages?include_compacted=true"
+            )
+            assert response.status == 200
+            payload = await response.json()
+
+        assert [message["content"] for message in payload["data"]] == [
+            "Refactor complete.",
+            "Refactor complete.",
+        ]
+        assert [message.get("reasoning") for message in payload["data"]] == [
+            "source reasoning",
+            None,
+        ]
+
+    @pytest.mark.asyncio
     async def test_messages_endpoint_never_serves_compaction_scaffolding(
         self,
         adapter,
@@ -214,6 +314,11 @@ class TestMessagesEndpointProjection:
             payload = await response.json()
 
         messages = payload["data"]
+        assert payload["session_id"] == session_id
+        assert payload["lineage_root_id"] == session_id
+        assert payload["resolved_tip_id"] == session_id
+        assert payload["display_revision"] == session_db.get_display_revision(session_id)
+        assert payload["unchanged"] is False
         assert len(messages) == 3
         assert messages[0]["content"] == ""
         assert messages[0]["display_kind"] == "hidden"

@@ -60,7 +60,14 @@ def _run(stub, command):
 
 
 def _git(repo, *args):
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True,
+    # -c core.autocrlf=false: without it, a Windows git with autocrlf=true
+    # (or input) rewrites the committed blob's line endings on checkout
+    # while the working-tree file keeps what the test wrote — the "clean"
+    # fixture then diffs as 1 insertion/1 deletion of invisible CR, and
+    # test_diff_clean_repo_reports_no_changes fails on the line-ending
+    # noise instead of the no-changes path it exists to pin.
+    subprocess.run(["git", "-c", "core.autocrlf=false", *args], cwd=repo,
+                   check=True, capture_output=True,
                    env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
                         "HOME": str(repo),

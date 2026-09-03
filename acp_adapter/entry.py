@@ -257,6 +257,51 @@ def main(argv: list[str] | None = None) -> None:
     # that path is unaffected.)  Moved from model_tools.py module scope
     # to avoid freezing the gateway's loop on lazy import (#16856).
     # Metadata-only hosts can opt out of unrelated global MCP startup.
+    # Eagerly import the configured memory provider (e.g. mnemosyne) on the
+    # main thread, BEFORE any background thread is spawned (MCP discovery
+    # below, ACP's stdin-reader thread started inside acp.run_agent()).
+    #
+    # Root cause (#58083): the configured memory provider's first import can
+    # pull in a heavy native-extension dependency chain (numpy -> a compiled
+    # extension module, in mnemosyne's case). On Windows, importing such a
+    # module for the FIRST time on a secondary thread -- which is exactly
+    # what happens when session/new's create_session_async() runs the memory
+    # provider load inside its asyncio.to_thread() worker -- can deadlock
+    # against CPython's import lock combined with the OS loader lock used to
+    # load the extension's DLL, because a second thread starting up
+    # concurrently (e.g. the stdin-reader thread acp.run_agent() spins up)
+    # can be starved indefinitely. Confirmed via py-spy: the stuck thread
+    # sits at the exact same `import numpy` frame indefinitely (unchanged
+    # across dumps 20s+ apart), and the hang disappears entirely once the
+    # same import already happened on the main thread beforehand.
+    #
+    # Doing the import once, synchronously, before any other thread exists
+    # sidesteps the race: by the time create_session_async() reaches
+    # load_memory_provider(), Python's module cache already has the module,
+    # so the off-loop worker thread's import is a cheap sys.modules lookup
+    # instead of a fresh native-extension load.
+    #
+    # Any failure here is intentionally swallowed -- the memory provider load
+    # is retried (and any real error surfaced) later during normal agent
+    # construction; this is purely a warm-up to avoid the threading hazard.
+    if sys.platform == "win32":
+        try:
+            from hermes_cli.config import load_config as _load_config_for_warmup
+
+            _mem_cfg = (_load_config_for_warmup() or {}).get("memory") or {}
+            _mem_provider_name = str(_mem_cfg.get("provider") or "").strip()
+            if _mem_provider_name:
+                from plugins.memory import (
+                    warmup_import_memory_provider_module as _warmup_import,
+                )
+
+                _warmup_import(_mem_provider_name)
+        except Exception:
+            logger.debug(
+                "Eager memory provider warm-up import failed (non-fatal)",
+                exc_info=True,
+            )
+
     if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery

@@ -240,6 +240,94 @@ def find_provider_entry_point(name: str):
     return None
 
 
+def _warm_import_provider_from_dir(provider_dir: Path) -> bool:
+    """Import a provider package without constructing a provider instance."""
+    name = provider_dir.name
+    _is_bundled = _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
+    module_name = (
+        f"plugins.memory.{name}"
+        if _is_bundled
+        else f"{_USER_NAMESPACE}.{name}"
+    )
+    init_file = provider_dir / "__init__.py"
+
+    if not init_file.exists():
+        return False
+
+    cached = sys.modules.get(module_name)
+    if cached is not None and getattr(cached, "__file__", None):
+        return True
+
+    for parent in ("plugins", "plugins.memory"):
+        if parent not in sys.modules:
+            parent_path = Path(__file__).parent
+            if parent == "plugins":
+                parent_path = parent_path.parent
+            parent_init = parent_path / "__init__.py"
+            if parent_init.exists():
+                spec = importlib.util.spec_from_file_location(
+                    parent,
+                    str(parent_init),
+                    submodule_search_locations=[str(parent_path)],
+                )
+                if spec:
+                    parent_mod = importlib.util.module_from_spec(spec)
+                    sys.modules[parent] = parent_mod
+                    try:
+                        spec.loader.exec_module(parent_mod)
+                    except Exception:
+                        pass
+
+    if not _is_bundled:
+        _register_synthetic_package(_USER_NAMESPACE, [])
+
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        str(init_file),
+        submodule_search_locations=[str(provider_dir)],
+    )
+    if not spec or not spec.loader:
+        return False
+
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        logger.debug("Failed to warm-import memory provider '%s': %s", name, e)
+        sys.modules.pop(module_name, None)
+        return False
+
+    return True
+
+
+def warmup_import_memory_provider_module(name: str) -> bool:
+    """Import a provider module only, avoiding construction side effects.
+
+    Returns True if the module import succeeded or was already loaded.
+    """
+    provider_dir = find_provider_dir(name)
+    entry_point = None if provider_dir else find_provider_entry_point(name)
+    if not provider_dir and entry_point is None:
+        logger.debug(
+            "Memory provider '%s' not found for warm-up import", name
+        )
+        return False
+
+    try:
+        if provider_dir:
+            return _warm_import_provider_from_dir(provider_dir)
+        if entry_point is not None:
+            entry_point.load()
+            return True
+    except Exception as exc:
+        logger.debug(
+            "Warm-up import of memory provider '%s' failed: %s", name, exc
+        )
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

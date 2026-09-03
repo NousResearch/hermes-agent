@@ -31,6 +31,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { hudScopedSpeechOwnership } from './ambient-speech-claim'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -16547,7 +16548,24 @@ const claimedAmbientCue = createEventDeduper()
 
 // A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
 // The first caller within the window gets true; peers get false and stay quiet.
-ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
+// Speech while a HUD window is live is the exception (#99717): the 1s dedupe
+// window expires mid-playback, so ownership is pinned to the HUD renderer by
+// sender identity — the hidden main renderer is denied even if it claims late.
+ipcMain.handle('hermes:ambient:claim', (event, rawKey) => {
+  const key = String(rawKey ?? '')
+  const liveHud = hudWindow && !hudWindow.isDestroyed() ? hudWindow : null
+
+  const hudSenderId =
+    liveHud && !liveHud.webContents.isDestroyed() ? liveHud.webContents.id : null
+
+  const hudDecision = hudScopedSpeechOwnership({ key, senderId: event.sender.id, hudSenderId })
+
+  if (hudDecision !== null) {
+    return hudDecision
+  }
+
+  return !claimedAmbientCue(key)
+})
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {

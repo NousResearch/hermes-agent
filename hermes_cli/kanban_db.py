@@ -3166,6 +3166,82 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _drop_disabled_skills(skills: list[str], assignee: str) -> list[str]:
+    """Strip skills the assignee profile has disabled.
+
+    A worker treats a disabled skill as missing — ``build_preloaded_skills_prompt``
+    bypasses the scan-time filter on purpose so a pinned name cannot force-load
+    something an operator disabled (#59156) — and hard-fails when *every*
+    requested skill is missing. A card pinning only disabled skills therefore
+    kills its worker before it does any work, and the task auto-blocks once
+    retries run out.
+
+    Dropping those names keeps the card dispatchable. A card left with nothing
+    simply behaves like one that pinned no skills at all.
+    """
+    try:
+        from agent.skill_utils import get_globally_disabled_skill_names
+        from hermes_cli.profiles import get_profile_dir
+
+        disabled = get_globally_disabled_skill_names(get_profile_dir(assignee))
+    except Exception:
+        return skills  # profile config unreadable — leave the card untouched
+    if not disabled:
+        return skills
+    dropped = [s for s in skills if s in disabled]
+    if not dropped:
+        return skills
+    kept = [s for s in skills if s not in disabled]
+    _log.warning(
+        "kanban: dropping skill(s) %s — disabled in profile %r; keeping %s",
+        ", ".join(dropped),
+        assignee,
+        ", ".join(kept) or "(none)",
+    )
+    return kept
+
+
+def _reconcile_skills_for_assignee(conn: sqlite3.Connection, task_id: str) -> None:
+    """Re-run the disabled-skill filter against a card's *current* owner.
+
+    ``create_task`` can only filter against the assignee a card is born with,
+    so an existing card can still acquire a fatal skill set later: an explicit
+    :func:`assign_task`, or the dispatcher applying ``kanban.default_assignee``
+    to a card that had no assignee to inspect at creation. Both end with the
+    same all-missing worker failure the creation-time filter exists to prevent,
+    so both re-run it here.
+
+    Deliberately reads the assignee back out of the row instead of taking it as
+    an argument: the filter then can never be applied on behalf of a profile
+    that did not actually win the assignment. Call inside the caller's
+    ``write_txn``.
+    """
+    row = conn.execute(
+        "SELECT assignee, skills FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None or not row["assignee"] or not row["skills"]:
+        return
+    try:
+        stored = json.loads(row["skills"])
+    except (TypeError, ValueError):
+        return
+    if not isinstance(stored, list):
+        return
+    skills = [s for s in stored if isinstance(s, str) and s]
+    if not skills:
+        return
+    kept = _drop_disabled_skills(skills, row["assignee"])
+    if kept == skills:
+        return
+    # ``or None`` to match create_task: a card whose every skill was dropped is
+    # stored exactly like one that pinned no skills. Dropping is one-way — a
+    # later reassignment does not resurrect a name, same as at creation.
+    conn.execute(
+        "UPDATE tasks SET skills = ? WHERE id = ?",
+        (json.dumps(kept) if kept else None, task_id),
+    )
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -3403,6 +3479,11 @@ def create_task(
                 "capabilities (e.g. `web`, `browser`, `terminal`)."
             )
         skills_list = cleaned
+        if skills_list and assignee:
+            # ``or None`` so a card whose every skill was dropped is stored
+            # exactly like one that pinned no skills, rather than as an empty
+            # list the dispatcher would have to special-case.
+            skills_list = _drop_disabled_skills(skills_list, assignee) or None
 
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
@@ -3739,6 +3820,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+        _reconcile_skills_for_assignee(conn, task_id)
         _append_event(conn, task_id, "assigned", {"assignee": profile})
     # Task-mutation observer (RFC #58548), fired AFTER the assignment txn
     # has committed so subscribers always observe durable board state.
@@ -10149,6 +10231,9 @@ def _dispatch_once_locked(
                                 "AND (assignee IS NULL OR assignee = '')",
                                 (_default_assignee, row["id"]),
                             )
+                            # The card had no assignee for create_task to
+                            # filter its pinned skills against; it has one now.
+                            _reconcile_skills_for_assignee(conn, row["id"])
                             _append_event(
                                 conn, row["id"], "assigned",
                                 {

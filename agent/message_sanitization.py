@@ -192,6 +192,35 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
 _FULL_ARGS_LOG_BOUND = 100_000
 
 
+def _strip_leading_json_value(raw: str) -> str:
+    """Strip a complete JSON value prefix if the suffix parses standalone.
+
+    Some OpenAI-compatible gateway proxies (one-api/new-api style) prepend
+    an empty value to tool-call arguments, e.g. ``{}{"city": "Paris"}``.
+    ``json.loads`` rejects that as "Extra data"; the trailing repair passes
+    do not handle it, so the args would be replaced with ``{}`` and the tool
+    would run with no arguments.  When a clean prefix (``{}``/``[]``/scalar)
+    is present and the suffix parses on its own, return the suffix.
+    """
+    if not raw or not raw.strip():
+        return raw
+    text = raw.strip()
+    try:
+        _, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        return raw  # doesn't start with a complete JSON value
+    remainder = text[end:].strip()
+    if not remainder:
+        return raw  # whole string is a single value — normal args
+    try:
+        parsed = json.loads(remainder)
+    except json.JSONDecodeError:
+        return raw  # suffix alone isn't valid → not this bug
+    if not isinstance(parsed, dict):
+        return raw  # tool args must be a JSON object, not an array/scalar
+    return remainder
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -229,6 +258,18 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
+
+    # Repair pass 0.5: gateway proxies prepend a complete JSON value
+    # (typically an empty object) to the real arguments, e.g.
+    # `{}{"city": "Paris"}`. The trailing repairs below can't fix that
+    # ("Extra data"), so recover the standalone suffix here.
+    stripped = _strip_leading_json_value(raw_stripped)
+    if stripped != raw_stripped:
+        logger.warning(
+            "Repaired leading-value-prefixed tool_call arguments for %s: %s → %s",
+            tool_name, raw_stripped[:80], stripped[:80],
+        )
+        return stripped
 
     # Attempt common JSON repairs
     fixed = raw_stripped

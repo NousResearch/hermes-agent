@@ -144,6 +144,67 @@ def test_empty_string_arguments_treated_as_empty_object(caplog):
     assert caplog.records == []
 
 
+def test_double_serialized_arguments_salvaged():
+    # DeepSeek-V4-Flash via MARVIN proxy streams a leading "{}" chunk before
+    # the real arguments: '{}{"path": "/tmp/foo"}'. The real args must be
+    # recovered, not discarded to "{}".
+    messages = [
+        _assistant_message(_tool_call(arguments='{}{"path": "/tmp/foo"}')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"path": "/tmp/foo"}'
+    # No marker tool message inserted — arguments were recovered, not dropped.
+    assert len(messages) == 1
+
+
+def test_double_serialized_with_whitespace_salvaged():
+    messages = [
+        _assistant_message(_tool_call(arguments='  {}  {"mode": "tail"}')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == '{"mode": "tail"}'
+
+
+def test_double_empty_object_not_salvaged_falls_back_to_marker():
+    # '{}{}' has no recoverable args — must fall through to drop-and-marker.
+    marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+    messages = [
+        _assistant_message(_tool_call(arguments="{}")),  # valid, untouched
+        _assistant_message(_tool_call(arguments="{}{}")),
+        _tool_message(content="existing"),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1  # only the '{}{}' one
+    # First tool call (valid "{}") left as-is.
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    # Second ones reset to "{}" with marker prepended on the existing tool msg.
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert messages[2]["content"].startswith(marker)
+
+
+def test_non_object_suffix_not_salvaged():
+    # '{}[...]' — suffix is an array, not object args → fall back.
+    marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+    messages = [
+        _assistant_message(_tool_call(arguments='{}[1, 2, 3]')),
+    ]
+
+    repaired = AIAgent._sanitize_tool_call_arguments(messages)
+
+    assert repaired == 1
+    assert messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert messages[1]["role"] == "tool"
+    assert messages[1]["content"] == marker
+
+
 def test_non_assistant_messages_ignored():
     messages = [
         {"role": "user", "content": "hello", "tool_calls": [_tool_call(arguments='{"bad":')]},

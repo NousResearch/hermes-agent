@@ -1099,3 +1099,105 @@ def test_install_resizes_decodable_png_to_panel_sizes(
     assert not stale.exists()
     assert struct.unpack(">II", dest_24.read_bytes()[16:24]) == (24, 24)
     assert struct.unpack(">II", dest_256.read_bytes()[16:24]) == (256, 256)
+
+
+# ---------------------------------------------------------------------------
+# desktop.manage_launcher_entry opt-out (#101097)
+# ---------------------------------------------------------------------------
+
+
+def _stub_manage_flag(monkeypatch, value) -> None:
+    monkeypatch.setattr(
+        lde,
+        "_launcher_entry_management_enabled",
+        lambda: value,
+    )
+
+
+def test_optout_leaves_existing_entry_untouched(tmp_path, xdg_home, monkeypatch):
+    """`manage_launcher_entry: false` must not clobber a hand-edited entry."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    entry_path = xdg_home / "applications" / "hermes.desktop"
+    entry_path.parent.mkdir(parents=True, exist_ok=True)
+    entry_path.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes (custom)\n"
+        'Exec=/usr/bin/special-wrapper desktop\n',
+        encoding="utf-8",
+    )
+    _stub_manage_flag(monkeypatch, False)
+
+    entry = lde.install_desktop_entry(root)
+
+    # The user's edit survives the launch instead of silently reverting.
+    assert entry == entry_path
+    assert "special-wrapper" in entry_path.read_text(encoding="utf-8")
+
+
+def test_optout_still_creates_missing_entry(tmp_path, xdg_home, monkeypatch):
+    """The opt-out protects user edits, not first-run presence: with no
+    entry on disk a launch still installs one."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    _stub_manage_flag(monkeypatch, False)
+
+    entry = lde.install_desktop_entry(root)
+
+    assert entry is not None
+    assert entry.is_file()
+    values = _parse(entry.read_text(encoding="utf-8"))
+    assert values["Name"] == "Hermes"
+
+
+def test_default_management_rewrites_changed_entry(tmp_path, xdg_home, monkeypatch):
+    """Default (True): a differing on-disk entry is still rewritten —
+    the opt-out only changes behavior for an EXISTING entry."""
+    root = _make_project(tmp_path)
+    _stub_install(tmp_path, monkeypatch)
+    entry_path = xdg_home / "applications" / "hermes.desktop"
+    entry_path.parent.mkdir(parents=True, exist_ok=True)
+    entry_path.write_text(
+        "[Desktop Entry]\nType=Application\nName=Hermes (custom)\n",
+        encoding="utf-8",
+    )
+    _stub_manage_flag(monkeypatch, True)
+
+    entry = lde.install_desktop_entry(root)
+
+    values = _parse(entry_path.read_text(encoding="utf-8"))
+    assert values["Name"] == "Hermes"
+
+
+def test_manage_flag_reads_config_desktop_section(tmp_path, monkeypatch):
+    """The gate reads `desktop.manage_launcher_entry` from config.yaml,
+    accepting bools and common string forms; config errors stay enabled."""
+    import hermes_cli.linux_desktop_entry as mod
+
+    def _with_config(cfg):
+        fake_load = lambda: cfg  # noqa: E731
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly", fake_load, raising=False
+        )
+
+    _with_config({"desktop": {"manage_launcher_entry": False}})
+    assert mod._launcher_entry_management_enabled() is False
+
+    _with_config({"desktop": {"manage_launcher_entry": "false"}})
+    assert mod._launcher_entry_management_enabled() is False
+
+    _with_config({"desktop": {"manage_launcher_entry": True}})
+    assert mod._launcher_entry_management_enabled() is True
+
+    _with_config({"desktop": {"manage_launcher_entry": "yes"}})
+    assert mod._launcher_entry_management_enabled() is True
+
+    _with_config({"desktop": {}})
+    assert mod._launcher_entry_management_enabled() is True
+
+    def boom():
+        raise RuntimeError("unreadable config")
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly", boom, raising=False
+    )
+    assert mod._launcher_entry_management_enabled() is True

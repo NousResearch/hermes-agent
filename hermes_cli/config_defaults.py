@@ -4040,6 +4040,14 @@ DEFAULT_CONFIG = {
         # Ignored on macOS/Windows. Bridged to the HERMES_DESKTOP_PASSWORD_STORE
         # env var the Electron app reads, so an explicit env var still wins.
         "password_store": "auto",
+        # Linux only: whether `hermes desktop` rewrites the XDG launcher
+        # entry (~/.local/share/applications/hermes.desktop) on every
+        # launch. The entry is content-compared first, so a rewrite only
+        # happens when the generated form actually differs from what is on
+        # disk — but that check IS the clobber: a user's hand-edited entry
+        # silently reverts on the next launch. Set False to stop touching
+        # an entry that already exists (a missing entry is still created).
+        "manage_launcher_entry": True,
         # macOS only: optional persistent code-signing identity (a cert in the
         # login keychain — a self-signed "Code Signing" cert from Keychain
         # Access works; no Apple Developer account needed) used to re-sign

@@ -292,6 +292,15 @@ Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` 
 
 To launch via the CLI, simply run `hermes desktop`. By default it installs workspace Node dependencies, builds the current OS's unpacked Electron app, then launches that packaged artifact.
 
+On Linux, every launch also (re)writes the XDG launcher entry at `~/.local/share/applications/hermes.desktop` so Hermes shows up in the application menu with its icon. If you hand-edit that file and want your edits to survive, opt out of the rewrite:
+
+```yaml
+desktop:
+  manage_launcher_entry: false
+```
+
+A missing entry is still created; the flag only stops `hermes desktop` from rewriting an entry that already exists.
+
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |
 | `--skip-build`       | Skip npm install/package and launch the existing unpacked app from `apps/desktop/release` |

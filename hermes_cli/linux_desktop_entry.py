@@ -759,6 +759,29 @@ def _install_icon_to_hicolor(icon: Path) -> bool:
         return False
 
 
+def _launcher_entry_management_enabled() -> bool:
+    """Whether config.yaml allows rewriting an EXISTING launcher entry.
+
+    ``desktop.manage_launcher_entry: false`` opts out of the every-launch
+    rewrite: a hand-edited ``hermes.desktop`` is then left alone instead
+    of silently reverting (#101097's clobber complaint). A MISSING entry
+    is still created regardless — the opt-out protects user edits, not
+    first-run presence. Any config error reads as enabled (default).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        desktop_cfg = (load_config_readonly() or {}).get("desktop") or {}
+        raw = desktop_cfg.get("manage_launcher_entry", True)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() not in ("false", "0", "no", "off")
+        return True
+    except Exception:
+        return True
+
+
 def install_desktop_entry(project_root: Path) -> Optional[Path]:
     """Write (or refresh) the Hermes desktop entry. Return its path.
 
@@ -769,6 +792,12 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
         return None
 
     entry_path = desktop_entry_path()
+
+    # Opt-out honored only for an entry that already exists: the flag
+    # stops the every-launch clobber, not first-run creation.
+    if entry_path.is_file() and not _launcher_entry_management_enabled():
+        return entry_path
+
     icon = icon_path(project_root)
     # Prefer the themed name: the icon is COPIED into the user's hicolor
     # tree, so the entry outlives the checkout (moving/archiving the

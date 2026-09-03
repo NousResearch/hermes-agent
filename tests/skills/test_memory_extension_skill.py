@@ -267,3 +267,30 @@ class TestContradictionLLMScript:
         spec.loader.exec_module(mod)
         with pytest.raises(json.JSONDecodeError):
             mod.parse_api_response("<html>524 origin timeout</html>")
+
+    def test_extract_json_array_chatty_reply(self):
+        """extract_json_array finds the JSON array inside a chatty reply."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("mem_llm3", SCRIPT_LLM)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        reply = (
+            "Some reflection before..." +
+                '[{"fait_a": "A", "source_a": "MEMORY.md", "fait_b": "B", "source_b": "USER.md", "raison": "R"}]' +
+            "And reflection after."
+        )
+        out = mod.extract_json_array(reply)
+        assert isinstance(out, list) and len(out) == 1
+        assert out[0]["fait_a"] == "A"
+
+    def test_extract_json_array_fenced(self):
+        """extract_json_array handles a fenced ```json block and empty []."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("mem_llm4", SCRIPT_LLM)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert mod.extract_json_array("```json\n[]\n```") == []
+        assert mod.extract_json_array("no json here") is None
+

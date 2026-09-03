@@ -86,7 +86,7 @@ Structural coherence (above) does not catch **semantic contradictions**: two fac
 bash scripts/check-memory-contradictions.sh "$HERMES_HOME"
 ```
 
-**Pass 2 — LLM (default provider, direct API):** `scripts/check-memory-contradictions-llm.py` sends the memory in overlapping chunks (peak-hour latency → automatic retries on any 5xx + 429: 524/520/503/502…) and writes `$HERMES_HOME/memories/contradictions-report.md`. It reads the default model + token from `config.yaml`/`auth.json` — no manual key management.
+**Pass 2 — LLM (default provider, direct API):** `scripts/check-memory-contradictions-llm.py` sends the memory in overlapping chunks (peak-hour latency → automatic retries on any 5xx + 429: 524/520/503/502… and non-JSON replies) and writes `$HERMES_HOME/memories/contradictions-report.md`. It reads the default model + token from `config.yaml`/`auth.json` — no manual key management.
 
 ```bash
 python scripts/check-memory-contradictions-llm.py "$HERMES_HOME"

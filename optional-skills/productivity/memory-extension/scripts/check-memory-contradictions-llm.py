@@ -29,12 +29,12 @@ PROMPT_TEMPLATE = """You are a memory coherence auditor. Here is the persistent 
 Find CONTRADICTIONS between facts: two statements that cannot both be true (e.g. "OS: Windows 11" vs "OS: Windows 10", "never launch X" vs "launch X for tests", two different versions of the same tool, two different dates for the same event).
 
 Rules:
-- Report ONLY real contradictions, not mere phrasing differences.
+- Report ONLY real contradictions, not mere phrasing differences, nor compatible pairs (e.g. "HIBP check shows no breach" vs "SFR leak" are compatible if the leak is not in HIBP).
 - A nuance (e.g. "registry says Win10, Win32_OperatingSystem is authoritative") is NOT a contradiction if explicitly resolved.
 - Cite the exact source (MEMORY.md, USER.md, extended/<file>.md) for each fact.
-- Reply ONLY with valid JSON, format:
+- Reply STRICTLY with a single valid JSON array, with NO other text before or after (no commentary, no explanation, no thinking). Format:
 [{{"fait_a": "...", "source_a": "...", "fait_b": "...", "source_b": "...", "raison": "..."}}]
-- If none: []
+- If none: [] (and nothing else)
 
 MEMORY TO AUDIT:
 {memory}"""
@@ -127,6 +127,41 @@ def parse_api_response(raw: str) -> dict:
     return json.loads(raw)
 
 
+def extract_json_array(text: str):
+    """Best-effort parse of a chatty LLM reply into a JSON list.
+    Tries: direct load, fenced ``` block, then every [..] span
+    (longest first). Returns None when no valid array is found."""
+    if not text:
+        return None
+    t = text.strip()
+    if t.startswith("```"):
+        parts = t.split("```")
+        if len(parts) >= 2:
+            t = parts[1]
+            if t.startswith("json"):
+                t = t[4:]
+            t = t.strip()
+    try:
+        v = json.loads(t)
+        if isinstance(v, list):
+            return v
+    except (json.JSONDecodeError, ValueError):
+        pass
+    starts = [i for i, c in enumerate(t) if c == "["]
+    ends = [i for i, c in enumerate(t) if c == "]"]
+    for s in starts:
+        for e in reversed(ends):
+            if e <= s:
+                break
+            try:
+                v = json.loads(t[s:e + 1])
+                if isinstance(v, list):
+                    return v
+            except (json.JSONDecodeError, ValueError):
+                continue
+    return None
+
+
 def call_llm_once(cfg: dict, prompt: str) -> list:
     body = json.dumps({
         "model": cfg["model"],
@@ -155,24 +190,12 @@ def call_llm_once(cfg: dict, prompt: str) -> list:
                 time.sleep(RETRY_BASE_DELAY * attempt)
                 continue
             content = resp["choices"][0]["message"]["content"]
-            content = content.strip()
-            if content.startswith("```"):
-                content = content.split("```", 2)[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                start = content.find("[")
-                end = content.rfind("]")
-                if start != -1 and end != -1:
-                    try:
-                        return json.loads(content[start:end + 1])
-                    except json.JSONDecodeError:
-                        pass
-                print("ERROR: non-JSON LLM response:", content[:500], file=sys.stderr)
-                sys.exit(2)
+            found = extract_json_array(content)
+            if found is not None:
+                return found
+            print(f"  [retry {attempt}/{MAX_RETRIES}] non-JSON LLM reply — waiting {RETRY_BASE_DELAY * attempt}s...")
+            print("    excerpt:", repr(content[:200]), file=sys.stderr)
+            time.sleep(RETRY_BASE_DELAY * attempt)
         except urllib.error.HTTPError as e:
             last_err = f"HTTP {e.code}: {e.read().decode()[:200]}"
             if e.code == 429 or e.code >= 500:  # 500/502/503/504/520/524 + rate-limit

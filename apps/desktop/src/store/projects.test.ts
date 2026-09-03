@@ -424,9 +424,41 @@ describe('createProject', () => {
     const result = await createProject({ folders: ['/srv/demo'], name: 'Demo', use: true })
 
     expect(result).toEqual(created)
-    expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ name: 'Demo' }))
+    expect(request).toHaveBeenCalledWith(
+      'projects.create',
+      expect.objectContaining({
+        name: 'Demo',
+        folders: ['/srv/demo'],
+        primary_path: '/srv/demo'
+      })
+    )
     expect($sidebarAgentsGrouped.get()).toBe(true)
     expect($activeProjectId.get()).toBe('p_new')
+  })
+
+  it('sends the selected host folder as primary_path when creating from a remote pick', async () => {
+    const hostFolder = '/home/hermes/.hermes/projects/agent-from-scratch'
+    const created = { folders: [], id: 'p_host', name: 'agent-from-scratch', primary_path: hostFolder }
+    const request = vi.fn(async (method: string) => {
+      if (method === 'projects.create') {
+        return { project: created }
+      }
+
+      return { active_id: 'p_host', projects: [created], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await createProject({ folders: [hostFolder], name: 'agent-from-scratch', use: true })
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.create',
+      expect.objectContaining({
+        folders: [hostFolder],
+        name: 'agent-from-scratch',
+        primary_path: hostFolder
+      })
+    )
   })
 
   it('marks the backend stale and surfaces a friendly error when projects.create is missing', async () => {

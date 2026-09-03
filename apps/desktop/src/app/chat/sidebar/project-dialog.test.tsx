@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 import type * as Nanostores from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,11 +10,11 @@ afterEach(cleanup)
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
-      common: { cancel: 'Cancel', save: 'Save' },
+      common: { cancel: 'Cancel', close: 'Close', save: 'Save' },
       sidebar: {
         projects: {
           addFolder: 'Add folder',
-          create: 'Create',
+          create: 'Create project',
           createDesc: 'Create a new project',
           createFailed: 'Failed to create project',
           createTitle: 'New project',
@@ -38,13 +39,15 @@ vi.mock('@/i18n', () => ({
 // store (backend calls, project list, etc.) which is irrelevant to the Tip fix.
 // vi.mock factories are hoisted above the rest of the file, so the atom must
 // be created inside vi.hoisted to exist by the time the factory runs.
-const { $projectDialog } = vi.hoisted(() => {
+const { $projectDialog, createProject, pickProjectFolder } = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
 
   return {
     $projectDialog: atom<{ mode: 'create' | 'rename' | 'add-folder'; name?: string; projectId?: string } | null>({
       mode: 'create'
-    })
+    }),
+    createProject: vi.fn(),
+    pickProjectFolder: vi.fn(async () => '/home/hermes/.hermes/projects/agent-from-scratch')
   }
 })
 
@@ -52,14 +55,10 @@ vi.mock('@/store/projects', () => ({
   $projectDialog,
   addProjectFolder: vi.fn(),
   closeProjectDialog: vi.fn(),
-  createProject: vi.fn(),
+  createProject,
   generateProjectIdea: vi.fn(),
-  pickProjectFolder: vi.fn(async () => '/Users/test/my-folder'),
+  pickProjectFolder,
   renameProject: vi.fn()
-}))
-
-vi.mock('@/store/notifications', () => ({
-  notifyError: vi.fn()
 }))
 
 vi.mock('@/lib/project-idea-templates', () => ({
@@ -83,5 +82,48 @@ describe('ProjectDialog', () => {
 
     const button = await screen.findByRole('button', { name: 'Remove folder' })
     expect(tipTrigger(button)).toBeTruthy()
+  })
+
+  it('keeps the sheet open and shows the server RPC message when create fails', async () => {
+    createProject.mockRejectedValueOnce(
+      new JsonRpcGatewayError(
+        "folder already belongs to project 'agent-from-scratch' (p_abc); switch to it instead of creating a duplicate",
+        { code: 5063 }
+      )
+    )
+
+    render(<ProjectDialog />)
+
+    fireEvent.change(screen.getByPlaceholderText('Project name'), {
+      target: { value: 'agent-from-scratch' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
+    await screen.findByRole('button', { name: 'Remove folder' })
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }))
+
+    expect(
+      await screen.findByText(
+        "folder already belongs to project 'agent-from-scratch' (p_abc); switch to it instead of creating a duplicate"
+      )
+    ).toBeTruthy()
+    expect(screen.queryByText(/Hermes RPC request failed \(5063\)/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Create project' })).toBeTruthy()
+  })
+
+  it('shows the opaque code fallback only when the gateway omitted a message', async () => {
+    createProject.mockRejectedValueOnce(new JsonRpcGatewayError('', { code: 5063 }))
+
+    render(<ProjectDialog />)
+
+    fireEvent.change(screen.getByPlaceholderText('Project name'), {
+      target: { value: 'agent-from-scratch' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
+    await screen.findByRole('button', { name: 'Remove folder' })
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Hermes RPC request failed (5063)')).toBeTruthy()
+    })
   })
 })

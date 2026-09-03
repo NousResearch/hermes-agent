@@ -1,8 +1,37 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
+
 /** True when a JSON-RPC call failed because the backend predates the method. */
 export function isMissingRpcMethod(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
   return /method not found|-32601|unknown method|no such method/i.test(message)
+}
+
+/** User-facing text for a gateway RPC failure. Prefer the server message; keep
+ *  the numeric code only as a diagnostic suffix when the message is missing or
+ *  already the opaque `Hermes RPC request failed (N)` fallback. */
+export function formatGatewayRpcError(error: unknown, fallback = 'request failed'): string {
+  if (error instanceof JsonRpcGatewayError) {
+    const message = typeof error.message === 'string' ? error.message.trim() : ''
+
+    if (message) {
+      return message
+    }
+
+    if (typeof error.code === 'number') {
+      return `Hermes RPC request failed (${error.code})`
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim()
+  }
+
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim()
+  }
+
+  return fallback
 }
 
 /** REST twin of isMissingRpcMethod: the route does not exist on this backend.

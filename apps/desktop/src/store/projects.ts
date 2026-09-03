@@ -858,12 +858,18 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   let res: { project: ProjectInfo | null }
 
   try {
+    const folders = input.folders ?? []
+    // Remote/mobile folder picks often omit primaryPath; the gateway still
+    // defaults to folders[0], but send it explicitly so older cores and the
+    // duplicate-primary-path check see the same path the user selected.
+    const primaryPath = input.primaryPath ?? folders[0]
+
     res = await gatewayRequest<{ project: ProjectInfo | null }>(
       'projects.create',
       projectParams({
         name: input.name,
-        folders: input.folders ?? [],
-        primary_path: input.primaryPath,
+        folders,
+        primary_path: primaryPath,
         slug: input.slug,
         description: input.description,
         icon: input.icon,

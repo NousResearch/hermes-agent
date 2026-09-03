@@ -449,9 +449,17 @@ export class JsonRpcGatewayClient {
       this.clearPending(frame.id)
 
       if (frame.error) {
+        const code = typeof frame.error.code === 'number' ? frame.error.code : undefined
+        const message =
+          typeof frame.error.message === 'string' && frame.error.message.trim()
+            ? frame.error.message.trim()
+            : code !== undefined
+              ? `Hermes RPC request failed (${code})`
+              : 'Hermes RPC failed'
+
         call.reject(
-          new JsonRpcGatewayError(frame.error.message || 'Hermes RPC failed', {
-            code: typeof frame.error.code === 'number' ? frame.error.code : undefined,
+          new JsonRpcGatewayError(message, {
+            code,
             data: frame.error.data
           })
         )

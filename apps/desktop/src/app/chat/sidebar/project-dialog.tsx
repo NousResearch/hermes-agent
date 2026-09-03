@@ -16,9 +16,9 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { formatGatewayRpcError } from '@/lib/gateway-rpc'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
-import { notifyError } from '@/store/notifications'
 import {
   $projectDialog,
   addProjectFolder,
@@ -45,6 +45,7 @@ export function ProjectDialog() {
   const [templates, setTemplates] = useState<ProjectIdeaTemplate[]>([])
   const [generatingIdea, setGeneratingIdea] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<null | string>(null)
   const nameRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -55,6 +56,7 @@ export function ProjectDialog() {
       setTemplates(randomIdeaTemplates())
       setGeneratingIdea(false)
       setSubmitting(false)
+      setError(null)
 
       if (mode !== 'add-folder') {
         window.setTimeout(() => nameRef.current?.select(), 0)
@@ -69,19 +71,21 @@ export function ProjectDialog() {
   }
 
   // One submit beat for every flow: guard re-entry, run the write, close on
-  // success, surface a toast on failure. Callers pass only the write.
+  // success, keep the sheet open with the server error on failure so mobile
+  // still sees the actionable message (not only an opaque RPC code toast).
   const runSubmit = async (write: () => Promise<unknown>) => {
     if (submitting) {
       return
     }
 
     setSubmitting(true)
+    setError(null)
 
     try {
       await write()
       closeProjectDialog()
     } catch (err) {
-      notifyError(err, p.createFailed)
+      setError(formatGatewayRpcError(err, p.createFailed))
     } finally {
       setSubmitting(false)
     }
@@ -103,9 +107,10 @@ export function ProjectDialog() {
         return
       }
 
+      setError(null)
       setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
     } catch (err) {
-      notifyError(err, p.createFailed)
+      setError(formatGatewayRpcError(err, p.createFailed))
     }
   }
 
@@ -150,7 +155,12 @@ export function ProjectDialog() {
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-md" onInteractOutside={event => event.preventDefault()}>
+      <DialogContent
+        banner={error}
+        bannerTone="error"
+        className="max-w-md"
+        onInteractOutside={event => event.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {mode === 'create' && <DialogDescription>{p.createDesc}</DialogDescription>}

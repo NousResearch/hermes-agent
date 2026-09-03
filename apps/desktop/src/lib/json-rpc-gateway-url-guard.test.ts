@@ -126,4 +126,60 @@ describe('JsonRpcGatewayClient structured errors', () => {
       vi.unstubAllGlobals()
     }
   })
+
+  it('keeps an empty server message from becoming a silent failure when a code is present', async () => {
+    class RespondingSocket {
+      static OPEN = 1
+      readyState = 0
+      private messageHandler: ((event: { data: string }) => void) | null = null
+
+      addEventListener = vi.fn((type: string, handler: (event?: { data: string }) => void) => {
+        if (type === 'open') {
+          setTimeout(() => {
+            this.readyState = RespondingSocket.OPEN
+            handler()
+          }, 0)
+        }
+
+        if (type === 'message') {
+          this.messageHandler = handler as (event: { data: string }) => void
+        }
+      })
+      removeEventListener = vi.fn()
+      close = vi.fn()
+      send = vi.fn((raw: string) => {
+        const req = JSON.parse(raw) as { id: string }
+        queueMicrotask(() => {
+          this.messageHandler?.({
+            data: JSON.stringify({
+              jsonrpc: '2.0',
+              id: req.id,
+              error: { code: 5063, message: '   ' }
+            })
+          })
+        })
+      })
+    }
+
+    vi.stubGlobal('WebSocket', RespondingSocket)
+
+    try {
+      const client = new JsonRpcGatewayClient({
+        requestTimeoutMs: 5_000,
+        socketFactory: () => new RespondingSocket() as unknown as WebSocket
+      })
+
+      await client.connect('ws://127.0.0.1:1234/api/ws?token=t')
+
+      await expect(client.request('projects.create', { name: 'x' })).rejects.toEqual(
+        expect.objectContaining({
+          name: 'JsonRpcGatewayError',
+          code: 5063,
+          message: 'Hermes RPC request failed (5063)'
+        })
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

@@ -240,3 +240,91 @@ def test_unverified_billing_survives_reload(tmp_path, monkeypatch):
     )
     entry = pool.entries()[0]
     assert entry.failure_reason == "billing_unverified"
+
+
+class TestRateLimitedUntil:
+    """``rate_limited_until`` answers "is this bench a 429, and until when".
+
+    ``STATUS_EXHAUSTED`` is also how a revoked key (401), a spent account
+    (402), a 403 and a 5xx are parked, so a caller routing around "the
+    provider is rate-limited" must not be handed those — that would hide the
+    real condition and skip the operator's re-auth prompt.
+    """
+
+    def test_all_429_reports_the_reset(self, tmp_path, monkeypatch):
+        pool = _load(
+            tmp_path,
+            monkeypatch,
+            [
+                _entry(429, age_seconds=60, cred_id="a", priority=0),
+                _entry(429, age_seconds=60, cred_id="b", priority=1),
+            ],
+        )
+        assert pool.rate_limited_until() == pool.next_available_at()
+
+    def test_revoked_key_is_not_a_rate_limit(self, tmp_path, monkeypatch):
+        pool = _load(
+            tmp_path,
+            monkeypatch,
+            [
+                _entry(401, age_seconds=1, cred_id="a", priority=0),
+                _entry(401, age_seconds=1, cred_id="b", priority=1),
+            ],
+        )
+        assert pool.next_available_at() is not None
+        assert pool.rate_limited_until() is None
+
+    def test_one_non_429_disqualifies_the_whole_pool(self, tmp_path, monkeypatch):
+        pool = _load(
+            tmp_path,
+            monkeypatch,
+            [
+                _entry(429, age_seconds=60, cred_id="a", priority=0),
+                _entry(402, age_seconds=60, cred_id="b", priority=1),
+            ],
+        )
+        assert pool.rate_limited_until() is None
+
+    def test_available_pool_reports_nothing(self, tmp_path, monkeypatch):
+        pool = _load(
+            tmp_path,
+            monkeypatch,
+            [
+                _entry(429, age_seconds=60, cred_id="a", priority=0),
+                _entry(429, age_seconds=10 * 3600, cred_id="b", priority=1),
+            ],
+        )
+        # The second key's bench has elapsed, so the pool is usable again.
+        assert pool.rate_limited_until() is None
+
+    def test_sole_credential_reports_its_short_window(self, tmp_path, monkeypatch):
+        """A single throttled key must not be reported as benched for an hour."""
+        import time as _time
+
+        pool = _load(tmp_path, monkeypatch, [_entry(429, age_seconds=10)])
+        until = pool.rate_limited_until()
+        assert until is not None
+        assert until - _time.time() <= 60
+
+    def test_metadata_only_row_does_not_disable_the_gate(self, tmp_path, monkeypatch):
+        """A key-less reference row is not a live entry.
+
+        ``_available_entries`` skips such rows, so counting one here would
+        make an otherwise all-429 pool look mixed and silently stop reporting
+        the cooldown.
+        """
+        rows = [
+            _entry(429, age_seconds=60, cred_id="a", priority=0),
+            _entry(429, age_seconds=60, cred_id="b", priority=1),
+        ]
+        rows.append({
+            "id": "meta",
+            "label": "meta",
+            "auth_type": "api_key",
+            "priority": 2,
+            "source": "borrowed",
+            "access_token": "",
+            "base_url": "https://openrouter.ai/api/v1",
+        })
+        pool = _load(tmp_path, monkeypatch, rows)
+        assert pool.rate_limited_until() is not None

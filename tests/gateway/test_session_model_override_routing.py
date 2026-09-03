@@ -104,7 +104,7 @@ fallback_providers:
     )
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
-    def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None):
+    def fake_resolve_runtime_provider(*, requested=None, explicit_base_url=None, explicit_api_key=None, **kwargs):
         if requested in {None, "", "openai-codex"}:
             from hermes_cli.auth import AuthError
             raise AuthError("No Codex credentials stored. Run `hermes auth` to authenticate.")

@@ -803,9 +803,9 @@ def _resolve_api_key_provider_secret(
                 if not has_usable_secret(key):
                     continue
                 if not _secret_matches_declared_prefix(provider_id, key):
-                    _warn_malformed_secret(provider_id, f"credential_pool:{provider_id}")
+                    _warn_malformed_secret(provider_id, f"{CREDENTIAL_POOL_SOURCE_PREFIX}{provider_id}")
                     continue
-                return key, f"credential_pool:{provider_id}"
+                return key, f"{CREDENTIAL_POOL_SOURCE_PREFIX}{provider_id}"
     except Exception:
         pass
 
@@ -1010,6 +1010,11 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
 # Such failures are transient and re-authenticating cannot resolve them, so
 # they must be kept distinct from missing/expired-credential errors.
 CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
+
+# ``source`` prefix stamped on a secret resolved from the credential pool
+# rather than an env var. Callers key routing decisions off it, so it must
+# not drift from the two f-strings in _resolve_api_key_provider_secret.
+CREDENTIAL_POOL_SOURCE_PREFIX = "credential_pool:"
 
 
 class AuthError(RuntimeError):

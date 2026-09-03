@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
@@ -22,6 +23,7 @@ from agent.secret_scope import get_secret as _get_secret
 from hermes_cli.auth import (
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
     AuthError,
+    CREDENTIAL_POOL_SOURCE_PREFIX,
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
@@ -1979,6 +1981,56 @@ def _is_external_process_provider(provider: str) -> bool:
     return profile is not None and getattr(profile, "auth_type", "") == "external_process"
 
 
+#: Key set on a resolved runtime when every live pooled credential for the
+#: provider is benched by a 429. Callers that own a fallback chain read it to
+#: route around the cooldown; everyone else can ignore it and use the runtime.
+CREDENTIALS_COOLING_DOWN_KEY = "credentials_cooling_down_until"
+
+
+def _pooled_credentials_cooldown_until(
+    pool: Optional[CredentialPool],
+    creds: Optional[Dict[str, Any]],
+) -> Optional[float]:
+    """When the pool behind *creds* re-enters rotation, if a 429 benched it.
+
+    Two questions, and only the first belongs here: is the secret we are about
+    to hand out one of this pool's own credentials?  The ``source`` stamp
+    alone cannot answer it -- env vars win over the pool inside
+    ``_resolve_api_key_provider_secret``, so a key that is ALSO a pool entry
+    resolves with an env-var source while its entry cools down.  Matching the
+    resolved secret back to an entry catches both provenances.
+
+    The second question -- is this bench a rate limit, and when does it lift --
+    is the pool's own, and :meth:`CredentialPool.rate_limited_until` answers it.
+
+    Fail-open by design: any error here leaves resolution exactly as it was.
+    """
+    if pool is None or not isinstance(creds, dict):
+        return None
+    try:
+        source = str(creds.get("source") or "")
+        api_key = creds.get("api_key")
+        pool_backed = source.startswith(CREDENTIAL_POOL_SOURCE_PREFIX) or (
+            isinstance(api_key, str)
+            and bool(api_key)
+            and pool.entry_id_for_api_key(api_key) is not None
+        )
+        if not pool_backed:
+            return None
+        cooling_until = pool.rate_limited_until()
+    except Exception:
+        logger.debug(
+            "Credential-pool cooldown probe failed for %s; leaving resolution "
+            "unchanged",
+            getattr(pool, "provider", "?"),
+            exc_info=True,
+        )
+        return None
+    if cooling_until is None or cooling_until <= time.time():
+        return None
+    return float(cooling_until)
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -2551,6 +2603,27 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
+        # Every live credential for this provider may be serving a 429
+        # cooldown.  `pool.select()` above already refused those entries, but
+        # the secret resolver falls back to iterating the pool without
+        # consulting entry status, so it hands back a benched key: the request
+        # goes out, 429s, and only then does the fallback chain run -- one
+        # wasted round-trip per turn, on every turn, because a fresh agent is
+        # built per gateway message and starts from the configured primary
+        # again.
+        #
+        # Report it on the runtime rather than raising.  Routing this is the
+        # caller's decision, and `resolve_runtime_provider` is also the
+        # credential primitive behind status probes, model pickers, one-shot
+        # setup and readiness checks -- those must keep seeing a configured
+        # provider, not an auth failure.  The gateway reads this key, hands
+        # over to its fallback chain, and keeps this runtime as its last
+        # resort, so a cooldown stays a demotion rather than a block.  Note
+        # that an explicit api_key/base_url resolves earlier, via
+        # _resolve_explicit_runtime, and is never annotated -- callers that
+        # need to cover that route probe the pool directly with
+        # _pooled_credentials_cooldown_until.
+        _cooldown_until = _pooled_credentials_cooldown_until(pool, creds)
         # Actual Computer: a loopback base_url configured in model_cfg (not
         # just env) selects the daemon's local offline API, which requires no
         # auth. Inject the placeholder BEFORE the usable-secret gate below,
@@ -2639,7 +2712,7 @@ def resolve_runtime_provider(
         api_key = creds.get("api_key", "")
         if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
             api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
-        return {
+        runtime: Dict[str, Any] = {
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
@@ -2647,6 +2720,9 @@ def resolve_runtime_provider(
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
         }
+        if _cooldown_until is not None:
+            runtime[CREDENTIALS_COOLING_DOWN_KEY] = _cooldown_until
+        return runtime
 
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,

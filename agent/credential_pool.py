@@ -1045,6 +1045,51 @@ class CredentialPool:
             ]
             return matches[0].id if len(matches) == 1 else None
 
+    def rate_limited_until(self) -> Optional[float]:
+        """Earliest epoch time this pool re-enters rotation, for a 429 bench.
+
+        Like :meth:`next_available_at`, but returns ``None`` unless the bench
+        is *specifically* a rate limit: every live entry must be exhausted
+        with a 429.
+
+        The distinction matters because ``STATUS_EXHAUSTED`` is also how a
+        revoked key (401), a spent account (402), a 403 and a 5xx are parked
+        (see :func:`_exhausted_ttl`).  A caller that routes around "the
+        provider is rate-limited" must not be handed a pool that is actually
+        out of credit or holding dead credentials — that would hide the real
+        condition and skip the operator's re-auth prompt.
+
+        Returns ``None`` when an entry is available now, when the pool is
+        empty or all-``DEAD``, or when any live entry is benched for another
+        reason.
+        """
+        # ``self._lock`` is an RLock, so holding it across next_available_at's
+        # own acquisition is safe -- and necessary: checking the bench reasons
+        # and reading the reset time must see one consistent set of entries,
+        # or a rotation landing between them could report a 401 pool as
+        # rate-limited.  The reset time itself is next_available_at's to
+        # compute, including its sole-credential TTL shortening (which counts
+        # non-DEAD rows, so it can differ from the live set scanned here when
+        # a metadata-only row is present).
+        with self._lock:
+            live = [
+                e for e in self._entries
+                if e.last_status != STATUS_DEAD
+                # Metadata-only rows carry no key and are skipped by
+                # _available_entries; counting one here would make an
+                # otherwise all-429 pool look mixed and silently disable
+                # the gate.
+                and not (e.auth_type == AUTH_TYPE_API_KEY and not e.runtime_api_key)
+            ]
+            if not live:
+                return None
+            for entry in live:
+                if entry.last_status != STATUS_EXHAUSTED:
+                    return None
+                if entry.last_error_code != 429:
+                    return None
+            return self.next_available_at()
+
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order.
 

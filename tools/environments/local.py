@@ -406,6 +406,17 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
         "HERMES_DASHBOARD_SESSION_TOKEN",
+        # Loopback capability token for the WhatsApp bridge's state-changing
+        # endpoints. Blocklisted so the agent's own terminal / execute_code
+        # subprocess CANNOT read it and hand-roll an authenticated bridge POST
+        # with an arbitrary chatId — the exact bypass that let a session's
+        # media be delivered to the wrong recipient. With the token withheld
+        # from the shell, the only working send paths are the adapter (routes
+        # by the active session's chat_id) and the in-process whatsapp_action
+        # tool, making cross-recipient leakage via raw POST structurally
+        # impossible. Mirrors HERMES_DASHBOARD_SESSION_TOKEN above; also
+        # unregisterable as skill passthrough per GHSA-rhgp-j443-p4rf.
+        "WHATSAPP_BRIDGE_TOKEN",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",

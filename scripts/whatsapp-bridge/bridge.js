@@ -26,7 +26,7 @@ import pino from 'pino';
 import path from 'path';
 import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -110,6 +110,42 @@ try {
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
 const PAIR_JSON = args.includes('--pair-json');
+
+// Loopback capability token for state-changing endpoints.
+//
+// The bridge already binds loopback-only and validates the Host header
+// (DNS-rebind defense, GHSA-ppp5-vxwm-4cf7).  That stops a remote/browser
+// attacker, but every *local* process still shares the loopback interface,
+// so any co-resident process could POST an arbitrary `chatId` to /send,
+// /send-media, /edit or /react and drive the user's WhatsApp account
+// (impersonation / cross-recipient leak).  This brings the bridge to the
+// same caller-auth posture the rest of the project's loopback HTTP surfaces
+// already enforce (X-Hermes-Session-Token in hermes_cli/web_server.py,
+// X-Hermes-Sidecar-Token in the photon sidecar, hmac bearer in api_server).
+//
+// The gateway generates a per-spawn random token and passes it via
+// WHATSAPP_BRIDGE_TOKEN.  When set, callers must echo it back in the
+// X-Hermes-Bridge-Token header on every state-changing endpoint.  When
+// UNSET (e.g. a bridge launched by hand outside the gateway) auth is
+// disabled so existing manual/dev workflows are unaffected — opt-in by
+// presence, exactly like WHATSAPP_ALLOWED_USERS gating inbound.
+const BRIDGE_TOKEN = (process.env.WHATSAPP_BRIDGE_TOKEN || '').trim();
+const BRIDGE_TOKEN_BUF = BRIDGE_TOKEN ? Buffer.from(BRIDGE_TOKEN) : null;
+
+// Timing-safe comparison of the presented token against the configured one.
+// Length-prefix guards timingSafeEqual's equal-length requirement without
+// leaking length via an early return path that differs from a mismatch.
+function bridgeTokenOk(presented) {
+  if (!BRIDGE_TOKEN_BUF) return true; // auth disabled (no token configured)
+  const got = Buffer.from(String(presented || ''));
+  if (got.length !== BRIDGE_TOKEN_BUF.length) return false;
+  try {
+    return timingSafeEqual(got, BRIDGE_TOKEN_BUF);
+  } catch {
+    return false;
+  }
+}
+
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -813,6 +849,24 @@ app.use((req, res, next) => {
   next();
 });
 
+// Capability-token gate for state-changing endpoints (default-deny).
+//
+// Read-only endpoints are explicitly allowlisted; everything else requires
+// the per-spawn token in X-Hermes-Bridge-Token.  Default-deny means any
+// future route that can act as the user is protected automatically without
+// having to remember to add it here.  /health is allowlisted because the
+// gateway's reuse handshake reads it BEFORE it knows the token; the other
+// read paths expose no ability to act as the user.  No-op when no token is
+// configured (manual/dev bridges), matching the opt-in-by-presence model.
+const TOKEN_OPEN_PREFIXES = ['/health', '/messages', '/chat', '/groups'];
+app.use((req, res, next) => {
+  if (!BRIDGE_TOKEN_BUF) return next(); // auth disabled
+  const isOpen = TOKEN_OPEN_PREFIXES.some((p) => req.path === p || req.path.startsWith(p + '/'));
+  if (isOpen) return next();
+  if (bridgeTokenOk(req.headers['x-hermes-bridge-token'])) return next();
+  return res.status(401).json({ error: 'Unauthorized: missing or invalid bridge token' });
+});
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
@@ -1111,6 +1165,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    tokenAuth: !!BRIDGE_TOKEN_BUF,
   });
 });
 

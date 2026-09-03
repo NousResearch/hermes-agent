@@ -1204,12 +1204,28 @@ class WebhookAdapter(BasePlatformAdapter):
         # indefinitely with no timestamp binding it to a specific delivery.)
         # Only reachable when X-Webhook-Signature-V2 was not sent at all —
         # see the guard above.
+        #
+        # V1 is rejected by default (SECURITY-CLASS-a93a9b33ab551b86). A route
+        # may explicitly opt in with ``allow_legacy_v1: true`` to preserve
+        # backward compatibility during migration to V2; the warning is still
+        # emitted once per route so the operator is reminded to migrate.
         generic_sig = request.headers.get("X-Webhook-Signature", "")
         if generic_sig:
-            expected = hmac.new(
-                secret.encode(), body, hashlib.sha256
-            ).hexdigest()
             route_name = request.match_info.get("route_name", "")
+            route_config = self._routes.get(route_name, {})
+            # Identity check only: YAML "false", 1, and non-empty objects
+            # are all truthy and must not re-enable replayable V1 HMAC.
+            if route_config.get("allow_legacy_v1") is not True:
+                logger.warning(
+                    "[webhook] Route '%s' sent legacy V1 signature "
+                    "(X-Webhook-Signature) which is replayable (no timestamp "
+                    "binding). V1 is rejected by default; set "
+                    "'allow_legacy_v1: true' on the route to accept during "
+                    "migration, or switch to X-Webhook-Signature-V2 with "
+                    "X-Webhook-Timestamp.",
+                    route_name,
+                )
+                return False
             if route_name not in self._v1_signature_warned:
                 self._v1_signature_warned.add(route_name)
                 logger.warning(
@@ -1220,6 +1236,9 @@ class WebhookAdapter(BasePlatformAdapter):
                     "'<timestamp>.<body>').",
                     route_name,
                 )
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
             return _hmac_str_equal(generic_sig, expected)
 
         # No recognised signature header but secret is configured → reject

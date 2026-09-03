@@ -6,6 +6,8 @@ Usage:
     result = transport.normalize_response(raw_response)
 """
 
+import threading
+
 from agent.transports.types import (
     NormalizedResponse,
     ToolCall,
@@ -16,6 +18,7 @@ from agent.transports.types import (
 
 _REGISTRY: dict = {}
 _discovered: bool = False
+_discover_lock = threading.Lock()
 
 
 def register_transport(api_mode: str, transport_cls: type) -> None:
@@ -49,20 +52,28 @@ def get_transport(api_mode: str):
 def _discover_transports() -> None:
     """Import all transport modules to trigger auto-registration."""
     global _discovered
-    _discovered = True
-    try:
-        import agent.transports.anthropic  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        import agent.transports.codex  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        import agent.transports.chat_completions  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        import agent.transports.bedrock  # noqa: F401
-    except ImportError:
-        pass
+    if _discovered:
+        return
+
+    with _discover_lock:
+        if _discovered:
+            return
+
+        try:
+            import agent.transports.anthropic  # noqa: F401
+        except ImportError:
+            pass
+        try:
+            import agent.transports.codex  # noqa: F401
+        except ImportError:
+            pass
+        try:
+            import agent.transports.chat_completions  # noqa: F401
+        except ImportError:
+            pass
+        try:
+            import agent.transports.bedrock  # noqa: F401
+        except ImportError:
+            pass
+
+        _discovered = True

@@ -1179,7 +1179,22 @@ class GatewayConfig:
                 continue
             try:
                 platform = Platform(platform_name)
-                platforms[platform] = PlatformConfig.from_dict(platform_data)
+                platform_cfg = PlatformConfig.from_dict(platform_data)
+                if (
+                    platform_cfg.home_channel is None
+                    and isinstance(platform_data.get("home_channel"), str)
+                    and str(platform_data.get("home_channel")).strip()
+                ):
+                    # Bare chat-id string form (e.g. discord
+                    # home_channel: "123..."). Without this coercion a string
+                    # home_channel is silently dropped and the gateway
+                    # treats the platform as having no home channel.
+                    platform_cfg.home_channel = HomeChannel(
+                        platform=platform,
+                        chat_id=str(platform_data["home_channel"]).strip(),
+                        name="Home",
+                    )
+                platforms[platform] = platform_cfg
             except ValueError:
                 pass  # Skip unknown platforms
         

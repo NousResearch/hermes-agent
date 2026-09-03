@@ -50,16 +50,31 @@ def _make_cli(**kwargs):
         "prompt_toolkit.formatted_text": MagicMock(),
         "prompt_toolkit.auto_suggest": MagicMock(),
     }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
-        "os.environ", clean_env, clear=False
-    ):
-        import cli as _cli_mod
-
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
-            _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
+    _cli_mod = None
+    original_globals = None
+    instance = None
+    try:
+        with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
+            "os.environ", clean_env, clear=False
         ):
-            return _cli_mod.HermesCLI(**kwargs)
+            import cli as _cli_mod
+
+            # reload() mutates the existing module object in place, so preserve
+            # its exact pre-test state. A second reload is not equivalent: it can
+            # replace class identities and invalidate references imported by
+            # earlier test modules.
+            original_globals = dict(_cli_mod.__dict__)
+            _cli_mod = importlib.reload(_cli_mod)
+            with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
+                _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
+            ):
+                instance = _cli_mod.HermesCLI(**kwargs)
+    finally:
+        if _cli_mod is not None and original_globals is not None:
+            _cli_mod.__dict__.clear()
+            _cli_mod.__dict__.update(original_globals)
+
+    return instance
 
 
 @pytest.fixture(scope="module")

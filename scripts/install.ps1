@@ -3849,8 +3849,30 @@ function Install-CuaDriver {
         # via a background job: the upstream installer serializes with its own
         # lock (600s stale window), so the ceiling sits above that -- matching
         # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
-        $job = Start-Job -ScriptBlock {
-            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
+        $pinFile = Join-Path $InstallDir "scripts\cua_installer_pin.env"
+        if (-not (Test-Path $pinFile)) {
+            Write-Warn "Computer Use driver pin file missing -- it will install on demand when you enable the tool."
+            Write-Info "Install later with: hermes computer-use install"
+            return
+        }
+        $pin = @{}
+        Get-Content $pinFile | ForEach-Object {
+            if ($_ -match "^\s*#" -or $_ -notmatch "=") { return }
+            $k, $v = $_ -split "=", 2
+            $pin[$k.Trim()] = $v.Trim()
+        }
+        $cuaRef = $pin["CUA_INSTALLER_REF"]
+        $expected = $pin["CUA_INSTALLER_SHA256_PS1"]
+        $cuaUrl = "https://raw.githubusercontent.com/trycua/cua/$cuaRef/libs/cua-driver/scripts/install.ps1"
+        $job = Start-Job -ArgumentList $cuaUrl, $expected -ScriptBlock {
+            param($Url, $Expected)
+            $tmp = Join-Path $env:TEMP ("cua-install-" + [guid]::NewGuid().ToString() + ".ps1")
+            Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $tmp
+            $hash = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLowerInvariant()
+            if ($hash -ne $Expected.ToLowerInvariant()) {
+                throw "cua-driver installer sha256 mismatch"
+            }
+            & $tmp
         }
         if (Wait-Job $job -Timeout 660) {
             Receive-Job $job -ErrorAction SilentlyContinue | Out-Null

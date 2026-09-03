@@ -1614,6 +1614,33 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
     return False
 
 
+
+def _write_verified_cua_installer(dest_path: str, *, is_windows: bool) -> None:
+    """Download the pinned cua-driver installer and refuse a digest mismatch."""
+    import urllib.error
+    import urllib.request
+
+    from hermes_cli.cua_installer_pin import (
+        cua_installer_expected_sha256,
+        cua_installer_url,
+        verify_cua_installer_digest,
+        CuaInstallerIntegrityError,
+    )
+
+    url = cua_installer_url(is_windows=is_windows)
+    try:
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            data = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise RuntimeError(f"cua-driver installer download failed: {e}") from e
+    try:
+        verify_cua_installer_digest(data, cua_installer_expected_sha256(is_windows=is_windows))
+    except CuaInstallerIntegrityError as e:
+        raise RuntimeError(str(e)) from e
+    with open(dest_path, "wb") as fh:
+        fh.write(data)
+
+
 def _run_cua_driver_installer(
     label: str = "Installing",
     verbose: bool = True,
@@ -1626,9 +1653,8 @@ def _run_cua_driver_installer(
     The scripts are idempotent: they always download the latest release, so
     re-running on an already-installed system performs an upgrade.
 
-    * macOS / Linux → ``curl -fsSL …/install.sh | /bin/bash``.
-    * Windows       → ``powershell -NoProfile -ExecutionPolicy Bypass -Command
-      "irm …/install.ps1 | iex"``.
+    The installer script itself is fetched from a pinned trycua/cua ref and
+    SHA-256-verified before execution (see ``hermes_cli.cua_installer_pin``).
 
     ``pin_version`` (e.g. ``"0.13.1"``) is exported as
     ``CUA_DRIVER_RS_VERSION`` so the installer downloads that exact release
@@ -1648,59 +1674,39 @@ def _run_cua_driver_installer(
     is_windows = system == "Windows"
     is_linux = system == "Linux"
 
+    from hermes_cli.cua_installer_pin import cua_installer_url
+    import tempfile as _tempfile
+
+    install_url = cua_installer_url(is_windows=is_windows)
     if is_windows:
-        # Mirror the one-liner printed by cua_driver_install_hint().
-        ps_oneliner = (
-            "irm https://raw.githubusercontent.com/trycua/cua/main/"
-            "libs/cua-driver/scripts/install.ps1 | iex"
-        )
-        install_cmd = [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-Command", ps_oneliner,
-        ]
         manual_hint = (
-            'powershell -NoProfile -ExecutionPolicy Bypass -Command '
-            f'"{ps_oneliner}"'
+            'powershell -NoProfile -ExecutionPolicy Bypass -File '
+            "<verified install.ps1 from pinned trycua/cua ref>"
         )
-        script_path = None
+        suffix = ".ps1"
     else:
         # Download-then-exec instead of `bash -c "$(curl …)"`: no shell=True,
         # no command substitution, and the script lands in a mkstemp file
-        # (unpredictable name, 0600) rather than a fixed /tmp path — avoiding
-        # both the shell-injection surface and a symlink/TOCTOU race on
-        # multi-user machines. The manual hint stays the upstream one-liner
-        # since that's what the docs/README teach.
-        import tempfile as _tempfile
-
-        install_url = (
-            "https://raw.githubusercontent.com/trycua/cua/main/"
-            "libs/cua-driver/scripts/install.sh"
-        )
+        # (unpredictable name, 0600) rather than a fixed /tmp path.
         manual_hint = f'/bin/bash -c "$(curl -fsSL {install_url})"'
-        fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=".sh")
-        os.close(fd)
+        suffix = ".sh"
+    fd, script_path = _tempfile.mkstemp(prefix="cua-driver-install-", suffix=suffix)
+    os.close(fd)
+    try:
+        _write_verified_cua_installer(script_path, is_windows=is_windows)
+    except RuntimeError as e:
+        _print_warning(f"    {e}")
         try:
-            dl = subprocess.run(
-                ["curl", "-fsSL", "-o", script_path, install_url],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-            )
-        except (subprocess.TimeoutExpired, OSError) as e:
-            _print_warning(f"    cua-driver installer download failed: {e}")
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
-            return False
-        if dl.returncode != 0:
-            _print_warning(
-                "    cua-driver installer download failed: "
-                f"{(dl.stderr or '').strip()[:200]}"
-            )
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
-            return False
+            os.remove(script_path)
+        except OSError:
+            pass
+        return False
+    if is_windows:
+        install_cmd = [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+        ]
+    else:
         install_cmd = ["/bin/bash", script_path]
     use_shell = False
 
@@ -1761,14 +1767,11 @@ def _run_cua_driver_installer(
             # ONLY branch of install.ps1 that self-elevates (UAC). Cost: an
             # existing cua-driver-serve task keeps pointing at the previous
             # binary until the next interactive upgrade re-registers it.
-            # scriptblock invocation (instead of `| iex`) is what lets us
-            # pass the parameter to a piped script.
+            # -File plus a named switch works because the script is already
+            # on disk after the pinned digest check.
             install_cmd = [
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-Command",
-                "$sc = irm https://raw.githubusercontent.com/trycua/cua/"
-                "main/libs/cua-driver/scripts/install.ps1; "
-                "& ([scriptblock]::Create($sc)) -NoAutoStart",
+                "-File", script_path, "-NoAutoStart",
             ]
 
     # POSIX: run the installer in its own process group so a timeout kill

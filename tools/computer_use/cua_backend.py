@@ -17,11 +17,7 @@ in this file is OS-agnostic; per-host gaps (no DISPLAY, missing AT-SPI,
 etc.) surface as specific blocked checks via `hermes computer-use doctor`
 rather than failing silently.
 
-Install:
-  - **macOS**:
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"
-  - **Windows** (PowerShell):
-      irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex
+Install via ``hermes computer-use install`` (pinned trycua/cua ref + sha256).
 
 After install, `cua-driver` is on $PATH and supports `cua-driver mcp` (stdio
 transport) which is what we invoke.
@@ -1398,16 +1394,15 @@ def _maybe_nudge_update() -> None:
 
 
 def cua_driver_install_hint() -> str:
+    from hermes_cli.cua_installer_pin import cua_installer_url
     if sys.platform == "win32":
         installer = (
-            '  irm https://raw.githubusercontent.com/trycua/cua/main/'
-            'libs/cua-driver/scripts/install.ps1 | iex'
+            f'  irm {cua_installer_url(is_windows=True)} | iex'
         )
     else:
         installer = (
             '  /bin/bash -c "$(curl -fsSL '
-            'https://raw.githubusercontent.com/trycua/cua/main/'
-            'libs/cua-driver/scripts/install.sh)"'
+            f'{cua_installer_url(is_windows=False)})"'
         )
     return (
         "cua-driver is not installed. Install with one of:\n"

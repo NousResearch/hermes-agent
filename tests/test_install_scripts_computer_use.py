@@ -32,12 +32,25 @@ class TestInstallSh:
         window; a ceiling below that reintroduces the self-perpetuating
         wedge (#58762). Must stay >= 660."""
         text = INSTALL_SH.read_text()
-        assert "run_with_timeout 660 /bin/bash -c" in text
+        assert "run_with_timeout 660 /bin/bash" in text
 
     def test_install_is_best_effort(self) -> None:
         text = INSTALL_SH.read_text()
         assert "Computer Use driver install failed" in text
         assert "hermes computer-use install" in text
+
+    def test_install_uses_pinned_ref_and_sha256(self) -> None:
+        from hermes_cli.cua_installer_pin import (
+            CUA_INSTALLER_REF,
+            CUA_INSTALLER_SHA256_SH,
+        )
+
+        text = INSTALL_SH.read_text()
+        assert "trycua/cua/main/" not in text
+        assert "cua_installer_pin.env" in text
+        assert CUA_INSTALLER_SHA256_SH
+        assert "CUA_INSTALLER_SHA256_SH" in text
+        assert CUA_INSTALLER_REF.startswith("cua-driver-rs-")
 
     def test_skips_unwritable_applications_dir(self) -> None:
         """Non-admin macOS accounts can't receive CuaDriver.app (#47865
@@ -65,6 +78,15 @@ class TestInstallPs1:
         text = INSTALL_PS1.read_text()
         assert "Computer Use driver install timed out" in text
         assert "hermes computer-use install" in text
+
+    def test_install_uses_pinned_ref_and_sha256(self) -> None:
+        from hermes_cli.cua_installer_pin import CUA_INSTALLER_SHA256_PS1
+
+        text = INSTALL_PS1.read_text()
+        assert "trycua/cua/main/" not in text
+        assert "cua_installer_pin.env" in text
+        assert "CUA_INSTALLER_SHA256_PS1" in text
+        assert CUA_INSTALLER_SHA256_PS1
 
     def test_install_rechecks_runtime_contract_before_success(self) -> None:
         text = INSTALL_PS1.read_text()

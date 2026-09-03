@@ -24,10 +24,23 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_verified_cua_installer():
+    """Unit tests must not fetch the live trycua installer."""
+    from hermes_cli import tools_config
+
+    def _write(dest_path, *, is_windows):
+        Path(dest_path).write_bytes(b"# stub cua installer\n")
+
+    with patch.object(tools_config, "_write_verified_cua_installer", side_effect=_write):
+        yield
 
 
 def _runtime_manifest(version="0.20.0", *, omit=None):
@@ -1308,7 +1321,8 @@ class TestInstallerNoShell:
     asserting a branch the host had already selected.
     """
 
-    def _run(self, download_rc=0):
+    def _run(self, download_ok=True):
+        from pathlib import Path
         from unittest.mock import MagicMock
         from hermes_cli import tools_config
 
@@ -1318,18 +1332,17 @@ class TestInstallerNoShell:
         fake_proc.returncode = 0
         fake_proc.communicate.return_value = ("", None)
 
-        def fake_run(cmd, **kw):
-            calls.append(("run", cmd, kw))
-            m = MagicMock()
-            m.returncode = download_rc
-            m.stderr = "curl: (6) could not resolve" if download_rc else ""
-            return m
+        def fake_write(dest_path, *, is_windows):
+            calls.append(("write", dest_path, is_windows))
+            if not download_ok:
+                raise RuntimeError("cua-driver installer download failed: simulated")
+            Path(dest_path).write_bytes(b"# stub cua installer\n")
 
         def fake_popen(cmd, **kw):
             calls.append(("popen", cmd, kw))
             return fake_proc
 
-        with patch("subprocess.run", side_effect=fake_run), \
+        with patch.object(tools_config, "_write_verified_cua_installer", side_effect=fake_write), \
              patch("subprocess.Popen", side_effect=fake_popen), \
              patch.object(tools_config.shutil, "which", return_value="/usr/local/bin/cua-driver"), \
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
@@ -1342,12 +1355,10 @@ class TestInstallerNoShell:
     def test_posix_path_downloads_then_execs_argv_list(self):
         ok, calls = self._run()
         assert ok is True
-        run_calls = [c for c in calls if c[0] == "run"]
+        write_calls = [c for c in calls if c[0] == "write"]
         popen_calls = [c for c in calls if c[0] == "popen"]
-        assert len(run_calls) == 1 and len(popen_calls) == 1
-        # Download: plain argv curl, no shell.
-        dl_cmd = run_calls[0][1]
-        assert isinstance(dl_cmd, list) and dl_cmd[0] == "curl"
+        assert len(write_calls) == 1 and len(popen_calls) == 1
+        assert write_calls[0][2] is False
         # Exec: argv list ["/bin/bash", <mkstemp path>], shell=False.
         exec_cmd, exec_kw = popen_calls[0][1], popen_calls[0][2]
         assert isinstance(exec_cmd, list) and exec_cmd[0] == "/bin/bash"
@@ -1355,7 +1366,7 @@ class TestInstallerNoShell:
         assert exec_kw.get("shell") is False
 
     def test_download_failure_returns_false_without_exec(self):
-        ok, calls = self._run(download_rc=6)
+        ok, calls = self._run(download_ok=False)
         assert ok is False
         assert not [c for c in calls if c[0] == "popen"]
 
@@ -1739,22 +1750,25 @@ class TestUnattendedRefreshPreflights:
         assert ok is True
 
     def test_windows_unattended_command_passes_noautostart(self):
-        """The unattended Windows command must invoke install.ps1 with
-        -NoAutoStart — Register-CuaDriverAutostart is the only branch that
-        self-elevates (UAC)."""
+        """The unattended Windows command must invoke the verified install.ps1
+        with -NoAutoStart — Register-CuaDriverAutostart is the only branch
+        that self-elevates (UAC)."""
         ok, popen, _, _, _ = self._run(120, system="Windows")
         assert ok is True
         cmd = popen.call_args.args[0]
         joined = " ".join(cmd)
+        assert "-File" in cmd
         assert "-NoAutoStart" in joined
-        assert "scriptblock" in joined
+        assert "| iex" not in joined
 
-    def test_windows_explicit_command_keeps_plain_oneliner(self):
-        """Explicit installs keep upstream's documented `irm | iex` shape
-        (autostart re-registration included — human present for UAC)."""
+    def test_windows_explicit_command_runs_verified_file(self):
+        """Explicit installs run the digest-checked script as -File so
+        autostart re-registration stays available (human present for UAC)
+        without piping an unpinned remote script."""
         ok, popen, _, _, _ = self._run(None, system="Windows")
         assert ok is True
         cmd = popen.call_args.args[0]
         joined = " ".join(cmd)
+        assert "-File" in cmd
         assert "-NoAutoStart" not in joined
-        assert "| iex" in joined
+        assert "| iex" not in joined

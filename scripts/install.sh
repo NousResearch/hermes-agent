@@ -2916,18 +2916,49 @@ install_computer_use_driver() {
     # upstream installer serializes with its own lock (600s stale window),
     # so give it a ceiling above that — matching Hermes'
     # _CUA_INSTALLER_TIMEOUT (660s).
-    local cua_log
+    # Fetch a pinned trycua/cua ref and verify SHA-256 before exec so a
+    # mutable `main` commit cannot run on every default install.
+    local pin_file cua_log cua_script actual
+    pin_file="$INSTALL_DIR/scripts/cua_installer_pin.env"
+    if [ ! -f "$pin_file" ]; then
+        log_warn "Computer Use driver pin file missing — it will install on demand when you enable the tool."
+        log_info "Install later with: hermes computer-use install"
+        return 0
+    fi
+    # shellcheck disable=SC1090
+    . "$pin_file"
     cua_log="$(mktemp)"
-    if run_with_timeout 660 /bin/bash -c \
-        'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash' \
+    cua_script="$(mktemp)"
+    if ! curl -fsSL -o "$cua_script" \
+        "https://raw.githubusercontent.com/trycua/cua/${CUA_INSTALLER_REF}/libs/cua-driver/scripts/install.sh" \
         >"$cua_log" 2>&1; then
+        log_warn "Computer Use driver install failed — it will install on demand when you enable the tool."
+        log_info "Install later with: hermes computer-use install"
+        tail -n 5 "$cua_log" >&2 || true
+        rm -f "$cua_log" "$cua_script"
+        return 0
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$cua_script" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$cua_script" | awk '{print $1}')"
+    else
+        actual="$(openssl dgst -sha256 "$cua_script" | awk '{print $NF}')"
+    fi
+    if [ "$actual" != "$CUA_INSTALLER_SHA256_SH" ]; then
+        log_warn "Computer Use driver installer sha256 mismatch — refusing to execute unpinned script."
+        log_info "Install later with: hermes computer-use install"
+        rm -f "$cua_log" "$cua_script"
+        return 0
+    fi
+    if run_with_timeout 660 /bin/bash "$cua_script" >"$cua_log" 2>&1; then
         log_success "Computer Use driver installed (enable via 'hermes tools' → Computer Use)"
     else
         log_warn "Computer Use driver install failed — it will install on demand when you enable the tool."
         log_info "Install later with: hermes computer-use install"
         tail -n 5 "$cua_log" >&2 || true
     fi
-    rm -f "$cua_log"
+    rm -f "$cua_log" "$cua_script"
 }
 
 run_setup_wizard() {

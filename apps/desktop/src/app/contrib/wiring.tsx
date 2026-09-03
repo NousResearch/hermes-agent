@@ -82,7 +82,7 @@ import {
   setMessages
 } from '@/store/session'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
-import { armWakeWord, stopClientCapture } from '@/store/wake-word'
+import { armWakeWord, clearWakeWordConnectionState, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -229,6 +229,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const messagingSessions = useStore($messagingSessions)
   const sessions = useStore($sessions)
   const activeConnectionId = useStore($activeConnectionId)
+  const connection = useStore($connection)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
   const boot = useStore($desktopBoot)
@@ -805,12 +806,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   useEffect(() => {
-    if (gatewayState === 'open') {
-      // Status-then-arm, syncing $wakeWord so the composer toggle reflects the
-      // same listener this auto-arm claims.
-      void armWakeWord(requestGateway)
+    if (gatewayState !== 'open') {
+      clearWakeWordConnectionState()
+
+      return
     }
-  }, [gatewayState, requestGateway])
+
+    // Re-run when main recycles a local backend: the registry connection id can
+    // stay `local` while the ephemeral port/base URL changes, so gatewayState
+    // alone does not give React a new dependency. The request must be issued on
+    // the newly-open socket or the old wake lease is gone forever.
+
+    void armWakeWord(requestGateway)
+  }, [activeConnectionId, activeGatewayProfile, connection?.baseUrl, gatewayState, requestGateway])
 
   const activeIsMessaging =
     !!selectedStoredSessionId &&
@@ -1096,7 +1104,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // (preview's monitor/devtools cluster, …) arrive as registry contributions.
   const leftTitlebarTools = useTitlebarToolContributions('left')
   const rightTitlebarTools = useTitlebarToolContributions('right')
-  const connection = useStore($connection)
   const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).

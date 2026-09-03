@@ -269,14 +269,15 @@ def resolve_capture_mode(
         return "client"
     if raw == "local":
         return "local"
-    # auto: a working backend input always wins so local desktops keep
-    # PortAudio and the configured ``input_device`` selection. Client capture
-    # is the fallback for a preferring surface (desktop remote) on a backend
-    # with no usable mic — the headless VPS/Cloud case.
-    if _local_input_device_ready():
-        return "local"
+    # auto: a preferring surface owns the microphone capture decision. This is
+    # intentional: device enumeration can succeed while opening the stream
+    # hangs (Core Audio/HAL, permissions, or a stale device). The Desktop can
+    # capture PCM through getUserMedia and keep the detector on the selected
+    # backend, so do not let a false-positive local probe defeat that path.
     if prefer_client:
         return "client"
+    if _local_input_device_ready():
+        return "local"
     # No local mic and no client preference (CLI/TUI): stay local so status
     # reports the real requirement instead of advertising a capture path
     # nothing will feed.
@@ -1030,6 +1031,30 @@ class WakeWordDetector:
         t = self._thread
         return t is not None and t.is_alive()
 
+    def _queue_audio_chunk(self, chunk) -> None:
+        """Enqueue capture data without blocking the audio callback."""
+        try:
+            self._audio_q.put_nowait(chunk)
+        except Exception:
+            # Drop oldest on overflow so we stay real-time.
+            try:
+                self._audio_q.get_nowait()
+            except Exception:
+                pass
+            try:
+                self._audio_q.put_nowait(chunk)
+            except Exception:
+                pass
+
+    def _on_local_audio(self, indata, _frames, _time_info, status) -> None:
+        if status:
+            logger.debug("wake word: capture status: %s", status)
+
+        try:
+            self._queue_audio_chunk(indata.copy())
+        except Exception:
+            self._queue_audio_chunk(indata)
+
     def feed(self, pcm_int16) -> None:
         """Enqueue one int16 mono frame (or raw bytes) for client capture.
 
@@ -1060,17 +1085,9 @@ class WakeWordDetector:
                 pad[: chunk.shape[0]] = chunk
                 chunk = pad
             try:
-                self._audio_q.put_nowait(chunk)
+                self._queue_audio_chunk(chunk)
             except Exception:
-                # Drop oldest on overflow so we stay real-time
-                try:
-                    self._audio_q.get_nowait()
-                except Exception:
-                    pass
-                try:
-                    self._audio_q.put_nowait(chunk)
-                except Exception:
-                    pass
+                pass
 
     def start(self) -> None:
         """Open the mic (or client feeder) and begin listening. Idempotent."""
@@ -1127,6 +1144,7 @@ class WakeWordDetector:
         frame_length = self.engine.frame_length
         capture_frame_length = frame_length
         capture_rate = SAMPLE_RATE
+        local_callback_capture = False
         np = None
         stream = None
 
@@ -1165,14 +1183,18 @@ class WakeWordDetector:
                 capture_rate,
                 SAMPLE_RATE,
             )
+            local_callback_capture = sys.platform == "darwin"
             try:
-                stream = sd.InputStream(
-                    device=self.input_device,
-                    samplerate=capture_rate,
-                    channels=1,
-                    dtype="int16",
-                    blocksize=capture_frame_length,
-                )
+                stream_kwargs = {
+                    "device": self.input_device,
+                    "samplerate": capture_rate,
+                    "channels": 1,
+                    "dtype": "int16",
+                    "blocksize": capture_frame_length,
+                }
+                if local_callback_capture:
+                    stream_kwargs["callback"] = self._on_local_audio
+                stream = sd.InputStream(**stream_kwargs)
                 stream.start()
             except Exception as e:
                 logger.error("wake word: failed to open microphone: %s", e)
@@ -1198,16 +1220,15 @@ class WakeWordDetector:
         try:
             while not self._stop.is_set():
                 try:
-                    if self.external_audio:
+                    if self.external_audio or local_callback_capture:
                         try:
-                            frame = self._audio_q.get(timeout=0.25)
+                            data = self._audio_q.get(timeout=0.25)
                         except Exception:
-                            # No client frames yet — count as silence for status.
+                            # No callback/client frames yet — count as silence for status.
                             self._silent_frames += 1
                             if self._silent_frames == silent_alert_frames:
                                 self.audio_silent = True
                             continue
-                        data = frame
                     else:
                         data, _overflow = stream.read(capture_frame_length)
                 except Exception as e:

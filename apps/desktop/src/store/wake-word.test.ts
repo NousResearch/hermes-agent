@@ -6,6 +6,7 @@ import {
   applyWakeStatus,
   applyWakeStopResult,
   armWakeWord,
+  clearWakeWordConnectionState,
   resetWakeWordState,
   resumeWakeAfterVoice,
   toggleWakeWord,
@@ -243,6 +244,23 @@ describe('applyWakeStopResult', () => {
     const state = $wakeWord.get()
     expect(state.listening).toBe(false)
     expect(state.notice).toBe('another surface owns the listener')
+  })
+})
+
+describe('clearWakeWordConnectionState', () => {
+  it('clears the live lease state without losing backend configuration', () => {
+    applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey alia' })
+
+    clearWakeWordConnectionState()
+
+    expect($wakeWord.get()).toMatchObject({
+      available: true,
+      enabled: true,
+      listening: false,
+      notice: '',
+      pending: false,
+      phrase: 'hey alia'
+    })
   })
 })
 

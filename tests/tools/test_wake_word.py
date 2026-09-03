@@ -523,6 +523,61 @@ def test_detector_opens_configured_input_device_and_reports_backend(monkeypatch)
         det.stop()
 
 
+def test_macos_local_capture_uses_callback_queue(monkeypatch):
+    """Core Audio must use callback capture; blocking ``read()`` can hang forever."""
+    np = pytest.importorskip("numpy")
+    opened = []
+    processed = []
+
+    class _CallbackStream:
+        def __init__(self, **kwargs):
+            opened.append(kwargs)
+            self.closed = False
+
+        def start(self):
+            callback = opened[-1]["callback"]
+            callback(np.full((4, 1), 500, dtype=np.int16), 4, None, None)
+
+        def read(self, _n):
+            raise AssertionError("macOS capture must not use blocking read()")
+
+        def stop(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    fake_sd = types.SimpleNamespace(
+        InputStream=lambda **kwargs: _CallbackStream(**kwargs),
+        query_devices=lambda selector, kind: {
+            "name": "Yeti Stereo Microphone",
+            "hostapi": 0,
+            "max_input_channels": 2,
+            "default_samplerate": 16000.0,
+        },
+        query_hostapis=lambda index: {"name": "Core Audio"},
+    )
+    monkeypatch.setattr(ww.sys, "platform", "darwin")
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, np))
+
+    class _RecordingEngine(_FakeEngine):
+        def process(self, frame):
+            processed.append(frame)
+            return False
+
+    det = ww.WakeWordDetector(_RecordingEngine(fire=False), lambda: None, input_device="Yeti Stereo Microphone")
+    det.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not processed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert processed
+        assert callable(opened[0]["callback"])
+        assert len(processed[0]) == 4
+    finally:
+        det.stop()
+
+
 @pytest.mark.windows_only
 def test_windows_silent_hint_names_selected_device():
     hint = ww.silent_audio_hint(
@@ -710,9 +765,9 @@ def test_resolve_capture_mode_auto_and_prefer_client(monkeypatch):
     assert ww.resolve_capture_mode({"capture": "auto"}, force_local=True) == "local"
     monkeypatch.setattr(ww, "_local_input_device_ready", lambda: True)
     assert ww.resolve_capture_mode({"capture": "auto"}) == "local"
-    # A working backend mic wins under auto even for a preferring surface, so
-    # local desktops keep PortAudio + wake_word.input_device selection.
-    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "local"
+    # A GUI-preferring surface deliberately uses client capture under auto;
+    # enumeration alone is not proof that opening the backend stream works.
+    assert ww.resolve_capture_mode({"capture": "auto"}, prefer_client=True) == "client"
     # Explicit client still forces streaming (backend mic exists but is wrong).
     assert ww.resolve_capture_mode({"capture": "client"}, prefer_client=True) == "client"
 

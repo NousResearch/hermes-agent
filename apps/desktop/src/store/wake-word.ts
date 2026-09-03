@@ -401,6 +401,19 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
   }
 }
 
+/** The transport lease is gone; keep config truth but clear the live listener UI. */
+export function clearWakeWordConnectionState(): void {
+  const current = $wakeWord.get()
+
+  stopClientCapture()
+  $wakeWord.set({
+    ...current,
+    listening: false,
+    notice: '',
+    pending: false
+  })
+}
+
 /** Test-only reset. */
 export function resetWakeWordState(): void {
   stopClientCapture()

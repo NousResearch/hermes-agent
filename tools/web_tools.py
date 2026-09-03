@@ -1525,6 +1525,25 @@ def _provider_is_ready(provider) -> bool:
         return False
 
 
+# Backends that support *search* but not *extract*.  When one of these is
+# the sole configured backend, web_extract should not be registered —
+# calling it would always fail with "X is a search-only backend".
+# Fixes: https://github.com/NousResearch/hermes-agent/issues/89912
+_SEARCH_ONLY_BACKENDS: frozenset = frozenset({"ddgs", "searxng", "brave-free"})
+
+
+def _configured_backend_is_search_only() -> bool:
+    """True when the shared backend is search-only AND no extract override exists."""
+    cfg = _load_web_config()
+    extract_override = (cfg.get("extract_backend") or "").lower().strip()
+    if extract_override:
+        # An explicit extract backend was configured — honour it regardless of
+        # the shared backend.
+        return False
+    shared = (cfg.get("backend") or "").lower().strip()
+    return shared in _SEARCH_ONLY_BACKENDS
+
+
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available.
 
@@ -1566,6 +1585,33 @@ def check_web_api_key() -> bool:
     except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
         logger.debug("web provider registry availability check failed: %s", exc)
         return False
+
+
+def check_web_search_available() -> bool:
+    """check_fn for the ``web_search`` tool.
+
+    Returns True whenever any search-capable backend is available, including
+    search-only backends like ddgs/searxng/brave-free.  This is a strict
+    superset of ``check_web_api_key`` — if the general check passes, search
+    is available.
+    """
+    return check_web_api_key()
+
+
+def check_web_extract_available() -> bool:
+    """check_fn for the ``web_extract`` tool.
+
+    Returns False when the *only* configured backend is search-only (ddgs,
+    searxng, brave-free) and no per-capability ``web.extract_backend``
+    override is set.  In that case registering web_extract would produce a
+    tool the model can see but that always fails, causing it to mistakenly
+    report "web_search is not available" and fall back to worse paths.
+
+    Fixes: https://github.com/NousResearch/hermes-agent/issues/89912
+    """
+    if _configured_backend_is_search_only():
+        return False
+    return check_web_api_key()
 
 if __name__ == "__main__":
     """
@@ -1701,7 +1747,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_available,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
@@ -1715,7 +1761,7 @@ registry.register(
         "markdown",
         char_limit=args.get("char_limit"),
     ),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_available,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

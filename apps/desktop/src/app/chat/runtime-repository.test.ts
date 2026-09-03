@@ -39,6 +39,67 @@ describe('useRuntimeMessageRepository', () => {
     expect(ids).toEqual(['user-1', 'assistant-1'])
   })
 
+  it('emits one settled message when live and durable ids differ after compaction', () => {
+    const live: ChatMessage = {
+      id: 'assistant-stream-1',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'Finished the work.' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '' }
+      ] as ChatMessage['parts'],
+      timestamp: 1_700_000_000,
+      pending: false
+    }
+    const durable: ChatMessage = {
+      ...live,
+      id: '1700000000-42-assistant',
+      rowId: 42
+    }
+
+    const { result } = renderHook(() => useRuntimeMessageRepository([live, durable]))
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['assistant-stream-1'])
+  })
+
+  it('does not content-dedupe messages that are still streaming', () => {
+    const partial = {
+      ...text('assistant-stream-1', 'assistant', 'same partial'),
+      timestamp: 1_700_000_000,
+      pending: true
+    }
+
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([partial, { ...partial, id: 'assistant-stream-2' }])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual([
+      'assistant-stream-1',
+      'assistant-stream-2'
+    ])
+  })
+
+  it('keeps settled tool messages with different call identities', () => {
+    const settledToolMessage = (id: string, toolCallId: string): ChatMessage => ({
+      id,
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'Finished.' },
+        { type: 'tool-call', toolCallId, toolName: 'terminal', args: {}, argsText: '' }
+      ] as ChatMessage['parts'],
+      timestamp: 1_700_000_000,
+      pending: false
+    })
+
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        settledToolMessage('assistant-1', 'call-1'),
+        settledToolMessage('assistant-2', 'call-2')
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['assistant-1', 'assistant-2'])
+  })
+
   it('builds a repository the runtime can link without throwing', () => {
     const { result } = renderHook(() =>
       useRuntimeMessageRepository([

@@ -2,14 +2,28 @@ import { fromThreadMessageLike, getAutoStatus } from '@assistant-ui/core/interna
 import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/react'
 import { useMemo, useRef } from 'react'
 
-import type { ChatMessage } from '@/lib/chat-messages'
-import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
 
 // The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
 // Normalization happens HERE, once per message, so the cached record below is
 // already the final ThreadMessage the runtime consumes.
 const FALLBACK_STATUS = getAutoStatus(false, false, false, false, undefined)
+
+const settledMessageKey = (message: ChatMessage): string | null => {
+  // Compression can leave a completed live copy beside the same rehydrated
+  // durable row. Their renderer ids differ, but persisted identity fields do
+  // not. Never apply this fallback to a still-streaming row: repeated partial
+  // snapshots are updates, not settled duplicates.
+  if (message.timestamp === undefined || message.pending === true) {
+    return null
+  }
+
+  const firstToolCallId = message.parts.find(part => part.type === 'tool-call')?.toolCallId ?? ''
+  const normalizedText = chatMessageText(message).replace(/\s+/g, ' ').trim()
+
+  return JSON.stringify([message.role, normalizedText, message.timestamp, firstToolCallId])
+}
 
 /**
  * ChatMessage[] -> assistant-ui message repository, with a WeakMap identity
@@ -32,6 +46,7 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
     const seenIds = new Set<string>()
+    const seenSettledMessages = new Set<string>()
     let visibleParentId: string | null = null
     let headId: string | null = null
 
@@ -45,7 +60,17 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
         continue
       }
 
+      const settledKey = settledMessageKey(message)
+
+      if (settledKey !== null && seenSettledMessages.has(settledKey)) {
+        continue
+      }
+
       seenIds.add(message.id)
+
+      if (settledKey !== null) {
+        seenSettledMessages.add(settledKey)
+      }
 
       let parentId = visibleParentId
 

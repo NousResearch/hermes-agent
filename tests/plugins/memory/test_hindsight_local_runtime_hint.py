@@ -44,9 +44,33 @@ def test_unavailable_reason_surfaces_hint_for_local_embedded(monkeypatch):
 
 
 def test_unavailable_reason_empty_for_cloud(monkeypatch):
-    monkeypatch.setattr(hs, "_load_config", lambda: {"mode": "cloud"})
+    # Cloud provider with full credentials: no hint needed.
+    monkeypatch.setattr(hs, "_load_config", lambda: {"mode": "cloud", "apiKey": "k", "api_url": "http://x"})
     # Should not even probe the runtime for a cloud provider.
     monkeypatch.setattr(hs, "_check_local_runtime", lambda: (_ for _ in ()).throw(AssertionError("probed")))
+    assert HindsightMemoryProvider().unavailable_reason() == ""
+
+
+def test_unavailable_reason_cloud_missing_creds(monkeypatch):
+    # #2765: cloud mode with missing credentials (systemd/.env-not-inherited)
+    # must name the missing variables instead of returning a bare warning.
+    monkeypatch.setattr(hs, "_load_config", lambda: {"mode": "cloud"})
+    monkeypatch.setattr(hs, "_check_local_runtime", lambda: (_ for _ in ()).throw(AssertionError("probed")))
+    reason = HindsightMemoryProvider().unavailable_reason()
+    assert "HINDSIGHT_API_URL" in reason
+    assert "HINDSIGHT_API_KEY" in reason
+    assert reason == reason.strip()
+
+
+def test_unavailable_reason_cloud_missing_only_url(monkeypatch):
+    # Key present alone makes the provider available (is_available is
+    # has_key or has_url), so no hint is needed — matches empty_for_cloud.
+    monkeypatch.setattr(hs, "_load_config", lambda: {"mode": "cloud", "apiKey": "k"})
+    assert HindsightMemoryProvider().unavailable_reason() == ""
+
+
+def test_unavailable_reason_cloud_missing_only_key(monkeypatch):
+    monkeypatch.setattr(hs, "_load_config", lambda: {"mode": "cloud", "api_url": "http://x"})
     assert HindsightMemoryProvider().unavailable_reason() == ""
 
 

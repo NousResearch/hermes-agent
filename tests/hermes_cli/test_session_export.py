@@ -135,3 +135,39 @@ def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys):
     }
 
 
+
+
+class TestCorruptTimestamps:
+    """#102352: one corrupt timestamp must degrade to the raw value, never
+    abort the whole export."""
+
+    def test_out_of_range_falls_back_to_raw(self):
+        from hermes_cli.session_export import _format_timestamp
+
+        assert _format_timestamp(1e30) == "1e+30"
+        assert _format_timestamp(float("inf")) == "inf"
+
+    def test_nan_falls_back_to_raw(self):
+        from hermes_cli.session_export import _format_timestamp
+
+        assert _format_timestamp(float("nan")) == "nan"
+
+    def test_export_completes_with_mixed_rows(self):
+        from hermes_cli.session_export import iter_user_prompt_records
+
+        sessions = [
+            {"id": "s1", "messages": [
+                {"role": "user", "content": "healthy", "timestamp": 1700000000},
+                {"role": "user", "content": "broken", "timestamp": 1e30},
+            ]},
+        ]
+        records = list(iter_user_prompt_records(sessions))
+        assert [r["text"] for r in records] == ["healthy", "broken"]
+        assert records[0]["created_at"] == "2023-11-14T22:13:20Z"
+        assert records[1]["created_at"] == "1e+30"
+
+    def test_valid_timestamps_unchanged(self):
+        from hermes_cli.session_export import _format_timestamp
+
+        assert _format_timestamp(1700000000) == "2023-11-14T22:13:20Z"
+        assert _format_timestamp(None) is None

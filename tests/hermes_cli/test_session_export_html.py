@@ -76,3 +76,28 @@ def test_single_session_untitled_coalesces_none_title_and_model():
     # Model meta falls back instead of rendering the literal "None".
     assert "<strong>Model:</strong> Unknown" in html
     assert "<strong>Model:</strong> None" not in html
+
+
+class TestCorruptTimestamps:
+    """#102352: corrupt timestamps degrade to the raw value."""
+
+    def test_out_of_range_falls_back_to_raw(self):
+        from hermes_cli.session_export_html import _format_timestamp
+
+        assert _format_timestamp(1e30) == "1e+30"
+
+    def test_valid_and_empty_unchanged(self):
+        from hermes_cli.session_export_html import _format_timestamp
+
+        assert _format_timestamp(0) == "N/A"
+        assert _format_timestamp(1700000000) == "2023-11-14 22:13:20"
+
+    def test_tag_shaped_timestamp_is_escaped_at_sinks(self):
+        from hermes_cli.session_export_html import _generate_messages_html
+
+        evil = "<script>alert(1)</script>"
+        html = _generate_messages_html(
+            [{"role": "user", "content": "hi", "timestamp": evil}]
+        )
+        assert evil not in html
+        assert "&lt;script&gt;" in html

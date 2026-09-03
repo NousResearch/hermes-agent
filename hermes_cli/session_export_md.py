@@ -26,7 +26,12 @@ def _iso_timestamp(value: Any) -> str:
         ts = float(value)
     except (TypeError, ValueError):
         return str(value)
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, ValueError, OSError):
+        # Corrupt timestamps must degrade to the raw value, never abort
+        # the whole export (#102352).
+        return str(value)
 
 
 def _frontmatter_value(value: Any) -> str:

@@ -156,6 +156,27 @@ BOARD_COLUMNS: list[str] = [
 _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
+def _current_run_started_at_map(
+    conn: sqlite3.Connection,
+    task_ids: list[str],
+) -> dict[str, Any]:
+    """Map task id -> started_at of its *current* run (active attempt).
+
+    ``tasks.started_at`` records the first attempt and survives reclaims;
+    the card/drawer clock must describe the active attempt instead.
+    """
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    rows = conn.execute(
+        "SELECT t.id AS task_id, r.started_at AS started_at "
+        f"FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+        f"WHERE t.status = 'running' AND t.id IN ({placeholders})",
+        list(task_ids),
+    ).fetchall()
+    return {row["task_id"]: row["started_at"] for row in rows}
+
+
 def _task_dict(
     task: kanban_db.Task,
     *,
@@ -461,6 +482,7 @@ def get_board(
         # for boards with hundreds of tasks). Truncated to a card-size
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
+        current_run_starts = _current_run_started_at_map(conn, [t.id for t in tasks])
 
         for t in tasks:
             full = summary_map.get(t.id)
@@ -468,6 +490,10 @@ def get_board(
                 full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None
             )
             d = _task_dict(t, latest_summary=preview)
+            if t.id in current_run_starts:
+                # The card clock describes the active attempt, not the first
+                # attempt retained on tasks.started_at across reclaims.
+                d["started_at"] = current_run_starts[t.id]
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -549,6 +575,10 @@ def get_task(
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
         task_d = _task_dict(task, latest_summary=full_summary)
+        if task_id in (current_run_starts := _current_run_started_at_map(conn, [task_id])):
+            # The drawer clock must agree with the card: describe the active
+            # attempt, not the first attempt retained on tasks.started_at.
+            task_d["started_at"] = current_run_starts[task_id]
         links = _links_for(conn, task_id)
         child_ids = links["children"]
         child_summaries = kanban_db.latest_summaries(conn, child_ids)

@@ -1797,6 +1797,28 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
         _log_safe_path(str(candidate)),
         reason,
         f", session_key={session_key}" if session_key else "",
+   )
+
+
+def _warn_unresolved_media_delivery_path(
+    path: str, session_key: str, reason: str, *, kind: str = "media delivery path"
+) -> None:
+    """Name WHY a host-side MEDIA path was rejected for native delivery (#100074).
+
+    Generalizes the #93950 pattern (``_warn_unresolved_docker_media``) to
+    host-side rejections: only reasons prefixed with ``blocked`` are security
+    decisions, while the common case (the file does not exist) is logged with
+    its actual cause so operators look for a missing file instead of auditing
+    security configuration.
+    """
+    blocked = reason.startswith("blocked")
+    logger.warning(
+        "Skipping%s %s %s: %s%s",
+        " unsafe" if blocked else "",
+        kind,
+        _log_safe_path(path),
+        reason,
+        f", session_key={session_key}" if session_key else "",
     )
 
 
@@ -1876,6 +1898,22 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
 def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
     """Return a safe absolute file path for native media delivery, else None.
 
+    Convenience wrapper around ``_validate_media_delivery_path_with_reason``
+    that discards the rejection reason; callers that log *why* a path was
+    dropped (e.g. "file not found" vs "blocked") should use the internal
+    variant so the wording reflects the actual cause (#100074).
+    """
+    safe_path, _reason = _validate_media_delivery_path_with_reason(
+        path, session_key=session_key
+    )
+    return safe_path
+
+
+def _validate_media_delivery_path_with_reason(
+    path: str, session_key: str = ""
+) -> Tuple[Optional[str], str]:
+    """Return a safe absolute file path for native media delivery, else None.
+
     Default mode (single-user / private gateway): accept any existing regular
     file that isn't under the credential / system-path denylist
     (``_MEDIA_DELIVERY_DENIED_PREFIXES`` + ``~/.ssh``, ``~/.aws``, etc.).
@@ -1892,24 +1930,29 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     host's secrets to that same user.
 
     Symlinks are resolved before any containment / denylist check.
+
+    Returns ``(safe_path, "")`` on acceptance, or ``(None, reason)`` where
+    ``reason`` names the actual cause -- "file not found" for a missing
+    file, "blocked: ..." for a security decision -- so callers can log
+    accurate wording instead of labeling every rejection unsafe (#100074).
     """
     if not path:
-        return None
+        return None, "empty path"
 
     candidate = str(path).strip()
     if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
         candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
-        return None
+        return None, "empty path"
 
     try:
         expanded = Path(os.path.expanduser(candidate))
     except (OSError, RuntimeError, ValueError):
         # expanduser raises ValueError("embedded null byte") for a ~\x00 path.
-        return None
+        return None, "invalid path"
     if not expanded.is_absolute():
-        return None
+        return None, "not an absolute path"
 
     # Docker agents emit MEDIA:/workspace/... (or other configured container
     # mount paths). Resolve those to host paths before the normal host-side
@@ -1921,10 +1964,10 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         try:
             resolved = expanded.resolve(strict=True)
         except (OSError, RuntimeError, ValueError):
-            return None
+            return None, "file not found"
 
     if not resolved.is_file():
-        return None
+        return None, "not a regular file"
 
     # Cache / operator allowlist is always honored — these are unconditionally
     # trusted regardless of mode.
@@ -1934,7 +1977,7 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         except (OSError, RuntimeError, ValueError):
             continue
         if _path_is_within(resolved, resolved_root):
-            return str(resolved)
+            return str(resolved), ""
 
     # Non-strict mode (default): accept anything not on the denylist.
     # The denylist still blocks /etc, /proc, ~/.ssh, ~/.aws, and the
@@ -1945,8 +1988,8 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     # ``MEDIA:~/.hermes/google_token.json``) remain rejected.
     if not _media_delivery_strict_mode():
         if _path_under_denied_prefix(resolved):
-            return None
-        return str(resolved)
+            return None, "blocked: path under a credential/system-path denylist"
+        return str(resolved), ""
 
     # Strict mode: fall back to recency-based trust for freshly-produced
     # files (e.g. ``pandoc -o /tmp/report.pdf`` or
@@ -1956,9 +1999,9 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
     window = _media_delivery_recency_seconds()
     if window > 0 and not _path_under_denied_prefix(resolved):
         if _file_is_recently_produced(resolved, window):
-            return str(resolved)
+            return str(resolved), ""
 
-    return None
+    return None, "blocked: not under an allowed media root and not recently produced (strict mode)"
 
 
 # Neutralise control chars and the Unicode line separators (NEL, LS, PS) that
@@ -5161,11 +5204,13 @@ class BasePlatformAdapter(ABC):
         safe_media: List[Tuple[str, bool]] = []
         for media_path, is_voice in media_files or []:
             raw = str(media_path)
-            safe_path = validate_media_delivery_path(raw, session_key=session_key)
+            safe_path, reason = _validate_media_delivery_path_with_reason(raw, session_key=session_key)
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path: %s", _log_safe_path(raw))
+                _warn_unresolved_media_delivery_path(
+                    raw, session_key, reason, kind="MEDIA directive path"
+                )
         return safe_media
 
     @staticmethod
@@ -5174,11 +5219,13 @@ class BasePlatformAdapter(ABC):
         safe_paths: List[str] = []
         for file_path in file_paths or []:
             raw = str(file_path)
-            safe_path = validate_media_delivery_path(raw, session_key=session_key)
+            safe_path, reason = _validate_media_delivery_path_with_reason(raw, session_key=session_key)
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
+                _warn_unresolved_media_delivery_path(
+                    raw, session_key, reason, kind="local file path"
+                )
         return safe_paths
 
 

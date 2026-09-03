@@ -1213,6 +1213,42 @@ class TestProxyKwargsForAiohttp:
 class TestMediaDeliveryDiagnosability:
     """Diagnosable rejection logging + crafted-path robustness (#33251)."""
 
+    def test_missing_file_logs_not_found_not_unsafe(self, tmp_path, monkeypatch, caplog):
+        """A nonexistent path is logged as 'file not found', not as 'unsafe'."""
+        import logging
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        missing = tmp_path / "nope.png"
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_media_delivery_paths([(str(missing), False)])
+        assert out == []
+        assert "file not found" in caplog.text
+        assert "unsafe" not in caplog.text
+
+    def test_blocked_path_logs_unsafe_blocked(self, tmp_path, monkeypatch, caplog):
+        """A path blocked by strict mode is logged with 'unsafe' and 'blocked'."""
+        import logging
+        outside = tmp_path / "outside.ogg"
+        outside.write_bytes(b"OggS")
+        with patch.dict(os.environ, {"HERMES_MEDIA_DELIVERY_STRICT": "1",
+                                     "HERMES_MEDIA_TRUST_RECENT_FILES": "0"}), \
+                patch("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", ()):
+            with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+                out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
+        assert out == []
+        assert "unsafe" in caplog.text
+        assert "blocked" in caplog.text
+
+    def test_filter_local_missing_logs_not_found(self, tmp_path, monkeypatch, caplog):
+        """Filter_local_delivery_paths also logs accurate wording for a missing file."""
+        import logging
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        missing = tmp_path / "nope.txt"
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            out = BasePlatformAdapter.filter_local_delivery_paths([str(missing)])
+        assert out == []
+        assert "local file path" in caplog.text
+        assert "file not found" in caplog.text
+
     def test_rejected_path_appears_in_log(self, tmp_path, caplog):
         outside = tmp_path / "outside.ogg"
         outside.write_bytes(b"OggS")

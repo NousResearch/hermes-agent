@@ -3334,18 +3334,57 @@ def run_doctor(args):
     elif _active_memory_provider == "mem0":
         try:
             from plugins.memory.mem0 import _load_config as _load_mem0_config
+            from plugins.memory.mem0 import _lazy_installs_enabled as _mem0_lazy_ok
+            from plugins.memory.mem0 import _mem0_sdk_installed as _mem0_sdk_ok
             mem0_cfg = _load_mem0_config()
             mem0_key = mem0_cfg.get("api_key", "")
-            if mem0_key:
-                check_ok("Mem0 API key configured")
-                check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+            mem0_host = mem0_cfg.get("host", "")
+            mem0_mode = mem0_cfg.get("mode", "platform")
+            # Mirror is_available(): OSS needs a vector store, self-hosted
+            # uses its HTTP endpoint directly, and platform needs an API key.
+            if mem0_mode == "oss":
+                config_ok = bool(mem0_cfg.get("oss", {}).get("vector_store"))
+                success_label = "Mem0 OSS vector store configured"
+                missing_label = "Mem0 OSS vector store not configured"
+                missing_hint = "run hermes memory setup to configure an OSS vector store"
+                missing_issue = "Mem0 is set to OSS mode but no vector store is configured"
+                sdk_required = True
+            elif mem0_host:
+                config_ok = True
+                success_label = "Mem0 self-hosted endpoint configured"
+                missing_label = "Mem0 self-hosted endpoint not configured"
+                missing_hint = "set MEM0_HOST in .env or run hermes memory setup"
+                missing_issue = "Mem0 is set to self-hosted mode but MEM0_HOST is missing"
+                sdk_required = False
             else:
+                config_ok = bool(mem0_key)
+                success_label = "Mem0 API key configured"
+                missing_label = "Mem0 API key not set"
+                missing_hint = "set MEM0_API_KEY in .env or run hermes memory setup"
+                missing_issue = "Mem0 is set as memory provider but API key is missing"
+                sdk_required = True
+            if not config_ok:
                 _fail_and_issue(
-                    "Mem0 API key not set",
-                    "(set MEM0_API_KEY in .env or run hermes memory setup)",
-                    "Mem0 is set as memory provider but API key is missing",
+                    missing_label,
+                    missing_hint,
+                    missing_issue,
                     issues,
                 )
+            elif sdk_required and not _mem0_lazy_ok() and not _mem0_sdk_ok():
+                # Config is present but the SDK is not installed and cannot
+                # be lazy-installed (security.allow_lazy_installs=false or
+                # sealed Docker venv). Same false-positive as #70979 in
+                # is_available() — the doctor must not claim "configured"
+                # when the provider can never initialize.
+                _fail_and_issue(
+                    "Mem0 SDK not installed",
+                    "pip install mem0ai",
+                    "Mem0 is configured but the mem0ai SDK is not installed and lazy installs are disabled",
+                    issues,
+                )
+            else:
+                check_ok(success_label)
+                check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
         except ImportError:
             _fail_and_issue(
                 "Mem0 plugin not loadable",

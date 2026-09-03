@@ -376,6 +376,77 @@ class TestDoctorMemoryProviderSection:
         assert "USER.md exists" not in out
         assert ("Built-in memory files disabled by config" in out) is not memory_enabled
 
+    def test_mem0_sdk_missing_and_lazy_disabled_shows_fail(self, monkeypatch, tmp_path):
+        """When mem0 config is present but the SDK is not installed and lazy
+        installs are disabled, doctor must report the SDK failure — not
+        'API key configured' (#70979 sibling path in doctor.py)."""
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        # Stub the lazy-install check and SDK probe at the source module
+        # so doctor's imports of the helpers see the stubbed values.
+        import plugins.memory.mem0 as _mem0_mod
+        monkeypatch.setattr(_mem0_mod, "_lazy_installs_enabled", lambda: False)
+        monkeypatch.setattr(_mem0_mod, "_mem0_sdk_installed", lambda: False)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+        assert "Mem0 SDK not installed" in out
+        assert "Mem0 API key configured" not in out
+
+    def test_mem0_sdk_missing_but_lazy_enabled_shows_ok(self, monkeypatch, tmp_path):
+        """When lazy installs are enabled, doctor should report config OK
+        even if the SDK is not yet installed — it will be installed on
+        demand. This is the chicken-and-egg guard."""
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        monkeypatch.delenv("MEM0_HOST", raising=False)
+        import plugins.memory.mem0 as _mem0_mod
+        monkeypatch.setattr(_mem0_mod, "_lazy_installs_enabled", lambda: True)
+        monkeypatch.setattr(_mem0_mod, "_mem0_sdk_installed", lambda: False)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+        assert "Mem0 API key configured" in out
+        assert "Mem0 SDK not installed" not in out
+
+    def test_mem0_self_hosted_without_api_key_or_sdk_shows_ok(self, monkeypatch, tmp_path):
+        """Self-hosted Mem0 uses its HTTP endpoint without the mem0ai SDK."""
+        monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        monkeypatch.setenv("MEM0_HOST", "http://localhost:8888")
+        import plugins.memory.mem0 as _mem0_mod
+        monkeypatch.setattr(_mem0_mod, "_lazy_installs_enabled", lambda: False)
+        monkeypatch.setattr(_mem0_mod, "_mem0_sdk_installed", lambda: False)
+
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+
+        assert "Mem0 self-hosted endpoint configured" in out
+        assert "Mem0 API key configured" not in out
+        assert "Mem0 SDK not installed" not in out
+
+    def test_mem0_oss_vector_store_shows_mode_specific_success(self, monkeypatch, tmp_path):
+        """A valid OSS setup must not be described as an API-key setup."""
+        home = self._make_hermes_home(tmp_path, provider="mem0")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "mem0.json").write_text(
+            '{"mode": "oss", "oss": {"vector_store": {"provider": "qdrant"}}}'
+        )
+        import plugins.memory.mem0 as _mem0_mod
+        monkeypatch.setattr(_mem0_mod, "_lazy_installs_enabled", lambda: True)
+        monkeypatch.setattr(_mem0_mod, "_mem0_sdk_installed", lambda: False)
+
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+
+        assert "Mem0 OSS vector store configured" in out
+        assert "Mem0 API key configured" not in out
+        assert "Mem0 SDK not installed" not in out
+
+    def test_mem0_oss_without_vector_store_shows_oss_remediation(self, monkeypatch, tmp_path):
+        """Missing OSS config should never point users at MEM0_API_KEY."""
+        home = self._make_hermes_home(tmp_path, provider="mem0")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "mem0.json").write_text('{"mode": "oss", "oss": {}}')
+
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+
+        assert "Mem0 OSS vector store not configured" in out
+        assert "configure an OSS vector store" in out
+        assert "MEM0_API_KEY" not in out
+
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()

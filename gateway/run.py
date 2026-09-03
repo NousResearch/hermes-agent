@@ -21222,6 +21222,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
+        _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         # One audit implementation for both paths (#101866): the idle path
         # previously carried its own inline copy of this line.
         from gateway.inbound_context import log_inbound_reply_context

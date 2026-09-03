@@ -13809,6 +13809,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     msg["tool_calls"] = []
             if msg.get("display_metadata") is not None:
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+            if msg.get("reasoning_details"):
+                try:
+                    msg["reasoning_details"] = json.loads(msg["reasoning_details"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["reasoning_details"] = None
+            if msg.get("codex_reasoning_items"):
+                try:
+                    msg["codex_reasoning_items"] = json.loads(msg["codex_reasoning_items"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["codex_reasoning_items"] = None
+            if msg.get("codex_message_items"):
+                try:
+                    msg["codex_message_items"] = json.loads(msg["codex_message_items"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["codex_message_items"] = None
             result.append(msg)
         return result
 
@@ -13905,6 +13920,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     msg["tool_calls"] = []
             if msg.get("display_metadata") is not None:
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
+            if msg.get("reasoning_details"):
+                try:
+                    msg["reasoning_details"] = json.loads(msg["reasoning_details"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["reasoning_details"] = None
+            if msg.get("codex_reasoning_items"):
+                try:
+                    msg["codex_reasoning_items"] = json.loads(msg["codex_reasoning_items"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["codex_reasoning_items"] = None
+            if msg.get("codex_message_items"):
+                try:
+                    msg["codex_message_items"] = json.loads(msg["codex_message_items"])
+                except (json.JSONDecodeError, TypeError):
+                    msg["codex_message_items"] = None
             result.append(msg)
 
         # before_rows includes the anchor itself; subtract 1 for the count of

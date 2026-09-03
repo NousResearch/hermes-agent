@@ -603,13 +603,41 @@ class TestMessageStorage:
     def test_append_and_get_messages(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")
-        db.append_message("s1", role="assistant", content="Hi there!")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hi there!",
+            reasoning_details=[{"type": "thought", "text": "let me think"}],
+            codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
+            codex_message_items=[{"id": "m1", "type": "commentary"}],
+        )
 
         messages = db.get_messages("s1")
         assert len(messages) == 2
         assert messages[0]["role"] == "user"
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
+        assert messages[1]["reasoning_details"] == [{"type": "thought", "text": "let me think"}]
+        assert messages[1]["codex_reasoning_items"] == [{"id": "r1", "type": "reasoning"}]
+        assert messages[1]["codex_message_items"] == [{"id": "m1", "type": "commentary"}]
+
+    def test_get_messages_around_deserializes_structured_fields(self, db):
+        db.create_session(session_id="s_around", source="cli")
+        row_id = db.append_message(
+            "s_around",
+            role="assistant",
+            content="Thinking answer",
+            reasoning_details=[{"type": "thought", "text": "deep thought"}],
+            codex_reasoning_items=[{"id": "cr1"}],
+            codex_message_items=[{"id": "cm1"}],
+        )
+
+        around = db.get_messages_around("s_around", around_message_id=row_id, window=2)
+        assert len(around["window"]) == 1
+        msg = around["window"][0]
+        assert msg["reasoning_details"] == [{"type": "thought", "text": "deep thought"}]
+        assert msg["codex_reasoning_items"] == [{"id": "cr1"}]
+        assert msg["codex_message_items"] == [{"id": "cm1"}]
 
 
 
@@ -903,10 +931,11 @@ class TestFTS5Search:
         db.append_message("s1", role="user", content="after")
 
         statements = []
-        read_conn = db._get_read_conn() or db._conn
+        read_conn = db._checkout_read_conn()
         traced_connections = [db._conn]
-        if read_conn is not db._conn:
+        if read_conn is not None:
             traced_connections.append(read_conn)
+            db._read_pool.put_nowait(read_conn)
         for conn in traced_connections:
             conn.set_trace_callback(statements.append)
 

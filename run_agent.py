@@ -9688,7 +9688,7 @@ class AIAgent:
                         return durable_turn_lease_turn_active
 
                 def _refresh_durable_turn_lease():
-                    # One periodic tick on the shared scheduler thread every
+                    # One isolated tick dispatched by the shared scheduler every
                     # _lease_refresh_interval; returning False stops it.
                     if durable_turn_lease_stop.is_set():
                         return False

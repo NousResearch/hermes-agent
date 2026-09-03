@@ -2,9 +2,10 @@
 
 Replaces the per-child ``while not stop.wait(interval): body()`` daemon
 threads (delegate heartbeat, durable turn-lease refresher, turn-liveness
-watchdog).  With ~130 in-process subagents those added 2-3 sleeping OS
-threads per child; this module runs every periodic body on ONE daemon
-thread ordered by a heap of due times.
+watchdog). With ~130 in-process subagents those added 2-3 sleeping OS
+threads per child. One daemon scheduler owns the heap of due times; each due
+body runs on a per-handle daemon worker so a blocking callback cannot starve
+unrelated lease or liveness timers. A handle never overlaps itself.
 
 Semantics match the loop they replace: the first call happens ``interval``
 seconds after :func:`schedule`, and each following call ``interval`` seconds
@@ -26,18 +27,26 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 _THREAD_NAME = "hermes-periodic-scheduler"
+_CALLBACK_THREAD_PREFIX = "hermes-periodic-callback"
 
 
 class ScheduledHandle:
     """Cancel token for one scheduled periodic callback."""
 
-    __slots__ = ("_fn", "_interval", "_cancelled", "_scheduler")
+    __slots__ = (
+        "_fn",
+        "_interval",
+        "_cancelled",
+        "_scheduler",
+        "_runner_thread",
+    )
 
     def __init__(self, scheduler: "PeriodicScheduler", fn: Callable[[], object], interval: float):
         self._scheduler = scheduler
         self._fn = fn
         self._interval = interval
         self._cancelled = False
+        self._runner_thread: Optional[threading.Thread] = None
 
     @property
     def cancelled(self) -> bool:
@@ -56,7 +65,6 @@ class PeriodicScheduler:
         self._heap: list = []  # (due, seq, handle)
         self._seq = itertools.count()
         self._thread: Optional[threading.Thread] = None
-        self._running: Optional[ScheduledHandle] = None
 
     def schedule(self, fn: Callable[[], object], interval: float) -> ScheduledHandle:
         handle = ScheduledHandle(self, fn, float(interval))
@@ -72,8 +80,30 @@ class PeriodicScheduler:
         with self._cond:
             handle._cancelled = True
             self._cond.notify()
-            if wait and self._running is handle and threading.current_thread() is not self._thread:
-                self._cond.wait_for(lambda: self._running is not handle, timeout=wait)
+            runner = handle._runner_thread
+            if wait and runner is not None and threading.current_thread() is not runner:
+                self._cond.wait_for(
+                    lambda: handle._runner_thread is None,
+                    timeout=wait,
+                )
+
+    def _run_callback(self, handle: ScheduledHandle) -> None:
+        stop = False
+        try:
+            stop = handle._fn() is False
+        except Exception:
+            logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
+        finally:
+            with self._cond:
+                handle._runner_thread = None
+                if stop:
+                    handle._cancelled = True
+                elif not handle._cancelled:
+                    heapq.heappush(
+                        self._heap,
+                        (time.monotonic() + handle._interval, next(self._seq), handle),
+                    )
+                self._cond.notify_all()
 
     def _run(self) -> None:
         while True:
@@ -91,28 +121,31 @@ class PeriodicScheduler:
                         self._cond.wait(delay)
                         continue
                     heapq.heappop(self._heap)
-                    self._running = handle
-                    break
-            stop = False
-            try:
-                stop = handle._fn() is False
-            except Exception:
-                logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
-            with self._cond:
-                self._running = None
-                if stop:
-                    handle._cancelled = True
-                elif not handle._cancelled:
-                    heapq.heappush(
-                        self._heap,
-                        (time.monotonic() + handle._interval, next(self._seq), handle),
+                    runner = threading.Thread(
+                        target=self._run_callback,
+                        args=(handle,),
+                        name=f"{_CALLBACK_THREAD_PREFIX}-{id(handle):x}",
+                        daemon=True,
                     )
-                self._cond.notify_all()
+                    handle._runner_thread = runner
+                    try:
+                        runner.start()
+                    except Exception:
+                        handle._runner_thread = None
+                        handle._cancelled = True
+                        logger.debug(
+                            "failed to start periodic callback worker %r",
+                            handle._fn,
+                            exc_info=True,
+                        )
+                        self._cond.notify_all()
+                        continue
+                    break
 
 
 _DEFAULT = PeriodicScheduler()
 
 
 def schedule(fn: Callable[[], object], interval: float) -> ScheduledHandle:
-    """Run ``fn()`` every ``interval`` seconds on the shared scheduler thread."""
+    """Run ``fn()`` periodically through the shared timer scheduler."""
     return _DEFAULT.schedule(fn, interval)

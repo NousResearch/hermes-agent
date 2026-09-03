@@ -1,4 +1,4 @@
-"""agent/periodic_scheduler: one shared thread runs every periodic timer."""
+"""agent/periodic_scheduler: one timer thread dispatches isolated callbacks."""
 
 import threading
 import time
@@ -24,7 +24,7 @@ def test_two_intervals_fire_proportionally_and_cancel_stops_one():
 
     assert _wait_until(lambda: len(slow) >= 3)
     assert len(fast) > len(slow)  # 5x interval ratio -> clearly more fast ticks
-    # Both ran on this scheduler's single thread, not on new threads.
+    # Scheduling another timer creates no persistent per-handle thread.
     before = threading.active_count()
     sched.schedule(lambda: None, 0.01).cancel()
     assert threading.active_count() == before
@@ -51,6 +51,57 @@ def test_raising_callback_is_rescheduled_and_does_not_kill_sibling():
     assert _wait_until(lambda: len(boom) >= 3 and len(ok) >= 3)
     h1.cancel()
     h2.cancel()
+
+
+def test_blocking_callback_does_not_starve_sibling():
+    sched = PeriodicScheduler()
+    entered = threading.Event()
+    release = threading.Event()
+    sibling_fired = threading.Event()
+
+    def blocking():
+        entered.set()
+        release.wait(2.0)
+
+    blocked = sched.schedule(blocking, 0.01)
+    sibling = sched.schedule(sibling_fired.set, 0.02)
+    try:
+        assert entered.wait(2.0)
+        assert sibling_fired.wait(0.5), (
+            "one blocked periodic callback starved an unrelated sibling"
+        )
+    finally:
+        release.set()
+        blocked.cancel(wait=2.0)
+        sibling.cancel(wait=2.0)
+
+
+def test_slow_callback_never_overlaps_itself():
+    sched = PeriodicScheduler()
+    lock = threading.Lock()
+    second_run_finished = threading.Event()
+    running = 0
+    peak_running = 0
+    completed = 0
+
+    def slow():
+        nonlocal running, peak_running, completed
+        with lock:
+            running += 1
+            peak_running = max(peak_running, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+            completed += 1
+            if completed >= 2:
+                second_run_finished.set()
+
+    handle = sched.schedule(slow, 0.01)
+    try:
+        assert second_run_finished.wait(2.0)
+        assert peak_running == 1
+    finally:
+        handle.cancel(wait=2.0)
 
 
 def test_returning_false_stops_callback_and_cancel_wait_joins_inflight():

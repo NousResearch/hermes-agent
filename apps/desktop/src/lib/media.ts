@@ -221,6 +221,44 @@ export async function downloadGatewayMediaFile(
   })
 }
 
+/**
+ * Open a delivered media path the way the current connection allows.
+ *
+ * On a remote gateway the file lives on the GATEWAY's disk, not this machine,
+ * so `file://` is meaningless here: Electron's shell silently refuses it and
+ * the click appears to do nothing. `mediaExternalUrl()` only avoids that when
+ * the connection exposes a renderer-visible `token` it can put in a
+ * `?token=` download URL — an OAuth/gated remote deliberately exposes none, so
+ * it degrades to exactly that dead `file://` path.
+ *
+ * Route every remote open through the authenticated save bridge instead (the
+ * same one the Files rail uses), which fetches the bytes over the connection
+ * and lands them on the user's machine. Local mode and http(s) URLs keep the
+ * previous shell behaviour.
+ */
+export async function openMediaFileExternally(path: string): Promise<void> {
+  if (/^https?:/i.test(path)) {
+    await window.hermesDesktop?.openExternal(path)
+
+    return
+  }
+
+  // Gate on the connection alone, NOT on the bridge being present. Requiring
+  // `window.hermesDesktop` here would send a remote path down the local branch
+  // whenever the bridge is missing — reinstating the dead `file://` open this
+  // function exists to remove. `downloadGatewayMediaFile()` raises an explicit
+  // "bridge is unavailable" error instead, which the caller surfaces.
+  if (isRemoteGateway()) {
+    await downloadGatewayMediaFile(path)
+
+    return
+  }
+
+  // Local mode only: the file really is on this machine, so `mediaExternalUrl()`
+  // resolves to a `file://` the shell can open.
+  await window.hermesDesktop?.openExternal(mediaExternalUrl(path))
+}
+
 export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)

@@ -10,6 +10,7 @@ import {
   isRemoteGateway,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
+  openMediaFileExternally,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
@@ -265,6 +266,103 @@ describe('downloadGatewayMediaFile', () => {
 
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
+    )
+  })
+})
+
+describe('openMediaFileExternally', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  // A token-bearing remote can mint an authenticated ?token= download URL, so
+  // the shell open still resolves on the gateway.
+  it('opens a token remote gateway path via the authenticated download URL', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, saveGatewayFile } })
+    $connection.set({ baseUrl: 'https://gw', mode: 'remote', token: 'secret' } as never)
+
+    await openMediaFileExternally('/srv/out/a.png')
+
+    expect(saveGatewayFile).toHaveBeenCalledTimes(1)
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  // The regression: an OAuth/gated remote exposes no renderer token, so
+  // mediaExternalUrl() degrades to file:///srv/... — a path on the GATEWAY.
+  // Handing that to the shell silently does nothing on the user's machine.
+  it('never hands a gateway-local file:// path to the shell on an OAuth remote', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, saveGatewayFile } })
+    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'default', token: null } as never)
+
+    await openMediaFileExternally('/srv/merittas/report.png')
+
+    expect(saveGatewayFile).toHaveBeenCalledWith({
+      path: '/srv/merittas/report.png',
+      profile: 'default',
+      suggestedName: 'report.png'
+    })
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('opens local-mode paths with the shell as before', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, saveGatewayFile } })
+    $connection.set({ mode: 'local' } as never)
+
+    await openMediaFileExternally('/Users/me/a.png')
+
+    expect(openExternal).toHaveBeenCalledWith('file:///Users/me/a.png')
+    expect(saveGatewayFile).not.toHaveBeenCalled()
+  })
+
+  it('passes http(s) URLs straight to the shell in any mode', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    const saveGatewayFile = vi.fn(async () => ({ saved: true }))
+
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, saveGatewayFile } })
+    $connection.set({ authMode: 'oauth', mode: 'remote', token: null } as never)
+
+    await openMediaFileExternally('https://example.com/a.png')
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/a.png')
+    expect(saveGatewayFile).not.toHaveBeenCalled()
+  })
+
+  // A failed remote fetch must reject so the caller can surface it. Swallowing
+  // it here would restore the silent no-op this fix exists to remove.
+  it('rejects instead of failing silently when the remote fetch fails', async () => {
+    const openExternal = vi.fn(async () => undefined)
+
+    const saveGatewayFile = vi.fn(async () => {
+      throw new Error('gateway read failed')
+    })
+
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, saveGatewayFile } })
+    $connection.set({ authMode: 'oauth', mode: 'remote', token: null } as never)
+
+    await expect(openMediaFileExternally('/srv/out/a.png')).rejects.toThrow('gateway read failed')
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  // Gating the remote branch on the bridge's presence would drop a remote path
+  // into the local `file://` branch when the bridge is absent entirely, and
+  // `?.` then resolves to undefined — the exact silent no-op this fix removes.
+  // A remote open with no bridge must be a loud failure, not a quiet success.
+  it('rejects rather than silently resolving for a remote path with no bridge', async () => {
+    vi.stubGlobal('window', {})
+    $connection.set({ authMode: 'oauth', mode: 'remote', token: null } as never)
+
+    await expect(openMediaFileExternally('/srv/out/a.png')).rejects.toThrow(
+      'Desktop file download bridge is unavailable'
     )
   })
 })

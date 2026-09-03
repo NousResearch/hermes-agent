@@ -8911,7 +8911,10 @@ def _restart_managed_dashboard_service(
     SIGTERM of the service's main PID as a clean stop, so ``Restart=on-failure``
     will not bring the dashboard back.
     """
-    if sys.platform == "win32":
+    # systemd-only. macOS/Windows/BSD have no hermes-dashboard unit; probing
+    # ``systemctl`` is FileNotFoundError (or a Homebrew binary that is not
+    # the host manager). Fail through to PID cleanup immediately (#101561).
+    if sys.platform != "linux" or not shutil.which("systemctl"):
         return False
 
     def _systemctl(*args: str, timeout: int = 10) -> subprocess.CompletedProcess:

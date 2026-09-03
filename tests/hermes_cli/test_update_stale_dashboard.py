@@ -310,6 +310,18 @@ class TestKillStaleDashboardWindows:
         assert "✓ stopped PID 12346" in out
 
 
+class TestRestartManagedDashboardSystemctl:
+    """Managed restart is systemd-only; missing systemctl must not be probed."""
+
+    def test_missing_systemctl_skips_probe(self, monkeypatch):
+        from hermes_cli import main
+
+        monkeypatch.setattr(main.shutil, "which", lambda _name: None)
+        with patch("subprocess.run") as mock_run:
+            assert main._restart_managed_dashboard_service("test") is False
+            mock_run.assert_not_called()
+
+
 class TestBackCompatAlias:
     """``_warn_stale_dashboard_processes`` is kept as an alias for the
     new kill function so old imports don't break."""
@@ -888,7 +900,7 @@ class TestPostUpdateStaleModuleReload:
 
         assert order == ["reload", "kill"]
 
-    def test_node_failures_skip_reload_and_kill(self):
+    def test_node_failures_skip_reload_and_kill(self, capsys):
         """A failed Node refresh leaves the running dashboard untouched —
         no reload, no kill (existing safety rule preserved)."""
         from hermes_cli import update_cmd
@@ -899,6 +911,7 @@ class TestPostUpdateStaleModuleReload:
 
         mock_reload.assert_not_called()
         mock_kill.assert_not_called()
+        assert "hermes dashboard --stop" in capsys.readouterr().out
 
     def test_reload_restores_missing_symbol(self):
         """Simulate the stale-module state: strip ``bounded_probe_run`` off

@@ -7533,8 +7533,8 @@ def _dashboard_code_skew_guard() -> Optional[str]:
     boot_rev, disk_rev = skew
     return (
         f"This process is running code from {boot_rev} but the checkout on "
-        f"disk is now {disk_rev}. The model picker would risk a stale-module "
-        f"crash — {_dashboard_skew_restart_hint()}"
+        f"disk is now {disk_rev} (pid={os.getpid()}). The model picker would "
+        f"risk a stale-module crash — {_dashboard_skew_restart_hint()}"
     )
 
 
@@ -7544,16 +7544,19 @@ def _dashboard_skew_restart_hint() -> str:
     The same FastAPI app backs the browser dashboard *and* Desktop-owned
     ``hermes serve --isolated`` (local or SSH). Hardcoding a systemd unit
     misleads macOS/launchd hosts and Desktop SSH backends, which have no
-    ``hermes-dashboard`` unit (#97046).
+    ``hermes-dashboard`` unit (#97046). Do not suggest ``hermes dashboard
+    --port`` while a leftover still holds the socket — that is EADDRINUSE
+    (#101561). Point at ``hermes dashboard --stop`` / ``hermes serve --stop``.
     """
     if os.environ.get("HERMES_SERVE_HEADLESS") == "1":
         return (
             "restart the Desktop-owned backend to load the new code "
-            "(use Restart backend in Hermes Desktop, or quit and reopen the app)"
+            "(use Restart backend in Hermes Desktop, quit and reopen the app, "
+            "or stop stale backends via: hermes serve --stop)"
         )
     return (
         "restart this Hermes process to load the new code "
-        "(hermes dashboard --port <port>, or the equivalent service restart for this install)"
+        "(stop stale backends with: hermes dashboard --stop, then start: hermes dashboard)"
     )
 
 

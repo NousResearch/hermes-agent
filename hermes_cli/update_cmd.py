@@ -1298,6 +1298,10 @@ def _finish_dashboard_update_cleanup(
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
         print("    Node.js dependency refresh did not complete.")
+        print(
+            "    If the model picker reports code skew (503), stop stale "
+            "processes via: hermes dashboard --stop"
+        )
         return
 
     # The scan path lazy-imports symbols from _subprocess_compat; make sure

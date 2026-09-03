@@ -10,6 +10,7 @@ stale-module ImportError after ``hermes update``.
 
 import asyncio
 import contextlib
+import os
 
 import pytest
 
@@ -90,6 +91,9 @@ class TestDashboardCodeSkewGuard:
         assert "restart" in msg.lower()
         # Browser-dashboard path: never hardcode a Linux-only unit (#97046).
         assert "systemctl" not in msg
+        # Do not tell the user to bind --port while a leftover still holds it.
+        assert "hermes dashboard --stop" in msg
+        assert "--port" not in msg
 
     def test_serve_guard_message_points_at_desktop_backend(self, monkeypatch):
         from hermes_cli import web_server
@@ -101,6 +105,23 @@ class TestDashboardCodeSkewGuard:
         assert "Desktop-owned backend" in msg
         assert "systemctl" not in msg
         assert "hermes-dashboard" not in msg
+        assert "hermes serve --stop" in msg
+
+    def test_dashboard_guard_message_names_serving_pid(self, monkeypatch):
+        """#101561: recovery must address the process that served the 503.
+
+        Restarting gateway / only the Electron-owned child leaves an unmanaged
+        ``hermes dashboard`` answering the picker. The message has to name
+        *this* PID so recycle/stop can reap it.
+        """
+        import os
+
+        from hermes_cli import web_server
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+        msg = web_server._dashboard_code_skew_guard()
+        assert msg is not None
+        assert f"pid={os.getpid()}" in msg
 
 
 class TestModelOptionsSkewGuard:
@@ -130,6 +151,7 @@ class TestModelOptionsSkewGuard:
 
         assert excinfo.value.status_code == 503
         assert "restart" in str(excinfo.value.detail).lower()
+        assert f"pid={os.getpid()}" in str(excinfo.value.detail)
         # The stale-import crash site (the payload build) is never reached.
         assert payload_calls == []
 

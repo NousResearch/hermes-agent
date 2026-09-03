@@ -64,7 +64,13 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
+import {
+  canReapSkewServingPid,
+  listenPidsFromLsofT,
+  localLoopbackListenPort,
+  recycleOwnedBackend,
+  recycleOwnedBackendTarget
+} from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import {
   isHostKeyChangedBootFailure,
@@ -14954,16 +14960,94 @@ const hudIpc = registerHudIpc({
   }
 })
 
-ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+async function listenPidsOnTcpPort(port) {
+  try {
+    const stdout = await execText('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'])
+
+    return listenPidsFromLsofT(stdout)
+  } catch {
+    return []
+  }
+}
+
+async function currentLocalListenPort(profile) {
+  const target = recycleOwnedBackendTarget(profile, primaryProfileKey())
+
+  if (target === 'pool') {
+    const key = String(profile || '').trim()
+    const entry = backendPool.get(key)
+
+    if (Number.isInteger(entry?.port) && entry.port > 0) {
+      return entry.port
+    }
+
+    return localLoopbackListenPort(entry?.remoteBaseUrl)
+  }
+
+  const pending = backendConnectionState.getPromise()
+
+  if (!pending) {
+    return null
+  }
+
+  try {
+    const connection = await pending
+
+    return localLoopbackListenPort(connection?.baseUrl)
+  } catch {
+    return null
+  }
+}
+
+async function teardownSkewListenPort(port) {
+  if (!Number.isInteger(port) || port <= 0) {
+    return
+  }
+
+  for (const pid of await listenPidsOnTcpPort(port)) {
+    await teardownSkewServingPid(pid)
+  }
+}
+
+async function teardownSkewServingPid(pid) {
+  // Fail closed: only reap a live local hermes dashboard/serve. A remote SSH
+  // 503 pid must not be interpreted as a local kill target (#101561).
+  const command = Number.isInteger(pid) ? await backendCommandForPid(pid) : null
+
+  if (!canReapSkewServingPid(pid, { command, selfPid: process.pid })) {
+    return
+  }
+
+  try {
+    await stopOwnedBackend({
+      nonce: 'code-skew-serving',
+      pid,
+      profile: 'skew-recovery',
+      startMarker: pidOnlyStartMarker(pid)
+    })
+  } catch {
+    // Leftover refused to exit must not block owned-child recycle (#101561).
+  }
+}
+
+ipcMain.handle('hermes:backend:recycle', async (_event, profile, servingPid) => {
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
+  // #101561: also reap the leftover local dashboard/serve that actually
+  // served the 503 when it is not the Electron-owned child.
+  const recycleProfile = typeof profile === 'string' ? profile : ''
+
   await recycleOwnedBackend({
     notifyApplied: sendConnectionApplied,
     primaryProfile: primaryProfileKey(),
-    profile: typeof profile === 'string' ? profile : '',
+    profile: recycleProfile,
+    servingPid: Number.isInteger(servingPid) ? servingPid : undefined,
+    listenPort: Number.isInteger(servingPid) ? undefined : await currentLocalListenPort(recycleProfile),
     teardownPool: teardownPoolBackendAndWait,
     teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+    teardownServingPid: teardownSkewServingPid,
+    teardownListenPort: teardownSkewListenPort,
     teardownSsh: value => teardownSshConnection(value || null)
   })
 

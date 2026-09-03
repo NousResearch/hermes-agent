@@ -14,6 +14,30 @@ const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
+
+// kimi-k3 and other transcript-imitating models sometimes emit tool calls as
+// PROSE instead of structured tool_calls:
+// `Assistant called tool terminal (call_abc) with arguments: {"command": …}`.
+// Persisted as plain assistant text (tool_calls empty), it renders as an
+// unreadable raw-JSON wall. Fence the payload so it renders as a code block
+// and any `$` inside is never parsed as math.
+const TRANSCRIPT_TOOL_CALL_RE =
+  /(Assistant called tool \w+ \(call_[A-Za-z0-9_-]+\) with arguments:)\s*(\{[\s\S]*?)(?=\n\n(?:Tool result \(|User:|Assistant called tool)|$)/g
+
+// The matching "Tool result (call_…):" block — same transcript-imitation
+// shape, same raw-wall rendering problem.
+const TRANSCRIPT_TOOL_RESULT_RE =
+  /(Tool result \(call_[A-Za-z0-9_-]+\):)\s*([\s\S]*?)(?=\n\n(?:User:|Assistant called tool)|$)/g
+
+// Leaked chat-template special tokens (`<|close|>`, `<|sep|>`) from models
+// whose gateway translation layer fails to strip them (observed on kimi-k3
+// via OmniRoute). They are never user-visible content.
+const CHAT_TEMPLATE_TOKEN_RE = /<\|(?:close|sep|start|end)\|>/g
+// Shell env vars (`$HOME`, `$PATH`, `${FOO}`) are prose, not math. With
+// singleDollarTextMath on, two `$HOME` in one message pair into a "math"
+// span and the `$` delimiters vanish from the render. Only ALL-CAPS
+// identifiers (2+ chars) match, so `$x^2$` and `$A$` still parse as math.
+const ENV_VAR_DOLLAR_RE = /(?<!\\)\$(?=\{?[A-Z_][A-Z0-9_]{1,})/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
 // exactly how escapeCurrencyDollarsPreservingMath marks a price, so the
@@ -152,6 +176,25 @@ function scrubBacktickNoise(text: string): string {
 
 function stripEmptyFenceBlocks(text: string): string {
   return text.replace(EMPTY_FENCE_BLOCK_RE, '$1')
+}
+
+/**
+ * Fence transcript-imitation tool-call/result blocks so they render as code
+ * instead of a raw JSON wall. Runs before the fence split, so the fences this
+ * inserts become structural for every later stage (math, prose rewrites).
+ */
+function fenceTranscriptToolBlocks(text: string): string {
+  return text
+    .replace(TRANSCRIPT_TOOL_CALL_RE, (_match, header: string, payload: string) => {
+      const body = payload.trimEnd()
+
+      return `${header}\n\n\`\`\`json\n${body}\n\`\`\`\n`
+    })
+    .replace(TRANSCRIPT_TOOL_RESULT_RE, (_match, header: string, payload: string) => {
+      const body = payload.trimEnd()
+
+      return `${header}\n\n\`\`\`text\n${body}\n\`\`\`\n`
+    })
 }
 
 function isUrlOnlyBlock(lines: string[]): boolean {
@@ -461,7 +504,17 @@ function normalizeProseMath(text: string): string {
   // hugging math the model emitted and the hugging math the rewrite produced.
   const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
 
-  return escapeCurrencyDollarsPreservingMath(normalized)
+  return escapeEnvVarDollars(escapeCurrencyDollarsPreservingMath(normalized))
+}
+
+/**
+ * Escape `$` that opens a shell env var (`$HOME`, `${PATH}`) so remark-math
+ * never pairs two of them into a phantom inline-math span. Runs after the
+ * currency pass; both mark prose dollars with `\$`, which MATH_SPAN_SPLIT_RE's
+ * `(?<!\\)` lookbehind already excludes from math.
+ */
+function escapeEnvVarDollars(text: string): string {
+  return text.replace(ENV_VAR_DOLLAR_RE, '\\$')
 }
 
 function extend(out: string[], lines: string[]) {
@@ -624,8 +677,13 @@ function normalizeFenceBlocks(text: string): string {
 }
 
 export function preprocessMarkdown(text: string): string {
-  const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
-  const scrubbed = scrubBacktickNoise(cleaned)
+  const cleaned = text
+    .replace(REASONING_BLOCK_RE, '')
+    .replace(PREVIEW_MARKER_RE, '')
+    .replace(CHAT_TEMPLATE_TOKEN_RE, '')
+
+  const fencedTranscript = fenceTranscriptToolBlocks(cleaned)
+  const scrubbed = scrubBacktickNoise(fencedTranscript)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
 

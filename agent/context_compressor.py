@@ -5026,6 +5026,64 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             logger.info("Lean tail: demoted %d stale tool result(s)", demoted)
         return result
 
+    def _build_chunk_digests(self, turns: List[Dict[str, Any]]) -> str:
+        """Map-reduce the compacted region into identifier-preserving digests.
+
+        Splits the region into ``_LEAN_DIGEST_CHUNK_CHARS`` chunks (capped at
+        ``_LEAN_DIGEST_MAX_CHUNKS`` — beyond that, earliest chunks are merged
+        coarser) and digests each with the compression LLM. Any chunk failure
+        degrades to a placeholder naming the message range; the whole call
+        never raises. Chunks run sequentially on the same transport as the
+        main summary.
+        """
+        text = _serialize_turns_for_digest(
+            turns, getattr(self, "_lean_pristine_tools", None),
+        )
+        if not text:
+            return ""
+        chunk_size = _LEAN_DIGEST_CHUNK_CHARS
+        n_chunks = max(1, (len(text) + chunk_size - 1) // chunk_size)
+        if n_chunks > _LEAN_DIGEST_MAX_CHUNKS:
+            chunk_size = (len(text) + _LEAN_DIGEST_MAX_CHUNKS - 1) // _LEAN_DIGEST_MAX_CHUNKS
+            n_chunks = _LEAN_DIGEST_MAX_CHUNKS
+        digests: list[str] = []
+        for ci in range(n_chunks):
+            segment = text[ci * chunk_size:(ci + 1) * chunk_size]
+            if not segment.strip():
+                continue
+            try:
+                from agent.auxiliary_client import call_llm
+
+                # During a stall-fallback retry, follow the summary onto the
+                # pinned healthy route (non-consuming read) instead of
+                # re-addressing the stalled task backend (#96634 follow-up).
+                resp = call_llm(
+                    messages=[{
+                        "role": "user",
+                        "content": _LEAN_DIGEST_PROMPT.format(segment=segment),
+                    }],
+                    task="compression",
+                    max_tokens=_LEAN_DIGEST_MAX_TOKENS,
+                    **attempt_summary_route_kwargs(),
+                )
+                body = (
+                    extract_content_or_reasoning(resp)
+                    if hasattr(resp, "choices") else str(resp)
+                ) or ""
+                from agent.agent_runtime_helpers import strip_think_blocks
+
+                body = strip_think_blocks(None, body).strip()
+            except Exception as exc:
+                logger.warning("lean chunk digest %d/%d failed: %s", ci + 1, n_chunks, exc)
+                body = f"[digest unavailable for segment {ci + 1}/{n_chunks} — recover via session_search]"
+            digests.append(f"### Segment {ci + 1}/{n_chunks}\n{body}")
+        if not digests:
+            return ""
+        return (
+            "\n\n" + _LEAN_DIGESTS_HEADING + "\n"
+            + "\n\n".join(digests)
+        )
+
     def _augment_summary_lean(
         self, summary: str, turns_to_summarize: List[Dict[str, Any]],
     ) -> str:

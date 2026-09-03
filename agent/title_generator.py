@@ -23,7 +23,7 @@ import re
 import threading
 from typing import Any, Callable, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
 
@@ -411,7 +411,7 @@ def generate_title(
             main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
         )
-        content = response.choices[0].message.content or ""
+        content = extract_content_or_reasoning(response) or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title
         # with many words is a model that ignored the task and answered

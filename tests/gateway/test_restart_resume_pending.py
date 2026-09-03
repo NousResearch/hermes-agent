@@ -233,6 +233,21 @@ class TestClearResumePending:
         # Not marked
         assert store.clear_resume_pending(entry.session_key) is False
 
+    def test_save_failure_restores_pending_marker(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        assert store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
+        marked_at = entry.last_resume_marked_at
+        store._save = MagicMock(side_effect=OSError("disk full"))
+
+        with pytest.raises(OSError, match="disk full"):
+            store.clear_resume_pending(entry.session_key)
+
+        assert entry.resume_pending is True
+        assert entry.resume_reason == "shutdown_timeout"
+        assert entry.last_resume_marked_at == marked_at
+
 
 # ---------------------------------------------------------------------------
 # SessionStore.get_or_create_session resume_pending behaviour
@@ -951,6 +966,406 @@ class TestStuckLoopEscalation:
         second = store.get_or_create_session(source)
         assert second.session_id != entry.session_id
         assert second.auto_reset_reason == "suspended"
+
+    @pytest.mark.asyncio
+    async def test_startup_auto_resume_attempts_eventually_suspend_after_sigkill(
+        self, tmp_path, monkeypatch
+    ):
+        """Crash-left resumes must be bounded even without graceful shutdown.
+
+        A SIGKILL never reaches ``stop()`` and therefore cannot increment the
+        shutdown-time restart counter.  Each actual startup auto-resume attempt
+        must persist an attempt itself so a long-running hang (whose restart
+        interval exceeds the global loop guard window) is eventually retired.
+        """
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        # Model the reported >1h hang: every inter-boot gap exceeds the global
+        # guard's 300s chain window, so that process-wide breaker never trips.
+        monkeypatch.setattr(
+            "gateway.restart_loop_guard.check_and_record", lambda *_a, **_k: False
+        )
+        source = make_restart_source(chat_id="sigkill-loop")
+        pending_entry = SessionEntry(
+            session_key="agent:main:telegram:dm:sigkill-loop",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+
+        for _attempt in range(GatewayRunner._STUCK_LOOP_THRESHOLD):
+            runner, adapter = make_restart_runner()
+            runner.session_store._entries = {pending_entry.session_key: pending_entry}
+            adapter.handle_message = AsyncMock()
+
+            assert runner._suspend_stuck_loop_sessions() == 0
+            assert runner._schedule_resume_pending_sessions() == 1
+            await asyncio.sleep(0)
+
+        final_runner, final_adapter = make_restart_runner()
+        final_runner.session_store._entries = {
+            pending_entry.session_key: pending_entry
+        }
+        final_adapter.handle_message = AsyncMock()
+
+        assert final_runner._suspend_stuck_loop_sessions() == 1
+        assert pending_entry.suspended is True
+        assert final_runner._schedule_resume_pending_sessions() == 0
+        final_adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_graceful_shutdown_does_not_double_count_startup_resume(
+        self, tmp_path, monkeypatch
+    ):
+        """One startup recovery counts once even when its process drains."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        monkeypatch.setattr(
+            "gateway.restart_loop_guard.check_and_record", lambda *_a, **_k: False
+        )
+        source = make_restart_source(chat_id="graceful-loop")
+        pending_entry = SessionEntry(
+            session_key="agent:main:telegram:dm:graceful-loop",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+
+        for attempt in range(1, GatewayRunner._STUCK_LOOP_THRESHOLD + 1):
+            runner, adapter = make_restart_runner()
+            runner.session_store._entries = {pending_entry.session_key: pending_entry}
+            gate = asyncio.Event()
+
+            async def hold_resume(_event):
+                await gate.wait()
+
+            adapter.handle_message = AsyncMock(side_effect=hold_resume)
+
+            assert runner._suspend_stuck_loop_sessions() == 0
+            assert runner._schedule_resume_pending_sessions() == 1
+            runner._increment_restart_failure_counts({pending_entry.session_key})
+
+            counts = json.loads(counts_file.read_text(encoding="utf-8"))
+            assert counts[pending_entry.session_key] == attempt
+            gate.set()
+            await asyncio.sleep(0)
+
+        final_runner, final_adapter = make_restart_runner()
+        final_runner.session_store._entries = {
+            pending_entry.session_key: pending_entry
+        }
+        final_adapter.handle_message = AsyncMock()
+
+        assert final_runner._suspend_stuck_loop_sessions() == 1
+        assert final_runner._schedule_resume_pending_sessions() == 0
+
+    @pytest.mark.asyncio
+    async def test_successful_startup_resume_restores_shutdown_accounting(
+        self, tmp_path, monkeypatch
+    ):
+        """A later ordinary active turn is counted after recovery succeeds."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, _adapter = make_restart_runner()
+        source = make_restart_source(chat_id="recovered")
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:recovered",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+
+        runner._record_startup_resume_attempt(entry.session_key)
+        await runner._clear_restart_failure_count(entry.session_key)
+        entry.resume_pending = False
+        runner._increment_restart_failure_counts({entry.session_key})
+
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        counts = json.loads(counts_file.read_text(encoding="utf-8"))
+        assert counts == {entry.session_key: 1}
+
+    @pytest.mark.asyncio
+    async def test_startup_resume_requires_persisted_attempt(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed attempt publication must prevent synthetic dispatch."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, adapter = make_restart_runner()
+        source = make_restart_source(chat_id="write-failure")
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:write-failure",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        adapter.handle_message = AsyncMock()
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        counts_file.write_text(json.dumps({entry.session_key: 2}), encoding="utf-8")
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("gateway.run.atomic_json_write", fail_write)
+
+        assert runner._schedule_resume_pending_sessions() == 0
+        adapter.handle_message.assert_not_awaited()
+        assert json.loads(counts_file.read_text(encoding="utf-8")) == {
+            entry.session_key: 2
+        }
+
+    @pytest.mark.asyncio
+    async def test_startup_resume_preserves_malformed_attempt_ledger(
+        self, tmp_path, monkeypatch
+    ):
+        """Unknown persisted attempts must not be reset before dispatch."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, adapter = make_restart_runner()
+        source = make_restart_source(chat_id="malformed-ledger")
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:malformed-ledger",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        adapter.handle_message = AsyncMock()
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        malformed = "{not-json"
+        counts_file.write_text(malformed, encoding="utf-8")
+
+        assert runner._schedule_resume_pending_sessions() == 0
+        adapter.handle_message.assert_not_awaited()
+        assert counts_file.read_text(encoding="utf-8") == malformed
+
+    @pytest.mark.asyncio
+    async def test_startup_resume_rejects_malformed_sibling_count(
+        self, tmp_path, monkeypatch
+    ):
+        """One poisoned row must not disable another session's retry bound."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, adapter = make_restart_runner()
+        source = make_restart_source(chat_id="malformed-sibling")
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:malformed-sibling",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        adapter.handle_message = AsyncMock()
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        malformed_counts = {"poisoned-session": "invalid", entry.session_key: 2}
+        counts_file.write_text(json.dumps(malformed_counts), encoding="utf-8")
+
+        assert runner._suspend_stuck_loop_sessions() == 0
+        assert runner._schedule_resume_pending_sessions() == 0
+        adapter.handle_message.assert_not_awaited()
+        assert json.loads(counts_file.read_text(encoding="utf-8")) == malformed_counts
+
+    def test_shutdown_preserves_malformed_attempt_ledger(self, tmp_path, monkeypatch):
+        """Graceful shutdown must not replace unknown retry evidence."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, _adapter = make_restart_runner()
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        malformed = "{not-json"
+        counts_file.write_text(malformed, encoding="utf-8")
+
+        runner._increment_restart_failure_counts({"agent:main:telegram:dm:active"})
+
+        assert counts_file.read_text(encoding="utf-8") == malformed
+
+    def test_failed_suspension_save_preserves_retry_evidence(
+        self, tmp_path, monkeypatch
+    ):
+        """An in-memory suspension cannot consume its durable retry count."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, _adapter = make_restart_runner()
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:save-failure",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        runner.session_store._save = MagicMock(side_effect=OSError("disk full"))
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        counts = {entry.session_key: GatewayRunner._STUCK_LOOP_THRESHOLD}
+        counts_file.write_text(json.dumps(counts), encoding="utf-8")
+
+        assert runner._suspend_stuck_loop_sessions() == 0
+        assert entry.suspended is False
+        assert json.loads(counts_file.read_text(encoding="utf-8")) == counts
+
+    @pytest.mark.asyncio
+    async def test_retry_ledger_transactions_do_not_lose_concurrent_admission(
+        self, tmp_path, monkeypatch
+    ):
+        """A stale successful-turn clear cannot erase a newer admission."""
+        import json
+        import threading
+
+        from gateway.run import GatewayRunner, atomic_json_write as real_atomic_write
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, _adapter = make_restart_runner()
+        clearing_key = "agent:main:telegram:dm:clearing"
+        retained_key = "agent:main:telegram:dm:retained"
+        admitted_key = "agent:main:telegram:dm:admitted"
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        counts_file.write_text(
+            json.dumps({clearing_key: 1, retained_key: 1}), encoding="utf-8"
+        )
+        clear_write_started = threading.Event()
+        release_clear_write = threading.Event()
+
+        def controlled_write(path, payload, **kwargs):
+            if clearing_key not in payload and admitted_key not in payload:
+                clear_write_started.set()
+                assert release_clear_write.wait(timeout=5)
+            real_atomic_write(path, payload, **kwargs)
+
+        monkeypatch.setattr("gateway.run.atomic_json_write", controlled_write)
+        clear_task = asyncio.create_task(
+            runner._clear_restart_failure_count(clearing_key)
+        )
+        assert await asyncio.to_thread(clear_write_started.wait, 5)
+        admission_task = asyncio.create_task(
+            asyncio.to_thread(runner._record_startup_resume_attempt, admitted_key)
+        )
+        await asyncio.sleep(0)
+        assert not admission_task.done()
+
+        release_clear_write.set()
+        await clear_task
+        assert await admission_task is True
+        assert json.loads(counts_file.read_text(encoding="utf-8")) == {
+            retained_key: 1,
+            admitted_key: 1,
+        }
+
+    @pytest.mark.asyncio
+    async def test_failed_resume_marker_clear_preserves_retry_count(
+        self, tmp_path, monkeypatch
+    ):
+        """Retry evidence survives until resume_pending is durably cleared."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, _adapter = make_restart_runner()
+        session_key = "agent:main:telegram:dm:marker-save-failure"
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        counts_file.write_text(json.dumps({session_key: 2}), encoding="utf-8")
+        runner._startup_resume_attempt_keys = {session_key}
+        runner._async_session_store = MagicMock()
+        runner._async_session_store._store = runner.session_store
+        runner._async_session_store.clear_resume_pending = AsyncMock(
+            side_effect=OSError("disk full")
+        )
+
+        await runner._clear_completed_resume_state(session_key)
+
+        assert json.loads(counts_file.read_text(encoding="utf-8")) == {session_key: 2}
+        assert runner._startup_resume_attempt_keys == {session_key}
+
+    @pytest.mark.asyncio
+    async def test_startup_resume_dispatches_after_persisted_attempt(
+        self, tmp_path, monkeypatch
+    ):
+        """Successful durable admission still schedules the recovery turn."""
+        import json
+
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        runner, adapter = make_restart_runner()
+        source = make_restart_source(chat_id="persisted-attempt")
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:persisted-attempt",
+            session_id="sid",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=datetime.now(),
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        adapter.handle_message = AsyncMock()
+
+        assert runner._schedule_resume_pending_sessions() == 1
+        await asyncio.sleep(0)
+        adapter.handle_message.assert_awaited_once()
+        counts_file = tmp_path / GatewayRunner._STUCK_LOOP_FILE
+        assert json.loads(counts_file.read_text(encoding="utf-8")) == {
+            entry.session_key: 1
+        }
 
 
 @pytest.mark.asyncio

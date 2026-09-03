@@ -3556,10 +3556,18 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None or not entry.resume_pending:
                 return False
+            previous_reason = entry.resume_reason
+            previous_marked_at = entry.last_resume_marked_at
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
-            self._save()
+            try:
+                self._save()
+            except Exception:
+                entry.resume_pending = True
+                entry.resume_reason = previous_reason
+                entry.last_resume_marked_at = previous_marked_at
+                raise
             return True
 
     def prune_old_entries(self, max_age_days: int) -> int:

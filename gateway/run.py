@@ -7744,6 +7744,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # with the synthetic resume turns for the same session.  The queued
         # events drain only after all startup resume tasks have finished.
         self._startup_restore_in_progress = False
+        # Startup-resume attempts are counted before dispatch so SIGKILL cannot
+        # bypass the durable retry bound. Keep successfully persisted attempts
+        # process-local too, so graceful shutdown cannot count one twice.
+        self._startup_resume_attempt_keys: set[str] = set()
         # Set by start_gateway() only for an explicit ``--replace`` launch.
         # _connect_initial_adapter_with_timeout scopes it to each adapter's
         # cold-start connect and removes it before any reconnect can run.
@@ -12429,33 +12433,109 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
+    _STUCK_LOOP_LOCK = threading.Lock()
+
+    @staticmethod
+    def _validate_restart_failure_counts(counts) -> None:
+        """Reject ledgers whose retry evidence cannot be interpreted safely."""
+        if not isinstance(counts, dict):
+            raise ValueError("restart failure ledger must be a JSON object")
+        if any(
+            not isinstance(key, str)
+            or not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            for key, value in counts.items()
+        ):
+            raise ValueError("restart failure ledger contains an invalid count")
 
     def _increment_restart_failure_counts(self, active_session_keys: set) -> None:
         """Increment restart-failure counters for sessions active at shutdown.
 
         Persists to a JSON file so counters survive across restarts.
-        Sessions NOT in active_session_keys are removed (they completed
-        successfully, so the loop is broken).
+        Existing counts survive while their session is still resume-pending;
+        successful turns clear their own count in
+        ``_clear_restart_failure_count``.  This matters when an unrelated
+        active session triggers a graceful shutdown while a prior startup
+        resume attempt is pending: rewriting only ``active_session_keys``
+        would otherwise erase that prior failure.
         """
         import json
 
         path = _hermes_home / self._STUCK_LOOP_FILE
-        try:
-            counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except Exception:
-            counts = {}
+        with self._STUCK_LOOP_LOCK:
+            try:
+                counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                self._validate_restart_failure_counts(counts)
+            except Exception:
+                logger.warning(
+                    "Could not update restart failure ledger; preserving it unchanged",
+                    exc_info=True,
+                )
+                return
 
-        # Increment active sessions, remove inactive ones (loop broken)
-        new_counts = {}
-        for key in active_session_keys:
-            new_counts[key] = counts.get(key, 0) + 1
-        # Keep any entries that are still above 0 even if not active now
-        # (they might become active again next restart)
+            # Retain unresolved startup-resume attempts. Successful turns already
+            # remove their count explicitly, so absence from this shutdown's
+            # active snapshot is not proof that a pending recovery succeeded.
+            new_counts = {
+                key: value
+                for key, value in counts.items()
+                if (
+                    (entry := self.session_store._entries.get(key)) is not None
+                    and entry.resume_pending
+                    and not entry.suspended
+                )
+            }
+            startup_attempt_keys = self.__dict__.get("_startup_resume_attempt_keys", set())
+            for key in active_session_keys:
+                if key in startup_attempt_keys:
+                    new_counts[key] = counts.get(key, 0)
+                else:
+                    new_counts[key] = counts.get(key, 0) + 1
 
-        try:
-            atomic_json_write(path, new_counts, indent=None)
-        except Exception:
-            pass
+            try:
+                atomic_json_write(path, new_counts, indent=None)
+            except Exception:
+                logger.warning("Failed to update restart failure ledger", exc_info=True)
+
+    def _record_startup_resume_attempt(self, session_key: str) -> bool:
+        """Persist one synthetic startup-resume attempt for ``session_key``.
+
+        Unlike the shutdown counter, this runs before dispatch and therefore
+        survives SIGKILL.  A successful turn uses the existing clear path;
+        repeated crash-left attempts reach ``_STUCK_LOOP_THRESHOLD`` and are
+        suspended by ``_suspend_stuck_loop_sessions`` on the next boot.
+        """
+        import json
+
+        path = _hermes_home / self._STUCK_LOOP_FILE
+        with self._STUCK_LOOP_LOCK:
+            try:
+                counts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                self._validate_restart_failure_counts(counts)
+            except Exception:
+                logger.warning(
+                    "Refusing startup auto-resume for %s: restart failure ledger "
+                    "could not be read",
+                    session_key,
+                    exc_info=True,
+                )
+                return False
+
+            counts[session_key] = counts.get(session_key, 0) + 1
+            try:
+                atomic_json_write(path, counts, indent=None)
+                self.__dict__.setdefault("_startup_resume_attempt_keys", set()).add(
+                    session_key
+                )
+                return True
+            except Exception:
+                logger.warning(
+                    "Refusing startup auto-resume for %s: attempt could not be persisted",
+                    session_key,
+                    exc_info=True,
+                )
+                return False
 
     def _suspend_stuck_loop_sessions(self) -> int:
         """Suspend sessions that have been active across too many restarts.
@@ -12467,44 +12547,92 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import json
 
         path = _hermes_home / self._STUCK_LOOP_FILE
-        if not path.exists():
-            return 0
+        with self._STUCK_LOOP_LOCK:
+            if not path.exists():
+                return 0
 
-        try:
-            counts = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return 0
-
-        suspended = 0
-        stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
-
-        for session_key in stuck_keys:
             try:
+                counts = json.loads(path.read_text(encoding="utf-8"))
+                self._validate_restart_failure_counts(counts)
+            except Exception:
+                logger.warning(
+                    "Could not evaluate restart failure ledger; preserving it unchanged",
+                    exc_info=True,
+                )
+                return 0
+
+            changed_entries = []
+            stuck_keys = [k for k, v in counts.items() if v >= self._STUCK_LOOP_THRESHOLD]
+            for session_key in stuck_keys:
                 entry = self.session_store._entries.get(session_key)
                 if entry and not entry.suspended:
                     entry.suspended = True
-                    suspended += 1
+                    changed_entries.append(entry)
+
+            if changed_entries:
+                try:
+                    self.session_store._save()
+                except Exception:
+                    for entry in changed_entries:
+                        entry.suspended = False
+                    logger.warning(
+                        "Failed to persist stuck-session suspension; preserving retry ledger",
+                        exc_info=True,
+                    )
+                    return 0
+
+                for entry in changed_entries:
                     logger.warning(
                         "Auto-suspended stuck session %s (active across %d "
                         "consecutive restarts — likely a stuck loop)",
-                        session_key, counts[session_key],
+                        entry.session_key,
+                        counts[entry.session_key],
                     )
-            except Exception:
-                pass
 
-        if suspended:
+            # Remove only durably suspended rows. Other sessions may still be
+            # accumulating independent startup-resume failures.
+            removable = {
+                key
+                for key in stuck_keys
+                if (entry := self.session_store._entries.get(key)) is not None
+                and entry.suspended
+            }
             try:
-                self.session_store._save()
+                remaining = {k: v for k, v in counts.items() if k not in removable}
+                if remaining:
+                    atomic_json_write(path, remaining, indent=None)
+                else:
+                    path.unlink(missing_ok=True)
             except Exception:
-                pass
+                logger.warning("Failed to prune restart failure ledger", exc_info=True)
 
-        # Clear the file — counters start fresh after suspension
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            return len(changed_entries)
 
-        return suspended
+    def _clear_restart_failure_count_sync(self, session_key: str) -> None:
+        """Clear one retry count while serializing the ledger transaction."""
+        import json
+
+        path = _hermes_home / self._STUCK_LOOP_FILE
+        with self._STUCK_LOOP_LOCK:
+            if not path.exists():
+                self.__dict__.setdefault("_startup_resume_attempt_keys", set()).discard(
+                    session_key
+                )
+                return
+            try:
+                counts = json.loads(path.read_text(encoding="utf-8"))
+                self._validate_restart_failure_counts(counts)
+                if session_key in counts:
+                    del counts[session_key]
+                    if counts:
+                        atomic_json_write(path, counts, indent=None)
+                    else:
+                        path.unlink(missing_ok=True)
+                self.__dict__.setdefault("_startup_resume_attempt_keys", set()).discard(
+                    session_key
+                )
+            except Exception:
+                logger.warning("Failed to clear restart failure count", exc_info=True)
 
     async def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear the restart-failure counter for a session that completed OK.
@@ -12513,21 +12641,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Offloaded to a thread because the caller (_handle_message_with_agent)
         runs on the event loop and atomic_json_write calls os.fsync.
         """
-        import json
+        await asyncio.to_thread(self._clear_restart_failure_count_sync, session_key)
 
-        path = _hermes_home / self._STUCK_LOOP_FILE
-        if not path.exists():
-            return
+    async def _clear_completed_resume_state(self, session_key: str) -> None:
+        """Clear a completed recovery marker before consuming retry evidence."""
         try:
-            counts = json.loads(path.read_text(encoding="utf-8"))
-            if session_key in counts:
-                del counts[session_key]
-                if counts:
-                    await asyncio.to_thread(atomic_json_write, path, counts, indent=None)
-                else:
-                    path.unlink(missing_ok=True)
-        except Exception:
-            pass
+            await self.async_session_store.clear_resume_pending(session_key)
+        except Exception as exc:
+            logger.warning(
+                "Preserving restart failure count for %s because the completed "
+                "resume marker could not be persisted: %s",
+                session_key,
+                exc,
+            )
+            return
+        await self._clear_restart_failure_count(session_key)
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -13577,6 +13705,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Skipping auto-resume for %s: authorization check failed: %s",
                     entry.session_key, exc,
                 )
+                continue
+
+            # Count the attempt before task creation. A hard kill can prevent
+            # every shutdown/finally path from running, so shutdown-only
+            # accounting cannot bound this retry class. Successful completion
+            # clears this same counter in _handle_message_with_agent.
+            if not self._record_startup_resume_attempt(entry.session_key):
                 continue
 
             # Claim the session slot *before* spawning the task so that an
@@ -23294,14 +23429,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # succeeded and subsequent messages should no longer receive
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
-                await self._clear_restart_failure_count(session_key)
-                try:
-                    await self.async_session_store.clear_resume_pending(session_key)
-                except Exception as _e:
-                    logger.debug(
-                        "clear_resume_pending failed for %s: %s",
-                        session_key, _e,
-                    )
+                await self._clear_completed_resume_state(session_key)
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.

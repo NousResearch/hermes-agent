@@ -7206,6 +7206,17 @@ def resolve_provider_client(
         if custom_entry:
             custom_base = (custom_entry.get("base_url") or "").strip()
             custom_key = (custom_entry.get("api_key") or "").strip()
+            # A per-task base_url/api_key (auxiliary.<task>.base_url, resolved
+            # by _resolve_task_provider_model and passed as explicit_base_url)
+            # must win over the named provider entry's own endpoint — the
+            # PROVIDER_REGISTRY and anonymous-custom branches already honour
+            # this override, and without it a task-level override (e.g.
+            # routing one aux task through a local translator shim) is
+            # silently dropped for named custom providers (#task-base-url).
+            if explicit_base_url:
+                custom_base = explicit_base_url.strip()
+            if explicit_api_key:
+                custom_key = explicit_api_key.strip() or custom_key
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)

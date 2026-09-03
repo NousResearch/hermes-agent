@@ -20,7 +20,7 @@ The harness must prove these current behaviors independently:
 3. CLI `hermes mcp login`/`reauth` deletes durable state before authorization and does not restore it after failure.
 4. Runtime reconnect or parking must not delete a token after a transient transport failure.
 
-The first three are expected failures on the baseline. The fourth is a preservation invariant and guards the useful soft-eviction portion of the earlier proposal. It is the same invariant the fix relies on — "a dependency being unreachable is not evidence against the credential" (architecture §6.2, §7.1) — so the preservation test cross-references those sections.
+The first three are expected failures on the baseline. The fourth is a preservation invariant and guards the useful soft-eviction portion of the earlier proposal. It is the same invariant the fix relies on: runtime reconnect calls only `MCPOAuthManager.evict` (architecture §12.4), and "a dependency being unreachable is not evidence against the credential" (architecture §6.3, §7.1) — so the preservation test cross-references those sections.
 
 ## Test harness
 
@@ -50,14 +50,14 @@ Tests use an isolated temporary `HERMES_HOME`, real `HermesTokenStorage`, and re
 
 ### Failure kind
 
-Each network-boundary injection point (the discovery, registration, token-exchange, and probe steps) also accepts an optional *kind*, so the same peer serves the F-2 probe/commit taxonomy that Chunk 3 asserts:
+Each pre-token network-boundary injection point (discovery, registration, token exchange) also accepts an optional *kind*, so the same peer serves the F-2 probe/commit taxonomy that later chunks assert (architecture §6.2, §6.3):
 
-- `definitive` — HTTP 4xx, `invalid_grant`, or `invalid_client`. The default, and the only kind the Chunk 0 baseline tests use: the current bug loses the token regardless of kind.
+- `definitive` — HTTP 400, `invalid_grant`, `invalid_client`, or unsupported registration. The default, and the only kind the Chunk 0 baseline tests use: the current bug loses the token regardless of kind.
 - `indeterminate` — HTTP 5xx, connection error, timeout, or HTTP 429 with an optional `Retry-After`.
 
-The MCP probe point yields a classifiable outcome rather than a single raise: `authenticated`, `rejected` (HTTP 401/403), or `indeterminate`.
+The MCP probe point yields a classifiable outcome rather than a single raise: `authenticated`, `rejected` (HTTP 401/403), or `indeterminate` (5xx / timeout / 429). Browser-authorization failures (cancellation, callback timeout, invalid state) are exercised through the existing "Authorization URL publication" / "Callback receipt" points and are not kind-classified.
 
-Chunk 0 only exposes this capability. The assertions that a `definitive` outcome aborts, an `indeterminate` token-exchange failure surfaces a transient error, and an `indeterminate` probe commits `probe=deferred` belong to Chunk 3.
+Chunk 0 only exposes this capability. The behavior built on it lands later: Chunk 2 introduces the failure classifier, the `authorization_endpoint_unavailable` code, and the `AuthorizationResult` shape; Chunk 3 adds the per-stage retry and the staged commit (including the `probe=deferred` path).
 
 ## Scenario fixture
 
@@ -112,7 +112,7 @@ Run the prescribed repository test wrapper against the focused files. The demons
 - Do not read source files or assert function-call text.
 - Do not depend on Todoist, Hugging Face, or another live provider.
 - Do not freeze implementation-specific line numbers or file counts.
-- Do not add the F-2 taxonomy assertions. Chunk 0 exposes kind-aware and classifiable-probe injection; Chunk 3 asserts the retry / abort / `probe=deferred` behavior.
+- Do not add the F-2 taxonomy assertions. Chunk 0 exposes kind-aware and classifiable-probe injection; Chunk 2 asserts classification and typed codes, Chunk 3 asserts the retry / abort / `probe=deferred` behavior.
 - Do not add the Chunk 4 token time-model fields or clock injection yet.
 
 ## Merge strategy

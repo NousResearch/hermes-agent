@@ -3349,6 +3349,14 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Live _keep_typing tasks.  A loop registers itself on start and
+        # re-checks its membership every tick; _stop_typing_refresh removes
+        # the task it was handed *before* cancelling it.  That gives the loop
+        # a second stop signal that survives a lost cancellation: on Python
+        # 3.11 asyncio.wait_for drops an external cancel() that lands in the
+        # same loop iteration as send_typing() completing (CPython gh-86296),
+        # after which nothing else would ever stop the refresh loop.
+        self._typing_refresh_tasks: set = set()
         # Dynamic working-state status text per chat (chat_id -> phrase).
         # Set by the gateway on tool starts ("is running pytest…") and read
         # by adapters whose typing indicator renders text (Slack's
@@ -5531,8 +5539,21 @@ class BasePlatformAdapter(ABC):
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.
         _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
+        # Register as a live loop.  getattr-guard: bare object.__new__()
+        # adapters in tests may lack the set (same idiom as _status_text).
+        live = getattr(self, "_typing_refresh_tasks", None)
+        if live is None:
+            live = set()
+            self._typing_refresh_tasks = live
+        me = asyncio.current_task()
+        live.add(me)
         try:
             while True:
+                if me not in live:
+                    # _stop_typing_refresh already stopped this turn's loop
+                    # and the cancel() it sent was lost — exit here instead
+                    # of refreshing a turn that no longer exists.
+                    return
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
@@ -5571,6 +5592,7 @@ class BasePlatformAdapter(ABC):
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
+            live.discard(me)
             # Ensure the underlying platform typing loop is stopped.
             # _keep_typing may have called send_typing() after an outer
             # stop_typing() cleared the task dict, recreating the loop.
@@ -5596,6 +5618,15 @@ class BasePlatformAdapter(ABC):
         stop_attempts: int = 2,
     ) -> None:
         """Stop the refresh task and platform typing state as one operation."""
+        # Deregister the loop *before* cancelling it so it exits on its next
+        # tick even if the cancel() below never reaches it (Python 3.11
+        # wait_for can lose a cancel that races send_typing() completing;
+        # an adapter's send_typing may swallow it).  Only the task this turn
+        # was handed is touched: other live loops for the same chat_id
+        # belong to concurrent sessions (per-user group sessions, Slack
+        # threads sharing a channel) and must keep running.
+        if typing_task is not None:
+            getattr(self, "_typing_refresh_tasks", set()).discard(typing_task)
         self._typing_paused.add(chat_id)
         try:
             if typing_task is not None and not typing_task.done():

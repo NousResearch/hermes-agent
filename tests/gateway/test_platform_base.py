@@ -459,6 +459,27 @@ class TestUniversalMediaEgress:
         assert "MEDIA:" not in cleaned
         assert "Done." in cleaned
 
+    def test_strip_media_directives_for_display_strips_extensionless_placeholder(self):
+        text = "Before MEDIA:/absolute/path/to/file After"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+        assert "/absolute/path" not in stripped
+        assert stripped == "Before After"
+
+    def test_as_document_directive_stripped_without_media_tag(self):
+        """[[as_document]] must be stripped even when no MEDIA: tag is present.
+
+        The display/strip guards short-circuit on text containing none of the
+        delivery directives; [[as_document]] must be in that guard or it leaks
+        to the user as visible text on any image-only response.
+        """
+        from gateway.platforms.base import _strip_media_directives
+
+        text = "Here is your image. [[as_document]]"
+        assert "[[as_document]]" not in _strip_media_directives(text)
+        assert "[[as_document]]" not in (
+            BasePlatformAdapter.strip_media_directives_for_display(text)
+        )
 
     def test_known_extension_still_unconditional(self):
         # Known extensions keep the pre-#36060 behavior: extracted (and the

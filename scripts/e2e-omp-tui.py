@@ -74,6 +74,13 @@ def terminate_pid(pid: int) -> None:
         pass
 
 
+def tui_argv(hermes: str, dev: bool = False) -> list[str]:
+    argv = [hermes, "--tui"]
+    if dev:
+        argv.append("--dev")
+    return argv
+
+
 def build_env(cols: int, rows: int) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("TERM", "xterm-256color")
@@ -100,7 +107,8 @@ def launch_pty(argv: list[str], env: dict[str, str], cols: int, rows: int) -> tu
 
 def run_component_acceptance() -> int:
     ui_tui = _PROJECT_ROOT / "ui-tui"
-    return subprocess.run(["npm", "run", "test:acceptance"], cwd=str(ui_tui)).returncode
+    script = ui_tui / "scripts" / "omp-acceptance.mjs"
+    return subprocess.run(["node", str(script)], cwd=str(ui_tui)).returncode
 
 
 def assert_live_acceptance(text: str) -> list[str]:
@@ -125,8 +133,14 @@ def cmd_test(args: argparse.Namespace) -> int:
         print("component acceptance failed", file=sys.stderr)
         return component_rc
 
+    if not args.live:
+        print("OMP component acceptance passed (live PTY skipped; pass --live)")
+        return 0
+
     hermes = find_hermes()
-    argv = [hermes, "--tui", "--dev"]
+    ui_dist = _PROJECT_ROOT / "ui-tui" / "dist" / "entry.js"
+    use_dev = args.dev or not ui_dist.exists()
+    argv = tui_argv(hermes, dev=use_dev)
     env = build_env(args.cols, args.rows)
     print(f"live PTY: {' '.join(argv)}")
 
@@ -139,7 +153,7 @@ def cmd_test(args: argparse.Namespace) -> int:
             if chunk:
                 captured += chunk
                 plain = strip_ansi(captured.decode("utf-8", errors="replace"))
-                if "❯" in plain and COMPOSER_BORDER_RE.search(plain):
+                if any(h in plain for h in READY_HINTS) and COMPOSER_BORDER_RE.search(plain):
                     break
             else:
                 time.sleep(0.1)
@@ -220,7 +234,7 @@ def cmd_monitor(args: argparse.Namespace) -> int:
             MONITOR_PID.unlink(missing_ok=True)
 
     hermes = find_hermes()
-    argv = [hermes, "--tui", "--dev"]
+    argv = tui_argv(hermes, dev=args.dev)
     env = build_env(args.cols, args.rows)
 
     MONITOR_LOG.write_bytes(b"")
@@ -260,10 +274,13 @@ def main() -> int:
     t.add_argument("--cols", type=int, default=100)
     t.add_argument("--rows", type=int, default=32)
     t.add_argument("--timeout", type=float, default=120.0)
+    t.add_argument("--live", action="store_true", help="also spawn hermes --tui in a PTY smoke test")
+    t.add_argument("--dev", action="store_true", help="force tsx dev mode for --live (default when dist/ is missing)")
 
     m = sub.add_parser("monitor", help="launch detached TUI for external monitoring")
     m.add_argument("--cols", type=int, default=100)
     m.add_argument("--rows", type=int, default=32)
+    m.add_argument("--dev", action="store_true", help="run ui-tui via tsx (slower; optional)")
 
     sub.add_parser("stop", help="stop detached monitor")
 

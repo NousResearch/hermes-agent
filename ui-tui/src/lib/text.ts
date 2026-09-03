@@ -211,12 +211,6 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-// Tool cards default to a one-line chevron row (OMP-style quiet tape).
-// `/details tools expanded` still lists every call; the user expands per-call.
-export const toolCardKey = (name: string) => name.trim().toLowerCase().replace(/[\s-]+/g, '_')
-
-export const toolCardCollapsedByDefault = (_name: string) => true
-
 export const buildToolTrailLine = (
   name: string,
   context: string,

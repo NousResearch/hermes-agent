@@ -70,6 +70,7 @@
       "author": "iap",
       "tags": ["workflow", "principles", "verification", "review", "planning"],
       "repo": "iap/pstack-hermes",
+      "subdir": "pstack",
       "ref": "6c772d3ac39de105c096b33af83685209d727847",
       "homepage": "https://github.com/iap/pstack-hermes",
       "capabilities": ["commands"],

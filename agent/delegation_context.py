@@ -52,15 +52,37 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     Child construction calls ``set_current_session_id`` internally, so even a
     context entered without an id must restore the parent's ContextVar.  Child
     execution passes its explicit id and receives it only for this scope.
+
+    Approval authority is isolated at this same worker boundary: a delegated
+    child must never enqueue or await a gateway approval under its parent's
+    session key (a dangerous child action would otherwise surface a phantom
+    approval in the parent session's attention queue — see nesquena/hermes-webui
+    #6100).  The child's approval key is REBOUND to a child-owned key derived
+    from its session id (``subagent:<session_id>``), or an explicitly cleared
+    key when no session id is known yet, so approval lookups fail closed instead
+    of resolving the parent's key through the copied context or the process env.
     """
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
         # Import lazily: session_context calls is_delegated_child_context() when
         # deciding whether the compatibility os.environ mirror is safe.
-        from gateway.session_context import scoped_current_session_id
+        from gateway.session_context import _SESSION_KEY, scoped_current_session_id
+        from tools.approval import reset_current_session_key, set_current_session_key
 
-        with scoped_current_session_id(session_id):
-            yield
+        # Rebinding BOTH resolution layers matters: copy_context() carries the
+        # parent's _approval_session_key and _SESSION_KEY into the worker, and
+        # get_current_session_key() consults the approval contextvar first,
+        # then get_session_env() — which would otherwise fall back to the
+        # process-wide HERMES_SESSION_KEY the gateway sets.
+        child_approval_key = f"subagent:{session_id}" if session_id else ""
+        session_key_token = _SESSION_KEY.set(child_approval_key)
+        approval_key_token = set_current_session_key(child_approval_key)
+        try:
+            with scoped_current_session_id(session_id):
+                yield
+        finally:
+            _SESSION_KEY.reset(session_key_token)
+            reset_current_session_key(approval_key_token)
     finally:
         _DELEGATED_CHILD_CONTEXT.reset(token)
 

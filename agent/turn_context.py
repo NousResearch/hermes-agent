@@ -154,9 +154,12 @@ def compose_user_api_content(
     injections = []
     if ext_prefetch_cache:
         fenced = build_memory_context_block(ext_prefetch_cache)
-        if fenced:
+        # ponytail: substring guard; a re-composition over already-composed
+        # content (retry/re-entry, bypass-prologue paths) must not duplicate
+        # the block every pass or the wire grows per turn (#76806).
+        if fenced and "<memory-context>" not in content:
             injections.append(fenced)
-    if plugin_user_context:
+    if plugin_user_context and plugin_user_context not in content:
         injections.append(plugin_user_context)
     if not injections:
         return None

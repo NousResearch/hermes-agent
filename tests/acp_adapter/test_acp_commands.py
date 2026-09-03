@@ -73,8 +73,8 @@ def make_agent_and_state():
     return acp_agent, state, fake, conn
 
 
-def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
-    """ACP sessions persist to SessionDB; recall must receive the same DB handle."""
+def test_acp_real_agent_gets_session_db_and_reasoning_config(monkeypatch):
+    """ACP agent construction propagates shared session state and model config."""
     captured = {}
     sentinel_db = NoopDb()
 
@@ -93,7 +93,16 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m", "provider": "p"}}),
+        mod(
+            "hermes_cli.config",
+            load_config=lambda: {
+                "model": {"default": "default-model", "provider": "p"},
+                "agent": {
+                    "reasoning_effort": "high",
+                    "reasoning_overrides": {"openai/gpt-5.2-codex": "low"},
+                },
+            },
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -112,12 +121,17 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     )
 
     manager = SessionManager(db=sentinel_db)
-    agent = manager._make_agent(session_id="acp-session", cwd=".")
+    agent = manager._make_agent(
+        session_id="acp-session",
+        cwd=".",
+        model="openai/gpt-5.2-codex",
+    )
 
     assert isinstance(agent, CapturingAgent)
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "low"}
 
 
 @pytest.mark.asyncio

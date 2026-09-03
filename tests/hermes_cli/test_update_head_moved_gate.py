@@ -76,6 +76,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     (tmp_path / ".git").mkdir()  # pass the "is a git repo" gate
     monkeypatch.setattr(
+        hermes_main, "_enforce_downstream_update_guard", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
         hermes_main, "_resolve_update_branch", lambda args: "main"
     )
     monkeypatch.setattr(hermes_main, "_is_windows", lambda: False)

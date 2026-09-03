@@ -1,0 +1,14 @@
+name: builder_adapter
+version: 1.0.0
+description: "Governed, task-scoped builder tools for hermes.builder_dispatch.v1."
+author: Hermes
+kind: standalone
+platforms:
+  - macos
+provides_tools:
+  - builder_patch
+  - builder_read_execution_packet
+  - builder_read_file
+  - builder_run_validation_profile
+  - builder_search_files
+  - builder_write_file

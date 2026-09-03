@@ -28,6 +28,7 @@ class FakeClient:
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
         self.ingest_calls = []
+        self.legacy_ingest_calls = []
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
 
@@ -55,6 +56,22 @@ class FakeClient:
         return self.forget_by_query_response
 
     def ingest_conversation(self, session_id, messages, metadata=None):
+        """Mirror the real client's ingest wire (#101270): one documents.add
+        per conversation, role-tagged lines, idempotent custom_id. The raw
+        /v4/conversations POST is dead — legacy_ingest_calls stays empty."""
+        lines = []
+        for msg in messages or []:
+            role = str((msg or {}).get("role", "")).strip().title() or "User"
+            content = str((msg or {}).get("content", "") or "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+        self.add_calls.append({
+            "content": "\n\n".join(lines),
+            "metadata": metadata,
+            "entity_context": "",
+            "container_tag": None,
+            "custom_id": f"session-{session_id}",
+        })
         self.ingest_calls.append({"session_id": session_id, "messages": messages, "metadata": metadata})
 
 
@@ -127,16 +144,20 @@ def test_on_session_end_ingests_clean_messages(provider):
         {"role": "assistant", "content": "hi there"},
     ]
     provider.on_session_end(messages)
-    assert len(provider._client.ingest_calls) == 1
-    payload = provider._client.ingest_calls[0]
-    assert payload["session_id"] == "session-1"
-    assert payload["messages"] == [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ]
-    assert payload["metadata"]["type"] == "full_session"
-    assert payload["metadata"]["session_id"] == "session-1"
-    assert payload["metadata"]["message_count"] == 2
+    # #101270: ingestion now goes through documents.add (the SDK path both
+    # cloud AND self-hosted implement), never the raw /v4/conversations POST.
+    assert len(provider._client.add_calls) == 1
+    doc = provider._client.add_calls[0]
+    assert doc["custom_id"] == "session-session-1"
+    assert doc["container_tag"] in (None, provider._container_tag)
+    # Role-tagged lines for the two captured turns.
+    assert "User: hello" in doc["content"]
+    assert "Assistant: hi there" in doc["content"]
+    assert doc["metadata"]["type"] == "full_session"
+    assert doc["metadata"]["session_id"] == "session-1"
+    assert doc["metadata"]["message_count"] == 2
+    # The dead platform-only route is never touched.
+    assert provider._client.legacy_ingest_calls == []
     # Buffer is cleared after a normal session-end ingest.
     assert provider._session_turns == []
 
@@ -196,14 +217,21 @@ def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
     assert provider._sync_thread is None
     assert provider._write_thread is None
     assert provider._prefetch_thread is None
-    # Explicit memory write went through.
-    assert len(provider._client.add_calls) == 1
-    # Buffered turn was flushed as a partial full-session ingest.
+    # Explicit memory write + buffered-turn flush both went through
+    # documents.add (#101270): 1 memory write + 1 partial session ingest.
+    assert len(provider._client.add_calls) == 2
+    # The LAST add call is the flushed buffer (the write happened first at
+    # release.set() time, the flush at shutdown()).
+    flushed = provider._client.add_calls[-1]
+    assert flushed["custom_id"] == "session-session-1"
+    assert flushed["metadata"]["partial"] is True
+    assert flushed["metadata"]["type"] == "full_session"
+    assert flushed["content"] == (
+        "User: Please remember this request in long-term memory\n\n"
+        "Assistant: Absolutely, I will keep that in long-term memory."
+    )
+    # And the session-end ingest recorded through the same client.
     assert len(provider._client.ingest_calls) == 1
-    payload = provider._client.ingest_calls[0]
-    assert payload["session_id"] == "session-1"
-    assert payload["metadata"]["partial"] is True
-    assert payload["metadata"]["type"] == "full_session"
 
 
 def test_store_tool_returns_saved_payload(provider):
@@ -326,14 +354,23 @@ def test_client_passes_custom_base_url_to_sdk(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("base_url", "expected_url"),
+    "base_url",
     [
-        ("https://api.supermemory.ai", "https://api.supermemory.ai/v4/conversations"),
-        ("http://localhost:6767", "http://localhost:6767/v4/conversations"),
+        "https://api.supermemory.ai",
+        "http://localhost:6767",
     ],
 )
-def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expected_url):
-    """Raw conversation ingest follows the same endpoint as SDK operations."""
+def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url):
+    """Conversation ingest routes through the SDK documents path (#101270).
+
+    The raw POST to {base_url}/v4/conversations hit a platform/cloud-only
+    route that the self-hosted server binary does not implement — every
+    session-end auto_capture on a self-hosted install 404'd and memory was
+    silently dropped. Ingest now goes through documents.add (which both
+    surfaces implement); the base_url contract is that the SDK client
+    receives it, and the raw platform-only POST must never fire on any
+    base URL.
+    """
     from plugins.memory.supermemory import _SupermemoryClient
 
     client = _SupermemoryClient.__new__(_SupermemoryClient)
@@ -342,22 +379,30 @@ def test_ingest_conversation_uses_client_base_url(monkeypatch, base_url, expecte
     client._timeout = 1.0
     client._base_url = base_url
 
-    captured = {}
+    captured_sdk = {}
 
-    class _FakeResponse:
-        def __enter__(self):
-            return self
+    class _FakeSdkDocuments:
+        @staticmethod
+        def add(**kwargs):
+            captured_sdk["kwargs"] = kwargs
 
-        def __exit__(self, *args):
-            return False
+    class _FakeSdkClient:
+        documents = _FakeSdkDocuments()
 
-    def fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        return _FakeResponse()
+    client._client = _FakeSdkClient()
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    def fail_raw_urlopen(*args, **kwargs):
+        raise AssertionError(
+            "raw /v4/conversations POST must not be used on any base_url (#101270)"
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_raw_urlopen)
+
     client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
-    assert captured["url"] == expected_url
+    kwargs = captured_sdk["kwargs"]
+    assert kwargs["custom_id"] == "session-s1"
+    assert "User: hello there" in kwargs["content"]
+    assert kwargs["container_tags"] == ["hermes"]
 
 
 # -- Multi-container tests ----------------------------------------------------

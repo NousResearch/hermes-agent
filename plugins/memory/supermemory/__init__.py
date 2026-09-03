@@ -396,26 +396,33 @@ class _SupermemoryClient:
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
-        payload: dict = {
-            "conversationId": session_id,
-            "messages": messages,
-            "containerTags": [self._container_tag],
+        # The /v4/conversations route is a platform/cloud-only feature
+        # (supermemory.ai/changelog/api) — the self-hosted server binary does
+        # not implement it, so a raw POST 404s and every session-end
+        # auto_capture silently dropped memory on self-hosted installs
+        # (#101270). Route ingestion through the SDK's documents path, which
+        # both surfaces implement, using the same container-tag + metadata
+        # routing as add_memory. One document per conversation, role-tagged
+        # lines, custom_id so re-ingesting the same session is idempotent.
+        lines: list[str] = []
+        for msg in messages or []:
+            role = str((msg or {}).get("role", "")).strip().title() or "User"
+            content = str((msg or {}).get("content", "") or "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+        body = "\n\n".join(lines)
+        kwargs: dict[str, Any] = {
+            "content": body,
+            "container_tags": [self._container_tag],
+            "custom_id": f"session-{session_id}",
+            "metadata": self._merge_metadata({
+                **(metadata or {}),
+                "type": "conversation",
+                "session_id": session_id,
+            }),
         }
-        if metadata:
-            payload["metadata"] = self._merge_metadata(metadata)
-
-        req = urllib.request.Request(
-            f"{self._base_url}/v4/conversations",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-                "x-sm-source": "hermes",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self._timeout + 3):
-            return
+        self._client.documents.add(**kwargs)
+        return
 
 
 def _resolve_container_tag_for_setup(hermes_home: str, *, identity: str = "default") -> str:

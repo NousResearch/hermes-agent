@@ -247,7 +247,13 @@ Relay `plugins.toml`; see
   intentionally short-circuiting execution.
 - If execution middleware raises before calling `next_call(...)`, Hermes treats
   that as middleware failure and continues with the remaining middleware chain
-  and base execution.
+  and base execution — **except `hermes_cli.middleware.LLMExecutionBlocked`**,
+  which the runner re-raises explicitly before this fallthrough and which
+  always propagates to the caller instead. Use it when `llm_execution`
+  middleware needs to unconditionally prevent a provider call (budget limits,
+  safety filters, compliance checks) rather than merely fail. See
+  [`docs/plugins/hook-taxonomy.md`](../plugins/hook-taxonomy.md) for the
+  broader mutating-hook contract this belongs to.
 - If execution middleware calls `next_call(...)` successfully and then raises
   during post-processing, Hermes preserves the downstream result and does not
   run the provider or tool a second time.

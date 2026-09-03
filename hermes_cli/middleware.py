@@ -34,6 +34,54 @@ VALID_MIDDLEWARE: set[str] = {
 }
 
 
+class LLMExecutionBlocked(Exception):
+    """Raised by ``llm_execution`` middleware to unconditionally prevent an LLM
+    API call from proceeding.
+
+    Plain ``Exception`` subclasses raised without calling ``next_call`` are
+    caught by ``_run_execution_chain``'s general fallthrough handler and
+    silently routed to the next middleware (or the terminal call) — the
+    correct behavior for an unrelated failure, but it defeats an intentional
+    block. ``_run_execution_chain`` re-raises ``LLMExecutionBlocked``
+    explicitly before that fallthrough, so raising it from any middleware in
+    the chain — directly, or from code called via ``next_call``'s downstream
+    execution — reliably propagates to the caller of
+    ``run_llm_execution_middleware`` instead of being swallowed.
+
+    Args:
+        reason: Human-readable explanation for the block.
+        metadata: Optional structured data passed to the caller. By
+            convention (see docs/plugins/hook-taxonomy.md), deny-path
+            metadata may carry:
+
+            - ``checked_by``: the plugin/middleware that made the block
+              decision. If omitted, ``_run_execution_chain`` backfills it
+              from the raising callback's own registered name — a plugin
+              is never required to set this itself, so existing raises
+              don't need updating.
+            - ``decision``: e.g. ``"block"``.
+            - ``chain``: optional list of middleware names that ran before
+              the block, in order.
+
+            Pure observer hooks are not part of this envelope.
+
+    Example::
+
+        def budget_guard(request, next_call, session_id, **ctx):
+            if cost_exceeded(session_id):
+                raise LLMExecutionBlocked(
+                    "Session cost budget exceeded",
+                    metadata={"budget_usd": 5.0, "session_id": session_id},
+                )
+            return next_call(request)
+    """
+
+    def __init__(self, reason: str, *, metadata: Dict[str, Any] | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.metadata = metadata or {}
+
+
 @dataclass
 class RequestMiddlewareResult:
     """Result of applying request middleware to a mutable payload."""
@@ -298,6 +346,18 @@ def _run_execution_chain(
         call_kwargs["next_call"] = next_call
         try:
             return callback(**call_kwargs)
+        except LLMExecutionBlocked as exc:
+            # Explicit re-raise before the general fallthrough below — an
+            # intentional block must not be treated like an unrelated
+            # middleware failure and routed to the next callback in the chain.
+            # Backfill checked_by from the raising callback's own registered
+            # name if the plugin didn't set it — required on the deny-path
+            # per the checked_by envelope convention, but never fail closed
+            # on a missing key; the host fills it in instead.
+            exc.metadata.setdefault(
+                "checked_by", getattr(callback, "__name__", repr(callback))
+            )
+            raise
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:

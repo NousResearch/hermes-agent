@@ -966,7 +966,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
 
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
-        mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
+        mapped = (
+            "tool_calls"
+            if finish_reason_raw == "STOP" and tool_call_indices
+            else _map_gemini_finish_reason(finish_reason_raw)
+        )
         finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
         # Attach usage from this event's usageMetadata so the streaming
         # loop in run_agent.py can record token counts (mirrors the

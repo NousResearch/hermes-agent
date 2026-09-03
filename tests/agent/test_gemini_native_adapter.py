@@ -441,6 +441,52 @@ def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
     assert request["generationConfig"]["thinkingConfig"]["includeThoughts"] is False
 
 
+@pytest.mark.parametrize(
+    ("gemini_finish_reason", "openai_finish_reason"),
+    [
+        ("STOP", "tool_calls"),
+        ("MAX_TOKENS", "length"),
+        ("SAFETY", "content_filter"),
+    ],
+)
+def test_stream_event_translation_preserves_terminal_finish_reason_after_tool_call(
+    gemini_finish_reason,
+    openai_finish_reason,
+):
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    tool_call_event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}}
+                    ]
+                }
+            }
+        ]
+    }
+    tool_chunks = translate_stream_event(
+        tool_call_event,
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+    terminal_event = {
+        "candidates": [
+            {"content": {"parts": []}, "finishReason": gemini_finish_reason}
+        ]
+    }
+    terminal_chunks = translate_stream_event(
+        terminal_event,
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].function.name == "search"
+    assert terminal_chunks[-1].choices[0].finish_reason == openai_finish_reason
+
+
 
 
 

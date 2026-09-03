@@ -116,7 +116,25 @@ commands).
 
 # A whole book, paper stack, or large docs corpus — becomes a knowledge-base skill
 /learn ~/books/designing-data-intensive-applications.pdf
+
+# Updating an existing skill in place
+/learn --update deploy-staging add step to invalidate Cloudflare cache
+/learn --update my-skill fix the verification command in step 3
 ```
+
+### Updating an existing skill (`/learn --update`)
+
+To modify or refine an existing skill rather than authoring a new one, pass `--update <skill> [notes]`:
+
+```bash
+# Update a specific skill with guided instructions
+/learn --update deploy-staging add step to invalidate Cloudflare cache
+
+# Refine a skill based on errors encountered in the current session
+/learn --update my-skill
+```
+
+In update mode, the agent reads the existing skill with `skill_view`, applies targeted modifications using `skill_manage(action="patch")` (or `action="edit"` for a major overhaul), and keeps the skill's name and directory intact without authoring a duplicate skill.
 
 ### Large sources become knowledge-base skills
 

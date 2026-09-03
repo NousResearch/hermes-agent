@@ -1,11 +1,13 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { modelSearchText } from '../lib/model-search-text.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -62,7 +64,7 @@ export function ModelPicker({
   // model names scroll into view, and so `wrap="truncate-end"` on each row
   // has an actual constraint to truncate against. Optional maxWidth lets
   // grid layouts hand the picker its cell budget.
-  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const preferredWidth = terminalFloor(Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6), MIN_WIDTH, TERMUX_TUI_MODE)
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {

@@ -1,8 +1,10 @@
 import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useRef, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { openInEditor } from '../lib/editor.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { deriveStarmapPalette, fadeHex, fadeInk, type StarmapPalette } from '../lib/starmapPalette.js'
 import type { Theme } from '../theme.js'
@@ -135,10 +137,10 @@ function ListRow({ active, cells, t }: { active: boolean; cells: Cell[]; t: Them
 
 export function Journey({ gw, onClose, t }: JourneyProps) {
   const { stdout } = useStdout()
-  const cols = Math.max(40, (stdout?.columns ?? 90) - 3)
-  const rows = Math.max(16, (stdout?.rows ?? 30) - 2)
-  const chartRows = Math.max(5, Math.min(MAX_CHART_ROWS, Math.floor(rows * 0.32)))
-  const page = Math.max(4, rows - 6)
+  const cols = terminalFloor((stdout?.columns ?? 90) - 3, 40, TERMUX_TUI_MODE)
+  const rows = terminalFloor((stdout?.rows ?? 30) - 2, 16, TERMUX_TUI_MODE)
+  const chartRows = terminalFloor(Math.min(MAX_CHART_ROWS, Math.floor(rows * 0.32)), 5, TERMUX_TUI_MODE)
+  const page = terminalFloor(rows - 6, 4, TERMUX_TUI_MODE)
 
   const palette = deriveStarmapPalette(t.color.primary, t.color.text)
 
@@ -448,7 +450,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
   const axisGap = Math.max(1, cols - 2 - data.axis.start.length - data.axis.end.length)
   const dataGrid = data.frames.at(-1)?.grid.filter(r => !rowText(r).trimStart().startsWith('trajectory')) ?? []
   const chartGrid = dataGrid.slice(-MAX_CHART_ROWS)
-  const listH = Math.max(3, rows - chartGrid.length - (data.categories?.length ? 11 : 10))
+  const listH = terminalFloor(rows - chartGrid.length - (data.categories?.length ? 11 : 10), 3, TERMUX_TUI_MODE)
   const start = windowStart(cursor, tree.length, listH)
 
   return (

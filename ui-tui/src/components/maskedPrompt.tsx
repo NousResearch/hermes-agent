@@ -1,6 +1,8 @@
 import { Box, Text } from '@hermes/ink'
 import { useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import type { Theme } from '../theme.js'
 
 import { TextInput } from './textInput.js'
@@ -20,7 +22,7 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: Maske
         <Text color={t.color.label}>{'> '}</Text>
         <TextInput
           color={t.color.text}
-          columns={Math.max(20, cols - 6)}
+          columns={terminalFloor(cols - 6, 20, TERMUX_TUI_MODE)}
           mask="*"
           onChange={setValue}
           onSubmit={onSubmit}

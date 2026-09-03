@@ -1,5 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
@@ -42,7 +44,7 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
 
         return (
           <Text color={active ? t.color.accent : t.color.muted} dimColor key={`${idx}-${item.slice(0, 16)}`}>
-            {active ? '▸' : ' '} {idx + 1}. {compactPreview(item, Math.max(16, cols - 10))}
+            {active ? '▸' : ' '} {idx + 1}. {compactPreview(item, terminalFloor(cols - 10, 16, TERMUX_TUI_MODE))}
           </Text>
         )
       })}

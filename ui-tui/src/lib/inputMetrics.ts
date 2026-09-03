@@ -1,5 +1,6 @@
 import { stringWidth, wrapAnsi } from '@hermes/ink'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Role } from '../types.js'
 
 export const COMPOSER_PROMPT_GAP_WIDTH = 1
@@ -178,17 +179,41 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
   return role === 'user' ? composerPromptWidth(userPrompt) : 3
 }
 
+export function terminalFloor(value: number, minimum: number, termuxMode = TERMUX_TUI_MODE) {
+  const available = Math.max(1, value)
+
+  // In Termux, the physical pane is the hard upper bound. Raising an 8-column
+  // pane to an 8-10+ column "usability floor" cannot create usable space; it
+  // only makes Ink claim cells that do not exist and can restart the resize /
+  // wrap oscillation this helper prevents. Callers may choose to hide a UI at
+  // extreme sizes, but any rendered surface must stay within `available`.
+  return termuxMode ? available : Math.max(minimum, available)
+}
+
 export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
   const horizontalReserve = termuxMode ? 2 : 4
   const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
 
-  if (termuxMode) {
-    // On narrow / unusual aspect-ratio mobile panes, forcing a wide minimum
-    // width causes right-edge clipping and chopped words.
-    return available
-  }
+  // On narrow / unusual aspect-ratio mobile panes, forcing a wide minimum
+  // width causes right-edge clipping and chopped words.
+  return terminalFloor(available, 20, termuxMode)
+}
 
-  return Math.max(20, available)
+export function transcriptPaneColumns(
+  totalCols: number,
+  railCols: number,
+  petWidth = 0,
+  usePetGutter = false,
+  termuxMode = false
+) {
+  const petReserve = usePetGutter ? Math.max(0, petWidth) : 0
+  const available = Math.max(1, totalCols - Math.max(0, railCols) - petReserve)
+
+  // Desktop keeps the historical readability floor. Termux must never claim
+  // more cells than the physical terminal actually owns: Ink otherwise wraps
+  // the over-wide transcript, fires another resize/layout pass, and narrow
+  // Android terminals visibly bounce between two geometries.
+  return terminalFloor(available, 28, termuxMode)
 }
 
 export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false) {

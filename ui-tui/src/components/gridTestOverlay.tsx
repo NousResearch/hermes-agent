@@ -1,5 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
 import type { GridTestState } from '../sdk/apps/gridTestState.js'
 import type { Theme } from '../theme.js'
@@ -23,7 +25,7 @@ const MINI_CELL_HEIGHT = 3
 const showsNestedPreview = (row: number, col: number) => row % 2 === 0 && col % 2 === 0
 
 export function GridTestOverlay({ cols, state, t }: GridTestOverlayProps) {
-  const gridCols = Math.max(12, cols)
+  const gridCols = terminalFloor(cols, 12, TERMUX_TUI_MODE)
   const activeIdx = state.activeRow * state.cols + state.activeCol
   const activeLabel = `c${activeIdx + 1}`
 

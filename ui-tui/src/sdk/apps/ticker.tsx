@@ -1,8 +1,10 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, Text, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import { Dialog } from '../../components/overlay.js'
+import { TERMUX_TUI_MODE } from '../../config/env.js'
 import { sparkline } from '../../lib/charts.js'
+import { terminalFloor } from '../../lib/inputMetrics.js'
 import type { Theme } from '../../theme.js'
 import { defineWidgetApp } from '../registry.js'
 import { isCtrl } from '../types.js'
@@ -23,6 +25,10 @@ export interface TickerState {
 }
 
 function Chart({ symbol, t }: { symbol: string; t: Theme }) {
+  const { stdout } = useStdout()
+  const width = terminalFloor(Math.min(POINTS + 6, Math.max(1, (stdout?.columns ?? POINTS + 6) - 2)), 32, TERMUX_TUI_MODE)
+  const chartPoints = Math.max(1, width - 6)
+
   const [series, setSeries] = useState<number[]>(() => {
     const seed = 1.1 + Math.random() * 0.4
     const out = [seed]
@@ -49,7 +55,7 @@ function Chart({ symbol, t }: { symbol: string; t: Theme }) {
   const dir = up ? t.color.ok : t.color.error
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width}>
       <Box columnGap={1} flexDirection="row">
         <Text bold color={t.color.label}>
           {symbol}
@@ -60,7 +66,7 @@ function Chart({ symbol, t }: { symbol: string; t: Theme }) {
           {Math.abs(delta / PIP).toFixed(1)}p
         </Text>
       </Box>
-      <Text color={dir}>{sparkline(series)}</Text>
+      <Text color={dir}>{sparkline(series.slice(-chartPoints))}</Text>
     </Box>
   )
 }
@@ -84,7 +90,7 @@ export const tickerApp = defineWidgetApp<TickerState>({
 
   render({ state, t }) {
     return (
-      <Dialog width={Math.max(32, POINTS + 6)}>
+      <Dialog>
         <Chart symbol={state.symbol} t={t} />
       </Dialog>
     )

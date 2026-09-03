@@ -1,7 +1,9 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { terminalFloor } from '../lib/inputMetrics.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -52,7 +54,7 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
 
   const { stdout } = useStdout()
   // Optional maxWidth lets grid layouts hand the hub its cell budget.
-  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const preferredWidth = terminalFloor(Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6), MIN_WIDTH, TERMUX_TUI_MODE)
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   const load = () => {

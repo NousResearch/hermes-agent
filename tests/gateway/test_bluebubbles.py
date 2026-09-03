@@ -118,9 +118,20 @@ class TestBlueBubblesMentionGating:
 
 class TestBlueBubblesWebhookParsing:
 
-    def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_new_message_can_fall_back_to_sender_when_chat_fields_missing(
+        self, monkeypatch
+    ):
         adapter = _make_adapter(monkeypatch)
+        adapter.send_read_receipts = False
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
         payload = {
+            "type": "new-message",
             "data": {
                 "guid": "MESSAGE-GUID",
                 "text": "hello",
@@ -128,35 +139,137 @@ class TestBlueBubblesWebhookParsing:
                 "isFromMe": False,
             }
         }
-        record = adapter._extract_payload_record(payload) or {}
-        chat_guid = adapter._value(
-            record.get("chatGuid"),
-            payload.get("chatGuid"),
-            record.get("chat_guid"),
-            payload.get("chat_guid"),
-            payload.get("guid"),
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(payload)
         )
-        chat_identifier = adapter._value(
-            record.get("chatIdentifier"),
-            record.get("identifier"),
-            payload.get("chatIdentifier"),
-            payload.get("identifier"),
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "user@example.com"
+        assert handled[0].source.chat_type == "dm"
+
+    @pytest.mark.asyncio
+    async def test_incomplete_updated_message_does_not_fabricate_dm(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({
+                "type": "updated-message",
+                "data": {
+                    "guid": "GROUP-MESSAGE-GUID",
+                    "text": "Clu apologize",
+                    "handle": {"address": "+15555550100"},
+                    "isFromMe": False,
+                },
+            })
         )
-        sender = (
-            adapter._value(
-                record.get("handle", {}).get("address")
-                if isinstance(record.get("handle"), dict)
-                else None,
-                record.get("sender"),
-                record.get("from"),
-                record.get("address"),
-            )
-            or chat_identifier
-            or chat_guid
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
+
+    @pytest.mark.asyncio
+    async def test_new_and_updated_webhooks_for_same_guid_dispatch_once(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        record = {
+            "guid": "GROUP-MESSAGE-GUID",
+            "text": "Clu apologize",
+            "handle": {"address": "+15555550100"},
+            "isFromMe": False,
+            "isGroup": True,
+            "chats": [{"guid": "iMessage;+;friends-group"}],
+        }
+        first = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "new-message", "data": record})
         )
-        if not (chat_guid or chat_identifier) and sender:
-            chat_identifier = sender
-        assert chat_identifier == "user@example.com"
+        second = await adapter._handle_webhook(
+            _FakeBlueBubblesRequest({"type": "updated-message", "data": record})
+        )
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "iMessage;+;friends-group"
+
+    @pytest.mark.asyncio
+    async def test_send_drops_reply_anchor_known_to_belong_to_other_chat(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        adapter._inbound_message_chats["GROUP-MESSAGE-GUID"] = (
+            "iMessage;+;friends-group"
+        )
+        sent = []
+
+        async def fake_resolve(target):
+            return target
+
+        async def fake_api_post(path, payload):
+            sent.append(payload)
+            return {"data": {"guid": "OUTBOUND-GUID"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send(
+            "iMessage;-;+15555550100",
+            "This must be a top-level DM",
+            reply_to="GROUP-MESSAGE-GUID",
+        )
+
+        assert result.success is True
+        assert sent[0]["chatGuid"] == "iMessage;-;+15555550100"
+        assert "selectedMessageGuid" not in sent[0]
+        assert "method" not in sent[0]
+
+    @pytest.mark.asyncio
+    async def test_send_keeps_reply_anchor_for_same_chat(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        adapter._inbound_message_chats["DM-MESSAGE-GUID"] = (
+            "iMessage;-;+15555550100"
+        )
+        sent = []
+
+        async def fake_resolve(target):
+            return target
+
+        async def fake_api_post(path, payload):
+            sent.append(payload)
+            return {"data": {"guid": "OUTBOUND-GUID"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send(
+            "iMessage;-;+15555550100",
+            "This remains an in-thread DM reply",
+            reply_to="DM-MESSAGE-GUID",
+        )
+
+        assert result.success is True
+        assert sent[0]["selectedMessageGuid"] == "DM-MESSAGE-GUID"
+        assert sent[0]["method"] == "private-api"
 
 
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
@@ -323,14 +436,17 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url preserves concrete hosts and normalises wildcard binds."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        assert "127.0.0.1" in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
+
+    def test_wildcard_host_is_normalized_to_localhost(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="0.0.0.0")
+        assert "localhost" in adapter._webhook_url
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
@@ -565,5 +681,3 @@ class TestBlueBubblesTimeoutErrorNormalization:
 
         assert not result.success
         assert "500 Internal Server Error" in (result.error or "")
-
-

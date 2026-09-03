@@ -526,6 +526,13 @@ class TestPatchSchemaShape:
         params = o["parameters"]
         assert params["required"] == ["mode"]
         assert "anyOf" not in params and "oneOf" not in params
+        # Verified anchored patch mode rides this V4A layer (base stays
+        # replace-only); rejected alternative names stay unadvertised.
+        v4a_props = params["properties"]
+        assert "verified" in v4a_props["mode"]["enum"]
+        assert "hashline" not in v4a_props["mode"]["enum"]
+        assert "patch_text" not in v4a_props
+        assert "mode='verified'" in v4a_props["patch"]["description"]
 
 
 # ---------------------------------------------------------------------------

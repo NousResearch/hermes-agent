@@ -2381,11 +2381,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if path:
         _paths_to_check.append(path)
         _content_write_paths.append(path)
-    if mode == "patch" and patch:
+    if mode in {"patch", "verified"} and patch:
         import re as _re
         from tools.path_security import has_traversal_component
         def _reject_v4a_traversal(v4a_path: str) -> str | None:
-            # V4A path headers come from patch CONTENT, not the explicit
+            # V4A/verified path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
             # in V4A headers: a legitimate multi-file patch from a single cwd
@@ -2514,6 +2514,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     patch, _path_to_resolved, file_ops
                 )
                 result = file_ops.patch_v4a(patch_for_ops)
+            elif mode == "verified":
+                if not patch:
+                    return tool_error("patch content required for mode='verified'")
+                patch_for_ops = _rewrite_v4a_patch_paths_for_host(
+                    patch, _path_to_resolved, file_ops
+                )
+                result = file_ops.patch_verified(patch_for_ops)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -2782,8 +2789,9 @@ PATCH_SCHEMA = {
             },
             # NOTE: handler still accepts `cross_profile` — see write_file's
             # NOTE (mirror-guard bypass only; unadvertised by design).
-            # NOTE: handler still accepts `mode` + `patch` (V4A) from ANY
-            # model — the schema just doesn't advertise them off-family.
+            # NOTE: handler still accepts `mode` + `patch` (V4A, incl.
+            # mode='verified') from ANY model — the schema just doesn't
+            # advertise them off-family.
         },
         "required": ["path", "old_string", "new_string"],
     },
@@ -2799,19 +2807,22 @@ _PATCH_V4A_DESCRIPTION = (
     "REPLACE MODE (mode='replace', default): find a unique string and replace it. "
     "REQUIRED PARAMETERS: mode, path, old_string, new_string.\n"
     "PATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. "
+    "REQUIRED PARAMETERS: mode, patch.\n"
+    "VERIFIED MODE (mode='verified'): apply V4A-style update hunks with local "
+    "old-line preconditions and non-destructive context relocation. "
     "REQUIRED PARAMETERS: mode, patch."
 )
 
 _PATCH_V4A_PARAMS = {
     "mode": {
         "type": "string",
-        "enum": ["replace", "patch"],
-        "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+        "enum": ["replace", "patch", "verified"],
+        "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only. 'verified': V4A-style update hunks with @@ line range hints and '-' old-line preconditions.",
         "default": "replace",
     },
     "patch": {
         "type": "string",
-        "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+        "description": "REQUIRED when mode='patch' or mode='verified'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch\nFor mode='verified', only Update File hunks are supported, each hunk must use a numeric @@ range hint (e.g. @@ 12..14 @@); '-' lines are mandatory old-content preconditions, context lines are non-destructive relocation evidence, and '+' lines are the replacement.",
     },
 }
 

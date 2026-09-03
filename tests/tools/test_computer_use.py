@@ -2072,6 +2072,34 @@ class TestStructuredElementsConsumption:
         assert out[0].bounds == (10, 20, 80, 30)
         assert out[1].bounds == (100, 50, 200, 24)
 
+    def test_control_state_survives_capture_response(self):
+        from tools.computer_use.backend import CaptureResult
+        from tools.computer_use.cua_backend import _parse_elements_from_structured
+        from tools.computer_use.tool import _capture_response
+
+        elements = _parse_elements_from_structured([{
+            "element_index": 6,
+            "role": "AXCheckBox",
+            "label": "Protection",
+            "frame": {"x": 10, "y": 20, "w": 44, "h": 24},
+            "value": "0",
+            "selected": False,
+            "enabled": True,
+        }])
+        payload = json.loads(_capture_response(CaptureResult(
+            mode="ax",
+            width=100,
+            height=100,
+            elements=elements,
+        )))
+
+        element = payload["elements"][0]
+        assert {key: element[key] for key in ("value", "selected", "enabled")} == {
+            "value": "0",
+            "selected": False,
+            "enabled": True,
+        }
+        assert "value='0' selected=False enabled=True" in payload["summary"]
 
     def test_vision_capture_falls_back_to_get_window_state_when_screenshot_dropped(self):
         """cua-driver >=0.5.x dropped the standalone `screenshot` MCP tool and
@@ -2458,6 +2486,18 @@ class TestCapturePayloadBudget:
         assert d["label"] == "OK"
         assert "label_truncated" not in d
 
+    def test_element_value_is_capped_in_json(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _MAX_ELEMENT_LABEL_CHARS, _element_to_dict
+
+        d = _element_to_dict(UIElement(
+            index=0,
+            role="TextField",
+            attributes={"value": "v" * 5000},
+        ))
+        assert len(d["value"]) == _MAX_ELEMENT_LABEL_CHARS
+        assert d["value_truncated"] is True
+
     def test_aux_vision_branch_respects_element_cap(self):
         """The aux-vision payload must carry the same capped element list as
         every other capture branch, not the full untruncated tree."""
@@ -2525,7 +2565,9 @@ class TestElementSpillFile:
 
         elems = [
             UIElement(index=i, role="Document", label=f"msg {i}: " + "x" * 2000,
-                      bounds=(100 + i, 200, 3600, 60), app="chrome.exe")
+                      bounds=(100 + i, 200, 3600, 60), app="chrome.exe",
+                      attributes={"value": "1", "selected": True, "enabled": True}
+                      if i == 0 else {})
             for i in range(120)
         ]
         return CaptureResult(mode="som", width=1455, height=791, png_b64=None,
@@ -2545,6 +2587,9 @@ class TestElementSpillFile:
         assert spill["total_elements"] == 120
         assert len(spill["elements"]) == 120           # beyond max_elements cap
         assert len(spill["elements"][0]["label"]) > 2000  # beyond label cap
+        assert spill["elements"][0]["value"] == "1"
+        assert spill["elements"][0]["selected"] is True
+        assert spill["elements"][0]["enabled"] is True
         assert spill["elements"][119]["label"].startswith("msg 119")
 
     def test_no_spill_when_nothing_dropped(self, tmp_path, monkeypatch):
@@ -2560,6 +2605,29 @@ class TestElementSpillFile:
                             app="X", window_title="t", png_bytes_len=0)
         out = json.loads(_capture_response(cap))
         assert "elements_file" not in out
+
+    def test_long_value_is_recoverable_from_spill(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use.tool import _MAX_ELEMENT_LABEL_CHARS, _capture_response
+
+        value = "v" * 5000
+        cap = CaptureResult(
+            mode="ax",
+            width=100,
+            height=100,
+            elements=[UIElement(
+                index=0,
+                role="TextField",
+                label="Input",
+                attributes={"value": value},
+            )],
+        )
+        out = json.loads(_capture_response(cap))
+        spill = json.loads(open(out["elements_file"], encoding="utf-8").read())
+
+        assert len(out["elements"][0]["value"]) == _MAX_ELEMENT_LABEL_CHARS
+        assert spill["elements"][0]["value"] == value
 
     def test_spill_pruning_bounds_cache_growth(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

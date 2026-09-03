@@ -53,6 +53,7 @@ from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
     ComputerUseBackend,
+    ELEMENT_STATE_KEYS,
     UIElement,
 )
 
@@ -1446,7 +1447,17 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
         where = "@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}"
+        state_parts = []
+        for key in ELEMENT_STATE_KEYS:
+            if key not in e.attributes:
+                continue
+            value = e.attributes[key]
+            if isinstance(value, str):
+                value = value.replace("\n", " ")[:60]
+            state_parts.append(f"{key}={value!r}")
+        state = " ".join(state_parts)
         out.append(f"  #{e.index} {e.role} {label!r} {where}"
+                   + (f" {state}" if state else "")
                    + (f" [{e.app}]" if e.app else ""))
     if len(elements) > max_lines:
         out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")
@@ -1560,6 +1571,11 @@ def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
                     "label": e.label,  # full, untruncated
                     "bounds": list(e.bounds),
                     "app": e.app,
+                    **{
+                        key: e.attributes[key]
+                        for key in ELEMENT_STATE_KEYS
+                        if key in e.attributes
+                    },
                 }
                 for e in cap.elements
             ],
@@ -1581,7 +1597,12 @@ def _capture_lost_detail(
     if truncated_elements:
         return True
     return any(
-        len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible_elements
+        len(e.label) > _MAX_ELEMENT_LABEL_CHARS
+        or (
+            isinstance(e.attributes.get("value"), str)
+            and len(e.attributes["value"]) > _MAX_ELEMENT_LABEL_CHARS
+        )
+        for e in visible_elements
     )
 
 
@@ -1668,6 +1689,15 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
     }
     if truncated:
         out["label_truncated"] = True
+    for key in ELEMENT_STATE_KEYS:
+        if key not in e.attributes:
+            continue
+        value = e.attributes[key]
+        if key == "value" and isinstance(value, str) and len(value) > _MAX_ELEMENT_LABEL_CHARS:
+            out[key] = value[:_MAX_ELEMENT_LABEL_CHARS]
+            out["value_truncated"] = True
+        else:
+            out[key] = value
     return out
 
 

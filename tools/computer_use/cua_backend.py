@@ -59,6 +59,7 @@ from tools.computer_use.backend import (
     ActionResult,
     CaptureResult,
     ComputerUseBackend,
+    ELEMENT_STATE_KEYS,
     UIElement,
 )
 
@@ -1457,7 +1458,9 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
     information out of the markdown tree via a regex (lossy: bounds
     were always ``(0, 0, 0, 0)``) — this path preserves the real
     frame so downstream consumers (e.g. ``UIElement.center()``) work
-    against pixel coordinates instead of just the index lookup.
+    against pixel coordinates instead of just the index lookup. Control
+    state fields are carried in ``UIElement.attributes`` so capture responses
+    can expose them without changing the common element shape.
 
     Unknown / malformed entries are skipped rather than failing the
     whole walk — the wrapper degrades to "fewer elements" rather than
@@ -1489,11 +1492,17 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
         # the driver owns the parse + LRU semantics.
         raw_token = raw.get("element_token")
         token = raw_token if isinstance(raw_token, str) and raw_token else None
+        attributes = {
+            key: raw[key]
+            for key in ELEMENT_STATE_KEYS
+            if key in raw
+        }
         elements.append(UIElement(
             index=idx,
             role=role,
             label=label,
             bounds=bounds,
+            attributes=attributes,
             element_token=token,
         ))
     return elements

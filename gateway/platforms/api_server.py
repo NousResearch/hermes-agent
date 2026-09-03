@@ -7900,8 +7900,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "API_SERVER_KEY was rejected by the startup guard (missing, "
                 "placeholder/too short, or strength unverifiable — see the "
                 "error logged above). Generate a strong secret (e.g. "
-                "`openssl rand -hex 32`), set API_SERVER_KEY, then "
-                "`/platform resume api_server`.",
+                "`openssl rand -hex 32`), set API_SERVER_KEY, then restart "
+                "the gateway (`hermes gateway restart`).",
                 retryable=False,
             )
             return False
@@ -8010,13 +8010,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     # defaulting to the same port, #52132), filling
                     # errors.log and leaking the adapter's ResponseStore
                     # fds each retry. Non-retryable drops it from the
-                    # reconnect queue; the operator recovers with
-                    # ``/platform resume api_server`` after changing the port.
+                    # reconnect queue, so ``/platform resume`` cannot bring
+                    # it back — the operator must restart the gateway after
+                    # changing the port.
                     self._set_fatal_error(
                         "api_server_port_in_use",
                         f"Port {self._port} already in use. Set "
                         f"platforms.api_server.port in config.yaml to a "
-                        f"different value, then `/platform resume api_server`.",
+                        f"different value, then restart the gateway "
+                        f"(`hermes gateway restart`).",
                         retryable=False,
                     )
                 logger.error(

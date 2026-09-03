@@ -170,3 +170,26 @@ class TestBindMechanics:
         finally:
             await first.disconnect()
             await second.disconnect()
+
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_message_names_a_working_recovery(self):
+        """The port-conflict message must not send the operator to
+        ``/platform resume``: a non-retryable fatal is never queued in
+        ``_failed_platforms`` (gateway/run.py), so slash_commands.py's
+        resume handler always replies "not in the retry queue — nothing
+        to resume" for this exact error. The only real recovery is a
+        gateway restart, and the message must say so (#101745).
+        """
+        port = self._free_port()
+        first = self._make_adapter(port)
+        assert await first.connect() is True
+        second = self._make_adapter(port)
+        try:
+            assert await second.connect() is False
+            message = second.fatal_error_message or ""
+            assert "/platform resume" not in message
+            assert "gateway restart" in message
+        finally:
+            await first.disconnect()
+            await second.disconnect()

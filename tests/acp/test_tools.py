@@ -1,5 +1,6 @@
 """Tests for acp_adapter.tools — tool kind mapping and ACP content building."""
 
+import pytest
 
 from acp_adapter.edit_approval import EditProposal
 from acp_adapter.tools import (
@@ -40,12 +41,9 @@ class TestToolKindMap:
     def test_tool_kind_terminal(self):
         assert get_tool_kind("terminal") == "execute"
 
-
-
-
-
-
-
+    @pytest.mark.parametrize("tool_name", ["browser_click", "browser_console"])
+    def test_browser_actions_have_execute_kind(self, tool_name):
+        assert get_tool_kind(tool_name) == "execute"
 
     def test_unknown_tool_returns_other_kind(self):
         assert get_tool_kind("nonexistent_tool_xyz") == "other"

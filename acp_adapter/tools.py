@@ -43,6 +43,7 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_navigate": "fetch",
     "browser_click": "execute",
     "browser_type": "execute",
+    "browser_console": "execute",
     "browser_snapshot": "read",
     "browser_vision": "read",
     "browser_scroll": "execute",

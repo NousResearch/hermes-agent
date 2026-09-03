@@ -778,15 +778,18 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       const fence = line.match(FENCE_RE)
 
       if (fence) {
+        const fenceStart = i
         const char = fence[1]![0] as '`' | '~'
         const len = fence[1]!.length
         const lang = fence[2]!.trim().toLowerCase()
         const block: string[] = []
+        let closed = false
 
         for (i++; i < lines.length; i++) {
           const close = lines[i]!.match(FENCE_CLOSE_RE)?.[1]
 
           if (close && close[0] === char && close.length >= len) {
+            closed = true
             break
           }
 
@@ -795,6 +798,23 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         if (i < lines.length) {
           i++
+        }
+
+        // Unclosed fence at end of input (model drifted into prose without
+        // closing, or mid-stream snapshot): show the opener as a literal
+        // muted label and re-parse the body through the main loop so the
+        // prose structure after the drift point survives. MdInline would
+        // half-eat the backticks, so this is a plain Text.
+        if (!closed) {
+          start('code')
+          nodes.push(
+            <Box key={key} paddingLeft={2}>
+              <Text color={t.color.muted}>{`─ ${lang || 'code'} (unclosed)`}</Text>
+            </Box>
+          )
+          i = fenceStart + 1
+
+          continue
         }
 
         if (['md', 'markdown'].includes(lang)) {

@@ -59,7 +59,7 @@ from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
 logger = logging.getLogger(__name__)
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_X_SEARCH_MODEL = "grok-4.5"
+DEFAULT_X_SEARCH_MODEL = "grok-4.6"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
 X_SEARCH_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
@@ -82,6 +82,14 @@ def _load_x_search_config() -> Dict[str, Any]:
 def _get_x_search_model() -> str:
     cfg = _load_x_search_config()
     return (str(cfg.get("model") or "").strip() or DEFAULT_X_SEARCH_MODEL)
+
+
+def _resolve_x_search_model(override: str = "") -> str:
+    """Resolve an optional caller override without permitting non-Grok routes."""
+    model = str(override or "").strip() or _get_x_search_model()
+    if not model.lower().startswith("grok-"):
+        raise ValueError("x_search model must be a Grok model ID")
+    return model
 
 
 def _get_x_search_reasoning_effort() -> Optional[str]:
@@ -307,6 +315,7 @@ def x_search_tool(
     to_date: str = "",
     enable_image_understanding: bool = False,
     enable_video_understanding: bool = False,
+    model: str = "",
 ) -> str:
     if not query or not query.strip():
         return tool_error("query is required for x_search")
@@ -346,8 +355,13 @@ def x_search_tool(
         if enable_video_understanding:
             tool_def["enable_video_understanding"] = True
 
+        try:
+            selected_model = _resolve_x_search_model(model)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
         payload = {
-            "model": _get_x_search_model(),
+            "model": selected_model,
             "input": [
                 {
                     "role": "user",
@@ -505,6 +519,13 @@ X_SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "What to look up on X.",
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional Grok model ID for this search. Defaults to "
+                    "x_search.model from config."
+                ),
+            },
             "allowed_x_handles": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -542,6 +563,7 @@ X_SEARCH_SCHEMA = {
 def _handle_x_search(args, **kw):
     return x_search_tool(
         query=args.get("query", ""),
+        model=args.get("model", ""),
         allowed_x_handles=args.get("allowed_x_handles"),
         excluded_x_handles=args.get("excluded_x_handles"),
         from_date=args.get("from_date", ""),

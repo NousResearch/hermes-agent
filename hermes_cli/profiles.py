@@ -911,10 +911,14 @@ def _count_skills(profile_dir: Path) -> int:
         return cached[2]
 
     count = 0
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
+    try:
+        for md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(md):
+                continue
+            count += 1
+    except OSError:
+        # skills_dir or a subdir vanished mid-walk (e.g. skill pruned during update); treat as 0
+        return 0
     _SKILL_COUNT_CACHE[key] = (signature, now, count)
     return count
 

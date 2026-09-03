@@ -4672,6 +4672,33 @@ def compress_context(
                     _todo_message.pop("_todo_snapshot_synthetic", None)
                 break
         if todo_snapshot:
+            # A prior standalone snapshot can be buried before later assistant/tool
+            # rows when another compression fires in the same turn. Refreshing only
+            # the tail then stacks one snapshot per boundary. Remove stale snapshot
+            # blocks across the whole compressed view first; preserve any real user
+            # text that previously carried a merged snapshot, and let the injection
+            # below place exactly one fresh snapshot at the newest safe boundary.
+            _without_stale_snapshots = []
+            for _message in compressed:
+                if not isinstance(_message, dict) or _message.get("role") != "user":
+                    _without_stale_snapshots.append(_message)
+                    continue
+                _stripped_content = _strip_stale_todo_snapshot(
+                    _message.get("content")
+                )
+                if _stripped_content == _message.get("content"):
+                    _without_stale_snapshots.append(_message)
+                    continue
+                _stripped_message = {
+                    key: value
+                    for key, value in _message.items()
+                    if key not in {"content", "_todo_snapshot_synthetic"}
+                }
+                _stripped_message["content"] = _stripped_content
+                if _is_real_user_message(_stripped_message):
+                    _without_stale_snapshots.append(_stripped_message)
+            compressed = _without_stale_snapshots
+
             # Retention parity (#84718): the snapshot below re-injects the
             # imperative verbatim. If this same boundary pruned skill bodies
             # to [SKILL_PRUNED: ...] markers, the policy that governed those

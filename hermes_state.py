@@ -13492,17 +13492,90 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
 
             # Concurrent tail: active rows that arrived after the watermark.
-            # Snapshot their ids and tool_calls now — the clone below needs a
+            # A durable row can also already be represented in the compressor's
+            # handoff (for example when a preflight compaction overlaps a live
+            # append). Match those exact occurrences before cloning so the commit
+            # preserves the row once instead of inserting it and cloning it again.
+            def _watermark_overlap_identity(
+                role: Any,
+                content: Any,
+                tool_call_id: Any,
+                tool_calls: Any,
+                tool_name: Any,
+                timestamp: Any,
+            ) -> tuple:
+                if isinstance(tool_calls, str):
+                    try:
+                        tool_calls = json.loads(tool_calls)
+                    except (json.JSONDecodeError, TypeError):
+                        tool_calls = []
+                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+                try:
+                    normalized_timestamp = float(timestamp)
+                except (TypeError, ValueError):
+                    normalized_timestamp = None
+                return (
+                    role,
+                    self._encode_content(content),
+                    tool_call_id,
+                    tool_calls_json,
+                    _scrub_surrogates(tool_name),
+                    normalized_timestamp,
+                )
+
+            represented_tail_occurrences: Dict[tuple, int] = {}
+            represented_untimed_occurrences: Dict[tuple, int] = {}
+            for message in compacted_messages:
+                identity = _watermark_overlap_identity(
+                    message.get("role", "unknown"),
+                    message.get("content"),
+                    message.get("tool_call_id"),
+                    message.get("tool_calls"),
+                    message.get("tool_name"),
+                    message.get("timestamp"),
+                )
+                represented_tail_occurrences[identity] = (
+                    represented_tail_occurrences.get(identity, 0) + 1
+                )
+                if identity[-1] is None:
+                    untimed_identity = identity[:-1]
+                    represented_untimed_occurrences[untimed_identity] = (
+                        represented_untimed_occurrences.get(untimed_identity, 0) + 1
+                    )
+
+            # Snapshot tail ids and tool_calls now — the clone below needs a
             # stable id list, and the tool-call count keeps sessions.* honest.
             tail_ids: list[int] = []
             tail_tool_calls = 0
             if watermark is not None:
                 for row in conn.execute(
-                    "SELECT id, tool_calls FROM messages "
+                    "SELECT id, role, content, tool_call_id, tool_calls, "
+                    "tool_name, timestamp FROM messages "
                     "WHERE session_id = ? AND active = 1 AND id > ? "
                     "ORDER BY id",
                     (session_id, int(watermark)),
                 ).fetchall():
+                    identity = _watermark_overlap_identity(
+                        row["role"],
+                        self._decode_content(row["content"]),
+                        row["tool_call_id"],
+                        row["tool_calls"],
+                        row["tool_name"],
+                        row["timestamp"],
+                    )
+                    represented_count = represented_tail_occurrences.get(identity, 0)
+                    if represented_count > 0:
+                        represented_tail_occurrences[identity] = represented_count - 1
+                        continue
+                    untimed_identity = identity[:-1]
+                    untimed_count = represented_untimed_occurrences.get(
+                        untimed_identity, 0
+                    )
+                    if untimed_count > 0:
+                        represented_untimed_occurrences[untimed_identity] = (
+                            untimed_count - 1
+                        )
+                        continue
                     tail_ids.append(int(row["id"]))
                     raw = row["tool_calls"]
                     if raw:

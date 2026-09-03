@@ -60,6 +60,43 @@ class TestWatermarkCommit:
         ], "tail must follow the summary, in arrival order"
         assert count == 4
 
+    def test_tail_already_in_compacted_handoff_is_not_cloned_twice(
+        self, db: SessionDB
+    ) -> None:
+        _seed(db)
+        watermark = db.get_active_message_watermark("sess1")
+        db.append_message("sess1", role="user", content="mid-compression steer")
+        late_arrival = db.get_messages_as_conversation("sess1")[-1]
+        assert late_arrival.get("_db_persisted") is True
+        compacted = [*SUMMARY, late_arrival]
+
+        count = db.archive_and_compact("sess1", compacted, watermark=watermark)
+
+        contents = [row["content"] for row in db.get_messages("sess1")]
+        assert contents == [
+            "[CONTEXT COMPACTION] summary of turns 0-5",
+            "Continuing from the summary.",
+            "mid-compression steer",
+        ]
+        assert count == 3
+
+    def test_generated_handoff_replaces_same_concurrent_scaffold(
+        self, db: SessionDB
+    ) -> None:
+        _seed(db)
+        watermark = db.get_active_message_watermark("sess1")
+        db.append_message(
+            "sess1",
+            role="user",
+            content=SUMMARY[0]["content"],
+        )
+
+        count = db.archive_and_compact("sess1", SUMMARY, watermark=watermark)
+
+        contents = [row["content"] for row in db.get_messages("sess1")]
+        assert contents.count(SUMMARY[0]["content"]) == 1
+        assert count == 2
+
     def test_tail_clone_preserves_every_column(self, db: SessionDB) -> None:
         """The pure-SQL clone must carry sidecar fields byte-exact."""
         _seed(db, 2)

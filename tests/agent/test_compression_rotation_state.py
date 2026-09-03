@@ -1589,6 +1589,43 @@ class TestTodoSnapshotScaffoldingTails:
             for previous, current in zip(compressed, compressed[1:])
         )
 
+    def test_buried_standalone_snapshot_is_replaced_not_duplicated(
+        self, tmp_path: Path
+    ):
+        """A tool result after a snapshot must not make the next boundary stack it."""
+        from tools.todo_tool import TODO_INJECTION_HEADER
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        agent = self._agent_with_todo(
+            db,
+            "PARENT_TODO_BURIED",
+            {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+        )
+        agent.context_compressor.compress.return_value.insert(
+            -1,
+            {
+                "role": "user",
+                "content": (
+                    f"{TODO_INJECTION_HEADER}\n"
+                    "- [ ] t0. stale task (pending)"
+                ),
+                "_todo_snapshot_synthetic": True,
+            },
+        )
+
+        compressed, _ = agent._compress_context(
+            _msgs(), "sys", approx_tokens=120_000
+        )
+
+        snapshot_rows = [
+            message
+            for message in compressed
+            if TODO_INJECTION_HEADER in str(message.get("content") or "")
+        ]
+        assert len(snapshot_rows) == 1
+        assert "task A" in str(snapshot_rows[0]["content"])
+        assert "stale task" not in str(snapshot_rows[0]["content"])
+
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
         from tools.todo_tool import TODO_INJECTION_HEADER
 

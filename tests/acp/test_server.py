@@ -446,6 +446,77 @@ class TestPrompt:
 
         assert captured.get("child") == resp.session_id
 
+    @pytest.mark.asyncio
+    async def test_prompt_cancelled_turn_with_none_response_does_not_brick_session(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": None,
+                "messages": [],
+                "interrupted": True,
+                "completed": False,
+            }
+
+        state.agent.run_conversation = mock_run
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="do something slow")],
+            session_id=new_resp.session_id,
+        )
+
+        assert resp.stop_reason == "cancelled"
+        assert state.is_running is False
+        assert state.queued_prompts == []
+
+        state.cancel_event.clear()
+        follow_up_ran = []
+
+        def mock_run_ok(*args, **kwargs):
+            follow_up_ran.append(True)
+            return {"final_response": "done", "messages": [], "completed": True}
+
+        state.agent.run_conversation = mock_run_ok
+        resp2 = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="follow up")],
+            session_id=new_resp.session_id,
+        )
+
+        assert resp2.stop_reason == "end_turn"
+        assert follow_up_ran, "follow-up prompt was queued instead of running"
+
+    @pytest.mark.asyncio
+    async def test_prompt_tail_exception_still_releases_session(self, agent):
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "user", "content": "x"}],
+                "completed": True,
+            }
+
+        state.agent.run_conversation = mock_run
+        agent.session_manager.save_session = MagicMock(side_effect=RuntimeError("disk full"))
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="hi")],
+                session_id=new_resp.session_id,
+            )
+
+        assert state.is_running is False
+        assert state.current_prompt_text == ""
+
 
 
 

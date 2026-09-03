@@ -7930,7 +7930,14 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             for mcp_tool in server._tools:
                 if not _should_register(mcp_tool.name):
                     continue
-                schema_obj = getattr(mcp_tool, "inputSchema", None)
+                # mcp 2.0 renamed every Tool model field to snake_case and
+                # left camelCase as a *serialization* alias only, which pydantic
+                # does not apply to attribute access: a bare camelCase getattr
+                # returns None on 2.x instead of raising. That silently wrote an
+                # empty ``inputSchema`` into the schema cache on every write-
+                # through, so a ``lazy: true`` server registered from cache with
+                # every parameter stripped. ``mcp_field`` reads both spellings.
+                schema_obj = mcp_field(mcp_tool, "input_schema", "inputSchema")
                 tools_payload.append({
                     "name": mcp_tool.name,
                     "description": mcp_tool.description or "",

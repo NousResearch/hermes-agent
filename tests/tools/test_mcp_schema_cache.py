@@ -110,3 +110,85 @@ class TestWriteSkip:
         # Changed payload → rewrite.
         msc.write_cache_entry("srv", "fp2", tools=tools, utility_tools=[])
         assert len(saves) == 2
+
+
+class TestWriteThroughPreservesSchema:
+    """Regression: the write-through path must persist real tool parameters.
+
+    ``mcp`` 2.0 renamed ``Tool.inputSchema`` to ``input_schema``, keeping the
+    camelCase spelling only as a *serialization* alias — pydantic aliases do
+    not apply to attribute access, so ``getattr(tool, "inputSchema")`` returns
+    None on 2.x instead of raising. The cache-write path used exactly that
+    bare read, so every entry landed on disk with ``"inputSchema": {}``. A
+    server later registered from that cache (``lazy: true``) was advertised to
+    the model with every parameter stripped, which makes required-argument
+    tools such as zhihu's ``zhida`` (``query`` + ``model`` both required)
+    uncallable.
+
+    These tests drive the live ``_register_server_tools`` write-through with a
+    genuine SDK ``Tool`` so the field-rename is actually exercised — the mock
+    fixtures elsewhere build ``SimpleNamespace`` objects and cannot catch it.
+    """
+
+    _SCHEMA = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "model": {"type": "string"},
+        },
+        "required": ["query", "model"],
+    }
+
+    def _cache_write_through(self, tmp_path, monkeypatch):
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from mcp.types import Tool
+
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
+        server = mt.MCPServerTask("probe_srv")
+        server._tools = [
+            Tool(name="zhida", description="知乎直答", inputSchema=self._SCHEMA)
+        ]
+        server.session = MagicMock()
+        from tools.registry import ToolRegistry
+
+        with patch("tools.registry.registry", ToolRegistry()):
+            registered = mt._register_server_tools("probe_srv", server, {})
+        assert registered, "tool was not registered; write-through never fired"
+        entry = json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))["probe_srv"]
+        return entry["tools"][0]["inputSchema"]
+
+    def test_cached_schema_keeps_properties(self, tmp_path, monkeypatch):
+        cached = self._cache_write_through(tmp_path, monkeypatch)
+        assert set(cached.get("properties", {})) == {"query", "model"}, (
+            "write-through persisted an empty schema — the SDK field rename "
+            "was read with a bare camelCase getattr"
+        )
+
+    def test_cached_schema_keeps_required(self, tmp_path, monkeypatch):
+        cached = self._cache_write_through(tmp_path, monkeypatch)
+        assert cached.get("required") == ["query", "model"]
+
+    def test_cache_round_trip_reaches_agent_schema(self, tmp_path, monkeypatch):
+        """The whole point of the cache: a lazy server re-advertises params."""
+        from unittest.mock import patch
+
+        import tools.mcp_tool as mt
+        from tools.registry import ToolRegistry
+
+        cached = self._cache_write_through(tmp_path, monkeypatch)
+        entry = {
+            "fingerprint": "fp",
+            "tools": [{"name": "zhida", "description": "d", "inputSchema": cached}],
+            "utility_tools": [],
+        }
+        lazy_reg = ToolRegistry()
+        with patch("tools.registry.registry", lazy_reg):
+            names = mt._register_from_cache_sync("probe_srv", {}, entry)
+        assert names, "lazy registration produced no tools"
+        schema = lazy_reg.get_schema("mcp__probe_srv__zhida")
+        assert schema is not None, "lazy path did not register the tool"
+        assert set(schema["parameters"].get("properties", {})) == {"query", "model"}

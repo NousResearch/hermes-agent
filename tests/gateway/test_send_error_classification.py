@@ -87,3 +87,97 @@ def test_telegram_send_failure_populates_error_kind():
     assert result.error_kind != "unknown" or result.error
 
 
+def _make_send_adapter(exc: Exception):
+    """TelegramAdapter wired with a bot whose send_message raises ``exc``."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    cfg = PlatformConfig(enabled=True, token="fake-token", extra={})
+    adapter = TelegramAdapter(cfg)
+    bot = MagicMock()
+    bot.send_message = AsyncMock(side_effect=exc)
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+    adapter._rich_messages_enabled = False
+    return adapter
+
+
+@pytest.mark.parametrize(
+    "error_text,expected_kind",
+    [
+        ("Bad Request: chat not found", "not_found"),
+        ("Forbidden: bot was blocked by the user", "forbidden"),
+    ],
+)
+def test_telegram_send_dead_target_failure_logs_warning_not_error(
+    caplog, error_text, expected_kind
+):
+    """NICHE-BOTS-C regression: a bot lacking access to its configured chat
+    (e.g. never added to the group -- config error, not a code bug) must not
+    file a Sentry issue every time.
+
+    ``adapter.send()`` already handles this cleanly: it catches the
+    exception and returns ``SendResult(success=False, error_kind=...)``
+    without raising, and ``gateway.dead_targets.DeadTargetRegistry`` marks
+    the target dead and self-heals on the next successful send. But the
+    failure was *also* logged at ERROR, and Sentry's fleet-wide
+    ``sitecustomize.py`` LoggingIntegration (event_level=ERROR by default)
+    turned that single log line into a fresh Sentry issue for an entirely
+    expected, already-handled outcome. Classified dead-target kinds
+    (``not_found`` / ``forbidden``) must log at WARNING instead; anything
+    unclassified still logs at ERROR so real bugs keep surfacing.
+    """
+    import asyncio
+
+    adapter = _make_send_adapter(Exception(error_text))
+
+    with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+        result = asyncio.run(adapter.send("123", "hello"))
+
+    assert result.success is False
+    assert result.error_kind == expected_kind
+
+    error_lines = [
+        r for r in caplog.records
+        if r.levelname == "ERROR" and "Failed to send Telegram message" in r.getMessage()
+    ]
+    warning_lines = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and "Failed to send Telegram message" in r.getMessage()
+    ]
+    assert not error_lines, (
+        "Expected no ERROR log for a classified dead-target send failure "
+        f"(would page Sentry for noise), got: {[r.getMessage() for r in error_lines]}"
+    )
+    assert warning_lines, (
+        f"Expected a WARNING log line; got records: "
+        f"{[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+
+
+def test_telegram_send_unknown_failure_still_logs_error(caplog):
+    """An unclassified send failure is a real, unexpected bug -- keep it at
+    ERROR so it still reaches Sentry/on-call instead of being silently
+    downgraded alongside the known dead-target noise."""
+    import asyncio
+
+    adapter = _make_send_adapter(Exception("some entirely novel provider message"))
+
+    with caplog.at_level("DEBUG", logger="plugins.platforms.telegram.adapter"):
+        result = asyncio.run(adapter.send("123", "hello"))
+
+    assert result.success is False
+    assert result.error_kind == "unknown"
+
+    error_lines = [
+        r for r in caplog.records
+        if r.levelname == "ERROR" and "Failed to send Telegram message" in r.getMessage()
+    ]
+    assert error_lines, (
+        f"Expected an ERROR log line for an unclassified failure; got records: "
+        f"{[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+
+

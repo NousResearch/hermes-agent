@@ -1195,10 +1195,43 @@ def kanban_command(args: argparse.Namespace) -> int:
             print(f"kanban: unknown action {action!r}", file=sys.stderr)
             return 2
         try:
-            return int(handler(args) or 0)
+            rc = int(handler(args) or 0)
+            # Force the flush now, inside the try, so that if the reader
+            # already closed its end (piped into `head`, a dashboard
+            # reading a bounded prefix, a caller that timed out the
+            # subprocess, ...) the resulting BrokenPipeError surfaces here
+            # -- where we handle it below -- rather than later during
+            # interpreter shutdown, where CPython's own stdio-flush
+            # machinery would print an "Exception ignored" notice to
+            # stderr and force exit status 120.
+            sys.stdout.flush()
+            return rc
         except (ValueError, RuntimeError) as exc:
             print(f"kanban: {exc}", file=sys.stderr)
             return 1
+        except BrokenPipeError:
+            # The process reading our stdout closed its read end early
+            # (piped into `head`, a caller that timed out/killed the
+            # reader, a dashboard reading a bounded prefix, etc). Every
+            # handler above may `print(json.dumps(...))` a payload of
+            # arbitrary size, so this is expected/benign traffic, not a
+            # crash -- log it once for diagnostics and exit cleanly
+            # instead of letting the traceback escape to stderr/Sentry.
+            #
+            # Note: we deliberately do NOT dup2() sys.stdout's fd to
+            # os.devnull here (the usual stdlib BrokenPipeError recipe).
+            # kanban_command() is also called in-process from the gateway
+            # and from tests, where stdout is a real long-lived fd shared
+            # by the rest of the process (or a fd-capturing test runner);
+            # clobbering it globally would silence/break unrelated output
+            # for the remainder of that process instead of just this call.
+            import logging as _logging
+
+            _logging.getLogger(__name__).info(
+                "kanban %s: stdout pipe closed by reader (BrokenPipeError)",
+                action,
+            )
+            return 0
 
 
 # ---------------------------------------------------------------------------

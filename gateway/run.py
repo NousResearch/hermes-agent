@@ -96,6 +96,22 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # 180s budget (is_reconnect=True preserves the offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Buffer added to the outer per-adapter cleanup guard when awaiting
+# cancel_background_tasks() specifically. That call self-bounds each drain
+# round with its own asyncio.wait_for(timeout=<adapter round timeout,
+# default 5.0s>) -- identical to (or shorter than) the outer guard's own
+# default budget. Racing two independent timers on the same deadline means
+# event-loop scheduling jitter can let the OUTER timer fire a few ms before
+# the inner asyncio.wait_for resolves on its own, cancelling the coroutine
+# while it's suspended inside the inner asyncio.gather(). That orphans the
+# inner _GatheringFuture (nobody left to call .result()/.exception() on
+# it), and asyncio's default exception handler logs "_GatheringFuture
+# exception was never retrieved" as an error-level CancelledError --
+# exactly Sentry NICHE-BOTS-M. Keeping the outer deadline strictly past the
+# inner one removes the race; the inner call still self-bounds at its own
+# timeout, so shutdown latency is unaffected in the fast (happy) path and
+# only extends the worst case by this buffer.
+_ADAPTER_CANCEL_TIMEOUT_BUFFER_SECS = 2.0
 # End reasons that mean the USER deliberately closed this thread of work
 # (/new -> session_reset / new_session, an explicit exit, or a /switch).
 # Shared by _classify_completion_target (pre-flight verdict) and
@@ -8435,18 +8451,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         task is cancelled and detached, then teardown forces forward progress;
         the loop never hangs even if an adapter swallows cancellation. Never
         raises.
+
+        The ``cancel_background_tasks()`` await uses a WIDER timeout than
+        ``disconnect()``: that call self-bounds its own single drain round
+        with ``adapter.CANCEL_BACKGROUND_TASKS_ROUND_TIMEOUT_SECS`` (default
+        5.0s, same as our base per-adapter budget). Giving the outer guard
+        the identical deadline let it race the inner ``asyncio.wait_for``
+        and cancel mid-gather, orphaning the inner ``_GatheringFuture`` and
+        surfacing as a spurious CancelledError (Sentry NICHE-BOTS-M). Adding
+        ``_ADAPTER_CANCEL_TIMEOUT_BUFFER_SECS`` keeps our deadline strictly
+        after the inner one so the inner timeout always resolves the gather
+        future first (retrieving its exception) on the sole-straggler path
+        that actually happens in practice, without materially extending
+        worst-case shutdown latency.
         """
         timeout = self._adapter_disconnect_timeout_secs()
+        cancel_timeout = self._adapter_cancel_background_tasks_timeout_secs(adapter, timeout)
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
         try:
             cancelled = await self._await_adapter_cleanup_with_timeout(
-                adapter.cancel_background_tasks(), timeout
+                adapter.cancel_background_tasks(), cancel_timeout
             )
             if not cancelled:
                 logger.warning(
                     "✗ %s background-task cancel timed out after %.1fs - forcing continue%s",
-                    platform.value, timeout, suffix,
+                    platform.value, cancel_timeout, suffix,
                 )
         except Exception as e:
             logger.debug("✗ %s background-task cancel error%s: %s", platform.value, suffix, e)
@@ -8484,6 +8514,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 return max(0.0, timeout)
         return _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT
+
+    def _adapter_cancel_background_tasks_timeout_secs(self, adapter, base_timeout: float) -> float:
+        """Return the outer guard timeout for awaiting ``cancel_background_tasks()``.
+
+        That call self-bounds each drain round at
+        ``adapter.CANCEL_BACKGROUND_TASKS_ROUND_TIMEOUT_SECS`` (a
+        ``BasePlatformAdapter`` class attribute, default 5.0s). If our own
+        timeout equals or undercuts that value, event-loop scheduling
+        jitter lets us fire first and cancel the coroutine while it's
+        suspended inside the adapter's own ``asyncio.wait_for(gather(...))``,
+        orphaning that inner ``_GatheringFuture`` -- surfacing as a spurious
+        "exception was never retrieved" CancelledError (Sentry
+        NICHE-BOTS-M). Returning the inner round timeout plus a fixed
+        buffer keeps our deadline strictly after the inner one so the
+        single-straggler case (the common one) always resolves there first.
+        """
+        inner_round_timeout = getattr(
+            adapter, "CANCEL_BACKGROUND_TASKS_ROUND_TIMEOUT_SECS", base_timeout
+        )
+        try:
+            inner_round_timeout = float(inner_round_timeout)
+        except (TypeError, ValueError):
+            inner_round_timeout = base_timeout
+        return max(base_timeout, inner_round_timeout + _ADAPTER_CANCEL_TIMEOUT_BUFFER_SECS)
 
     def _platform_connect_timeout_secs(self, platform=None, *, initial: bool = False) -> float:
         """Return the per-platform connect timeout used during startup/retry.

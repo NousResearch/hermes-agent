@@ -402,3 +402,106 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             _run("y = 2")
             self.assertIsNot(kernel.cell_authority, first_authority)
             self.assertFalse(kernel.cell_authority.active)
+
+
+class TestPopenRetryOnTransientError(unittest.TestCase):
+    """Tests for the Popen retry-with-backoff on BlockingIOError (EAGAIN)."""
+
+    def test_spawn_retries_on_eagain(self):
+        """Verify _spawn retries on BlockingIOError and succeeds after transient failure."""
+        import errno
+        from tools.code_kernel import _spawn, SessionKernel, _teardown
+
+        call_count = [0]
+        original_popen = __import__('subprocess').Popen
+
+        def mock_popen(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] < 3:
+                # Simulate EAGAIN on first two attempts
+                err = BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+                err.errno = errno.EAGAIN
+                raise err
+            return original_popen(*args, **kwargs)
+
+        kernel = SessionKernel(("test-owner", "strict", sys.executable, "/tmp", ()))
+        try:
+            with patch('subprocess.Popen', side_effect=mock_popen), \
+                 patch('time.sleep') as mock_sleep:
+                _spawn(
+                    kernel,
+                    task_id="retry-test",
+                    child_python=sys.executable,
+                    child_cwd="/tmp",
+                    sandbox_tools=frozenset(),
+                    max_tool_calls=50,
+                )
+            # Should have retried and succeeded on 3rd attempt
+            self.assertEqual(call_count[0], 3)
+            # Verify sleep was called with exponential backoff (2, 4 seconds)
+            self.assertEqual(mock_sleep.call_count, 2)
+            mock_sleep.assert_any_call(2)
+            mock_sleep.assert_any_call(4)
+            # Kernel should have a live process
+            self.assertIsNotNone(kernel.proc)
+            self.assertIsNone(kernel.proc.poll())
+        finally:
+            _teardown(kernel)
+
+    def test_spawn_fails_after_max_retries(self):
+        """Verify _spawn raises after exhausting all retry attempts."""
+        import errno
+        from tools.code_kernel import _spawn, SessionKernel, _teardown
+
+        def mock_popen(*args, **kwargs):
+            err = BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+            err.errno = errno.EAGAIN
+            raise err
+
+        kernel = SessionKernel(("test-owner", "strict", sys.executable, "/tmp", ()))
+        try:
+            with patch('subprocess.Popen', side_effect=mock_popen), \
+                 patch('time.sleep'):
+                with self.assertRaises(OSError) as ctx:
+                    _spawn(
+                        kernel,
+                        task_id="retry-fail-test",
+                        child_python=sys.executable,
+                        child_cwd="/tmp",
+                        sandbox_tools=frozenset(),
+                        max_tool_calls=50,
+                    )
+            self.assertIn("after 4 attempts", str(ctx.exception))
+            self.assertIn("BlockingIOError", str(ctx.exception))
+        finally:
+            _teardown(kernel)
+
+    def test_spawn_does_not_retry_on_other_errors(self):
+        """Verify _spawn doesn't retry on non-transient errors like ENOENT."""
+        import errno
+        from tools.code_kernel import _spawn, SessionKernel, _teardown
+
+        call_count = [0]
+
+        def mock_popen(*args, **kwargs):
+            call_count[0] += 1
+            err = FileNotFoundError(errno.ENOENT, "No such file")
+            err.errno = errno.ENOENT
+            raise err
+
+        kernel = SessionKernel(("test-owner", "strict", sys.executable, "/tmp", ()))
+        try:
+            with patch('subprocess.Popen', side_effect=mock_popen):
+                with self.assertRaises(FileNotFoundError):
+                    _spawn(
+                        kernel,
+                        task_id="no-retry-test",
+                        child_python=sys.executable,
+                        child_cwd="/tmp",
+                        sandbox_tools=frozenset(),
+                        max_tool_calls=50,
+                    )
+            # Should have failed immediately without retrying
+            self.assertEqual(call_count[0], 1)
+        finally:
+            _teardown(kernel)

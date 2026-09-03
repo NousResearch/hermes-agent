@@ -23,6 +23,7 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from agent.async_utils import consume_detached_task_result
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -3145,6 +3146,16 @@ class BasePlatformAdapter(ABC):
     # platforms (Telegram, Discord, Matrix, …) keep the default False and
     # never see these calls.
     supports_status_text: bool = False
+
+    # cancel_background_tasks() drains in rounds so late-arriving tasks
+    # (spawned by an inbound message while we're already draining) get
+    # swept up too; each round bounds its gather with a per-round timeout.
+    # Exposed as class attributes so gateway/run.py's outer per-adapter
+    # shutdown timeout (_adapter_disconnect_timeout_secs) can be sized to
+    # exceed this method's worst-case wall-clock bound instead of racing
+    # it on the same constant (see NICHE-BOTS-M postmortem).
+    CANCEL_BACKGROUND_TASKS_ROUND_TIMEOUT_SECS: float = 5.0
+    CANCEL_BACKGROUND_TASKS_MAX_DRAIN_ROUNDS: int = 5
 
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat.
@@ -7421,7 +7432,8 @@ class BasePlatformAdapter(ABC):
         # disconnecting adapter, logs send-failures, and may linger
         # until it completes on its own.  Retrying the drain until the
         # task set stabilizes closes the window.
-        MAX_DRAIN_ROUNDS = 5
+        MAX_DRAIN_ROUNDS = self.CANCEL_BACKGROUND_TASKS_MAX_DRAIN_ROUNDS
+        round_timeout = self.CANCEL_BACKGROUND_TASKS_ROUND_TIMEOUT_SECS
         for _ in range(MAX_DRAIN_ROUNDS):
             tasks = [task for task in self._background_tasks if not task.done()]
             if not tasks:
@@ -7429,19 +7441,32 @@ class BasePlatformAdapter(ABC):
             for task in tasks:
                 self._expected_cancelled_tasks.add(task)
                 task.cancel()
+            # Hold a direct reference to the gather future (rather than
+            # passing it anonymously into wait_for) and attach a
+            # done-callback that always retrieves its result/exception.
+            # asyncio.wait_for's own cancellation path (_cancel_and_wait)
+            # cancels this future and waits for it to finish, but never
+            # calls .result()/.exception() on it -- if *this* coroutine
+            # is itself cancelled from further out (e.g. the gateway's
+            # outer per-adapter shutdown timeout) while suspended here,
+            # the gather future resolves to CancelledError with nobody
+            # ever retrieving it, and asyncio's GC-time default exception
+            # handler logs "_GatheringFuture exception was never
+            # retrieved" -- surfacing as a spurious error-level
+            # CancelledError (Sentry NICHE-BOTS-M). The done-callback
+            # below closes that window regardless of which layer cancels.
+            gather_future = asyncio.gather(
+                *(asyncio.shield(t) for t in tasks),
+                return_exceptions=True,
+            )
+            gather_future.add_done_callback(consume_detached_task_result)
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        *(asyncio.shield(t) for t in tasks),
-                        return_exceptions=True,
-                    ),
-                    timeout=5.0,
-                )
+                await asyncio.wait_for(gather_future, timeout=round_timeout)
             except asyncio.TimeoutError:
                 logger.warning(
-                    "[%s] %d background task(s) did not exit within 5s; "
+                    "[%s] %d background task(s) did not exit within %.1fs; "
                     "releasing tracking and letting them unwind in the background",
-                    self.name, len([t for t in tasks if not t.done()]),
+                    self.name, len([t for t in tasks if not t.done()]), round_timeout,
                 )
                 break
             # Loop: late-arrival tasks spawned during the gather above

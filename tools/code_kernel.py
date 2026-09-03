@@ -593,18 +593,51 @@ def _spawn(kernel: SessionKernel, *, task_id: str, child_python: str,
     # timeout — a kernel outlives the 300s window between cells.
     child_env["HERMES_RPC_PERSISTENT"] = "1"
 
-    kernel.proc = subprocess.Popen(
-        [child_python, runner_path],
-        # Strict mode resolves an empty cwd: the kernel's own staging dir
-        # then plays the per-call tmpdir's role.
-        cwd=child_cwd or kernel.tmpdir,
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.PIPE,
-        start_new_session=True,
-        creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-    )
+    # Retry Popen with exponential backoff on transient fork/resource errors
+    # (EAGAIN/EWOULDBLOCK on macOS errno 35, ENOMEM on Linux). Under high host
+    # load (concurrent kanban dispatch, multiple gateway daemons sharing one
+    # Mac), fork() can transiently fail with BlockingIOError. Mirrors the
+    # retry logic in terminal_tool.py. See Sentry NICHE-BOTS-8.
+    max_spawn_retries = 3
+    spawn_attempt = 0
+    last_spawn_error = None
+    while spawn_attempt <= max_spawn_retries:
+        try:
+            kernel.proc = subprocess.Popen(
+                [child_python, runner_path],
+                # Strict mode resolves an empty cwd: the kernel's own staging dir
+                # then plays the per-call tmpdir's role.
+                cwd=child_cwd or kernel.tmpdir,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+            break  # Success
+        except (BlockingIOError, OSError) as e:
+            # BlockingIOError is a subclass of OSError; catch both to handle
+            # EAGAIN (errno 35 on macOS, 11 on Linux) and ENOMEM (12).
+            import errno
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.ENOMEM, 35):
+                raise  # Not a transient resource error, fail immediately
+            last_spawn_error = e
+            if spawn_attempt < max_spawn_retries:
+                spawn_attempt += 1
+                backoff = 2 ** spawn_attempt  # 2, 4, 8 seconds
+                logger.warning(
+                    "Kernel spawn failed (attempt %d/%d), retrying in %ds: %s: %s",
+                    spawn_attempt, max_spawn_retries + 1, backoff,
+                    type(e).__name__, e
+                )
+                time.sleep(backoff)
+            else:
+                # All retries exhausted
+                raise OSError(
+                    f"Kernel spawn failed after {max_spawn_retries + 1} attempts "
+                    f"(final error: {type(last_spawn_error).__name__}: {last_spawn_error})"
+                ) from last_spawn_error
 
     # Deliberately NOT propagate_context_to_thread: that would freeze the
     # spawning cell's context/callbacks into the server thread for the

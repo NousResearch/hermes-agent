@@ -3282,6 +3282,120 @@ class TestRunConversation:
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
+    def test_terminal_api_error_emits_session_end_hook(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.base_url = "https://api.deepseek.com"
+        agent.model = "deepseek-v4-flash"
+
+        class _BillingError(Exception):
+            status_code = 402
+            body = {
+                "error": {
+                    "message": "Insufficient Balance",
+                    "type": "unknown_error",
+                    "param": None,
+                    "code": "invalid_request_error",
+                }
+            }
+
+        api_error = _BillingError("Error code: 402 - Insufficient Balance")
+        agent.client.chat.completions.create.side_effect = api_error
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch(
+                "hermes_cli.lifecycle.has_hook",
+                side_effect=lambda name: name
+                in {"pre_api_request", "api_request_error", "on_session_end"},
+            ),
+            patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_recover_with_credential_pool", return_value=(False, False)),
+            patch.object(agent, "_has_pending_fallback", return_value=False),
+            patch.object(agent, "_try_activate_fallback", return_value=False),
+            patch.object(agent, "_dump_api_request_debug"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["failure_reason"] == FailoverReason.billing.value
+
+        pre_calls = [kw for name, kw in hook_calls if name == "pre_api_request"]
+        error_calls = [kw for name, kw in hook_calls if name == "api_request_error"]
+        session_end_calls = [kw for name, kw in hook_calls if name == "on_session_end"]
+
+        assert len(pre_calls) == 1
+        assert len(error_calls) == 1
+        assert len(session_end_calls) == 1
+        assert error_calls[0]["api_request_id"] == pre_calls[0]["api_request_id"]
+        assert session_end_calls[0]["api_request_id"] == pre_calls[0]["api_request_id"]
+        assert error_calls[0]["status_code"] == 402
+        assert error_calls[0]["retryable"] is False
+        assert error_calls[0]["reason"] == FailoverReason.billing.value
+        assert session_end_calls[0]["failed"] is True
+        assert session_end_calls[0]["completed"] is False
+        assert (
+            session_end_calls[0]["turn_exit_reason"]
+            == "non_retryable_client_error(billing)"
+        )
+
+    @pytest.mark.parametrize(
+        "turn_exit_reason",
+        [
+            "api_error_compaction_disabled(context_overflow)",
+            "non_retryable_client_error(billing)",
+            "max_retries_exhausted(rate_limit)",
+        ],
+    )
+    def test_terminal_turn_end_hook_payload(self, turn_exit_reason):
+        from agent.conversation_loop import _emit_terminal_turn_end_hook
+
+        agent = SimpleNamespace(
+            session_id="sess-1",
+            model="model-1",
+            platform="cli",
+        )
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+
+        with patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook):
+            _emit_terminal_turn_end_hook(
+                agent,
+                effective_task_id="task-1",
+                turn_id="turn-1",
+                api_request_id="api-1",
+                turn_exit_reason=turn_exit_reason,
+            )
+
+        assert hook_calls == [
+            (
+                "on_session_end",
+                {
+                    "session_id": "sess-1",
+                    "task_id": "task-1",
+                    "turn_id": "turn-1",
+                    "api_request_id": "api-1",
+                    "completed": False,
+                    "failed": True,
+                    "interrupted": False,
+                    "turn_exit_reason": turn_exit_reason,
+                    "model": "model-1",
+                    "platform": "cli",
+                },
+            )
+        ]
+
     def test_terminal_task_closes_logical_calls_before_metrics_scope(self, agent):
         from agent import relay_runtime
 

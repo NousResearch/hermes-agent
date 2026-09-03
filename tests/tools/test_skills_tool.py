@@ -334,6 +334,19 @@ class TestSkillView:
         assert by_name["success"] is True
         assert "Step 1" in by_name["content"]
 
+    def test_view_serializes_unquoted_yaml_date_in_frontmatter(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "dated-skill",
+                frontmatter_extra="compatibility:\n  updated: 2026-03-05\n",
+            )
+            raw = skill_view("dated-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["compatibility"]["updated"] == "2026-03-05"
+
     def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
         from tools.skills_tool import _skill_view_with_bump
 

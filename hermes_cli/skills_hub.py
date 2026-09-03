@@ -23,7 +23,7 @@ from rich.table import Table
 
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
-from hermes_constants import display_hermes_home
+from hermes_constants import display_hermes_home, get_hermes_home
 
 _console = Console()
 
@@ -223,6 +223,42 @@ def _is_valid_installed_skill_name(name: str) -> bool:
     if not candidate or candidate in {"skill", "readme", "index", "unnamed-skill"}:
         return False
     return bool(_VALID_NAME_RE.match(candidate))
+
+
+def _untracked_skill_dir(name: str, category: str) -> Optional[Path]:
+    """Return the install directory when it already holds an untracked skill.
+
+    ``do_install``'s collision check reads the hub lock file, which only knows
+    about hub-installed skills. ``install_from_quarantine`` nonetheless calls
+    ``shutil.rmtree`` on whatever sits at the install path, and its own comment
+    justifies that by pointing at "the lock-file check in ``do_install()``" --
+    a guarantee that does not hold for a skill with no lock entry. Locally
+    authored skills and bundled skills the user has edited are exactly that
+    population.
+
+    Resolve the directory ``install_from_quarantine`` would delete, using that
+    function's own validators so the two agree on the target, and report it
+    when it is an existing skill directory (one that directly contains
+    ``SKILL.md``). Return ``None`` when nothing is there, when it is a category
+    bucket, or when the name/category is malformed -- those cases are already
+    refused downstream with actionable errors, and pre-empting them here would
+    only change the message the user sees.
+    """
+    from tools.skills_hub import (
+        _resolve_lock_install_path,
+        _validate_install_parent_path,
+        _validate_skill_name,
+    )
+
+    try:
+        safe_name = _validate_skill_name(name)
+        safe_category = _validate_install_parent_path(category) if category else ""
+        install_rel_path = f"{safe_category}/{safe_name}" if safe_category else safe_name
+        install_dir = _resolve_lock_install_path(install_rel_path, safe_name)
+    except ValueError:
+        return None
+
+    return install_dir if (install_dir / "SKILL.md").is_file() else None
 
 
 def _existing_categories() -> List[str]:
@@ -684,6 +720,34 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
+            return
+
+    # The lock file only tracks hub-installed skills, so the check above cannot
+    # see a locally authored or user-edited skill sitting at the install path --
+    # yet install_from_quarantine() rmtrees it all the same. Consult the
+    # filesystem too, so an untracked skill gets the same "use --force" consent
+    # gate a hub-installed one already gets.
+    if not existing and not force:
+        untracked = _untracked_skill_dir(bundle.name, category)
+        if untracked is not None:
+            # Name the directory that would actually be rmtree'd. Rebuilding
+            # the path from the raw ``category`` would drift from it: the
+            # resolution in _untracked_skill_dir() runs the category through
+            # _validate_install_parent_path(), which strips empty and "."
+            # segments and rewrites "\" to "/". A consent prompt whose whole
+            # job is to name a deletion target must not name a different one.
+            try:
+                relative = untracked.relative_to(get_hermes_home().resolve())
+                shown = f"{display_hermes_home()}/{relative.as_posix()}"
+            except ValueError:
+                # SKILLS_DIR overridden outside HERMES_HOME -- no ~-shorthand
+                # to apply, so show the resolved path as-is.
+                shown = str(untracked)
+            c.print(
+                f"[yellow]Warning:[/] '{bundle.name}' already exists at {shown} "
+                "and is not tracked by the skills hub (a local or user-edited skill)."
+            )
+            c.print("Installing would replace it. Use --force to overwrite.\n")
             return
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})

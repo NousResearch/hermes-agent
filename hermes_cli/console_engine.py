@@ -764,8 +764,8 @@ class HermesConsoleEngine:
                 "hermes_cli.subcommands.memory",
                 "build_memory_parser",
                 "cmd_memory",
-                [("status",), ("off",), ("reset",)],
-                {("off",), ("reset",)},
+                [("status",), ("off",), ("add",), ("replace",), ("remove",), ("reset",)],
+                {("off",), ("add",), ("replace",), ("remove",), ("reset",)},
             ),
             "auth": (
                 "hermes_cli.subcommands.auth",

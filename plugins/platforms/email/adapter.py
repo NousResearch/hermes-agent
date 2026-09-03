@@ -50,7 +50,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, is_email_send_only
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -267,12 +267,14 @@ def check_email_requirements() -> bool:
 
     Treats blank/whitespace-only values as missing so an abandoned setup that
     left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
+    SMTP credentials are sufficient for the adapter to be present: an operator
+    may configure ``platforms.email.mode: send_only`` so cron/system delivery can
+    send mail without starting the IMAP poller.
     """
     addr = _get_secret("EMAIL_ADDRESS", "").strip()
     pwd = _get_secret("EMAIL_PASSWORD", "").strip()
-    imap = _get_secret("EMAIL_IMAP_HOST", "").strip()
     smtp = _get_secret("EMAIL_SMTP_HOST", "").strip()
-    return all([addr, pwd, imap, smtp])
+    return all([addr, pwd, smtp])
 
 
 _CHARSET_ALIASES = {
@@ -610,6 +612,8 @@ class EmailAdapter(BasePlatformAdapter):
         )
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
+        self._send_only = is_email_send_only(extra)
+
         # Skip attachments — configured via config.yaml:
         #   platforms:
         #     email:
@@ -743,7 +747,13 @@ class EmailAdapter(BasePlatformAdapter):
             return _connect(ipv4_only=True)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
+        """Connect to email services.
+
+        Normal mode verifies IMAP + SMTP and starts inbox polling. Send-only
+        mode verifies SMTP and deliberately skips IMAP/polling so another email
+        system (for example AgentMail) can own inbound mailbox processing while
+        Hermes keeps cron/system outbound delivery.
+        """
         # Validate up front so a missing host surfaces as an actionable config
         # error instead of IMAP4_SSL("") raising the cryptic
         # ``[Errno 8] nodename nor servname provided, or not known``.
@@ -752,11 +762,12 @@ class EmailAdapter(BasePlatformAdapter):
             for name, value in (
                 ("EMAIL_ADDRESS", self._address),
                 ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
                 ("EMAIL_SMTP_HOST", self._smtp_host),
             )
             if not value
         ]
+        if not self._send_only and not self._imap_host:
+            missing.append("EMAIL_IMAP_HOST")
         if missing:
             message = (
                 "Not configured — missing "
@@ -774,66 +785,63 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test IMAP connection. The handle is closed in ``finally`` —
-            # before this, a failure in login/select/search left the TCP
-            # socket open with no owner, leaking one fd per connect attempt.
-            # Under the gateway's reconnect watcher (fresh adapter instance
-            # per retry) against an unreachable/proxied host this grew
-            # monotonically until fd exhaustion on macOS's 256 soft limit
-            # (#79889).
-            imap = None
+        if not self._send_only:
             try:
-                imap = self._connect_imap()
-                imap.login(self._address, self._password)
-                _send_imap_id(imap)
-                imap.select("INBOX")
-                snapshot = self._seen_uids_snapshot.get(self._address)
-                if is_reconnect and snapshot is not None:
-                    # Reconnect within the same process: restore the previous
-                    # adapter's seen-UID baseline instead of re-marking the whole
-                    # mailbox. Mail that arrived during the outage stays UNSEEN
-                    # relative to the baseline and is dispatched by the next poll
-                    # instead of being silently skipped.
-                    self._seen_uids = set(snapshot)
-                    self._trim_seen_uids()
-                    logger.info(
-                        "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
-                        "messages received during the outage will be processed.",
-                        len(self._seen_uids),
-                    )
-                else:
-                    # First connect (or no snapshot): mark all existing messages as
-                    # seen so we only process new ones.
-                    status, data = imap.uid("search", None, "ALL")
-                    if status == "OK" and data and data[0]:
-                        for uid in data[0].split():
-                            self._seen_uids.add(uid)
-                    # Keep only the most recent UIDs to prevent unbounded growth
-                    self._trim_seen_uids()
-                    logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-            finally:
-                if imap is not None:
-                    _close_imap(imap)
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
-        except Exception as e:
-            logger.error("[Email] IMAP connection failed: %s", e)
-            # Always set an explicit fatal code (OOF-156): returning False
-            # with no error info made the gateway treat every IMAP failure —
-            # including permanently bad credentials — as transient, retrying
-            # forever with zero owner signal ("stuck retrying 22h").
-            # Kept retryable=True deliberately: imaplib raises the same
-            # generic IMAP4.error for bad credentials AND transient server
-            # NOs (e.g. Gmail's "too many simultaneous connections"), so a
-            # type-based terminal classification isn't safe here. Long-lived
-            # loops surface via the reconnect watcher's NEEDS_ATTENTION
-            # escalation instead.
-            self._set_fatal_error(
-                "email_imap_connect_error",
-                f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}",
-                retryable=True,
-            )
-            return False
+                imap = None
+                try:
+                    imap = self._connect_imap()
+                    imap.login(self._address, self._password)
+                    _send_imap_id(imap)
+                    imap.select("INBOX")
+                    snapshot = self._seen_uids_snapshot.get(self._address)
+                    if is_reconnect and snapshot is not None:
+                        # Reconnect within the same process: restore the previous
+                        # adapter's seen-UID baseline instead of re-marking the whole
+                        # mailbox. Mail that arrived during the outage stays UNSEEN
+                        # relative to the baseline and is dispatched by the next poll
+                        # instead of being silently skipped.
+                        self._seen_uids = set(snapshot)
+                        self._trim_seen_uids()
+                        logger.info(
+                            "[Email] IMAP reconnect test passed. Restored %d seen UIDs; "
+                            "messages received during the outage will be processed.",
+                            len(self._seen_uids),
+                        )
+                    else:
+                        # First connect (or no snapshot): mark all existing messages as
+                        # seen so we only process new ones.
+                        status, data = imap.uid("search", None, "ALL")
+                        if status == "OK" and data and data[0]:
+                            for uid in data[0].split():
+                                self._seen_uids.add(uid)
+                        # Keep only the most recent UIDs to prevent unbounded growth
+                        self._trim_seen_uids()
+                        logger.info(
+                            "[Email] IMAP connection test passed. %d existing messages skipped.",
+                            len(self._seen_uids),
+                        )
+                finally:
+                    if imap is not None:
+                        _close_imap(imap)
+                self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            except Exception as e:
+                logger.error("[Email] IMAP connection failed: %s", e)
+                # Always set an explicit fatal code (OOF-156): returning False
+                # with no error info made the gateway treat every IMAP failure —
+                # including permanently bad credentials — as transient, retrying
+                # forever with zero owner signal ("stuck retrying 22h").
+                # Kept retryable=True deliberately: imaplib raises the same
+                # generic IMAP4.error for bad credentials AND transient server
+                # NOs (e.g. Gmail's "too many simultaneous connections"), so a
+                # type-based terminal classification isn't safe here. Long-lived
+                # loops surface via the reconnect watcher's NEEDS_ATTENTION
+                # escalation instead.
+                self._set_fatal_error(
+                    "email_imap_connect_error",
+                    f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}",
+                    retryable=True,
+                )
+                return False
 
         try:
             # Test SMTP connection
@@ -867,8 +875,12 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        if self._send_only:
+            logger.info("[Email] Send-only mode active; IMAP polling disabled.")
+            print(f"[Email] Connected as {self._address} (send-only)")
+        else:
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            print(f"[Email] Connected as {self._address}")
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)
         return True
@@ -1565,14 +1577,15 @@ async def _standalone_send(
 
 
 def _is_connected(config) -> bool:
-    """Email is connected when an address is configured (in PlatformConfig.extra
-    or via EMAIL_ADDRESS). Mirrors the legacy
-    _PLATFORM_CONNECTED_CHECKERS[Platform.EMAIL] = bool(extra.get('address'))."""
+    """Return whether Email has credentials for its resolved operating mode."""
     extra = getattr(config, "extra", {}) or {}
-    if extra.get("address"):
-        return True
+    send_only = is_email_send_only(extra)
     import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
+    address = str(extra.get("address") or gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip()
+    password = str(extra.get("password") or gateway_mod.get_env_value("EMAIL_PASSWORD") or "").strip()
+    smtp = str(extra.get("smtp_host") or gateway_mod.get_env_value("EMAIL_SMTP_HOST") or "").strip()
+    imap = str(extra.get("imap_host") or gateway_mod.get_env_value("EMAIL_IMAP_HOST") or "").strip()
+    return bool(address and password and smtp and (send_only or imap))
 
 
 def _build_adapter(config):

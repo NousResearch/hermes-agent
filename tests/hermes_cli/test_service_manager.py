@@ -206,11 +206,14 @@ def test_s6_default_scandir_isolated_during_pytest(
     Regression: running the full suite inside the production container let
     container-aware gateway tests register and restart live services, which
     interrupted the active operator session and leaked test profile slots.
+
+    The invariant: ``pytest_configure`` installs ``HERMES_TEST_S6_SCANDIR``
+    before collection begins, so ``S6ServiceManager()`` is already isolated
+    at module-import time (see ``_COLLECTION_SCANDIR`` above). Within a test,
+    ``HERMES_TEST_S6_SCANDIR`` is what controls which scandir is used; setting
+    it here exercises the explicit-override path.
     """
     pytest_scandir = tmp_path / "pytest-s6-scandir"
-    # Collection and fixture setup run before PYTEST_CURRENT_TEST is set; the
-    # isolation must already apply during those phases.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("HERMES_TEST_S6_SCANDIR", str(pytest_scandir))
 
     mgr = S6ServiceManager()

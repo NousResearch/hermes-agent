@@ -170,6 +170,10 @@ import {
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
+import {
+  EMERGENCY_BACKUP_RETENTION,
+  selectEmergencyBackupsToDelete,
+} from './emergency-backup-retention'
 import { createEventDeduper } from './event-dedupe'
 import {
   buildTerminalScript,
@@ -4345,8 +4349,47 @@ function runningAppBundle() {
 // desktop Electron process itself, before the backend is killed and
 // before the updater is spawned — a separate safety net from the
 // Python-level pre-update snapshot inside `hermes update`.
+// Delete emergency state.db backups past the retention budget. Never throws:
+// this is disk hygiene on the update path, and a failure to reclaim must not
+// be able to abort an update.
+function pruneEmergencyStateDbBackups(hermesHome, rememberLog) {
+  try {
+    const stale = selectEmergencyBackupsToDelete(fs.readdirSync(hermesHome), EMERGENCY_BACKUP_RETENTION)
+
+    let reclaimed = 0
+
+    for (const name of stale) {
+      const target = path.join(hermesHome, name)
+
+      try {
+        const bytes = fs.statSync(target).size
+
+        fs.unlinkSync(target)
+        reclaimed += bytes
+      } catch {
+        // Held open, already gone, or not ours to delete. The next update
+        // tries again; one unremovable file must not stop the rest.
+        void 0
+      }
+    }
+
+    if (reclaimed > 0) {
+      rememberLog(`[updates] reclaimed ${reclaimed} bytes from ${stale.length} old state.db backup(s)`)
+    }
+  } catch {
+    void 0
+  }
+}
+
 function preflightStateDb(hermesHome, rememberLog) {
   const stateDbPath = path.join(hermesHome, 'state.db')
+
+  // Unconditionally, and BEFORE any early return. Every reason this function
+  // gives up (no state.db, too small to be a database, stat throws) and every
+  // reason the copy below fails (ENOSPC on a disk these very files filled,
+  // EBUSY from the running app on Windows) used to skip the sweep, so the
+  // backups accumulated precisely when reclaiming mattered most (#91229).
+  pruneEmergencyStateDbBackups(hermesHome, rememberLog)
 
   if (!fileExists(stateDbPath)) {
     rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
@@ -4390,30 +4433,12 @@ function preflightStateDb(hermesHome, rememberLog) {
 
         rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
 
-        // Prune to the 2 most recent emergency backups.
-        try {
-          const homeDir = fs.readdirSync(hermesHome)
-
-          const backups = homeDir
-            .filter(
-              f =>
-                f.startsWith('state.db.pre-update-emergency-') &&
-                f.endsWith('.bak') &&
-                f !== path.basename(emergencyPath)
-            )
-            .sort()
-            .reverse()
-
-          for (const old of backups.slice(2)) {
-            try {
-              fs.unlinkSync(path.join(hermesHome, old))
-            } catch {
-              void 0
-            }
-          }
-        } catch {
-          void 0
-        }
+        // Reclaim now that a new backup exists, so the newest one counts
+        // toward the retention budget. The unconditional sweep at the top of
+        // preflightStateDb is what guarantees this happens at all; this second
+        // call only keeps the budget from being exceeded by one until the next
+        // update runs.
+        pruneEmergencyStateDbBackups(hermesHome, rememberLog)
       } catch (copyErr) {
         rememberLog(`[updates] emergency state.db backup failed: ${copyErr.message}`)
       }

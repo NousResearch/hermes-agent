@@ -3411,13 +3411,27 @@ def create_task(
     # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
         row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "SELECT id, status FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
         if row:
-            return row["id"]
+            existing_id = row["id"]
+            if (
+                initial_status == "blocked"
+                and row["status"] == "blocked"
+                and not _has_sticky_block(conn, existing_id)
+            ):
+                with write_txn(conn, allow_nested=True):
+                    if not _has_sticky_block(conn, existing_id):
+                        _append_event(
+                            conn,
+                            existing_id,
+                            "blocked",
+                            {"reason": "initial_status=blocked", "kind": "needs_input"},
+                        )
+            return existing_id
 
     now = int(time.time())
 
@@ -3565,6 +3579,13 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked", "kind": "needs_input"},
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

@@ -642,7 +642,17 @@ def make_tool_result_message(
 # payload is data, not instructions — the architectural piece of the
 # promptware defense.  Skipped for short outputs (under 32 chars) where the
 # overhead of the wrapper outweighs any indirect-injection risk.
+# Tools whose output comes from sources the operator did not author and cannot
+# fully review — open-web content, third-party CLI output, community skill
+# libraries, files from attacker-accessible disk paths.  Every result from
+# these tools is wrapped in <untrusted_tool_result> delimiters so the model
+# treats it as data rather than instructions (indirect prompt injection).
+# Extended from {web_search, web_extract} to cover terminal, execute_code, and
+# skill_view per #98587.
 _UNTRUSTED_TOOL_NAMES = frozenset({
+    "execute_code",
+    "skill_view",
+    "terminal",
     "web_extract",
     "web_search",
 })

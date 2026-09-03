@@ -10,7 +10,10 @@ steals focus for a background session.
 """
 
 import json
+import os
 import re
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
@@ -33,6 +36,42 @@ def _normalize_target(raw: str) -> str:
     return v
 
 
+def _local_fs_path(target: str) -> Path | None:
+    """Return a filesystem path for local targets; None for http(s) URLs."""
+    raw = (target or "").strip()
+    if not raw:
+        return None
+    if "://" in raw:
+        parsed = urlparse(raw)
+        if parsed.scheme.lower() != "file":
+            return None
+        path = unquote(parsed.path or "")
+        if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+            path = f"//{parsed.netloc}{path}"
+        elif (
+            os.name == "nt"
+            and len(path) >= 3
+            and path[0] == "/"
+            and path[2] == ":"
+        ):
+            path = path[1:]
+        return Path(path) if path else None
+    return Path(raw).expanduser()
+
+
+def _is_existing_directory(target: str) -> bool:
+    path = _local_fs_path(target)
+    if path is None:
+        return False
+    try:
+        return path.is_dir()
+    except OSError:
+        # Stat failed (permissions, broken reparse, etc.). Do not treat that
+        # as "this is a directory" — reject only when we positively observe
+        # an existing directory. The renderer still sees the original target.
+        return False
+
+
 def open_preview_tool(url: str, label: str = "") -> str:
     """Ask the desktop GUI to show ``url`` in the preview pane beside the chat."""
     target = _normalize_target(url or "")
@@ -40,6 +79,11 @@ def open_preview_tool(url: str, label: str = "") -> str:
         return tool_error(
             "url is required — a web URL (https://…), a localhost dev server, or a "
             "file path to show in the preview pane."
+        )
+    if _is_existing_directory(target):
+        return tool_error(
+            "directories are not previewable — pass a file path or a URL. "
+            f"{target} is a directory."
         )
 
     label = (label or "").strip()

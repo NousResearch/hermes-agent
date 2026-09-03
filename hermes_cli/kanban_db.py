@@ -6261,7 +6261,9 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
-) -> bool:
+    force: bool = False,
+    with_reason: bool = False,
+) -> "bool | tuple[bool, Optional[str]]":
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
@@ -6288,7 +6290,19 @@ def block_task(
 
     Returns True on any successful transition (to ``blocked``, ``todo``, or
     ``triage``), False when the task wasn't in a blockable state.
+
+    When a live worker holds the card (status='running' with a non-null
+    ``worker_pid`` and ``_pid_alive(worker_pid)``), the function refuses by
+    default to prevent a silent double-spawn (#102423). Operators that know
+    what they're doing can pass ``force=True`` to override.
+
+    By default returns ``bool`` (matches historical contract). With
+    ``with_reason=True`` returns ``(ok, reason)`` mirroring
+    :func:`schedule_task`/``request_review``/``request_changes``.
     """
+    def _ret(ok: bool, reason: Optional[str] = None):
+        return (ok, reason) if with_reason else ok
+
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
@@ -6296,11 +6310,31 @@ def block_task(
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
-            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            "SELECT status, block_kind, block_recurrences, worker_pid "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if cur_row is None:
-            return False
+            return _ret(False, f"task {task_id} not found")
+        # Refuse to clear a live worker's claim without proof of ownership
+        # (expected_run_id) or an explicit operator override (force=True).
+        # Without this guard, #102423 fires: block -> unblock -> ready ->
+        # dispatcher spawns a second worker for the same card while the
+        # original is still running.
+        if (
+            expected_run_id is None
+            and not force
+            and cur_row["status"] == "running"
+            and cur_row["worker_pid"] is not None
+            and _pid_alive(cur_row["worker_pid"])
+        ):
+            return _ret(
+                False,
+                "task is running under a live worker (pid "
+                f"{cur_row['worker_pid']}); pass expected_run_id (worker "
+                "ownership) or force=True (explicit operator override) "
+                "instead of clearing the live run's claim",
+            )
         source_status = (
             _retry_status_for_run(conn, task_id)
             if cur_row["status"] == "running"
@@ -6334,7 +6368,7 @@ def block_task(
                 else (kind, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
-                return False
+                return _ret(False, "dependency block UPDATE did not match")
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -6362,7 +6396,7 @@ def block_task(
                 run_id=run_id,
                 reason=reason,
             )
-            return True
+            return _ret(True)
 
         # Truly-blocked kinds. Increment the unblock-loop counter when this is a
         # re-block for the SAME reason after a prior unblock. block_task only
@@ -6392,7 +6426,7 @@ def block_task(
                 else (kind, recurrences, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
-                return False
+                return _ret(False, "triage route UPDATE did not match")
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -6446,7 +6480,7 @@ def block_task(
                     (kind, recurrences, task_id, int(expected_run_id)),
                 )
             if cur.rowcount != 1:
-                return False
+                return _ret(False, "block UPDATE did not match")
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -6479,7 +6513,7 @@ def block_task(
         run_id=run_id,
         reason=reason,
     )
-    return True
+    return _ret(True)
 
 
 
@@ -7929,14 +7963,61 @@ def schedule_task(
     *,
     reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
-) -> bool:
+    force: bool = False,
+    with_reason: bool = False,
+) -> "bool | tuple[bool, Optional[str]]":
     """Park a task in ``scheduled`` so it is waiting on time, not human input.
 
     ``scheduled`` tasks are intentionally not dispatchable; an external cron,
     human action, or automation can later call ``unblock_task`` to re-gate them
     to ``ready`` (or ``todo`` if parents are still incomplete).
+
+    When a live worker holds the card (status='running' with a non-null
+    ``worker_pid`` and ``_pid_alive(worker_pid)``), the function refuses by
+    default to prevent a silent double-spawn (#102423): clearing the claim
+    while the live worker is still alive lets the next dispatcher tick spawn a
+    duplicate worker for the same card.
+
+    Callers that know what they're doing (e.g. operators reclaiming a stuck
+    card after a host crash that the DB hasn't noticed yet) can pass
+    ``force=True`` to override. The transition is then performed, the worker
+    PID is cleared, and a ``scheduled`` audit event is emitted with
+    ``force=True`` and ``orphaned_pid`` so an operator can find the live
+    process without ``pgrep``.
+
+    By default returns ``bool`` (matches historical contract). With
+    ``with_reason=True`` returns ``(ok, reason)`` mirroring
+    :func:`block_task`/``request_review``/``request_changes`` —
+    ``reason`` is a diagnostic string on failure, ``None`` on success.
     """
+    def _ret(ok: bool, reason: Optional[str] = None):
+        return (ok, reason) if with_reason else ok
+
     with write_txn(conn):
+        trow = conn.execute(
+            "SELECT status, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if trow is None:
+            return _ret(False, f"task {task_id} not found")
+        # Refuse to clear a live worker's claim without proof of ownership
+        # (expected_run_id) or an explicit operator override (force=True).
+        # Without this guard, #102423 fires: schedule -> unblock -> ready ->
+        # dispatcher spawns a second worker for the same card while the
+        # original is still running.
+        if (
+            expected_run_id is None
+            and not force
+            and trow["status"] == "running"
+            and trow["worker_pid"] is not None
+            and _pid_alive(trow["worker_pid"])
+        ):
+            return _ret(
+                False,
+                "task is running under a live worker (pid "
+                f"{trow['worker_pid']}); pass expected_run_id (worker "
+                "ownership) or force=True (explicit operator override) "
+                "instead of clearing the live run's claim",
+            )
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -7952,7 +8033,11 @@ def schedule_task(
             params.append(int(expected_run_id))
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
-            return False
+            return _ret(
+                False,
+                "task is not in todo/ready/running/blocked (or "
+                "expected_run_id did not match the current run)",
+            )
         run_id = _end_run(
             conn, task_id,
             outcome="scheduled", status="scheduled",
@@ -7964,8 +8049,18 @@ def schedule_task(
                 outcome="scheduled",
                 summary=reason,
             )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
-        return True
+        # Audit-trail payload records the orphaned PID so operators can
+        # locate the live worker process without `pgrep`. Recorded whenever
+        # the worker PID is non-null at transition time (covers force=True
+        # override AND the rare case where _pid_alive misses a transient
+        # process — the operator still gets the breadcrumb).
+        payload: dict[str, Any] = {"reason": reason}
+        if trow["worker_pid"] is not None:
+            payload["orphaned_pid"] = int(trow["worker_pid"])
+        if force:
+            payload["force"] = True
+        _append_event(conn, task_id, "scheduled", payload, run_id=run_id)
+        return _ret(True)
 
 
 # Dispatcher (one-shot pass)

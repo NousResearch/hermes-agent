@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import time
 import uuid
@@ -125,10 +126,58 @@ def _load_auth() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        # utf-8-sig, not utf-8, matching hermes_cli.auth._load_auth_store(): a
+        # BOM-prefixed auth.json is a perfectly valid store to the core module,
+        # and reading it as plain utf-8 raises JSONDecodeError ("Unexpected
+        # UTF-8 BOM") — reclassifying a healthy file as corrupt, which the
+        # degrade arm below is then one _save_auth() away from erasing.
+        with path.open("r", encoding="utf-8-sig") as fh:
             return json.load(fh) or {}
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("photon: could not read %s: %s", path, e)
+    except OSError:
+        # The file exists (checked above) but could not be READ: EACCES after a
+        # root-owned write, EIO, a stalled network mount. None of those mean the
+        # contents are bad, and every writer in this module does read-modify-write
+        # into a full-file _save_auth(), so degrading to an empty store here is one
+        # save away from erasing every credential in the shared auth.json — not
+        # just photon's. Fail loudly instead and leave the file on disk untouched,
+        # matching hermes_cli.auth._load_auth_store().
+        logger.warning(
+            "photon: could not read %s, leaving the store on disk untouched "
+            "rather than degrading to an empty one",
+            path, exc_info=True,
+        )
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        # Genuine corruption: unparseable JSON, or bytes that are not UTF-8.
+        # Degrading to an empty store is the established behaviour for this case
+        # in hermes_cli.auth._load_auth_store() — but only because it preserves a
+        # copy first. A truncated or half-flushed auth.json usually still holds
+        # the other providers' tokens verbatim, and the next _save_auth() writes
+        # the whole file, so without this copy the degrade arm destroys the only
+        # recoverable version.
+        corrupt_path = path.with_suffix(".json.corrupt")
+        preserved = False
+        try:
+            shutil.copy2(path, corrupt_path)
+            preserved = True
+        except OSError:
+            logger.debug(
+                "photon: could not preserve a copy of the corrupt store at %s",
+                corrupt_path, exc_info=True,
+            )
+        if preserved:
+            logger.warning(
+                "photon: failed to parse %s (%s), starting with empty store. "
+                "Corrupt file preserved at %s",
+                path, e, corrupt_path,
+            )
+        else:
+            # Do not advertise a backup that was never written.
+            logger.warning(
+                "photon: failed to parse %s (%s), starting with empty store. "
+                "A copy could NOT be preserved at %s",
+                path, e, corrupt_path,
+            )
         return {}
 
 

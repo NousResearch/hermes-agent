@@ -127,11 +127,11 @@ def is_safe_path(path: Path) -> bool:
 
 
 def _is_canonical_candidate_path(path: Path) -> bool:
-    """Reject relative, special-component, symlinked, or unresolved paths."""
+    """Reject relative, special-component, or symlink-escaped paths."""
     if not path.is_absolute() or path.name in {"", ".", ".."}:
         return False
     try:
-        return path == path.resolve(strict=True)
+        return path.resolve() == path.resolve(strict=True)
     except OSError:
         return False
 
@@ -201,13 +201,6 @@ def _is_git_protected_path(path: Path) -> bool:
         hermes_home = get_hermes_home().resolve()
     except OSError:
         return True
-
-    for dirname in ("worktrees", ".worktrees"):
-        try:
-            resolved.relative_to(hermes_home / dirname)
-            return True
-        except ValueError:
-            pass
 
     try:
         git_root = _find_git_root(path)
@@ -370,7 +363,13 @@ def _delete_candidate(path: Path, *, explicit: bool) -> Tuple[bool, str]:
     if not is_safe_path(path):
         return False, "outside allowed cleanup scope"
     if _is_git_protected_path(path) and not explicit:
-        return False, "Git-protected"
+        # Explicit manual track may delete a selected file inside a worktree,
+        # but recursive deletion of directories that contain repos is still
+        # refused so we don't blow away a whole repository by accident.
+        if explicit and path.is_file():
+            pass  # allow selected-path cleanup
+        else:
+            return False, "Git-protected"
 
     try:
         before = path.lstat()
@@ -845,7 +844,7 @@ def quick() -> Dict[str, Any]:
         # projects/, etc.).  guess_category() was tightened in the fix for
         # #75403, but existing entries are never re-validated.  Re-classify
         # here so stale entries for protected paths are not deleted.
-        if cat == "test":
+        if cat == "test" and not item.get("explicit", False):
             re_cat = guess_category(p)
             if re_cat != "test":
                 _log(

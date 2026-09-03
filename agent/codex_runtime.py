@@ -688,6 +688,7 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    messages_are_authoritative: bool = False,
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -920,6 +921,7 @@ def run_codex_app_server_turn(
                 final_response=turn.final_text,
                 interrupted=False,
                 messages=messages,
+                messages_are_authoritative=messages_are_authoritative,
             )
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)

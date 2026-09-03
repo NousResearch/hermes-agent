@@ -211,6 +211,49 @@ class TestRunConversationCodexPath:
         agent._memory_manager.sync_all.assert_called_once()
         assert agent._memory_manager.sync_all.call_args.kwargs["messages"] == result["messages"]
 
+    def test_recovered_provider_receives_turn_missed_during_outage(self, fake_session):
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+        agent._memory_manager.prefetch_all.return_value = ""
+        agent._memory_manager.sync_all.side_effect = [
+            ConnectionError("simulated provider outage"),
+            None,
+        ]
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("the reserve gemstone is jade")
+            agent.run_conversation("are you back")
+
+        delivered = agent._memory_manager.sync_all.call_args_list[-1].kwargs["messages"]
+        assert any(
+            message.get("role") == "user"
+            and message.get("content") == "the reserve gemstone is jade"
+            for message in delivered
+        ), "the recovered provider never receives the turn missed during its outage"
+
+    def test_explicit_history_remains_authoritative_for_memory_sync(self, fake_session):
+        agent = _make_codex_agent()
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.build_system_prompt.return_value = ""
+        agent._memory_manager.prefetch_all.return_value = ""
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            first = agent.run_conversation("first turn")
+            agent.run_conversation(
+                "second turn",
+                conversation_history=first["messages"],
+            )
+
+        delivered = agent._memory_manager.sync_all.call_args_list[-1].kwargs["messages"]
+        first_users = [
+            message
+            for message in delivered
+            if message.get("role") == "user"
+            and message.get("content") == "first turn"
+        ]
+        assert len(first_users) == 1
+
     def test_nudge_counters_tick(self, fake_session):
         """The skill nudge counter must accumulate tool_iterations across
         turns. The memory nudge counter is gated on memory being configured

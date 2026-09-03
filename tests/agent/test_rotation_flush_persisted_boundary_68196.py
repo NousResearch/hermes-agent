@@ -116,3 +116,60 @@ def test_rotation_flush_does_not_duplicate_persisted_prefix(tmp_path: Path) -> N
     )
     assert contents.count("persisted answer") == 1
     assert contents == ["persisted question", "persisted answer", "new turn"]
+
+
+def test_rotation_memory_sync_uses_compacted_transcript_once(tmp_path: Path) -> None:
+    """Legacy rotation's ``None`` DB baseline must not make provider memory
+    append the compacted transcript to its pre-compression snapshot."""
+    from agent.conversation_compression import (
+        conversation_history_after_compression,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "MEMORY_SYNC_PARENT"
+    db.create_session(parent_sid, source="desktop")
+
+    messages = [
+        {"role": "user", "content": "obsolete question"},
+        {"role": "assistant", "content": "obsolete answer"},
+        {"role": "user", "content": "new turn"},
+    ]
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._persist_user_message_idx = len(messages) - 1
+
+    compacted, _ = agent._compress_context(
+        messages,
+        "sys",
+        approx_tokens=120_000,
+    )
+    history = conversation_history_after_compression(agent, compacted, messages)
+
+    # Rotation still needs a cleared persistence baseline for its fresh child,
+    # but provider reconciliation has a separate, authoritative transcript.
+    assert history is None
+    assert agent._external_memory_transcript_authoritative is True
+
+    manager = MagicMock()
+    agent._memory_manager = manager
+    # Model the provider snapshot following the memory manager's child-session
+    # switch. If the compacted list were treated like a stateless exchange, the
+    # obsolete parent messages would be prepended here.
+    agent._external_memory_messages = [dict(message) for message in messages]
+    agent._external_memory_session_id = agent.session_id
+
+    agent._sync_external_memory_for_turn(
+        original_user_message="new turn",
+        final_response="new answer",
+        interrupted=False,
+        messages=compacted,
+        messages_are_authoritative=(
+            agent._external_memory_transcript_authoritative
+        ),
+    )
+
+    synced = manager.sync_all.call_args.kwargs["messages"]
+    assert [message["content"] for message in synced] == [
+        "[CONTEXT COMPACTION] summary",
+        "tail",
+    ]
+    assert all("obsolete" not in message["content"] for message in synced)

@@ -805,6 +805,9 @@ def finalize_turn(
         final_response=final_response,
         interrupted=interrupted,
         messages=messages,
+        messages_are_authoritative=bool(
+            getattr(agent, "_external_memory_transcript_authoritative", False)
+        ),
     )
 
     # Background memory/skill review — runs AFTER the response is delivered

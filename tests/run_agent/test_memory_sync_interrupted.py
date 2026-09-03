@@ -13,9 +13,10 @@ that replaces the inline block and returns early when ``interrupted``
 is True (regardless of whether ``final_response`` and
 ``original_user_message`` happen to be populated).
 
-These tests exercise the helper directly on a bare ``AIAgent`` built
-via ``__new__`` so the full ``run_conversation`` machinery isn't needed
-— the method is pure logic and three state arguments.
+These tests exercise the helper directly on a bare ``AIAgent`` built via
+``__new__`` so interruption safety, provider-only transcript continuity,
+authoritative-history replacement, and session isolation are independently
+observable.
 """
 from unittest.mock import MagicMock
 
@@ -57,6 +58,91 @@ class TestSyncExternalMemoryForTurn:
 
     # --- Normal completed turn still syncs ------------------------------
 
+    def test_historyless_completed_turns_accumulate_for_provider_reconciliation(self):
+        agent = _bare_agent()
+        first = [
+            {"role": "user", "content": "first user"},
+            {"role": "assistant", "content": "first answer"},
+        ]
+        second = [
+            {"role": "user", "content": "second user"},
+            {"role": "assistant", "content": "second answer"},
+        ]
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="first user",
+            final_response="first answer",
+            interrupted=False,
+            messages=first,
+        )
+        agent._sync_external_memory_for_turn(
+            original_user_message="second user",
+            final_response="second answer",
+            interrupted=False,
+            messages=second,
+        )
+
+        delivered = agent._memory_manager.sync_all.call_args.kwargs["messages"]
+        assert [message["content"] for message in delivered] == [
+            "first user",
+            "first answer",
+            "second user",
+            "second answer",
+        ]
+
+    def test_accumulated_history_replaces_the_provider_snapshot(self):
+        agent = _bare_agent()
+        agent._sync_external_memory_for_turn(
+            original_user_message="old user",
+            final_response="old answer",
+            interrupted=False,
+            messages=[
+                {"role": "user", "content": "old user"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+        )
+        authoritative = [
+            {"role": "user", "content": "compressed summary"},
+            {"role": "assistant", "content": "new answer"},
+        ]
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="compressed summary",
+            final_response="new answer",
+            interrupted=False,
+            messages=authoritative,
+            messages_are_authoritative=True,
+        )
+
+        delivered = agent._memory_manager.sync_all.call_args.kwargs["messages"]
+        assert delivered == authoritative
+
+    def test_provider_snapshot_resets_when_the_session_changes(self):
+        agent = _bare_agent()
+        agent._sync_external_memory_for_turn(
+            original_user_message="old user",
+            final_response="old answer",
+            interrupted=False,
+            messages=[
+                {"role": "user", "content": "old user"},
+                {"role": "assistant", "content": "old answer"},
+            ],
+        )
+        agent.session_id = "test_session_002"
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="new user",
+            final_response="new answer",
+            interrupted=False,
+            messages=[
+                {"role": "user", "content": "new user"},
+                {"role": "assistant", "content": "new answer"},
+            ],
+        )
+
+        delivered = agent._memory_manager.sync_all.call_args.kwargs["messages"]
+        assert all(message["content"] != "old user" for message in delivered)
+
 
 
 
@@ -75,4 +161,3 @@ class TestSyncExternalMemoryForTurn:
 
 
     # --- The specific matrix the reporter asked about ------------------
-

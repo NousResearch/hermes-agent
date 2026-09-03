@@ -5661,6 +5661,7 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "hooks",
     "quick_commands",
     "personalities",
+    "plugins",  # plugins.<name>.<key> — arbitrary per-plugin settings (#83899)
     "command_allowlist",
     "model_catalog",
     "channel_prompts",

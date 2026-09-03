@@ -7,6 +7,8 @@
  *
  * Endpoints (matches gateway/platforms/whatsapp.py expectations):
  *   GET  /messages       - Long-poll for new incoming messages
+ *   GET  /receipts       - Poll outbound delivery/read receipts
+ *   GET  /owner-messages - Peek messages typed on the owner device
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
@@ -31,19 +33,33 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
-import { createOutboundIdTracker } from './outbound_ids.js';
+import {
+  createDurableOutboundIdTracker,
+  createOutboundIdTracker,
+  sendWithProvenance,
+} from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
   buildPollPayload,
+  createDeliveryReceiptQueue,
+  createOwnerMessageQueue,
   createReconnectScheduler,
+  createSerializedSendQueue,
   createVersionResolver,
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
+  deliveryReceiptFromMessageUpdate,
+  deliveryReceiptFromUserReceiptUpdate,
   extractBridgeEvent,
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  ownerMessageTokenMatches,
+  ownerMessageDeliveryMode,
+  ownerSendFenceStatus,
+  providerSendErrorResponse,
+  providerSendIntentStatus,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -67,16 +83,20 @@ const WHATSAPP_DEBUG =
 // "owner just typed in this customer chat" — needed for handover / sliding
 // TTL flows. Default OFF: existing deployments see no behavior change.
 //
-// Heuristic limitation: we distinguish bot-API-sent from owner-typed by
-// looking up `key.id` in `recentlySentIds` (populated when /send returns).
-// On bridge restart that set is empty, so a few in-flight bot replies may
-// briefly look like owner-typed until they age out. Acceptable; we don't
-// persist the set.
+// Connector-originated IDs are reserved and written to the session directory
+// before sock.sendMessage starts. This closes both the upsert-before-return race
+// and the restart window: fromMe echoes can never be mistaken for owner input.
 const FORWARD_OWNER_MESSAGES =
   typeof process !== 'undefined' &&
   process.env &&
   typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
+const OWNER_MESSAGES_EXTERNAL_CONSUMER =
+  FORWARD_OWNER_MESSAGES
+  && typeof process.env.WHATSAPP_OWNER_MESSAGES_EXTERNAL_CONSUMER === 'string'
+  && ['1', 'true', 'yes', 'on'].includes(
+    process.env.WHATSAPP_OWNER_MESSAGES_EXTERNAL_CONSUMER.toLowerCase(),
+  );
 
 const SEND_READ_RECEIPTS =
   typeof process !== 'undefined' &&
@@ -86,6 +106,13 @@ const SEND_READ_RECEIPTS =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const OWNER_MESSAGE_SECRET = String(process.env.WHATSAPP_OWNER_MESSAGE_SECRET || '');
+if (FORWARD_OWNER_MESSAGES && Buffer.byteLength(OWNER_MESSAGE_SECRET, 'utf8') < 32) {
+  throw new Error('WHATSAPP_OWNER_MESSAGE_SECRET must contain at least 32 bytes');
+}
+const OWNER_MESSAGE_AUTH_FINGERPRINT = OWNER_MESSAGE_SECRET
+  ? createHash('sha256').update(OWNER_MESSAGE_SECRET).digest('hex').slice(0, 16)
+  : '';
 // Cache directories: the Python gateway passes the profile-aware paths via
 // env (HERMES_HOME-aware, new cache/ layout).  Fall back to the legacy
 // hardcoded locations for bridges launched outside the gateway.
@@ -124,36 +151,38 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+// The Python connector gives provider HTTP calls 30 seconds. An absolute
+// bridge-owned 25-second queue deadline guarantees a request cannot outlive
+// its caller merely because another provider call still owns the socket.
+const SEND_QUEUE_WAIT_TIMEOUT_MS = 25_000;
 
 // --- Send queue: serialise all sock.sendMessage() calls across concurrent
 //     HTTP handlers so a single Baileys socket never has overlapping sends.
 //     Overlapping sends are the root cause of cross-chat contamination
 //     (#33360) — the WhatsApp protocol-level routing can misdeliver when
 //     two sendMessage() Promises race on the same socket. ---
-let _sendQueue = Promise.resolve();
-
-function enqueueSend(fn) {
-  const task = _sendQueue.then(() => fn(), () => fn());
-  _sendQueue = task.catch(() => {});
-  return task;
-}
+const { enqueueSend } = createSerializedSendQueue();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
-  let timer;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
-      timeoutMs,
-    );
+function sendWithTimeout(
+  chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS, beforeSend = undefined,
+  queueContext = {},
+) {
+  const messageId = randomBytes(12).toString('hex').toUpperCase();
+  return enqueueSend(() => sendWithProvenance({
+    tracker: recentlySentIds,
+    messageId,
+    send: () => sock.sendMessage(chatId, payload, { ...options, messageId }),
+  }), {
+    beforeRun: beforeSend,
+    timeoutMs,
+    timeoutError: () => new Error(`sendMessage timed out after ${timeoutMs / 1000}s`),
+    queueDeadlineAt: queueContext.queueDeadlineAt,
+    isAbandoned: queueContext.isAbandoned,
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
 }
 
 function formatOutgoingMessage(message) {
@@ -270,17 +299,31 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+const MAX_RECEIPT_QUEUE_SIZE = 1000;
+const receiptQueue = createDeliveryReceiptQueue({
+  capacity: MAX_RECEIPT_QUEUE_SIZE,
+  pageSize: MAX_QUEUE_SIZE,
+});
+const ownerMessageQueue = createOwnerMessageQueue({
+  directory: SESSION_DIR,
+  pageSize: MAX_QUEUE_SIZE,
+});
 
 // Track recently sent message IDs.  Two purposes:
 //   1. Prevent echo-back loops with media in self-chat mode.
 //   2. (When WHATSAPP_FORWARD_OWNER_MESSAGES=true) distinguish our own
 //      bot-API outbound messages from owner-typed messages on the linked
 //      device so we can forward only the latter.
-// Capacity bounded (see outbound_ids.js) to keep memory flat under
-// sustained sending.
-const recentlySentIds = createOutboundIdTracker(512);
+// Connector-originated IDs are durable in the session directory. They are
+// reserved before sock.sendMessage begins, so the set survives restart and is
+// already populated if Baileys emits an echo before the send promise resolves.
+const recentlySentIds = createDurableOutboundIdTracker({ directory: SESSION_DIR });
 const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
 const messageStore = createBoundedMessageStore(512);
+
+function enqueueDeliveryReceipt(receipt) {
+  if (receipt) receiptQueue.add(receipt);
+}
 
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
@@ -480,6 +523,7 @@ async function startSocket() {
 
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
+      enqueueDeliveryReceipt(deliveryReceiptFromMessageUpdate({ key, update }));
       if (!update?.pollUpdates) continue;
       const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
       const pollCreation = messageStore.get(pollCreationId);
@@ -526,6 +570,12 @@ async function startSocket() {
         aggregation,
       });
       enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
+    }
+  });
+
+  sock.ev.on('message-receipt.update', (updates) => {
+    for (const { key, receipt } of updates || []) {
+      enqueueDeliveryReceipt(deliveryReceiptFromUserReceiptUpdate({ key, receipt }));
     }
   });
 
@@ -760,7 +810,24 @@ async function startSocket() {
       }
 
       messageStore.remember(msg);
-      messageQueue.push(event);
+      const ownerDeliveryMode = ownerMessageDeliveryMode(
+        fromOwner, OWNER_MESSAGES_EXTERNAL_CONSUMER,
+      );
+      if (ownerDeliveryMode === 'external') {
+        if (!ownerMessageQueue.add(event)) {
+          emitDebugEvent({
+            stage: 'ignored',
+            reason: 'invalid_or_duplicate_owner_message',
+            messageId: msg.key.id,
+          });
+          continue;
+        }
+      } else {
+        if (!fromOwner) {
+          event.ownerFenceSequence = ownerMessageQueue.lastSequence(chatId);
+        }
+        messageQueue.push(event);
+      }
       emitDebugEvent({
         stage: 'queued',
         chatId: redactWhatsAppId(chatId),
@@ -769,7 +836,9 @@ async function startSocket() {
         bodyLength: event.body.length,
         hasMedia: event.hasMedia,
         mediaType: event.mediaType,
-        queueLength: messageQueue.length,
+        queueLength: ownerDeliveryMode === 'external'
+          ? ownerMessageQueue.size()
+          : messageQueue.length,
       });
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
@@ -819,6 +888,117 @@ app.get('/messages', (req, res) => {
   res.json(msgs);
 });
 
+// Poll outbound delivery/read receipts independently from inbound messages.
+app.get('/receipts', (req, res) => {
+  res.json(receiptQueue.snapshot());
+});
+
+function requireOwnerMessageAccess(req, res, next) {
+  if (!FORWARD_OWNER_MESSAGES) return res.status(404).json({ error: 'Not found' });
+  if (!ownerMessageTokenMatches(OWNER_MESSAGE_SECRET, req.headers.authorization)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  return next();
+}
+
+app.get('/owner-messages', requireOwnerMessageAccess, (req, res) => {
+  const cursor = req.query.cursor === undefined ? '0' : String(req.query.cursor);
+  const limit = req.query.limit === undefined ? MAX_QUEUE_SIZE : Number(req.query.limit);
+  if (!/^\d+$/.test(cursor) || !Number.isSafeInteger(limit) || limit < 1 || limit > MAX_QUEUE_SIZE) {
+    return res.status(400).json({ error: 'invalid cursor or limit' });
+  }
+  return res.json(ownerMessageQueue.page({ cursor, limit }));
+});
+
+app.post('/owner-messages/ack', requireOwnerMessageAccess, (req, res) => {
+  const acknowledgements = req.body?.messages;
+  if (!Array.isArray(acknowledgements) || acknowledgements.length > MAX_QUEUE_SIZE) {
+    return res.status(400).json({ error: 'messages must be a bounded array' });
+  }
+  for (const acknowledgement of acknowledgements) {
+    if (
+      !acknowledgement
+      || typeof acknowledgement !== 'object'
+      || Object.keys(acknowledgement).join(',') !== 'messageId'
+      || typeof acknowledgement.messageId !== 'string'
+      || !/^[A-Za-z0-9_-]{1,191}$/.test(acknowledgement.messageId)
+    ) {
+      return res.status(400).json({ error: 'invalid owner message acknowledgement' });
+    }
+  }
+  const acknowledged = ownerMessageQueue.acknowledge(acknowledgements);
+  return res.json({ success: true, acknowledged });
+});
+
+app.post('/receipts/ack', (req, res) => {
+  const acknowledgements = req.body?.receipts;
+  if (!Array.isArray(acknowledgements) || acknowledgements.length > MAX_QUEUE_SIZE) {
+    return res.status(400).json({ error: 'receipts must be a bounded array' });
+  }
+  for (const acknowledgement of acknowledgements) {
+    if (
+      !acknowledgement
+      || typeof acknowledgement !== 'object'
+      || Object.keys(acknowledgement).sort().join(',') !== 'messageId,status'
+      || typeof acknowledgement.messageId !== 'string'
+      || !/^[A-Za-z0-9_-]{1,191}$/.test(acknowledgement.messageId)
+      || !['sent', 'delivered', 'read'].includes(acknowledgement.status)
+    ) {
+      return res.status(400).json({ error: 'invalid receipt acknowledgement' });
+    }
+  }
+  const acknowledged = receiptQueue.acknowledge(acknowledgements);
+  return res.json({ success: true, acknowledged });
+});
+
+function prepareProviderSend(req, res, chatId) {
+  let abandoned = false;
+  req.once('aborted', () => { abandoned = true; });
+  res.once('close', () => {
+    if (!res.writableEnded) abandoned = true;
+  });
+  const queueDeadlineAt = Date.now() + SEND_QUEUE_WAIT_TIMEOUT_MS;
+  const intentStatus = providerSendIntentStatus({
+    externalConsumer: OWNER_MESSAGES_EXTERNAL_CONSUMER,
+    sendIntent: req.body?.sendIntent,
+    expectedOwnerFenceSequence: req.body?.expectedOwnerFenceSequence,
+    expectedSecret: OWNER_MESSAGE_SECRET,
+    authorizationHeader: req.headers.authorization,
+  });
+  if (intentStatus === 'unauthorized') {
+    res.status(401).json({ error: 'Unauthorized' });
+    return null;
+  }
+  if (intentStatus === 'invalid') {
+    res.status(400).json({
+      error: 'external consumer sends require authenticated human intent or automatic intent with expectedOwnerFenceSequence',
+    });
+    return null;
+  }
+  const beforeSend = intentStatus === 'automatic'
+    ? () => {
+      if (ownerSendFenceStatus(
+        ownerMessageQueue, chatId, req.body.expectedOwnerFenceSequence,
+      ) !== 'allowed') {
+        const error = new Error('Owner intervention fenced this send');
+        error.code = 'OWNER_FENCED';
+        throw error;
+      }
+    }
+    : undefined;
+  return {
+    beforeSend,
+    intentStatus,
+    queueDeadlineAt,
+    isAbandoned: () => abandoned,
+  };
+}
+
+function respondToProviderSendError(res, error, messageIds = []) {
+  const { statusCode, body } = providerSendErrorResponse(error, messageIds);
+  return res.status(statusCode).json(body);
+}
+
 // Send a message
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -829,17 +1009,21 @@ app.post('/send', async (req, res) => {
   if (!chatId || !message) {
     return res.status(400).json({ error: 'chatId and message are required' });
   }
+  const sendContext = prepareProviderSend(req, res, chatId);
+  if (!sendContext) return undefined;
 
+  const chunks = splitLongMessage(formatOutgoingMessage(message));
+  const messageIds = [];
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
-    const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
         messageStore,
       });
-      const sent = await sendWithTimeout(chatId, payload, options);
+      const sent = await sendWithTimeout(
+        chatId, payload, options, SEND_TIMEOUT_MS, sendContext.beforeSend, sendContext,
+      );
       trackSentMessageId(sent);
       messageStore.remember(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
@@ -854,7 +1038,7 @@ app.post('/send', async (req, res) => {
       messageIds,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return respondToProviderSendError(res, err, messageIds);
   }
 });
 
@@ -869,17 +1053,31 @@ app.post('/edit', async (req, res) => {
     return res.status(400).json({ error: 'chatId, messageId, and message are required' });
   }
 
+  const sendContext = prepareProviderSend(req, res, chatId);
+  if (!sendContext) return undefined;
+
+  const completedMessageIds = [];
   try {
     const key = { id: messageId, fromMe: true, remoteJid: chatId };
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
+    await sendWithTimeout(
+      chatId, { text: chunks[0], edit: key }, {}, SEND_TIMEOUT_MS,
+      sendContext.beforeSend, sendContext,
+    );
+    completedMessageIds.push(messageId);
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
+        const sent = await sendWithTimeout(
+          chatId, { text: chunks[i] }, {}, SEND_TIMEOUT_MS,
+          sendContext.beforeSend, sendContext,
+        );
         trackSentMessageId(sent);
-        if (sent?.key?.id) messageIds.push(sent.key.id);
+        if (sent?.key?.id) {
+          messageIds.push(sent.key.id);
+          completedMessageIds.push(sent.key.id);
+        }
         if (i < chunks.length - 1) {
           await sleep(CHUNK_DELAY_MS);
         }
@@ -888,7 +1086,7 @@ app.post('/edit', async (req, res) => {
 
     res.json({ success: true, messageIds });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return respondToProviderSendError(res, err, completedMessageIds);
   }
 });
 
@@ -902,6 +1100,8 @@ app.post('/send-media', async (req, res) => {
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
+  const sendContext = prepareProviderSend(req, res, chatId);
+  if (!sendContext) return undefined;
 
   try {
     if (!existsSync(filePath)) {
@@ -982,12 +1182,14 @@ app.post('/send-media', async (req, res) => {
         break;
     }
 
-    const sent = await sendWithTimeout(chatId, msgPayload);
+    const sent = await sendWithTimeout(
+      chatId, msgPayload, {}, SEND_TIMEOUT_MS, sendContext.beforeSend, sendContext,
+    );
     trackSentMessageId(sent);
     messageStore.remember(sent);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return respondToProviderSendError(res, err);
   }
 });
 
@@ -1004,14 +1206,19 @@ app.post('/send-poll', async (req, res) => {
     return res.status(400).json({ error: 'chatId, question, and options are required' });
   }
 
+  const sendContext = prepareProviderSend(req, res, chatId);
+  if (!sendContext) return undefined;
+
   try {
     const payload = buildPollPayload({ question, options, selectableCount });
-    const sent = await sendWithTimeout(chatId, payload);
+    const sent = await sendWithTimeout(
+      chatId, payload, {}, SEND_TIMEOUT_MS, sendContext.beforeSend, sendContext,
+    );
     trackSentMessageId(sent);
     rememberSentMessage(sent, payload);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return respondToProviderSendError(res, err);
   }
 });
 
@@ -1026,14 +1233,19 @@ app.post('/send-location', async (req, res) => {
     return res.status(400).json({ error: 'chatId, latitude, and longitude are required' });
   }
 
+  const sendContext = prepareProviderSend(req, res, chatId);
+  if (!sendContext) return undefined;
+
   try {
     const payload = buildLocationPayload({ latitude, longitude, name, address });
-    const sent = await sendWithTimeout(chatId, payload);
+    const sent = await sendWithTimeout(
+      chatId, payload, {}, SEND_TIMEOUT_MS, sendContext.beforeSend, sendContext,
+    );
     trackSentMessageId(sent);
     messageStore.remember(sent);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    return respondToProviderSendError(res, err);
   }
 });
 
@@ -1107,7 +1319,24 @@ app.get('/chat/:id', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     status: connectionState,
+    forwardOwnerMessages: FORWARD_OWNER_MESSAGES,
+    ownerMessagesExternalConsumer: OWNER_MESSAGES_EXTERNAL_CONSUMER,
+    ownerMessageAuthFingerprint: OWNER_MESSAGE_AUTH_FINGERPRINT,
     queueLength: messageQueue.length,
+    ownerMessageQueueLength: ownerMessageQueue.size(),
+    receiptQueueLength: receiptQueue.size(),
+    capabilities: {
+      deliveryReceipts: true,
+      inboundReadReceipts: true,
+      ownerMessages: FORWARD_OWNER_MESSAGES ? {
+        version: 2,
+        auth: 'bearer',
+        durable: true,
+        pagination: 'cursor',
+        externalConsumer: OWNER_MESSAGES_EXTERNAL_CONSUMER,
+        payload: 'text-only-with-intervention-records',
+      } : false,
+    },
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,

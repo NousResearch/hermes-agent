@@ -181,15 +181,39 @@ whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
   send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
+  forward_owner_messages: false             # Forward linked-device sends (advanced)
+  owner_messages_external_consumer: false   # Use durable peek/ACK instead of normal Hermes polling
+  # owner_message_secret_file: ~/.hermes/whatsapp/session/owner-messages.secret
 ```
 
 When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
+
+`forward_owner_messages` is an advanced, text-only integration option. By default, allowed personal-chat messages typed on the owner/linked device remain compatible with the normal Hermes `/messages` polling flow. An integration that durably persists and reconciles those messages itself must also set `owner_messages_external_consumer: true`; only then are owner messages kept out of the inbound bot queue and written to the authenticated peek/ACK queue under the WhatsApp session directory. The queue never silently evicts entries and removes an entry only after an exact acknowledgement. Connector sends reserve and persist their WhatsApp message ID before transmission, so an echo cannot be misclassified as owner input during a send race or after bridge restart. Read receipts and self-chat loopback keep their existing behavior.
+
+Both owner endpoints require `Authorization: Bearer <secret>`. The adapter generates a high-entropy per-session secret in `owner-messages.secret` with mode `0600`. A configured `owner_message_secret_file` must resolve inside the session root without symlinked ancestors. The bridge health response reports only a short SHA-256 fingerprint, never the secret.
+
+- `GET /owner-messages?cursor=<cursor>&limit=<1..100>` returns `{ messages, nextCursor, hasMore }`. Pass `nextCursor` to reach later entries even while an earlier entry remains unacknowledged.
+- `POST /owner-messages/ack` accepts `{ "messages": [{ "messageId": "..." }] }` and deletes only those exact durable entries. Persist/process an event before acknowledging it.
+- With an external consumer enabled, that connector owns durable owner-message consumption, reconciliation, and automatic-send fence propagation. Automatic `/send` calls must use `sendIntent: "automatic"` plus `expectedOwnerFenceSequence`; the bridge revalidates that sequence inside the serialized send queue immediately before every provider chunk. The standard Hermes adapter deliberately does not invent a fence: sends without an explicit `whatsapp_owner_fence_sequence` are rejected in external-consumer mode (fail closed). Human CRM sends use `sendIntent: "human"` and the same Bearer secret, and are not blocked as automatic replies.
+- Text bodies are retained in full, including bodies larger than 20,000 characters. Media is **not** forwarded as media by this contract; instead the queue contains a durable intervention record with `disposition: "unsupported_media"` and `requiresIntervention: true`, allowing a coordinator to advance rather than blocking the queue.
+
+The option is disabled by default so owner-device sends cannot accidentally enter an AI reply loop.
 
 ---
 
 ## Message Formatting & Delivery
 
 WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
+
+### Delivery Receipt Consumer Contract
+
+The Baileys bridge exposes outbound `sent`, `delivered`, and `read` updates through a separate non-destructive receipt queue:
+
+- `GET /receipts` returns the oldest page as a JSON array of `{ "messageId", "status", "occurredAt" }` objects. A page contains at most **100** receipts.
+- `POST /receipts/ack` accepts `{ "receipts": [{ "messageId": "...", "status": "..." }] }`. Each ACK is exact on both message ID and status, and a request may acknowledge at most **100** receipts. The response reports the exact `acknowledged` count.
+- The bridge queue holds at most **1,000** unacknowledged receipts. Consumers must therefore poll promptly and ACK each bounded page rather than accumulating an oversized batch.
+- **Persist every receipt durably before ACKing it.** `GET` is a peek, so a crash before persistence leaves the receipt available; a crash after persistence but before ACK must be absorbed by the consumer's `(messageId, status)` deduplication.
+- ACKed states are replay-suppressed in the running bridge while a later monotonic state (for example `delivered` → `read`) remains eligible. An unmatched ACK does not suppress a future real receipt.
 
 ### Chunking
 

@@ -11,6 +11,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import { createSerializedSendQueue } from './bridge_helpers.js';
 
 // ------------------------------------------------------------------
 // 1.  Unit test for the queue primitives
@@ -21,17 +22,7 @@ import { strict as assert } from 'node:assert';
  * isolation without importing the full module (which would trigger
  * Baileys / express side effects).
  */
-function createSendQueue() {
-  let _sendQueue = Promise.resolve();
-
-  function enqueueSend(fn) {
-    const task = _sendQueue.then(() => fn(), () => fn());
-    _sendQueue = task.catch(() => {});
-    return task;
-  }
-
-  return { enqueueSend };
-}
+const createSendQueue = createSerializedSendQueue;
 
 // -- serial ordering -------------------------------------------------
 {
@@ -107,6 +98,109 @@ function createSendQueue() {
   assert.strictEqual(maxConcurrent, 1, 'never more than one in-flight');
   assert.strictEqual(concurrent, 0, 'all finished');
   console.log('  ✓ single-consumer concurrency');
+}
+
+// -- client timeout does not release queue occupancy -------------------
+{
+  const { enqueueSend } = createSendQueue();
+  let releaseProvider;
+  let secondProviderCalls = 0;
+  const first = enqueueSend(
+    () => new Promise(resolve => { releaseProvider = resolve; }),
+    { timeoutMs: 10, timeoutError: () => new Error('client timed out') },
+  );
+  const second = enqueueSend(async () => { secondProviderCalls += 1; return 'second'; });
+
+  await assert.rejects(first, /client timed out/);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(secondProviderCalls, 0, 'timed-out provider still owns the queue');
+  releaseProvider('late provider result');
+  assert.equal(await second, 'second');
+  assert.equal(secondProviderCalls, 1);
+  console.log('  ✓ client timeout keeps queue occupied until provider settlement');
+}
+
+// -- preflight happens after dequeue, immediately before send ----------
+{
+  const { enqueueSend } = createSendQueue();
+  let releaseFirst;
+  let signalStarted;
+  const started = new Promise(resolve => { signalStarted = resolve; });
+  let fence = 0;
+  let providerCalls = 0;
+  const first = enqueueSend(() => {
+    signalStarted();
+    return new Promise(resolve => { releaseFirst = resolve; });
+  });
+  const second = enqueueSend(
+    async () => { providerCalls += 1; },
+    { beforeRun: () => {
+      if (fence > 0) throw new Error('fenced');
+    } },
+  );
+  await started;
+  fence = 1;
+  releaseFirst();
+  await first;
+  await assert.rejects(() => second, /fenced/);
+  assert.equal(providerCalls, 0);
+  console.log('  ✓ send preflight runs after dequeue and blocks provider call');
+}
+
+// -- queued requests expire before preflight/provider --------------------
+{
+  let currentTime = 100;
+  const { enqueueSend } = createSerializedSendQueue({ now: () => currentTime });
+  let releaseFirst;
+  let signalFirstStarted;
+  const firstStarted = new Promise(resolve => { signalFirstStarted = resolve; });
+  let preflightCalls = 0;
+  let providerCalls = 0;
+  const first = enqueueSend(() => {
+    signalFirstStarted();
+    return new Promise(resolve => { releaseFirst = resolve; });
+  });
+  const expired = enqueueSend(
+    async () => { providerCalls += 1; },
+    {
+      beforeRun: () => { preflightCalls += 1; },
+      queueDeadlineAt: 110,
+      queueError: () => Object.assign(new Error('queued request expired'), { code: 'SEND_QUEUE_EXPIRED' }),
+    },
+  );
+  await firstStarted;
+  currentTime = 111;
+  releaseFirst();
+  await first;
+  await assert.rejects(expired, error => error?.code === 'SEND_QUEUE_EXPIRED');
+  assert.equal(preflightCalls, 0);
+  assert.equal(providerCalls, 0);
+  console.log('  ✓ expired queued request never reaches preflight or provider');
+}
+
+// -- disconnected queued requests are abandoned before send -------------
+{
+  const { enqueueSend } = createSerializedSendQueue();
+  let releaseFirst;
+  let signalFirstStarted;
+  const firstStarted = new Promise(resolve => { signalFirstStarted = resolve; });
+  let disconnected = false;
+  let providerCalls = 0;
+  const first = enqueueSend(() => {
+    signalFirstStarted();
+    return new Promise(resolve => { releaseFirst = resolve; });
+  });
+  const abandoned = enqueueSend(
+    async () => { providerCalls += 1; },
+    { isAbandoned: () => disconnected },
+  );
+  await firstStarted;
+  disconnected = true;
+  releaseFirst();
+  await first;
+  await assert.rejects(abandoned, error => error?.code === 'SEND_QUEUE_ABANDONED');
+  assert.equal(providerCalls, 0);
+  console.log('  ✓ disconnected queued request never reaches provider');
 }
 
 console.log('\n✅ All send-queue tests passed.');

@@ -151,6 +151,39 @@ class TestStaleBridgeHandshake:
 
         mock_popen.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_restarts_bridge_when_owner_forwarding_config_changed(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        adapter._forward_owner_messages = True
+        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        health = _mock_health({
+            "status": "connected",
+            "scriptHash": disk_hash,
+            "sendReadReceipts": False,
+            "forwardOwnerMessages": False,
+        })
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", health), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        mock_popen.assert_called_once()
+
 
 class TestDepRefreshStamp:
     @pytest.mark.asyncio

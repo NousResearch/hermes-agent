@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { useLocation } from 'react-router'
 
 import { appViewForPath, isOverlayView } from '@/app/routes'
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
@@ -278,7 +280,15 @@ export function FindBar() {
 
   const matchLabel = formatMatchLabel(query, matchOrdinal, matchCount)
 
-  const barStyle = filesPaneRight != null ? { right: `calc(${filesPaneRight}px + 0.75rem)` } : undefined
+  const barStyle: CSSProperties = {
+    // The find bar mounts inside the ContribController subtree, which sets
+    // --titlebar-height: 0px on the app shell div. Without overriding it here,
+    // the bar renders at top: 0.5rem — inside the 34px titlebar strip,
+    // overlapping the window controls (issue #97890). Set the var to the real
+    // titlebar height so the top offset clears the titlebar band.
+    '--titlebar-height': `${TITLEBAR_HEIGHT}px`,
+    ...(filesPaneRight != null ? { right: `calc(${filesPaneRight}px + 0.75rem)` } : {})
+  }
 
   return (
     <div

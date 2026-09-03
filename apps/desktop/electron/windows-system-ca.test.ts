@@ -58,6 +58,33 @@ test('does not inspect or replace CAs outside Windows', () => {
   })
 })
 
+test('returns not-applicable on linux without inspecting or replacing CAs', () => {
+  let reads = 0
+
+  const tlsApi: NodeTlsCaApi = {
+    getCACertificates() {
+      reads += 1
+
+      return []
+    },
+    setDefaultCACertificates() {
+      throw new Error('should not install')
+    }
+  }
+
+  const result = installWindowsSystemCaTrust(tlsApi, 'linux')
+
+  // CI on Linux hosts runs the same vitest suite; this guards the
+  // `platform !== 'win32'` early-return against a future refactor that
+  // hoists the default/system read above the gate.
+  assert.equal(reads, 0)
+  assert.deepEqual(result, {
+    applied: false,
+    systemCertificateCount: 0,
+    totalCertificateCount: 0
+  })
+})
+
 test('leaves the existing defaults untouched when Windows has no system CAs', () => {
   const tlsApi = fakeTlsApi(['mozilla-root'], [])
 

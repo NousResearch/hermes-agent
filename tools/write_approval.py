@@ -45,12 +45,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from tools.path_security import validate_within_dir
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ logger = logging.getLogger(__name__)
 MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
+_PENDING_ID_RE = re.compile(r"^[0-9a-f]{8}$")
 
 # Config key (per subsystem). A single boolean: the approval gate is OFF by
 # default (writes flow freely, the pre-gate behaviour), and ON means stage /
@@ -111,6 +114,38 @@ def _pending_dir(subsystem: str) -> Path:
     return get_hermes_home() / "pending" / subsystem
 
 
+def _pending_record_path(subsystem: str, pending_id: Any) -> Optional[Path]:
+    """Return a regular pending-record path for a generated, safe identifier."""
+    if subsystem not in _SUBSYSTEMS or not isinstance(pending_id, str):
+        return None
+    if _PENDING_ID_RE.fullmatch(pending_id) is None:
+        return None
+    pending_dir = _pending_dir(subsystem)
+    path = pending_dir / f"{pending_id}.json"
+    try:
+        if path.is_symlink() or validate_within_dir(path, pending_dir):
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return path
+
+
+def _read_pending_record(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
+    """Load only a well-formed record bound to its requested filename/store."""
+    path = _pending_record_path(subsystem, pending_id)
+    if path is None or not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("id") != pending_id or record.get("subsystem") != subsystem:
+        return None
+    return record
+
+
 def stage_write(subsystem: str, payload: Dict[str, Any],
                 *, summary: str, origin: str) -> Dict[str, Any]:
     """Persist a pending write and return a short record describing it.
@@ -152,50 +187,43 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
 
 
 def list_pending(subsystem: str) -> List[Dict[str, Any]]:
-    """Return all pending records for ``subsystem``, oldest first."""
+    """Return all valid pending records for ``subsystem``, oldest first."""
     d = _pending_dir(subsystem)
     if not d.exists():
         return []
     records: List[Dict[str, Any]] = []
     for p in d.glob("*.json"):
-        try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
-        except Exception:
-            logger.warning("Skipping unreadable pending record: %s", p)
+        record = _read_pending_record(subsystem, p.stem)
+        if record is not None:
+            records.append(record)
     records.sort(key=lambda r: r.get("created_at", 0))
     return records
 
 
 def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
-    """Return a single pending record by id, or None."""
-    path = _pending_dir(subsystem) / f"{pending_id}.json"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    """Return a single valid pending record by id, or None."""
+    return _read_pending_record(subsystem, pending_id)
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
-    """Delete a pending record. Returns True if it existed."""
-    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    """Delete a valid pending record. Returns True if it existed."""
+    path = _pending_record_path(subsystem, pending_id)
+    if path is None or _read_pending_record(subsystem, pending_id) is None:
+        return False
     try:
-        if path.exists():
-            path.unlink()
-            return True
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
     except Exception as e:  # pragma: no cover
         logger.error("Failed to discard pending %s/%s: %s", subsystem, pending_id, e)
     return False
 
 
 def pending_count(subsystem: str) -> int:
-    """Cheap count of pending records (for notification badges)."""
-    d = _pending_dir(subsystem)
-    if not d.exists():
-        return 0
+    """Count valid pending records (for notification badges)."""
     try:
-        return sum(1 for _ in d.glob("*.json"))
+        return len(list_pending(subsystem))
     except Exception:
         return 0
 
@@ -473,7 +501,16 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     elif action == "patch":
         old_s = payload.get("old_string") or ""
         new_s = payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
+        if current:
+            from tools.fuzzy_match import fuzzy_find_and_replace
+
+            new, _count, _strategy, match_error = fuzzy_find_and_replace(
+                current, old_s, new_s, payload.get("replace_all", False)
+            )
+            if match_error:
+                return f"(patch cannot be applied: {match_error})"
+        else:
+            new = f"(patch {old_s!r} → {new_s!r})"
     elif action == "write_file":
         new = payload.get("file_content") or ""
     elif action == "remove_file":

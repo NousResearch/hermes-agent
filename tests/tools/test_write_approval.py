@@ -293,3 +293,84 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+def test_skill_pending_diff_uses_the_fuzzy_patch_engine(hermes_home):
+    from tools import write_approval as wa
+
+    skill_dir = os.path.join(hermes_home, "skills", "demo")
+    os.makedirs(skill_dir)
+    with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: demo\ndescription: test\n---\n\nold value\n")
+
+    diff = wa.skill_pending_diff(
+        {
+            "payload": {
+                "action": "patch",
+                "name": "demo",
+                "old_string": "old    value",
+                "new_string": "new value",
+            }
+        }
+    )
+
+    assert "-old value\n" in diff
+    assert "+new value\n" in diff
+
+
+def test_pending_id_cannot_escape_its_subsystem_directory(hermes_home):
+    from tools import write_approval as wa
+
+    escaped = wa._pending_dir(wa.SKILLS).parent / "outside.json"
+    wa._pending_dir(wa.SKILLS).mkdir(parents=True, exist_ok=True)
+    escaped.parent.mkdir(parents=True, exist_ok=True)
+    escaped.write_text('{"id": "outside"}', encoding="utf-8")
+
+    assert wa.get_pending(wa.SKILLS, "../outside") is None
+    assert wa.discard_pending(wa.SKILLS, "../outside") is False
+    assert escaped.exists()
+
+
+def test_pending_record_symlink_is_never_read_listed_or_deleted(hermes_home):
+    from tools import write_approval as wa
+
+    pending_id = "a1b2c3d4"
+    pending_dir = wa._pending_dir(wa.SKILLS)
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    outside = os.path.join(hermes_home, "outside.json")
+    with open(outside, "w", encoding="utf-8") as f:
+        json.dump({"id": pending_id, "subsystem": wa.SKILLS}, f)
+    link = pending_dir / f"{pending_id}.json"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are unavailable on this platform")
+
+    assert wa.get_pending(wa.SKILLS, pending_id) is None
+    assert wa.list_pending(wa.SKILLS) == []
+    assert wa.pending_count(wa.SKILLS) == 0
+    assert wa.discard_pending(wa.SKILLS, pending_id) is False
+    assert link.is_symlink()
+    assert os.path.exists(outside)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"id": "d4c3b2a1", "subsystem": "skills"},
+        {"id": "a1b2c3d4", "subsystem": "memory"},
+    ],
+)
+def test_pending_record_must_match_its_filename_and_subsystem(hermes_home, record):
+    from tools import write_approval as wa
+
+    pending_id = "a1b2c3d4"
+    pending_dir = wa._pending_dir(wa.SKILLS)
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    record_path = pending_dir / f"{pending_id}.json"
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    assert wa.get_pending(wa.SKILLS, pending_id) is None
+    assert wa.list_pending(wa.SKILLS) == []
+    assert wa.discard_pending(wa.SKILLS, pending_id) is False
+    assert record_path.exists()

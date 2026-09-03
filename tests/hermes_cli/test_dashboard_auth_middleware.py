@@ -257,6 +257,20 @@ def test_invalid_cookie_returns_401_on_api(gated_app):
     assert r.status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/skills/pending"),
+        ("get", "/api/skills/pending/a1b2c3d4/diff"),
+        ("post", "/api/skills/pending/a1b2c3d4/approve"),
+        ("delete", "/api/skills/pending/a1b2c3d4"),
+    ],
+)
+def test_pending_skill_write_routes_require_dashboard_auth(gated_app, method, path):
+    response = getattr(gated_app, method)(path)
+
+    assert response.status_code == 401
+
 
 
 # ---------------------------------------------------------------------------

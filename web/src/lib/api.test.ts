@@ -200,3 +200,37 @@ describe("api OAuth helpers", () => {
     ]);
   });
 });
+
+describe("api pending skill writes", () => {
+  it("uses the selected profile for review actions", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ pending: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getPendingSkillWrites("commissar-dansk");
+    await api.getPendingSkillDiff("a1b2c3d4", "commissar-dansk");
+    await api.approvePendingSkillWrite("a1b2c3d4", "commissar-dansk");
+    await api.rejectPendingSkillWrite("a1b2c3d4", "commissar-dansk");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/skills/pending?profile=commissar-dansk",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/skills/pending/a1b2c3d4/diff?profile=commissar-dansk",
+      expect.objectContaining({ credentials: "include" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/skills/pending/a1b2c3d4/approve?profile=commissar-dansk",
+      expect.objectContaining({ credentials: "include", method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      "/api/skills/pending/a1b2c3d4?profile=commissar-dansk",
+      expect.objectContaining({ credentials: "include", method: "DELETE" }),
+    );
+  });
+});

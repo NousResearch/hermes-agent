@@ -5740,9 +5740,10 @@ def refresh_launchd_plist_if_needed() -> bool:
             f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
         )
     _deadline = time.monotonic() + _reload_budget
-    if not _retry_launchctl_bootstrap_until_registered(
+    bootstrap_succeeded = _retry_launchctl_bootstrap_until_registered(
         domain, plist_path, label, deadline=_deadline
-    ):
+    )
+    if not bootstrap_succeeded:
         _append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
             f"retrying for {int(_reload_budget)}s (in-process fallback path)"
@@ -5754,6 +5755,11 @@ def refresh_launchd_plist_if_needed() -> bool:
             int(_reload_budget),
             _launchd_reload_log_path(),
         )
+        print(
+            "✗ Updated the launchd plist but the service did not re-register; "
+            f"see {_launchd_reload_log_path()}"
+        )
+        return False
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )
@@ -5845,7 +5851,17 @@ def launchd_start():
         _clear_launchd_unsupported_marker()
         return
 
-    refresh_launchd_plist_if_needed()
+    refreshed = refresh_launchd_plist_if_needed()
+    if refreshed:
+        # refresh_launchd_plist_if_needed() bootstrapped the plist (either via
+        # a detached helper or in-process). The service config has RunAtLoad=true
+        # and KeepAlive=true, so launchd automatically starts the process when
+        # the label is registered. Issuing an immediate kickstart would race a
+        # second gateway instance into existence before the first one finishes
+        # booting.
+        print("✓ Service started")
+        _clear_launchd_unsupported_marker()
+        return
     try:
         subprocess.run(
             ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],

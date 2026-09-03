@@ -161,11 +161,15 @@ const InterAgentCollapsedNotice: FC<{ sender: string }> = ({ sender }) => (
  */
 const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }> = ({ sender, ...props }) => {
   const isRunning = useAuiState(s => s.message.status?.type === 'running')
+  // Collapse a bot-to-bot reply behind a "Replied to X" notice ONLY when the
+  // thread opts in. Direct Bot Chat DMs have no other surface to show the
+  // reply, so collapsing it hides the receiving bot's activity entirely.
+  const collapse = useAuiState(s => s.message.metadata?.custom?.interAgentCollapse === true)
 
   return (
     <AssistantMessageBody
       {...props}
-      collapsedNotice={isRunning ? null : <InterAgentCollapsedNotice sender={sender} />}
+      collapsedNotice={collapse && !isRunning ? <InterAgentCollapsedNotice sender={sender} /> : null}
     />
   )
 }

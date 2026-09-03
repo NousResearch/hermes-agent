@@ -142,10 +142,12 @@ describe('streaming-status invalidation scope', () => {
   })
 
   it('keeps the same root DOM node across the settle transition', async () => {
-    // The inter-agent reply collapses once it settles. Rendering that as a
-    // competing root swapped the element type at this position, so React
-    // unmounted the row and mounted a fresh one — discarding the DOM the
-    // scroll anchor was holding.
+    // A direct bot-to-bot reply now renders EXPANDED (visible) on settle, not
+    // collapsed behind a "Replied to" toggle. Rendering that as a competing
+    // root previously swapped the element type at this position, so React
+    // unmounted the row and mounted a fresh one — discarding the DOM the scroll
+    // anchor was holding. Same root, updated in place: settle is now a prop
+    // change React applies without a remount.
     const delivery = 'Message from 🤖 Hermes (@hermes): please check the build'
     const messages = [user('u1', delivery), assistant('a1', 'working on it', true)]
     const { container, findByText, rerender } = render(<Harness messages={messages} />)
@@ -156,10 +158,11 @@ describe('streaming-status invalidation scope', () => {
     expect(before).toBeTruthy()
 
     rerender(<Harness messages={[messages[0], assistant('a1', 'working on it', false)]} />)
-    await findByText(/Replied to/)
+    // Settled reply stays visible inline; no collapse / no remount.
+    await findByText('working on it')
+    expect(container.querySelector('[data-slot="aui_assistant-message-root"] [data-slot="aui_assistant-message-content"]')).toBeTruthy()
 
     const after = container.querySelector('[data-slot="aui_assistant-message-root"]')
-
     // Same element, updated in place — not a remount.
     expect(after).toBe(before)
   })

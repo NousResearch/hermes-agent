@@ -400,17 +400,38 @@ def generate_title(
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+        try:
+            response = call_llm(
+                task="title_generation",
+                messages=messages,
+                # A title is a handful of tokens. The old 500-token ceiling let a
+                # chatty model burn seconds generating prose we then threw away.
+                max_tokens=64,
+                temperature=0.3,
+                timeout=timeout,
+                main_runtime=main_runtime,
+                extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            )
+        except Exception as schema_err:
+            # Some providers (DeepSeek V4) reject the strict json_schema
+            # response_format with HTTP 400 ("This response_format type is
+            # unavailable now"). Retry with the looser json_object hint — the
+            # prompt already demands a single JSON object and
+            # _extract_title_text's loose scan tolerates non-compliant output.
+            logger.warning(
+                "Title generation with json_schema response_format failed (%s); "
+                "retrying with json_object",
+                schema_err,
+            )
+            response = call_llm(
+                task="title_generation",
+                messages=messages,
+                max_tokens=64,
+                temperature=0.3,
+                timeout=timeout,
+                main_runtime=main_runtime,
+                extra_body={"response_format": {"type": "json_object"}},
+            )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title

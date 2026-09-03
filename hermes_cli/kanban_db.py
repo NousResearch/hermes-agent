@@ -7846,7 +7846,14 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
       where ``<board-root>`` is the active board's root. The path is the
       same for the dispatcher and every profile worker, so handoff is
-      path-stable.
+      path-stable. If the task body signals a code-fix workflow (mentions
+      ``src/``, ``tests/``, ``docs/audits/``, or a known project repo by
+      basename like ``Chiron``/``Jakobsson_Deluxe``), auto-promote the
+      workspace to a linked worktree on the matching registered project.
+      This is the dispatcher-side complement to ``kanban-github-sync``'s
+      ``--project`` auto-detect and catches tasks created by older code
+      paths (legacy imports, manual dashboard creates) that lack the
+      project binding.
     - ``dir:<path>``: the path stored in ``workspace_path``.  Created
       if missing.  MUST be absolute — relative paths are rejected to
       prevent confused-deputy traversal where ``../../../tmp/attacker``
@@ -7868,6 +7875,22 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """
     kind = task.workspace_kind or "scratch"
     if kind == "scratch":
+        # Dispatcher-side auto-promotion: catch tasks imported before the
+        # kanban-github-sync --project fix was deployed, or created via
+        # legacy manual paths that didn't bind a project. The body signals
+        # "this task needs source files" via a couple of well-known
+        # patterns; if any match and a registered project shares a
+        # basename (or substring) with one of those signals, promote to
+        # worktree on that project's primary_path.
+        promoted_repo = _maybe_promote_scratch_to_worktree(task, board=board)
+        if promoted_repo is not None:
+            # Mutate the in-memory copy so the rest of this dispatch
+            # pass sees workspace_kind='worktree' (avoids second
+            # resolution branch downstream).
+            task.workspace_kind = "worktree"
+            task.workspace_path = str(promoted_repo)
+            p, _branch = _resolve_worktree_workspace(task, board=board)
+            return p
         if task.workspace_path:
             # Legacy scratch tasks that were set to an explicit path get the
             # same absolute-path guard as dir: — consistent with the
@@ -7900,6 +7923,68 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
+
+
+# Markers that strongly suggest "this task needs to land in a source tree".
+# Anything matching one of these tokens in the task body triggers
+# auto-promotion to a worktree on the matching registered project. Kept
+# intentionally narrow — false positives waste a worktree; false negatives
+# are recoverable (the worker can manually cd).
+_CODE_TASK_MARKERS = (
+    "src/agents/",
+    "src/plan/",
+    "src/integrations/",
+    "src/qa/",
+    "tests/test_",
+    "docs/audits/",
+    "pytest ",
+    "ruff ",
+    "git worktree",
+)
+
+
+def _maybe_promote_scratch_to_worktree(
+    task: Task, *, board: Optional[str] = None
+) -> Optional[Path]:
+    """Return a registered project's primary_path if the task body
+    signals a code-fix workflow and a registered project matches. None
+    otherwise. Does NOT mutate the task; the caller does that based on
+    the return value.
+
+    The match is a substring search on the project basename (e.g.
+    'Chiron' matches body text containing 'Chiron'). This is loose but
+    safe: a false match wastes a worktree under a real repo, not under
+    an attacker's chosen path. The body never names an absolute path we
+    would trust, and ``_resolve_worktree_workspace`` still anchors on
+    the registered project's primary_path.
+    """
+    body = (task.body or "") + " " + (task.title or "")
+    if not any(marker in body for marker in _CODE_TASK_MARKERS):
+        return None
+    from hermes_cli import projects_db as _pdb
+    try:
+        with _pdb.connect_closing() as conn:
+            rows = conn.execute(
+                "SELECT slug, name, primary_path FROM projects WHERE archived = 0"
+            ).fetchall()
+    except Exception:
+        return None
+    best: Optional[Path] = None
+    best_score = 0
+    for row in rows:
+        slug = row["slug"] or ""
+        name = row["name"] or ""
+        primary = row["primary_path"]
+        if not primary:
+            continue
+        score = 0
+        for needle in (slug, name, Path(primary).name):
+            if needle and needle in body:
+                score += len(needle)
+        if score > best_score:
+            best_score = score
+            best = Path(primary)
+    return best
 
 
 def set_workspace_path(

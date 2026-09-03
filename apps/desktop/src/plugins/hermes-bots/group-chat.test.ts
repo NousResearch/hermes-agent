@@ -206,6 +206,42 @@ describe('speaker labels', () => {
     release('(pass)')
     await drain(() => Boolean(chat.$groupChats.get().Scoped?.running))
   })
+
+  it("#102294: resolves a unique remote member's display_name for raw-name callers", async () => {
+    const { chat } = await loadRoom()
+    const data = await import('./data')
+
+    // A uniquely-named remote profile (its display_name set on its own
+    // machine) must label room surfaces with that identity, not fall
+    // through to the raw name / Hermes fallback.
+    data.$lastRoster.set([{ display_name: 'OrbitalBot', name: 'homelab', remoteSource: true, sourceScoped: true }])
+
+    expect(chat.groupSpeakerLabel('homelab')).toBe('OrbitalBot')
+  })
+
+  it('#102294: keeps the remote-default borrow guard — a lone remote default still reads Hermes', async () => {
+    const { chat } = await loadRoom()
+    const data = await import('./data')
+
+    data.$lastRoster.set([{ display_name: 'HomelabBot', name: 'default', remoteSource: true, sourceScoped: true }])
+
+    expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
+  })
+
+  it('#102294: same-named members keep the legacy rungs instead of guessing', async () => {
+    const { chat } = await loadRoom()
+    const data = await import('./data')
+
+    // Two remote rows sharing a name: the raw name alone cannot say which
+    // connection spoke, so the unique-rung must not fire and the legacy
+    // rungs keep today's behavior (raw name for non-defaults).
+    data.$lastRoster.set([
+      { display_name: 'Alpha', name: 'worker', remoteSource: true, sourceScoped: true },
+      { display_name: 'Beta', name: 'worker', remoteSource: true, sourceScoped: true }
+    ])
+
+    expect(chat.groupSpeakerLabel('worker')).toBe('worker')
+  })
 })
 
 // #93127: duplicate room delivery. Two raceable paths existed: a member turn

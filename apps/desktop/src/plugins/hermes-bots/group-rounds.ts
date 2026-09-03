@@ -5,7 +5,7 @@
  */
 
 import { botFriendlyNames, botHandle, clearBotAttention, mentionNameForms, noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { groupActivityMemberId, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   $groupNeedsYou,
@@ -606,7 +606,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           if (!heldEntry.noted) {
             recordGroupActivity(group, {
               kind: 'held',
-              member: member.name,
+              member: groupActivityMemberId(member),
               thread
             })
           }
@@ -653,7 +653,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           const reason = String(error?.data?.reason || '').trim()
           recordGroupActivity(group, {
             kind: 'failed',
-            member: member.name,
+            member: groupActivityMemberId(member),
             thread,
             ...(reason
               ? {
@@ -694,7 +694,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
           recordGroupActivity(group, {
             kind: 'cancelled',
-            member: member.name,
+            member: groupActivityMemberId(member),
             thread
           })
 
@@ -815,7 +815,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               } catch (error: any) {
                 recordGroupActivity(group, {
                   kind: 'failed',
-                  member: member.name,
+                  member: groupActivityMemberId(member),
                   thread
                 })
                 noteBotAttention(memberKey, error?.message || error)

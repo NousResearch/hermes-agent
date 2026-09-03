@@ -662,6 +662,9 @@ class HermesACPAgent(acp.Agent):
         _MODE_ACCEPT_EDITS: "workspace_session",
         _MODE_DONT_ASK: "session",
     }
+    _MODEL_DEPENDENT_RUNTIME_PROVIDERS = frozenset(
+        {"azure-foundry", "bedrock", "copilot", "nous", "opencode-go", "opencode-zen"}
+    )
     _EDIT_APPROVAL_POLICY_TO_MODE = {
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
     }
@@ -2579,17 +2582,20 @@ class HermesACPAgent(acp.Agent):
                 current_provider or "openrouter",
             )
             state.model = resolved_model
+            make_agent_kwargs: dict[str, Any] = {
+                "session_id": session_id,
+                "cwd": state.cwd,
+                "model": resolved_model,
+                "requested_provider": requested_provider,
+            }
             provider_changed = bool(current_provider and requested_provider != current_provider)
-            current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
-            current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
-            state.agent = self.session_manager._make_agent(
-                session_id=session_id,
-                cwd=state.cwd,
-                model=resolved_model,
-                requested_provider=requested_provider,
-                base_url=current_base_url,
-                api_mode=current_api_mode,
-            )
+            if (
+                not provider_changed
+                and requested_provider not in self._MODEL_DEPENDENT_RUNTIME_PROVIDERS
+            ):
+                make_agent_kwargs["base_url"] = getattr(state.agent, "base_url", None)
+                make_agent_kwargs["api_mode"] = getattr(state.agent, "api_mode", None)
+            state.agent = self.session_manager._make_agent(**make_agent_kwargs)
             self.session_manager.save_session(session_id)
             logger.info(
                 "Session %s: model switched to %s via provider %s",

@@ -2,7 +2,7 @@ import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages } from '@/hermes'
+import { getLatestSessionMessages } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionTileDelegate } from '@/store/session-states'
 import { $todoHistoryBySession, clearAllSessionTodoState, rebuildSessionTodoHistory } from '@/store/todos'
@@ -13,7 +13,7 @@ import { useSessionTileDelegate } from './use-session-tile-delegate'
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getSessionMessages: vi.fn()
+  getLatestSessionMessages: vi.fn()
 }))
 
 describe('useSessionTileDelegate task-history hydration', () => {
@@ -42,7 +42,7 @@ describe('useSessionTileDelegate task-history hydration', () => {
       return next
     }
 
-    vi.mocked(getSessionMessages).mockResolvedValue({
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: 'stored-tile-a',
       messages: [
         {
@@ -129,7 +129,7 @@ describe('useSessionTileDelegate task-history hydration', () => {
       return next
     }
 
-    vi.mocked(getSessionMessages).mockResolvedValue({
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: 'stored-tile-a',
       messages: [
         {

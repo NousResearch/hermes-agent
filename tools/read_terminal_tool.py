@@ -6,13 +6,15 @@ tool round-trips through the gateway's blocking-prompt bridge — the same one
 `clarify` uses: tui_gateway emits ``terminal.read.request``, the renderer answers
 with ``terminal.read.respond``. This module is just schema + a thin dispatcher
 over the platform-injected callback.
+
+Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
+desktop-sourced sessions.
 """
 
 import json
 from typing import Callable, Optional
 
 from tools.registry import registry, tool_error
-from utils import env_var_enabled
 
 
 def read_terminal_tool(
@@ -48,20 +50,13 @@ def read_terminal_tool(
         return json.dumps({"text": str(raw)}, ensure_ascii=False)
 
 
-def check_read_terminal_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
-
-
 READ_TERMINAL_SCHEMA = {
     "name": "read_terminal",
     "description": (
-        "Read what's currently shown in the in-app terminal pane of the Hermes "
-        "desktop GUI (the embedded shell beside this chat). Call with no arguments "
-        "to get the visible screen plus the total line count (`total_lines`). To "
-        "page through scrollback, pass `start_line` (0 = oldest line) and `count`; "
-        "valid lines are [0, total_lines). Returns JSON: "
-        "{total_lines, start, end, viewport_rows, cursor_row, text}."
+        "Read the in-app terminal pane beside this chat. No args = visible "
+        "screen + total_lines; page scrollback with start_line (0 = oldest) "
+        "+ count. JSON: {total_lines, start, end, viewport_rows, cursor_row, "
+        "text}."
     ),
     "parameters": {
         "type": "object",
@@ -81,13 +76,12 @@ READ_TERMINAL_SCHEMA = {
 
 registry.register(
     name="read_terminal",
-    toolset="terminal",
+    toolset="desktop_ui",
     schema=READ_TERMINAL_SCHEMA,
     handler=lambda args, **kw: read_terminal_tool(
         start_line=args.get("start_line"),
         count=args.get("count"),
         callback=kw.get("callback"),
     ),
-    check_fn=check_read_terminal_requirements,
     emoji="🖥️",
 )

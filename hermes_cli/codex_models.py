@@ -13,14 +13,12 @@ import os
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODEX_MODELS: List[str] = [
-    # GPT-5.6 series (Sol/Terra/Luna + -pro high-effort modes) — GA 2026-07-09
-    # (previewed 2026-06-26).
+    # GPT-5.6 series (Sol/Terra/Luna). The public API exposes "-pro"
+    # variants, but the ChatGPT Codex OAuth backend rejects them with HTTP 400,
+    # so the curated offline fallback must not surface those dead choices.
     "gpt-5.6-sol",
-    "gpt-5.6-sol-pro",
     "gpt-5.6-terra",
-    "gpt-5.6-terra-pro",
     "gpt-5.6-luna",
-    "gpt-5.6-luna-pro",
     "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
@@ -54,11 +52,8 @@ DEFAULT_CODEX_MODELS: List[str] = [
 
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-sol-pro", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra-pro", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna-pro", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex")),
     ("gpt-5.4-mini", ("gpt-5.3-codex",)),
     ("gpt-5.4", ("gpt-5.3-codex",)),
@@ -92,6 +87,38 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
             seen.add(synthetic_model)
 
     return ordered
+
+
+def _add_context_variants(model_ids: List[str]) -> List[str]:
+    """Insert ``-900k`` large-context picker variants after eligible base slugs.
+
+    The ChatGPT Codex backend advertises 272K for the gpt-5.4 / gpt-5.6
+    families but accepts ~911K (live-verified Aug 2026). The base slugs keep
+    the cheaper advertised 272K limit by default; each verified slug gets an
+    explicit ``<slug>-900k`` picker entry that opts into the large window.
+    The suffix is Hermes-side only — it is stripped before the model id hits
+    the wire (agent/transports/codex.py, agent/auxiliary_client.py).
+    """
+    from agent.model_metadata import (
+        CODEX_CONTEXT_VARIANT_SUFFIX,
+        has_codex_context_variant,
+    )
+
+    out: List[str] = []
+    present = set(model_ids)
+    for model_id in model_ids:
+        out.append(model_id)
+        variant = model_id + CODEX_CONTEXT_VARIANT_SUFFIX
+        if variant in present or variant in out:
+            continue
+        if has_codex_context_variant(model_id):
+            out.append(variant)
+    return out
+
+
+def _finalize_codex_models(model_ids: List[str]) -> List[str]:
+    """Forward-compat synthesis + large-context variant synthesis."""
+    return _add_context_variants(_add_forward_compat_models(model_ids))
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
@@ -165,7 +192,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    return _finalize_codex_models([slug for _, slug in sortable])
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -237,7 +264,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
-            return _add_forward_compat_models(api_models)
+            return _finalize_codex_models(api_models)
 
     # Fall back to local sources
     default_model = _read_default_model(codex_home)
@@ -252,4 +279,4 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
         if model_id not in ordered:
             ordered.append(model_id)
 
-    return _add_forward_compat_models(ordered)
+    return _finalize_codex_models(ordered)

@@ -1,0 +1,152 @@
+import type { ClientSessionState } from '../types'
+
+export const DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT = 24
+export const DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES = 32 * 1024 * 1024
+
+interface SessionStateCacheLimits {
+  maxBytes?: number
+  maxCount?: number
+}
+
+interface SessionStateCacheCallbacks {
+  isReferenced: (runtimeId: string, state: ClientSessionState) => boolean
+  onEvict: (runtimeId: string, state: ClientSessionState) => void
+  /** Optional liveness check for a cached snapshot's in-flight claims. A
+   *  connection death mid-turn orphans snapshots: the respawned backend
+   *  re-mints runtime ids, so their frozen busy/awaitingResponse flags never
+   *  receive a settling publish (#95189) and would pin megabytes of warm
+   *  transcript per reconnect cycle until restart. When wired, those flags
+   *  only block eviction while the authoritative store still claims work for
+   *  the same runtime id; without the probe they always block. */
+  isAuthoritativelyActive?: (runtimeId: string, state: ClientSessionState) => boolean
+}
+
+function transcriptBytes(state: ClientSessionState): number {
+  if (state.messages.length === 0) {
+    return 0
+  }
+
+  // JS strings occupy two bytes per UTF-16 code unit. JSON also accounts for
+  // ids, part tags, tool payloads, attachment metadata, and error text without
+  // retaining a second serialized copy in the cache.
+  return JSON.stringify(state.messages).length * 2
+}
+
+function hasDraftOrInFlightMessage(state: ClientSessionState): boolean {
+  return state.messages.some(message => message.pending === true)
+}
+
+/**
+ * Runtime state map whose settled, unreferenced transcripts form a weighted
+ * LRU. Live/visible states and unsaved drafts are outside both limits.
+ */
+export class SessionStateCache extends Map<string, ClientSessionState> {
+  readonly #callbacks: SessionStateCacheCallbacks
+  readonly #maxBytes: number
+  readonly #maxCount: number
+  readonly #recency = new Map<string, number>()
+  #clock = 0
+
+  constructor(callbacks: SessionStateCacheCallbacks, limits: SessionStateCacheLimits = {}) {
+    super()
+    this.#callbacks = callbacks
+    this.#maxBytes = limits.maxBytes ?? DEFAULT_WARM_SESSION_TRANSCRIPT_BYTES
+    this.#maxCount = limits.maxCount ?? DEFAULT_WARM_SESSION_TRANSCRIPT_COUNT
+  }
+
+  override get(runtimeId: string): ClientSessionState | undefined {
+    const state = super.get(runtimeId)
+
+    if (state) {
+      this.#touch(runtimeId)
+    }
+
+    return state
+  }
+
+  override set(runtimeId: string, state: ClientSessionState): this {
+    super.set(runtimeId, state)
+    this.#touch(runtimeId)
+
+    return this
+  }
+
+  override delete(runtimeId: string): boolean {
+    this.#recency.delete(runtimeId)
+
+    return super.delete(runtimeId)
+  }
+
+  override clear(): void {
+    this.#recency.clear()
+    super.clear()
+  }
+
+  prune(): void {
+    const candidates: Array<{ bytes: number; runtimeId: string; state: ClientSessionState; touched: number }> = []
+    let bytes = 0
+
+    for (const [runtimeId, state] of this.entries()) {
+      if (!this.#isWarmSettled(runtimeId, state)) {
+        continue
+      }
+
+      const weight = transcriptBytes(state)
+      candidates.push({ bytes: weight, runtimeId, state, touched: this.#recency.get(runtimeId) ?? 0 })
+      bytes += weight
+    }
+
+    let count = candidates.length
+
+    if (count <= this.#maxCount && bytes <= this.#maxBytes) {
+      return
+    }
+
+    candidates.sort((a, b) => a.touched - b.touched)
+
+    for (const candidate of candidates) {
+      if (count <= this.#maxCount && bytes <= this.#maxBytes) {
+        break
+      }
+
+      // References and activity can change between insertion and pruning.
+      const current = super.get(candidate.runtimeId)
+
+      if (current !== candidate.state || !this.#isWarmSettled(candidate.runtimeId, current)) {
+        continue
+      }
+
+      super.delete(candidate.runtimeId)
+      this.#recency.delete(candidate.runtimeId)
+      count -= 1
+      bytes -= candidate.bytes
+      this.#callbacks.onEvict(candidate.runtimeId, candidate.state)
+    }
+  }
+
+  #isWarmSettled(runtimeId: string, state: ClientSessionState): boolean {
+    // In-flight claims pin a transcript only while they are trustworthy: with
+    // an authority probe wired, a frozen busy/awaitingResponse on an orphaned
+    // snapshot stops blocking eviction (see callback docs). Without one, the
+    // legacy behavior holds and the flags always block.
+    if (
+      (state.busy || state.awaitingResponse) &&
+      this.#callbacks.isAuthoritativelyActive?.(runtimeId, state) !== false
+    ) {
+      return false
+    }
+
+    return (
+      Boolean(state.storedSessionId) &&
+      state.messages.length > 0 &&
+      !state.needsInput &&
+      !hasDraftOrInFlightMessage(state) &&
+      !this.#callbacks.isReferenced(runtimeId, state)
+    )
+  }
+
+  #touch(runtimeId: string): void {
+    this.#clock += 1
+    this.#recency.set(runtimeId, this.#clock)
+  }
+}

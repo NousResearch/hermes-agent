@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { stopBackendChild } from './backend-child'
+import { stopBackendChild, stopBackendTreesForUpdate } from './backend-child'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 test('hiddenWindowsChildOptions adds windowsHide:true on Windows when unset', () => {
@@ -65,17 +65,34 @@ test('stopBackendChild tree-kills on Windows when the child has a pid', () => {
   assert.deepEqual(calls, [], 'SIGTERM must not be sent when the Windows tree-kill path is taken')
 })
 
-test('stopBackendChild sends SIGTERM on non-Windows platforms', () => {
+test('stopBackendChild group-SIGTERMs on POSIX (negative pgid) when the child has a pid', () => {
   const { child, calls } = makeChild({ pid: 4242 })
   const treeKillCalls: number[] = []
+  const groupKills: Array<[number, string]> = []
 
   stopBackendChild(child, {
     forceKillProcessTree: (pid: number) => treeKillCalls.push(pid),
-    isWindows: false
+    isWindows: false,
+    killGroup: (pgid, signal) => groupKills.push([pgid, signal])
   })
 
-  assert.deepEqual(calls, ['SIGTERM'])
+  assert.deepEqual(groupKills, [[-4242, 'SIGTERM']], 'must signal the whole process group')
+  assert.deepEqual(calls, [], 'direct child.kill must not run when the group send succeeds')
   assert.deepEqual(treeKillCalls, [], 'tree-kill must not run off Windows')
+})
+
+test('stopBackendChild falls back to direct SIGTERM on POSIX when the group send throws', () => {
+  const { child, calls } = makeChild({ pid: 4242 })
+
+  stopBackendChild(child, {
+    forceKillProcessTree: () => {},
+    isWindows: false,
+    killGroup: () => {
+      throw new Error('ESRCH: no such process group')
+    }
+  })
+
+  assert.deepEqual(calls, ['SIGTERM'], 'must fall back to signalling the direct child')
 })
 
 test('stopBackendChild falls back to SIGTERM on Windows when the pid is not an integer', () => {
@@ -129,4 +146,23 @@ test('stopBackendChild swallows errors thrown by the kill strategy', () => {
       isWindows: false
     })
   })
+})
+
+test('Windows update tree-kills captured roots without pre-signalling the primary backend', () => {
+  const primary = makeChild({ pid: 101 })
+  const pooled = makeChild({ pid: 202 })
+  const events: string[] = []
+
+  stopBackendTreesForUpdate(primary.child, {
+    forceKillProcessTree: pid => events.push(`tree:${pid}`),
+    stopAllPoolBackends: () => {
+      events.push('pool-stop')
+      // Production stopAllPoolBackends() already tree-kills every pool root.
+      events.push(`tree:${pooled.child.pid}`)
+    }
+  })
+
+  assert.deepEqual(events, ['tree:101', 'pool-stop', 'tree:202'])
+  assert.deepEqual(primary.calls, [], 'the primary root must not be signalled before taskkill /T sees it')
+  assert.deepEqual(pooled.calls, [])
 })

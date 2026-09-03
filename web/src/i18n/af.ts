@@ -469,6 +469,8 @@ export const af: Translations = {
     copyCliCommand: "Kopieer CLI-opdrag (vir ekstern / terugval)",
     connect: "Koppel",
     sessionExpires: "Sessie verval oor {time}",
+    sessionExpiredNoError:
+      "Aanmelding het verval sonder om die verskaffer te bereik. Dit beteken gewoonlik dat die aanmeldbladsy in die oop oortjie vasgeval het ('n bedienerkant-probleem) — voltooi die aanmelding daar en klik dan Probeer weer. As dit aanhou misluk, gebruik eerder 'n API-sleutel of die CLI.",
     initiatingLogin: "Aanmeldvloei word begin…",
     exchangingCode: "Kode word vir tokens omgeruil…",
     connectedClosing: "Gekoppel! Besig om toe te maak…",
@@ -618,6 +620,12 @@ export const af: Translations = {
       "Borde laat u toe om onverwante werkstrome te skei — een per projek, repositorium of domein. Werkers op een bord sien nooit 'n ander bord se take nie.",
     slug: "Slug",
     slugHint: "— kleinletters, koppeltekens, bv. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Vertoonnaam",
     displayNameHint: "(opsioneel)",
     description: "Beskrywing",

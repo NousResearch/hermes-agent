@@ -4,12 +4,14 @@ import type { TodoItem } from '@/lib/todos'
 
 import {
   $todoHistoryBySession,
+  $todoRevisionsBySession,
   $todosBySession,
   clearActiveSessionTodos,
   clearAllSessionTodoState,
   clearSessionTodos,
   finalizeSessionTodoSnapshot,
   rebuildSessionTodoHistory,
+  restoreSessionTodosFromSnapshot,
   setSessionTodos,
   todosForHydration
 } from './todos'
@@ -48,7 +50,7 @@ describe('persistent task history hydration', () => {
   })
 
   it('keeps an errored turn plan in history, coherent with a later transcript rebuild', () => {
-    setSessionTodos('s1', [todo('a', 'in_progress')], 'turn-1')
+    setSessionTodos('s1', [todo('a', 'in_progress')], null, 'turn-1')
 
     // The error handler commits the live turn (rather than dropping it).
     finalizeSessionTodoSnapshot('s1', 'turn-1', 20)
@@ -67,7 +69,7 @@ describe('persistent task history hydration', () => {
   })
 
   it('commits a stopped turn before clearing its live list', () => {
-    setSessionTodos('s1', [todo('a', 'in_progress')], 'turn-a')
+    setSessionTodos('s1', [todo('a', 'in_progress')], null, 'turn-a')
 
     // cancelRun order: finalize the plan, then clear the live list.
     finalizeSessionTodoSnapshot('s1', 'turn-a', 20)
@@ -94,7 +96,7 @@ describe('persistent task history hydration', () => {
 
   it('finalizes from the live list and replaces a duplicate plan even when status changed', () => {
     rebuildSessionTodoHistory('s1', [todoMessage('old', [todo('a', 'in_progress')], 10)])
-    setSessionTodos('s1', [todo('a', 'completed')], 'turn-complete')
+    setSessionTodos('s1', [todo('a', 'completed')], null, 'turn-complete')
 
     finalizeSessionTodoSnapshot('s1', 'turn-complete', 20)
 
@@ -110,7 +112,7 @@ describe('persistent task history hydration', () => {
     ])
 
     rebuildSessionTodoHistory('s1', [todoMessage('keep', [todo('keep', 'completed')], 10)])
-    setSessionTodos('s1', [todo('appended', 'in_progress')], 'replacement')
+    setSessionTodos('s1', [todo('appended', 'in_progress')], null, 'replacement')
     finalizeSessionTodoSnapshot('s1', 'replacement', 40)
 
     expect($todoHistoryBySession.get().s1.map(snapshot => snapshot.id)).toEqual(['replacement', 'keep:call-keep'])
@@ -142,6 +144,7 @@ describe('persistent task history hydration', () => {
     setSessionTodos(
       'runtime-a',
       [{ ...todo('same-todo-id', 'in_progress'), content: 'changed only in A' }],
+      null,
       'same-message-id'
     )
     finalizeSessionTodoSnapshot('runtime-a', 'same-message-id', 20)
@@ -169,7 +172,7 @@ describe('persistent task history hydration', () => {
   })
 
   it('does not resurrect history from a stale finalize after the live list was cleared', () => {
-    setSessionTodos('s1', [todo('a', 'in_progress')], 'turn-a')
+    setSessionTodos('s1', [todo('a', 'in_progress')], null, 'turn-a')
 
     // clearSessionTodos retires ownership, so a late/duplicate finalize that
     // races in afterwards cannot commit a second (stale) snapshot.
@@ -209,7 +212,7 @@ describe('setSessionTodos finished-list auto-clear', () => {
   })
 
   it('keeps turn ownership after visual linger so a late completion still finalizes history', () => {
-    setSessionTodos('s1', [todo('a', 'completed')], 'turn-a')
+    setSessionTodos('s1', [todo('a', 'completed')], null, 'turn-a')
 
     vi.advanceTimersByTime(5_000)
     finalizeSessionTodoSnapshot('s1', 'turn-a', 20)
@@ -281,5 +284,53 @@ describe('todosForHydration (stale-active guard on restore)', () => {
 
   it('returns null when there is nothing stored', () => {
     expect(todosForHydration(null)).toBeNull()
+  })
+})
+
+describe('revisioned snapshots', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearSessionTodos('s1')
+  })
+
+  afterEach(() => {
+    clearSessionTodos('s1')
+    vi.useRealTimers()
+  })
+
+  it('rejects a snapshot older than the latest live update', () => {
+    setSessionTodos('s1', [todo('new', 'in_progress')], 5)
+    setSessionTodos('s1', [todo('old', 'pending')], 4)
+
+    expect($todosBySession.get().s1?.[0]?.id).toBe('new')
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('restores an active snapshot only while the session is running', () => {
+    const snapshot = { revision: 7, todos: [todo('active', 'in_progress')] }
+
+    restoreSessionTodosFromSnapshot('s1', snapshot, false)
+    expect($todosBySession.get().s1).toBeUndefined()
+
+    restoreSessionTodosFromSnapshot('s1', snapshot, true)
+    expect($todosBySession.get().s1?.[0]?.id).toBe('active')
+  })
+
+  it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {
+    setSessionTodos('s1', [todo('a', 'pending'), todo('b', 'pending')], 5)
+    setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])
+
+    expect($todosBySession.get().s1?.[0]?.status).toBe('completed')
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('does not stamp a watermark from an unused empty snapshot', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 0, todos: [] }, true)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoRevisionsBySession.get().s1).toBeUndefined()
+
+    setSessionTodos('s1', [todo('a', 'in_progress')])
+    expect($todosBySession.get().s1?.[0]?.id).toBe('a')
   })
 })

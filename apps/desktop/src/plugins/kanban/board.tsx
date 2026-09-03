@@ -4,8 +4,8 @@
  * header row (count, filter kebab, search, settings, new task — the board
  * SWITCHER lives in the titlebar, see board-switcher.tsx), columns in
  * BOARD_COLUMNS order, drag-to-move (optimistic, workflow-checked),
- * ⌘-click multi-select with a floating bulk bar, right-click actions, and
- * the detail drawer. Dispatch nudges ride every write (see api.ts).
+ * primary-modifier-click multi-select with a floating bulk bar, right-click
+ * actions, and the detail drawer. Dispatch nudges ride every write (see api.ts).
  */
 
 import {
@@ -30,6 +30,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   ErrorState,
+  formatModifierToken,
   host,
   Input,
   Loader,
@@ -309,7 +310,7 @@ function Card({
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onToggleSelect(task.id)}>
           <Codicon name={selected ? 'close' : 'check-all'} size="0.85rem" />
-          {selected ? k.deselect : k.select}
+          {selected ? k.deselect : k.select(formatModifierToken('mod'))}
         </ContextMenuItem>
         <ContextMenuSeparator />
         {columns

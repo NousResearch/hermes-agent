@@ -622,3 +622,88 @@ class TestDiscordUnconfiguredNonRetryable:
         assert adapter.fatal_error_retryable is False
         assert adapter.fatal_error_code == "missing_dependency"
 
+
+# ============================================================================
+# #79430: PrivilegedIntentsRequired → actionable, non-retryable fatal
+# ============================================================================
+
+class PrivilegedIntentsRequired(Exception):
+    """Stand-in for discord.errors.PrivilegedIntentsRequired."""
+
+    def __init__(self, shard_id=None):
+        self.shard_id = shard_id
+        super().__init__(
+            "Shard ID None is requesting privileged intents that have not been "
+            "explicitly enabled in the developer portal."
+        )
+
+
+class TestPrivilegedIntentsRequiredFatal:
+    """Missing Developer Portal intents must not spin reconnect forever."""
+
+    def test_guidance_lists_message_content_always(self):
+        text = discord_platform._format_privileged_intents_guidance(needs_members=False)
+        assert "Message Content Intent" in text
+        assert "Server Members Intent" not in text
+        assert "discord.com/developers/applications" in text
+
+    def test_guidance_lists_members_when_needed(self):
+        text = discord_platform._format_privileged_intents_guidance(needs_members=True)
+        assert "Message Content Intent" in text
+        assert "Server Members Intent" in text
+
+    def test_needs_members_intent_rules(self):
+        needs = discord_platform._needs_server_members_intent
+        assert needs(set(), set()) is False
+        assert needs({"*"}, set()) is False
+        assert needs({"769524422783664158"}, set()) is False
+        assert needs({"alice"}, set()) is True
+        assert needs(set(), {"111"}) is True
+
+    @pytest.mark.asyncio
+    async def test_connect_sets_non_retryable_fatal(self, monkeypatch):
+        adapter = DiscordAdapter(
+            PlatformConfig(enabled=True, token="test-token", extra={"slash_commands": False})
+        )
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+        monkeypatch.setattr(
+            "gateway.status.release_scoped_lock",
+            lambda scope, identity: None,
+        )
+
+        intents = SimpleNamespace(
+            message_content=False,
+            dm_messages=False,
+            guild_messages=False,
+            members=False,
+            voice_states=False,
+        )
+        monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+        class BoomBot(FakeBot):
+            async def start(self, token):
+                raise PrivilegedIntentsRequired(None)
+
+        monkeypatch.setattr(
+            discord_platform.commands,
+            "Bot",
+            lambda **kwargs: BoomBot(
+                intents=kwargs["intents"],
+                proxy=kwargs.get("proxy"),
+                allowed_mentions=kwargs.get("allowed_mentions"),
+            ),
+        )
+
+        ok = await adapter.connect()
+
+        assert ok is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "discord_intents_required"
+        assert "Message Content Intent" in (adapter.fatal_error_message or "")
+        assert "discord.com/developers/applications" in (adapter.fatal_error_message or "")
+        assert adapter._bot_task is None
+

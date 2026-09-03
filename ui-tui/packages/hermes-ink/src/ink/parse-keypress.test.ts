@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
+describe('legacy modified return parsing', () => {
+  it.each(['\r', '\n'])('parses ESC+%j as one Alt+Enter keypress', lineEnding => {
+    const sequence = `\x1b${lineEnding}`
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, sequence)
+
+    expect(keys).toEqual([expect.objectContaining({ name: 'return', ctrl: false, meta: true, shift: false, sequence })])
+  })
+})
+
 describe('parseMultipleKeypresses bracketed paste recovery', () => {
   it('emits empty bracketed pastes when the terminal sends both markers', () => {
     const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, PASTE_START + PASTE_END)
@@ -37,6 +46,129 @@ describe('parseMultipleKeypresses bracketed paste recovery', () => {
     expect(keys).toEqual([])
     expect(state.mode).toBe('NORMAL')
     expect(state.pasteBuffer).toBe('')
+  })
+})
+
+describe('parseMultipleKeypresses text control splitting', () => {
+  it('keeps an IME backspace plus composed character in the same read', () => {
+    const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x7fô')
+
+    expect(keys).toEqual([
+      expect.objectContaining({ name: 'backspace', raw: '\x7f' }),
+      expect.objectContaining({ name: '', raw: 'ô' })
+    ])
+    expect(state.mode).toBe('NORMAL')
+  })
+
+  it('keeps trailing IME text after a backspace in the same read', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x7fôi')
+
+    expect(keys).toEqual([
+      expect.objectContaining({ name: 'backspace', raw: '\x7f' }),
+      expect.objectContaining({ name: '', raw: 'ôi' })
+    ])
+  })
+
+  it('splits embedded backspace control bytes without splitting surrounding text', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'ab\bç')
+
+    expect(keys).toEqual([
+      expect.objectContaining({ name: '', raw: 'ab' }),
+      expect.objectContaining({ name: 'backspace', raw: '\b' }),
+      expect.objectContaining({ name: '', raw: 'ç' })
+    ])
+  })
+
+  it('peels off a non-backspace control byte fused with text instead of dropping the whole chunk', () => {
+    // An IME can fuse a control byte other than \x7f/\b with the recomposed
+    // text (here U+0001). The original PR only split on \x7f/\b, so a chunk
+    // like "a\x01b" fell through every parseKeypress branch, returned
+    // name:"" with a non-printable sequence, and the composer discarded the
+    // entire chunk — eating the printable letters 'a' and 'b' too. Every
+    // control byte must be peeled off so the surrounding text survives.
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'a\x01b')
+
+    // The leading and trailing printable letters must each survive as their
+    // own keypress (the control byte in between parses to ctrl+a). The bug was
+    // the WHOLE "a\x01b" chunk collapsing into one undeliverable key.
+    expect(keys).toHaveLength(3)
+    expect(keys[0]).toMatchObject({ name: 'a', raw: 'a' })
+    expect(keys[1]).toMatchObject({ raw: '\x01' })
+    expect(keys[2]).toMatchObject({ name: 'b', raw: 'b' })
+  })
+
+  it('keeps printable letters around a fused ESC control byte', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'vương\x1b')
+
+    // The trailing printable run must still be delivered as its own key.
+    expect(keys.some(k => 'raw' in k && k.raw === 'vương')).toBe(true)
+  })
+
+  it('does NOT split embedded CR/LF (preserves paste/return handling)', () => {
+    // CR/LF inside a text token come from non-bracketed paste; splitting them
+    // into `return` keys would prematurely submit the composer. They must stay
+    // inside the single text token.
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'a\rb')
+
+    expect(keys).toEqual([expect.objectContaining({ raw: 'a\rb' })])
+  })
+})
+
+describe('parseMultipleKeypresses CSI u (Kitty keyboard protocol)', () => {
+  it('parses Shift+Enter (CSI 13;2u) as return with shift=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;2u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: true,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
+  })
+
+  it('parses Ctrl+Enter (CSI 13;5u) as return with ctrl=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;5u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: true,
+      meta: false,
+      super: false
+    })
+  })
+
+  it('parses Cmd+Enter (CSI 13;9u) as return with super=true', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13;9u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: true
+    })
+  })
+
+  it('parses plain Enter (CSI 13u) as return with no modifiers', () => {
+    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[13u')
+
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatchObject({
+      kind: 'key',
+      name: 'return',
+      shift: false,
+      ctrl: false,
+      meta: false,
+      super: false
+    })
   })
 })
 

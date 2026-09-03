@@ -18,6 +18,36 @@ import sys
 
 from rich.markup import escape as _escape
 
+from utils import base_url_host_matches
+
+
+def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:
+    """Clarify has no interactive surface in a single-query (-q) turn.
+
+    ``hermes chat -q`` runs one turn without ever building the
+    prompt_toolkit application, so the interactive clarify modal can never
+    be painted or answered — the CLI callback would poll its response queue
+    until ``agent.clarify_timeout`` expires (default 3600 s, 0 = unlimited)
+    while the gateway/cron/kanban-dispatcher caller sees a silent hang. The
+    oneshot path answers immediately via ``_oneshot_clarify_callback``;
+    single-query turns need the same headless behavior (#94943)."""
+    if choices:
+        if multi_select:
+            return (
+                f"[single-query mode: no user available to answer {question!r}. "
+                f"Pick the best subset from {choices} using your own judgment "
+                f"and continue.]"
+            )
+        return (
+            f"[single-query mode: no user available to answer {question!r}. "
+            f"Pick the best option from {choices} using your own judgment "
+            f"and continue.]"
+        )
+    return (
+        f"[single-query mode: no user available to answer {question!r}. Make "
+        f"the most reasonable assumption you can and continue.]"
+    )
+
 
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
@@ -102,7 +132,11 @@ class CLIAgentSetupMixin:
             # no API key was found, use a placeholder so the OpenAI SDK
             # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
-            _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
+            _has_custom_base = (
+                isinstance(base_url, str)
+                and base_url
+                and not base_url_host_matches(base_url, "openrouter.ai")
+            )
             if _has_custom_base:
                 api_key = "no-key-required"
                 logger.debug(
@@ -215,7 +249,7 @@ class CLIAgentSetupMixin:
         return bool(
             isinstance(base_url, str)
             and base_url
-            and "openrouter.ai" not in base_url
+            and not base_url_host_matches(base_url, "openrouter.ai")
         )
 
     def _offer_first_run_setup(self) -> bool:
@@ -319,12 +353,18 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
+        if service_tier != "priority":
+            # None (normal) or auto/cold — the bounded window is applied per
+            # request by agent.fast_mode, not pinned into request_overrides.
             route["request_overrides"] = None
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime["provider"],
+                base_url=runtime["base_url"],
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
@@ -341,6 +381,11 @@ class CLIAgentSetupMixin:
         from cli import AIAgent, ChatConsole, _DIM, _RST, _accent_hex, _cprint, _prepare_deferred_agent_startup, logger
         if self.agent is not None:
             return True
+
+        # Join the background preloaded-skills load (cli.py cmd_chat starts
+        # it when --skills/-s is passed) BEFORE the agent snapshots
+        # self.system_prompt below. No-op when nothing was requested.
+        self.finalize_preloaded_skills()
 
         _prepare_deferred_agent_startup()
         self._install_tool_callbacks()
@@ -404,6 +449,22 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
+            prior_resume_error = getattr(self, "_resume_history_error", None)
+            if prior_resume_error:
+                return False
+            # This path loads only the TIP session's rows (no ancestors),
+            # so guard with a tip-only count — the full-lineage count would
+            # over-reject heavily-compressed sessions with a small tip.
+            resume_limit_error = self._resume_history_limit_error(tip_only=True)
+            if resume_limit_error:
+                self._resume_history_error = resume_limit_error
+                if _quiet_mode:
+                    print(f"Cannot resume session: {resume_limit_error}", file=sys.stderr)
+                else:
+                    ChatConsole().print(
+                        f"[bold red]Cannot resume session:[/] {_escape(resume_limit_error)}"
+                    )
+                return False
             restored = self._session_db.get_messages_as_conversation(
                 self.session_id, repair_alternation=True
             )
@@ -430,6 +491,7 @@ class CLIAgentSetupMixin:
                     )
                 self._restore_session_cwd(session_meta, quiet=_quiet_mode)
                 self._restore_session_yolo(session_meta, quiet=_quiet_mode)
+                self._restore_session_model(session_meta, quiet=_quiet_mode)
             else:
                 if _quiet_mode:
                     print(
@@ -442,11 +504,7 @@ class CLIAgentSetupMixin:
                     )
             # Re-open the session (clear ended_at so it's active again)
             try:
-                self._session_db._conn.execute(
-                    "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
-                    (self.session_id,),
-                )
-                self._session_db._conn.commit()
+                self._session_db.reopen_session(self.session_id)
             except Exception:
                 pass
         
@@ -476,6 +534,7 @@ class CLIAgentSetupMixin:
                 credential_pool=runtime.get("credential_pool"),
                 max_tokens=self.max_tokens,
                 max_iterations=self.max_turns,
+                run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
@@ -496,7 +555,15 @@ class CLIAgentSetupMixin:
                 session_id=self.session_id,
                 platform="cli",
                 session_db=self._session_db,
-                clarify_callback=self._clarify_callback,
+                # A -q turn never builds the prompt_toolkit application, so
+                # the interactive modal can never be painted or answered —
+                # answer headless instead of polling until clarify_timeout
+                # (#94943; mirrors _oneshot_clarify_callback on the -z path).
+                clarify_callback=(
+                    _single_query_clarify_callback
+                    if getattr(self, "_single_query_mode", False)
+                    else self._clarify_callback
+                ),
                 reasoning_callback=self._current_reasoning_callback(),
 
                 fallback_model=self._fallback_model,
@@ -573,6 +640,39 @@ class CLIAgentSetupMixin:
                 console.print(line)
             return False
 
+    def _resume_history_limit_error(self, tip_only: bool = False):
+        """Return a safe-resume error without materializing transcript rows.
+
+        ``tip_only`` matches call sites that load only the tip session's rows
+        (``get_messages_as_conversation`` without ancestors) — counting the
+        full lineage there would over-reject heavily-compressed sessions
+        whose tip is small. Generic guard failures fail OPEN (resume
+        proceeds) — only a genuine over-limit result blocks.
+        """
+        if not self._session_db:
+            return None
+        from hermes_state import (
+            SessionResumeTooLargeError,
+        )
+
+        try:
+            safety_check = getattr(self._session_db, "assert_resume_safe", None)
+            if not callable(safety_check):
+                return None
+            if tip_only:
+                safety_check(self.session_id, tip_only=True)
+            else:
+                safety_check(self.session_id)
+        except SessionResumeTooLargeError as exc:
+            return str(exc)
+        except Exception as exc:
+            logger.warning(
+                "Resume safety check failed for %s (proceeding without guard): %s",
+                self.session_id, exc,
+            )
+            return None
+        return None
+
     def _preload_resumed_session(self) -> bool:
         """Load a resumed session's history from the DB early (before first chat).
 
@@ -615,6 +715,14 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
+        resume_limit_error = self._resume_history_limit_error()
+        if resume_limit_error:
+            self._resume_history_error = resume_limit_error
+            self._console_print(
+                f"[bold red]Cannot resume session:[/] {resume_limit_error}"
+            )
+            return False
+
         model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
         restored = model_history
         if restored:
@@ -623,11 +731,15 @@ class CLIAgentSetupMixin:
             self._resume_display_history = [
                 m for m in display_history if m.get("role") != "session_meta"
             ]
+            from agent.context_compressor import is_user_originated_turn
+
+            # Count only user-originated turns (#80622): legacy compaction
+            # handoffs are durable role=user rows without display_kind.
             msg_count = len(
                 [
                     m
                     for m in self._resume_display_history
-                    if m.get("role") == "user" and not m.get("display_kind")
+                    if is_user_originated_turn(m)
                 ]
             )
             title_part = ""
@@ -642,6 +754,7 @@ class CLIAgentSetupMixin:
             )
             self._restore_session_cwd(session_meta)
             self._restore_session_yolo(session_meta)
+            self._restore_session_model(session_meta)
         else:
             accent_color = _accent_hex()
             self._console_print(
@@ -652,12 +765,7 @@ class CLIAgentSetupMixin:
 
         # Re-open the session (clear ended_at so it's active again)
         try:
-            self._session_db._conn.execute(
-                "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
-                "WHERE id = ?",
-                (self.session_id,),
-            )
-            self._session_db._conn.commit()
+            self._session_db.reopen_session(self.session_id)
         except Exception:
             pass
 
@@ -822,20 +930,20 @@ class CLIAgentSetupMixin:
             elif role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
                 # Show first line inline, indent rest
-                msg_lines = text.splitlines()
+                msg_lines = text.splitlines() or [""]
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             elif role == "assistant_last":
                 # Last assistant response shown in full, non-dim
                 lines.append("  ◆ Hermes: ", style=f"bold {_assistant_label_c}")
-                msg_lines = text.splitlines()
+                msg_lines = text.splitlines() or [""]
                 lines.append(msg_lines[0] + "\n", style="")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="")
             else:
                 lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
-                msg_lines = text.splitlines()
+                msg_lines = text.splitlines() or [""]
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="dim")

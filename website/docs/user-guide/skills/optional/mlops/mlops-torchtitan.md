@@ -1,12 +1,12 @@
 ---
-title: "Distributed Llm Pretraining Torchtitan — Pretrain LLMs at scale with PyTorch 4D parallelism"
-sidebar_label: "Distributed Llm Pretraining Torchtitan"
+title: "Torchtitan — Pretrain LLMs at scale with PyTorch 4D parallelism"
+sidebar_label: "Torchtitan"
 description: "Pretrain LLMs at scale with PyTorch 4D parallelism"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Distributed Llm Pretraining Torchtitan
+# Torchtitan
 
 Pretrain LLMs at scale with PyTorch 4D parallelism.
 
@@ -15,7 +15,7 @@ Pretrain LLMs at scale with PyTorch 4D parallelism.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/torchtitan` |
-| Path | `optional-skills/mlops/torchtitan` |
+| Path | `optional-skills/mlops\torchtitan` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -388,13 +388,13 @@ Create seed checkpoint first (see Workflow 4, Step 1).
 
 ## Advanced topics
 
-**FSDP2 configuration**: See [references/fsdp.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/torchtitan/references/fsdp.md) for detailed FSDP2 vs FSDP1 comparison and ZeRO equivalents.
+**FSDP2 configuration**: See [references/fsdp.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\torchtitan/references/fsdp.md) for detailed FSDP2 vs FSDP1 comparison and ZeRO equivalents.
 
-**Float8 training**: See [references/float8.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/torchtitan/references/float8.md) for tensorwise vs rowwise scaling recipes.
+**Float8 training**: See [references/float8.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\torchtitan/references/float8.md) for tensorwise vs rowwise scaling recipes.
 
-**Checkpointing**: See [references/checkpoint.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/torchtitan/references/checkpoint.md) for HuggingFace conversion and async checkpointing.
+**Checkpointing**: See [references/checkpoint.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\torchtitan/references/checkpoint.md) for HuggingFace conversion and async checkpointing.
 
-**Adding custom models**: See [references/custom-models.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/torchtitan/references/custom-models.md) for TrainSpec protocol.
+**Adding custom models**: See [references/custom-models.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\torchtitan/references/custom-models.md) for TrainSpec protocol.
 
 ## Resources
 

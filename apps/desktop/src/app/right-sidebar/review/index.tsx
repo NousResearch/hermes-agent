@@ -4,14 +4,7 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DiffSkeleton, TreeSkeleton } from '@/components/chat/skeletons'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
@@ -209,32 +202,30 @@ export function ReviewPane() {
 
       <ReviewShipBar />
 
-      <Dialog onOpenChange={open => !open && cancelRevert()} open={revertTarget !== undefined}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{revertingAll ? c.revertAll : c.revert}</DialogTitle>
-            <DialogDescription>
-              {revertingAll ? c.revertAllConfirm : c.revertConfirm}
-              {!revertingAll && revertTarget?.path && (
-                <span
-                  className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
-                  title={displayPath(revertTarget.path)}
-                >
-                  {displayPath(revertTarget.path)}
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button onClick={cancelRevert} variant="ghost">
-              {t.common.cancel}
-            </Button>
-            <Button onClick={() => void confirmRevert().catch(err => notifyError(err, c.revert))} variant="destructive">
-              {revertingAll ? c.revertAll : c.revert}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        confirmLabel={revertingAll ? c.revertAll : c.revert}
+        description={
+          <>
+            {revertingAll ? c.revertAllConfirm : c.revertConfirm}
+            {!revertingAll && revertTarget?.path && (
+              <span
+                className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
+                title={displayPath(revertTarget.path)}
+              >
+                {displayPath(revertTarget.path)}
+              </span>
+            )}
+          </>
+        }
+        destructive
+        // confirmRevert closes the dialog itself, then reverts in the
+        // background — so the failure lands in a toast, not inline.
+        dismissOnConfirm
+        onClose={cancelRevert}
+        onConfirm={() => confirmRevert().catch(err => void notifyError(err, c.revert))}
+        open={revertTarget !== undefined}
+        title={revertingAll ? c.revertAll : c.revert}
+      />
     </aside>
   )
 }

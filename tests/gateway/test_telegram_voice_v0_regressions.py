@@ -163,7 +163,7 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
     assert interrupt_text == '"hello once"'
     assert drain_text == interrupt_text
     assert drain_transcripts == interrupt_transcripts == ["hello once"]
-    mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg")
+    mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg", None, "gateway")
     adapter.send.assert_awaited_once_with(
         "12345",
         '🎙️ "hello once"',
@@ -216,7 +216,7 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
 
     assert result["final_response"] == "follow-up complete"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
-    mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg")
+    mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
 
 

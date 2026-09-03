@@ -693,13 +693,59 @@ def _drive_health_report_or_fallback(
 ) -> Dict[str, Any]:
     """Prefer real health_report; on denial/non-schema, synthesize via probes."""
     try:
-        return _drive_health_report(
+        report = _drive_health_report(
             binary, include=include, skip=skip, timeout=timeout,
         )
     except HealthReportUnavailable as e:
-        return _compose_fallback_report(
+        report = _compose_fallback_report(
             binary, reason=str(e), timeout=timeout,
         )
+    return _apply_display_count_guard(report)
+
+
+def _apply_display_count_guard(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Downgrade an 'ok' report whose screen capture has zero displays.
+
+    macOS ScreenCaptureKit reports ``display_count=0`` on headless Macs and
+    when the built-in panel is asleep — TCC grants are fine, health_report
+    can still say pass/ok, but every capture will come back 0x0. Marking
+    the check failed (with the recovery actions) turns an undiagnosable
+    silent failure into an actionable one. Applied at the report seam so
+    the real health_report path and the composed fallback both get it.
+
+    Composed from PR #52949 (sujeet111) and PR #67259 (webtecnica).
+    """
+    checks = report.get("checks")
+    if not isinstance(checks, list):
+        return report
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        if check.get("name") != "screen_capture_capability":
+            continue
+        data = check.get("data")
+        count = data.get("display_count") if isinstance(data, dict) else None
+        if count == 0 and check.get("status") == "pass":
+            check["status"] = "fail"
+            check["message"] = (
+                "ScreenCaptureKit reachable but 0 shareable display(s) — "
+                "every capture will return 0x0."
+            )
+            check["hint"] = (
+                "Wake the built-in display, connect a monitor or HDMI dummy "
+                "dongle (e.g. Headless Ghost), or enable a virtual display "
+                "(Screen Sharing/VNC, BetterDisplay). Verify with "
+                "`system_profiler SPDisplaysDataType`."
+            )
+            if report.get("overall") == "ok":
+                report["overall"] = "degraded"
+    return report
+
+
+def _wayland_environment_context(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if report.get("platform") != "linux" or not os.environ.get("WAYLAND_DISPLAY"):
+        return None
+    return {"scope": "cli_process", "gateway_environment_checked": False}
 
 
 def _print_text_report(
@@ -707,6 +753,7 @@ def _print_text_report(
     color: bool,
     *,
     identity: Optional[Dict[str, Any]] = None,
+    environment: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Render the report in the same style as `cua-driver call health_report`
     would (one line per check + a summary footer).
@@ -757,6 +804,12 @@ def _print_text_report(
     elif cli_v and not mismatch:
         # Still show the resolved path; version already matches header.
         pass
+    if environment:
+        print(f"  {col_dim}environment: current CLI process{col_reset}")
+        print(
+            f"  {col_dim}gateway environment was not checked; active gateway "
+            f"computer_use sessions use that process environment{col_reset}"
+        )
     if mismatch:
         warn = col_yellow if color else ""
         print(
@@ -841,6 +894,7 @@ def run_doctor(
         return 2
 
     identity = _build_identity(binary, report)
+    environment = _wayland_environment_context(report)
 
     if json_output:
         # Additive envelope: preserve the upstream health_report keys and
@@ -848,12 +902,19 @@ def run_doctor(
         # that only read overall/checks keep working.
         payload = dict(report)
         payload["hermes_identity"] = identity
+        if environment:
+            payload["hermes_environment"] = environment
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
         if color is None:
             color = sys.stdout.isatty()
-        _print_text_report(report, color=bool(color), identity=identity)
+        _print_text_report(
+            report,
+            color=bool(color),
+            identity=identity,
+            environment=environment,
+        )
 
     overall = report.get("overall")
     if overall in ("degraded", "failed"):

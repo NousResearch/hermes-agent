@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
@@ -18,7 +19,12 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+# Resolved lazily (see ``_directory_path``): a multiplexed gateway serves
+# several profile homes from one process, so an import-time constant would pin
+# every profile's directory to whichever home imported this module first.
+# ``DIRECTORY_PATH`` / ``CHANNEL_ALIASES_PATH`` stay as explicit overrides
+# (tests patch them); ``None`` means "resolve from the current home".
+DIRECTORY_PATH: Optional[Path] = None
 # Throttle window for repeated Slack channel-directory refresh failures.
 # The directory rebuilds on a timer, so a persistent workspace error (e.g.
 # missing scope, revoked token) would otherwise re-log the same warning on
@@ -33,14 +39,23 @@ _slack_directory_warning_last: Dict[tuple[str, str], float] = {}
 # on every build AND every load, giving durable human-friendly names (and
 # letting you pre-name a chat before it has produced any traffic).
 # Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
-CHANNEL_ALIASES_PATH = get_hermes_home() / "channel_aliases.json"
+CHANNEL_ALIASES_PATH: Optional[Path] = None
+
+
+def _directory_path() -> Path:
+    return DIRECTORY_PATH or get_hermes_home() / "channel_directory.json"
+
+
+def _aliases_path() -> Path:
+    return CHANNEL_ALIASES_PATH or get_hermes_home() / "channel_aliases.json"
 
 
 def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
-    if not CHANNEL_ALIASES_PATH.exists():
+    aliases_path = _aliases_path()
+    if not aliases_path.exists():
         return {}
     try:
-        with open(CHANNEL_ALIASES_PATH, encoding="utf-8") as f:
+        with open(aliases_path, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -143,7 +158,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
     Build a channel directory from connected platform adapters and session data.
 
-    Returns the directory dict and writes it to DIRECTORY_PATH.
+    Returns the directory dict and writes it to the current home's
+    ``channel_directory.json``.
     """
     from gateway.config import Platform
 
@@ -206,7 +222,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     }
 
     try:
-        atomic_json_write(DIRECTORY_PATH, directory)
+        await asyncio.to_thread(atomic_json_write, _directory_path(), directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
 
@@ -355,49 +371,70 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             continue
 
     # Merge in DM/group entries discovered from session history.
+    # Thread-qualified IDs are internal routing keys, not Slack API IDs.
+    def slack_lookup_id(entry_id: str) -> str:
+        return entry_id.split(":", 1)[0]
+
     # Build a lookup from API-discovered channels so we can enrich session entries.
     api_name_lookup = {ch["id"]: ch["name"] for ch in channels}
 
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
         eid = entry.get("id")
+        if not isinstance(eid, str):
+            continue
         if eid not in seen_ids:
             # If the entry name is still a raw Slack ID (e.g. C0xxx / D0xxx),
-            # try to resolve it from the API lookup first.
+            # try to resolve it from the API lookup using the base conversation ID.
             if entry.get("name", "").startswith(("C0", "D0", "G0")):
-                if eid in api_name_lookup:
-                    entry["name"] = api_name_lookup[eid]
+                base_id = slack_lookup_id(eid)
+                if base_id in api_name_lookup:
+                    entry["name"] = api_name_lookup[base_id]
             channels.append(entry)
             seen_ids.add(eid)
 
     # Resolve remaining raw-ID entries (DMs, private channels not in bot scope)
-    # by calling conversations.info + users.info for each.
+    # by calling conversations.info + users.info once per base conversation,
+    # with all base-ID lookups running concurrently.
     unresolved = [ch for ch in channels if ch.get("name", "").startswith(("C0", "D0", "G0"))]
     if unresolved and team_clients:
         client = next(iter(team_clients.values()))
+        unresolved_by_base = {}
         for entry in unresolved:
+            unresolved_by_base.setdefault(slack_lookup_id(entry["id"]), []).append(entry)
+
+        async def _resolve_base(base_id: str, entries: list) -> None:
             try:
-                resp = await client.conversations_info(channel=entry["id"])
+                resp = await client.conversations_info(channel=base_id)
                 if not resp.get("ok"):
-                    continue
+                    return
                 ch_info = resp.get("channel", {})
+                resolved_name = None
+                resolved_type = None
                 if ch_info.get("is_im"):
                     peer_user = ch_info.get("user", "")
                     if peer_user:
                         user_resp = await client.users_info(user=peer_user)
                         if user_resp.get("ok"):
                             u = user_resp["user"]
-                            entry["name"] = (
+                            resolved_name = (
                                 u.get("profile", {}).get("display_name")
                                 or u.get("real_name")
                                 or u.get("name")
-                                or entry["id"]
                             )
-                            entry["type"] = "dm"
+                            resolved_type = "dm"
                 else:
-                    entry["name"] = ch_info.get("name") or ch_info.get("name_normalized") or entry["id"]
+                    resolved_name = ch_info.get("name") or ch_info.get("name_normalized")
+                if resolved_name:
+                    for entry in entries:
+                        entry["name"] = resolved_name
+                        if resolved_type:
+                            entry["type"] = resolved_type
             except Exception as e:
-                logger.debug("Channel directory: failed to resolve %s: %s", entry["id"], e)
-                continue
+                logger.debug("Channel directory: failed to resolve %s: %s", base_id, e)
+
+        await asyncio.gather(
+            *[_resolve_base(bid, ents) for bid, ents in unresolved_by_base.items()]
+        )
 
     return channels
 
@@ -418,15 +455,15 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
     entries: List[Dict[str, str]] = []
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_state import get_shared_session_db, release_or_close
+        db = get_shared_session_db()
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):
                 return []
             rows = lister(platform=platform_name, active_only=False)
         finally:
-            db.close()
+            release_or_close(db)
 
         seen_ids = set()
         for row in rows:
@@ -504,12 +541,13 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
 
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
-    if not DIRECTORY_PATH.exists():
+    directory_path = _directory_path()
+    if not directory_path.exists():
         base = {"updated_at": None, "platforms": {}}
         _apply_channel_aliases(base["platforms"])
         return base
     try:
-        with open(DIRECTORY_PATH, encoding="utf-8") as f:
+        with open(directory_path, encoding="utf-8") as f:
             data = json.load(f)
         # Re-apply aliases on read so friendly names take effect immediately,
         # even between timed rebuilds and for brand-new alias entries.

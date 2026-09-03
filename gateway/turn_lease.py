@@ -31,9 +31,10 @@ Safety properties:
   exact token is the current holder — a stale unwind can never release a
   newer turn's lease (the #28686 ownership lesson applied). Release is
   idempotent.
-- **Fail-open on timeout.** A stuck holder degrades to today's unserialized
-  behavior with a loud ERROR after the configured wait — never a wedged
-  session. A degraded token holds nothing and releases nothing.
+- **Fail-closed on timeout.** A timed-out waiter raises
+  :class:`TurnLeaseTimeoutError` and must be rejected by the dispatch layer
+  with a visible resend notice. It never runs concurrently against the
+  still-held lease and therefore cannot defeat the serialization invariant.
 - **Bounded registry.** The per-session lease map is size-capped; eviction
   only ever removes idle (unheld, uncontended) entries, never a live lease.
 
@@ -54,62 +55,101 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Upper bound on tracked per-session leases. Idle entries (no holder, no
-# waiter) are evicted oldest-first once the cap is reached; live leases are
-# never evicted, so a burst of distinct sessions can transiently exceed the
-# cap rather than break serialization.
+# Upper bound on tracked per-session leases. Idle entries (no holder or
+# pending acquire) are evicted oldest-first once the cap is reached; live
+# leases are never evicted, so a burst of distinct sessions can transiently
+# exceed the cap rather than break serialization.
 DEFAULT_MAX_LEASES = 512
 
-# Fallback wait (seconds) when the caller passes no positive timeout. Matches
-# the gateway's default agent inactivity timeout so a stuck holder fails open
-# on the same clock the turn itself would be declared stuck on.
-DEFAULT_LEASE_WAIT = 1800.0
+# Fallback wait (seconds) when the caller passes no positive timeout. The
+# gateway carries this independently through its internal
+# HERMES_TURN_LEASE_TIMEOUT bridge because lease contention is not agent
+# inactivity. A caller that reaches this bound must reject the turn rather than
+# run it concurrently with the holder.
+# Keep contention fail-closed, but never pin a sequential platform updater for
+# minutes. A waiter that cannot acquire promptly is rejected with a resend
+# notice; it is never authorized to run without serialization.
+DEFAULT_LEASE_WAIT = 5.0
+
+
+class TurnLeaseTimeoutError(TimeoutError):
+    """The session lease stayed held for the caller's full wait budget.
+
+    This is a fail-closed signal: the caller did not acquire the lease and
+    must not enter the transcript load/run/flush region for this turn.
+    """
+
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        owner_key: str,
+        generation: int,
+        wait_seconds: float,
+    ) -> None:
+        self.session_id = session_id
+        self.owner_key = owner_key
+        self.generation = generation
+        self.wait_seconds = wait_seconds
+        super().__init__(
+            f"turn lease wait timed out after {wait_seconds:.0f}s on session "
+            f"{session_id} for routing key {owner_key} (gen {generation})"
+        )
 
 
 class TurnLeaseToken:
     """Handle returned by :meth:`SessionTurnLeaseRegistry.acquire`.
 
-    ``degraded`` means the acquire timed out and the turn is proceeding
-    UNSERIALIZED (fail-open); such a token holds nothing and its release is a
-    no-op. ``released`` makes release idempotent.
+    A timeout raises :class:`TurnLeaseTimeoutError` instead of returning a
+    token, so every token handed out is a held lease. ``released`` makes
+    release idempotent.
     """
 
-    __slots__ = ("session_id", "owner_key", "generation", "degraded", "released")
+    __slots__ = ("session_id", "owner_key", "generation", "released")
 
     def __init__(
         self,
         session_id: str,
         owner_key: str,
         generation: int,
-        degraded: bool = False,
     ) -> None:
         self.session_id = session_id
         self.owner_key = owner_key
         self.generation = generation
-        self.degraded = degraded
         self.released = False
 
     def __repr__(self) -> str:  # pragma: no cover - debug aid
         return (
             f"TurnLeaseToken(session_id={self.session_id!r}, "
             f"owner_key={self.owner_key!r}, generation={self.generation}, "
-            f"degraded={self.degraded}, released={self.released})"
+            f"released={self.released})"
         )
 
 
 class _SessionLease:
-    __slots__ = ("lock", "holder", "acquired_at", "last_used")
+    __slots__ = (
+        "lock",
+        "holder",
+        "acquired_at",
+        "last_used",
+        "pending_acquires",
+    )
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.holder: Optional[TurnLeaseToken] = None
         self.acquired_at = 0.0
         self.last_used = time.time()
+        self.pending_acquires = 0
 
     @property
     def idle(self) -> bool:
         """True when this lease can be evicted: nobody holds or awaits it."""
-        return self.holder is None and not self.lock.locked()
+        return (
+            self.holder is None
+            and not self.lock.locked()
+            and self.pending_acquires == 0
+        )
 
 
 class SessionTurnLeaseRegistry:
@@ -161,9 +201,10 @@ class SessionTurnLeaseRegistry:
     ) -> Optional[TurnLeaseToken]:
         """Acquire the turn lease for ``session_id``, waiting if held.
 
-        Returns a :class:`TurnLeaseToken` — degraded when the wait timed out
-        (fail-open: caller proceeds unserialized). Returns ``None`` for a
-        falsy ``session_id``.
+        Returns a held :class:`TurnLeaseToken`. Raises
+        :class:`TurnLeaseTimeoutError` when the wait budget expires; the caller
+        must reject rather than enter the serialized region. Returns ``None``
+        for a falsy ``session_id``.
         """
         if not session_id:
             return None
@@ -187,6 +228,12 @@ class SessionTurnLeaseRegistry:
                 time.time() - lease.acquired_at if lease.acquired_at else -1.0,
             )
 
+        # Lock.release() wakes a waiter while leaving the lock momentarily
+        # unlocked. Track every in-progress acquire across that handoff so
+        # eviction cannot orphan the old lock and create a second lock for the
+        # same session. Count even apparently-uncontended acquires: wait_for()
+        # may schedule them before the underlying lock coroutine runs.
+        lease.pending_acquires += 1
         try:
             await asyncio.wait_for(lease.lock.acquire(), timeout=wait)
         except asyncio.TimeoutError:
@@ -194,9 +241,8 @@ class SessionTurnLeaseRegistry:
             logger.error(
                 "turn lease wait timed out after %.0fs on session %s "
                 "(waiter: routing key %s gen %s; holder: routing key %s "
-                "gen %s) — failing open: this turn runs UNSERIALIZED against "
-                "the stuck holder rather than wedging the session; transcript "
-                "writes may interleave",
+                "gen %s) — failing closed: refusing to run this turn "
+                "UNSERIALIZED against the still-held lease",
                 wait,
                 session_id,
                 owner_key,
@@ -204,9 +250,17 @@ class SessionTurnLeaseRegistry:
                 holder.owner_key if holder else "?",
                 holder.generation if holder else "?",
             )
-            token.degraded = True
-            return token
+            raise TurnLeaseTimeoutError(
+                session_id,
+                owner_key=owner_key,
+                generation=generation,
+                wait_seconds=wait,
+            ) from None
+        finally:
+            lease.pending_acquires -= 1
 
+        # The lock is held and there is no await before holder publication, so
+        # the lease cannot become evictable after the pending count is cleared.
         lease.holder = token
         lease.acquired_at = time.time()
         lease.last_used = lease.acquired_at
@@ -237,7 +291,6 @@ class SessionTurnLeaseRegistry:
         """
         if (
             token is None
-            or token.degraded
             or token.released
             or not new_session_id
             or new_session_id == token.session_id
@@ -275,11 +328,11 @@ class SessionTurnLeaseRegistry:
         """Release ``token``'s lease. Idempotent; ownership-checked.
 
         Returns True only when this exact token was the current holder and
-        the lock was freed. A degraded token, a re-release, or a stale token
-        whose slot has since been granted to a newer turn are all safe
-        no-ops — a stale unwind can never release a newer turn's lease.
+        the lock was freed. A re-release or a stale token whose slot has
+        since been granted to a newer turn are both safe no-ops — a stale
+        unwind can never release a newer turn's lease.
         """
-        if token is None or token.degraded or token.released:
+        if token is None or token.released:
             return False
         token.released = True
         lease = self._leases.get(token.session_id)

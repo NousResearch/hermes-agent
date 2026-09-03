@@ -1,9 +1,5 @@
 export type RightPanePerfEvent =
-  | 'project-tree-render'
-  | 'project-tree-row-render'
-  | 'terminal-fit-active'
-  | 'terminal-fit-hidden'
-  | 'terminal-measure'
+  'project-tree-render' | 'project-tree-row-render' | 'terminal-fit-active' | 'terminal-fit-hidden' | 'terminal-measure'
 
 export interface RightPanePerfSnapshot {
   counts: Record<RightPanePerfEvent, number>

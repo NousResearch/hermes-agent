@@ -20,10 +20,6 @@ import { useSessionTileActions } from './session-tile-actions'
 
 const requestGateway = vi.hoisted(() => vi.fn())
 
-vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
-  useGatewayRequest: () => ({ requestGateway })
-}))
-
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
@@ -73,7 +69,12 @@ function Harness({ onReady }: { onReady: (handle: Handle) => void }) {
     target: `tile:${STORED_ID}`
   }
 
-  const actions = useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+  const actions = useSessionTileActions({
+    requestGateway: requestGateway as never,
+    runtimeId: RUNTIME_ID,
+    scope,
+    storedSessionId: STORED_ID
+  })
 
   useEffect(() => {
     onReady(actions)

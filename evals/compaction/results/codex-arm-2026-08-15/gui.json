@@ -1,0 +1,134 @@
+{
+ "summary": {
+  "policy": "codex_real",
+  "recall_pct": 40.0,
+  "scores": [
+   2,
+   2,
+   0,
+   2,
+   0,
+   0,
+   0,
+   2,
+   2,
+   2,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "read_seconds": 207,
+  "compaction_events": 1,
+  "peak_context_tokens": 482525,
+  "rollout": "/home/teknium/.codex/sessions/2026/08/15/rollout-2026-08-15T18-28-36-01a0082f-5b69-7ff0-977d-998523a4b3fc.jsonl"
+ },
+ "results": [
+  {
+   "q": "What is the PR number for the authored fix addressing mid-turn message ordering bugs in Hermes Desktop?",
+   "gold": "#86617",
+   "answer": "PR **#86617**.",
+   "score": 2,
+   "why": "The answer provides the exact PR number specified in the gold answer."
+  },
+  {
+   "q": "According to the contribution rubric in AGENTS.md, which type of config belongs in '.env' and which belongs in 'config.yaml'?",
+   "gold": ".env is for secrets only (API keys, tokens, passwords). All behavioral settings... go in config.yaml.",
+   "answer": "`.env` is for secrets and deployment-specific values; `config.yaml` is for non-secret user-facing runtime configuration.",
+   "score": 2,
+   "why": "The answer correctly identifies that .env is for secrets and config.yaml is for non-secret/behavioral settings, which matches the core distinction in the gold answer."
+  },
+  {
+   "q": "What specific file and line number were identified as the cause of an AssertionError (assert 56 == 55) in the Python tests?",
+   "gold": "tests/hermes_cli/test_session_recovery_lost_and_found.py:327",
+   "answer": "**UNKNOWN** \u2014 best guess: a schema-width assertion in a Python schema/config test, expecting 55 fields but receiving 56 after `git_metadata_generation` was added.",
+   "score": 0,
+   "why": "The answer fails to provide the specific file and line number requested, which are present in the gold answer. It instead provides a guess about the context of the error without identifying the location."
+  },
+  {
+   "q": "What was the root cause of issue #73793 regarding mid-turn message rendering?",
+   "gold": "redirect/steer paths spliced the mid-turn user bubble BEFORE the active assistant stream row",
+   "answer": "Two live paths handled mid-turn corrections independently, allowing corrections and assistant stream output to be inserted in the wrong causal order.",
+   "score": 2,
+   "why": "The answer identifies the same root cause as the gold answer: the independent handling of paths caused the user bubble (correction) and assistant stream to be rendered in the wrong causal order."
+  },
+  {
+   "q": "Which PR was verified to already be on 'main', resulting in nothing needing to be salvaged for it?",
+   "gold": "#84287",
+   "answer": "**PR #86299**.",
+   "score": 0,
+   "why": "The answer identifies PR #86299, but the gold answer is PR #84287. The two are different pull requests."
+  },
+  {
+   "q": "In the Desktop virtualized-scrolling cluster, what was the fix for issue #79157 (scrollbar unclickable)?",
+   "gold": "pane sash grab band made asymmetric 1px/7px",
+   "answer": "**UNKNOWN** \u2014 best guess: make the scrollbar gutter/overlay accept pointer events instead of letting the virtualized content layer cover it.",
+   "score": 0,
+   "why": "The answer provides a guess that contradicts the gold answer; the fix was making the pane sash grab band asymmetric (1px/7px), not changing pointer events on the gutter/overlay."
+  },
+  {
+   "q": "Which contributor's email was mapped to 'baihemax' during the attribution audit of PR #86588?",
+   "gold": "602028@ky-tech.com.cn",
+   "answer": "**UNKNOWN** \u2014 best guess: the email associated with contributor `hkfiberlaser-svg`.",
+   "score": 0,
+   "why": "The answer states the answer is unknown and provides a guess that does not match the gold answer."
+  },
+  {
+   "q": "What error message does the Hermes terminal tool return when a git command is blocked to prevent rewriting the live source checkout?",
+   "gold": "Blocked: `git <op>` would rewrite Hermes's live source checkout",
+   "answer": "**UNKNOWN** \u2014 best guess: an error stating that the git command was blocked because it would rewrite the live source checkout.",
+   "score": 2,
+   "why": "The answer correctly identifies the core substance of the error message (blocked git command because it would rewrite the live source checkout) which matches the gold answer."
+  },
+  {
+   "q": "What is the core design principle regarding 'Narrow Waist' in Hermes development?",
+   "gold": "The core is a narrow waist; capability lives at the edges.",
+   "answer": "Keep a small, stable core interface\u2014the \u201cnarrow waist\u201d\u2014through which different clients, providers, and integrations communicate, avoiding duplicated business logic across surfaces.",
+   "score": 2,
+   "why": "The answer correctly identifies the core principle of a 'narrow waist' and explains that the logic/interfaces are centralized there while clients and providers interact at the edges, matching the substance of the gold answer."
+  },
+  {
+   "q": "What was the result of the rebase-merge attempt for PR #86589?",
+   "gold": "GraphQL: Pull Request has merge conflicts (mergePullRequest)",
+   "answer": "**UNKNOWN** \u2014 best guess: the rebase merge could not proceed because the PR had conflicts and was not mergeable.",
+   "score": 2,
+   "why": "The answer correctly identifies that the rebase-merge could not proceed due to merge conflicts, which matches the factual content of the gold answer."
+  },
+  {
+   "q": "In the infographic style picker, what vibe is associated with the 'designers-republic' style?",
+   "gold": "The Designers Republic: flat orange+violet vector schematic on pewter grey",
+   "answer": "A bold, experimental, anti-corporate graphic-design vibe\u2014brutalist/techno typography inspired by The Designers Republic.",
+   "score": 0,
+   "why": "The answer describes the real-world aesthetic of 'The Designers Republic' studio, but fails to identify the specific visual elements (flat orange+violet vector schematic on pewter grey) defined for this style within the infographic picker context."
+  },
+  {
+   "q": "Why was PR #76286 excluded from the compaction/compression transcript-visibility cluster?",
+   "gold": "conflicts with main in 4 files and introduces a second competing display-dedupe scheme",
+   "answer": "It did not address transcript visibility after compaction/compression; its changes concerned a different part of the compaction flow.",
+   "score": 0,
+   "why": "The answer provides a completely different reason than the gold answer, which specifies merge conflicts and a competing deduplication scheme as the reasons for exclusion."
+  },
+  {
+   "q": "What is the 'Provenance note' date for the pr-infographic-workflow.md reference file?",
+   "gold": "May 23 2026",
+   "answer": "**UNKNOWN** \u2014 best guess: **2026-08-12**.",
+   "score": 0,
+   "why": "The answer provides a 'best guess' that is factually incorrect compared to the gold date (2026-08-12 vs. May 23 2026)."
+  },
+  {
+   "q": "What specific TypeScript error caused PR #86772 to fail CI linting after a rebase?",
+   "gold": "Property 'onToggleUnread' is missing in type",
+   "answer": "**UNKNOWN** \u2014 best guess: a TypeScript unresolved-name/import error introduced by the rebase.",
+   "score": 0,
+   "why": "The answer identifies as UNKNOWN and provides an incorrect guess. The gold answer specifies a 'property is missing' error, while the provided answer guesses an 'unresolved-name/import' error."
+  },
+  {
+   "q": "According to the Desktop Engineering Guide, who is the authority for process lifecycle and the native filesystem?",
+   "gold": "Electron",
+   "answer": "The **Rust/Tauri backend** is authoritative for process lifecycle and the native filesystem.",
+   "score": 0,
+   "why": "The answer identifies the Rust/Tauri backend as the authority, which directly contradicts the gold answer stating Electron is the authority."
+  }
+ ]
+}

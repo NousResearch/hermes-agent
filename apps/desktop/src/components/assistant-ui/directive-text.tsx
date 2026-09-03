@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
-import { openExternalLink } from '@/lib/external-link'
+import { openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
@@ -194,6 +194,15 @@ export const hermesDirectiveFormatter: Unstable_DirectiveFormatter = {
 
       // Simple references like `@diff` / `@staged`.
       if (!insertId) {
+        return rawText
+      }
+
+      // Colon-less completions (`@diff`, `@staged`, agent mentions like
+      // `@researcher`) are plain inline text, not typed references. classify()
+      // gives them `insertId = text`, and the typed-reference branch below
+      // would mint a bogus `@simple:` kind around them — the composer showed
+      // "@simple:`@mr-tester`" for a picked agent mention.
+      if (!rawText.includes(':')) {
         return rawText
       }
 
@@ -479,7 +488,7 @@ export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
   url: {
     icon: 'link-external',
     label: t => t.composer.openDirective,
-    run: openExternalLink
+    run: openLink
   }
 }
 

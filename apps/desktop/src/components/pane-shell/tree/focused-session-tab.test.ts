@@ -80,4 +80,45 @@ describe('focused chat zone drives the tab verbs', () => {
     expect(tree.closeFocusedSessionTab()).toBe(false)
     expect(model.allPaneIds(tree.$layoutTree.get()!)).toContain('workspace')
   })
+
+  // Preview/page tiles share `placement: 'main'` but not the session-tile id
+  // prefix — the generic tab verbs must serve their zones too, or ⌘W over a
+  // lone Browser tile falls through and empties MAIN instead.
+  it('⌘W and ⌃Tab serve a zone of preview/page tiles like any tab strip', async () => {
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const { registry } = await import('@/contrib/registry')
+
+    for (const id of ['workspace', 'preview-tile:url:x', 'route-tile:/skills']) {
+      registry.register({
+        area: 'panes',
+        data: id === 'workspace' ? { placement: 'main', uncloseable: true } : { placement: 'main' },
+        id,
+        render: () => null,
+        title: id
+      })
+    }
+
+    const closed: string[] = []
+
+    tree.registerPaneCloser('preview-tile:url:x', () => closed.push('preview-tile:url:x'))
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['preview-tile:url:x', 'route-tile:/skills'], { active: 'preview-tile:url:x', id: 'grp-view' })
+      ])
+    )
+    tree.noteActiveTreeGroup('grp-view')
+
+    // ⌃Tab cycles within the preview zone, not main's.
+    expect(tree.cycleTreeTabInFocusedZone(1)).toBe('route-tile:/skills')
+    expect(tree.$layoutTree.get() && model.findGroup(tree.$layoutTree.get()!, 'grp-view')?.active).toBe(
+      'route-tile:/skills'
+    )
+
+    // ⌘W closes the zone's active tab through its registered closer.
+    tree.cycleTreeTabInFocusedZone(1)
+    expect(tree.closeFocusedSessionTab()).toBe(true)
+    expect(closed).toEqual(['preview-tile:url:x'])
+  })
 })

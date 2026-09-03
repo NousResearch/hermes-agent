@@ -11,6 +11,7 @@ because its dispatch is tightly coupled to module-level ``cmd_*`` functions.
 """
 
 import argparse
+from functools import lru_cache
 
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before
@@ -21,6 +22,54 @@ PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [
     ("--profile", True),
     ("-p", True),
 ]
+
+
+# Static snapshot fallback for ``top_level_value_flag_sets`` — used only if
+# introspecting the live parser fails (e.g. argparse surface broken mid-edit).
+# The derived path is authoritative; a parity test in
+# tests/hermes_cli/test_top_level_value_flags_parity.py fails CI if the parser
+# grows a value-taking flag this snapshot lacks AND derivation regresses.
+_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset(
+    {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider", "--reasoning",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+        "--usage-file",
+        "--in",
+    }
+)
+_OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
+
+
+@lru_cache(maxsize=1)
+def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
+    """(required-value, optional-value) top-level flags, derived from the
+    REAL parser.
+
+    Introspects ``build_top_level_parser()`` (every option with nargs != 0)
+    so the argv scanners in ``main.py`` (``_first_positional_argv``,
+    ``_apply_profile_override``) can never drift from the argparse surface —
+    the exact drift that made ``hermes --reasoning high chat …`` misread
+    ``high`` as the subcommand and forced eager plugin discovery (#93530).
+    Mirrors the ``update_cmd._holder_value_flags`` precedent, including the
+    handwritten-snapshot fallback for a broken parser import. Cached per
+    process.
+    """
+    try:
+        parser = build_top_level_parser()[0]
+        required: set[str] = set()
+        optional: set[str] = set()
+        for action in parser._actions:
+            if not action.option_strings or action.nargs == 0:
+                continue
+            target = optional if action.nargs == "?" else required
+            target.update(action.option_strings)
+        return frozenset(required), frozenset(optional)
+    except Exception:
+        return _VALUE_FLAGS_FALLBACK, _OPTIONAL_VALUE_FLAGS_FALLBACK
 
 
 def _inherited_flag(parser, *args, **kwargs):
@@ -46,6 +95,8 @@ Examples:
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
+    hermes --resume latest        Resume the most recent session (same as -c)
+    hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes auth add <provider>    Add a pooled credential
@@ -170,13 +221,28 @@ def build_top_level_parser():
         "-r",
         metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID or title",
+        help=(
+            "Resume a previous session by ID or title, or pass 'latest' for "
+            "the most recent session (workspace-scoped, like -c with no name)"
+        ),
     )
     parser.add_argument(
         "--no-restore-cwd",
         action="store_true",
         default=False,
         help="Don't cd into a resumed session's recorded working directory.",
+    )
+    parser.add_argument(
+        "--in",
+        dest="in_dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Change into DIR before starting or resuming. Combined with "
+            "'--resume latest' or -c, the most recent session for DIR's "
+            "workspace is picked, and the session stays in DIR (skips the "
+            "recorded-cwd restore)."
+        ),
     )
     parser.add_argument(
         "--continue",
@@ -283,8 +349,39 @@ def build_top_level_parser():
         help="Interactive chat with the agent",
         description="Start an interactive chat session with Hermes Agent",
     )
+    _query_group = chat_parser.add_mutually_exclusive_group()
+    _query_group.add_argument(
+        "-q", "--query",
+        help=(
+            "Query to run. On a real TTY the prompt seeds an interactive "
+            "session (submitted literally as the first turn); combined with "
+            "--oneshot or -Q, or on a non-TTY, it answers and exits."
+        ),
+    )
+    _query_group.add_argument(
+        "--query-file",
+        metavar="PATH",
+        help=(
+            "Read the single query from a file instead of the command line "
+            "('-' reads stdin). Safe for arbitrary text: nothing is shell-"
+            "interpreted, so quotes, $(...), and backticks are preserved "
+            "verbatim. Mutually exclusive with -q."
+        ),
+    )
     chat_parser.add_argument(
-        "-q", "--query", help="Single query (non-interactive mode)"
+        "--oneshot",
+        dest="oneshot_exit",
+        action="store_true",
+        # Distinct dest: the top-level `-z/--oneshot PROMPT` is value-taking
+        # and its dispatch sites do `if args.oneshot: _run_and_exit_oneshot(
+        # args.oneshot)` — a shared boolean dest would be passed as the
+        # prompt. `oneshot_exit` keeps the surfaces independent.
+        default=False,
+        help=(
+            "With -q/--query-file: answer the query and exit (legacy "
+            "single-query behavior) instead of seeding an interactive "
+            "session. Implied on non-TTY stdio and by -Q/--quiet."
+        ),
     )
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
@@ -358,13 +455,26 @@ def build_top_level_parser():
         "-r",
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
-        help="Resume a previous session by ID (shown on exit)",
+        help=(
+            "Resume a previous session by ID (shown on exit), or 'latest' "
+            "for the most recent session"
+        ),
     )
     chat_parser.add_argument(
         "--no-restore-cwd",
         action="store_true",
         default=argparse.SUPPRESS,
         help="Don't cd into a resumed session's recorded working directory.",
+    )
+    chat_parser.add_argument(
+        "--in",
+        dest="in_dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS,
+        help=(
+            "Change into DIR before starting or resuming (scopes "
+            "'--resume latest' / -c lookups to DIR's workspace)."
+        ),
     )
     chat_parser.add_argument(
         "--continue",
@@ -375,6 +485,17 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         metavar="SESSION_NAME",
         help="Resume a session by name, or the most recent if no name given",
+    )
+    chat_parser.add_argument(
+        "--create-if-missing",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help=(
+            "With -c/--continue <name>: if no session matches the name, "
+            "create a new session with that title and proceed (instead of "
+            "failing with a not-found error). Programmatic callers that "
+            "want 'send to this named thread, making it if needed'."
+        ),
     )
     chat_parser.add_argument(
         "--worktree",
@@ -406,6 +527,21 @@ def build_top_level_parser():
         default=None,
         metavar="N",
         help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
+    )
+    chat_parser.add_argument(
+        "--run-budget",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        dest="run_budget",
+        help=(
+            "Optional wall-clock budget in seconds for each conversation run. "
+            "At 80%% elapsed the agent gets a one-time wrap-up notice, and "
+            "implicit provider stale timeouts are capped to the remaining "
+            "budget so one hung call can't consume the run. Unset = off. "
+            "Also configurable as agent.run_budget_seconds in config.yaml. "
+            "Intended for one-shot/eval invocations with a hard ceiling."
+        ),
     )
     _inherited_flag(
         chat_parser,

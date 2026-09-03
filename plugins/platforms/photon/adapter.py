@@ -283,6 +283,23 @@ _DEFAULT_MENTION_PATTERNS = [
 # ---------------------------------------------------------------------------
 # Module-level helpers — also used by check_fn / standalone send
 
+class PhotonSidecarStartupError(RuntimeError):
+    """Typed startup failure raised by ``_start_sidecar`` (OOF-156).
+
+    Carries the fatal-error classification instead of relying on
+    ``connect()``'s catch-all, which used to collapse every startup failure
+    into ``SIDECAR_FAILED, retryable=True`` — including deterministic ones
+    (deps that can't install on an immutable image, missing node binary)
+    that then retried forever with zero owner signal. ``retryable`` defaults
+    to True: only failures known to be deterministic mark themselves False.
+    """
+
+    def __init__(self, message: str, *, code: str = "SIDECAR_FAILED", retryable: bool = True) -> None:
+        self.code = code
+        self.retryable = retryable
+        super().__init__(message)
+
+
 class PhotonSidecarError(RuntimeError):
     """Structured failure returned by the supervised Photon sidecar."""
 
@@ -406,10 +423,10 @@ def check_requirements() -> bool:
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    if not shutil.which(os.getenv("PHOTON_NODE_BIN") or "node"):
+    if not shutil.which(_get_scoped_secret("PHOTON_NODE_BIN") or "node"):
         logger.warning(
             "photon: node binary '%s' not found on PATH",
-            os.getenv("PHOTON_NODE_BIN") or "node",
+            _get_scoped_secret("PHOTON_NODE_BIN") or "node",
         )
         return False
     if not sidecar_deps_installed():
@@ -534,7 +551,7 @@ def _reinstall_sidecar_deps() -> None:
 
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
-    project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
+    project_id = extra.get("project_id") or _get_scoped_secret("PHOTON_PROJECT_ID")
     project_secret = extra.get("project_secret") or _get_scoped_secret("PHOTON_PROJECT_SECRET")
     if not project_id or not project_secret:
         # Fall back to auth.json
@@ -557,11 +574,11 @@ def _env_enablement() -> Optional[dict]:
     if not (project_id and project_secret):
         return None
     seed: dict = {"project_id": project_id, "project_secret": project_secret}
-    home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
+    home = _get_scoped_secret("PHOTON_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
             "chat_id": home,
-            "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
+            "name": _get_scoped_secret("PHOTON_HOME_CHANNEL_NAME", "Home"),
         }
     return seed
 
@@ -574,7 +591,7 @@ def _markdown_enabled() -> bool:
     ``PHOTON_MARKDOWN=false`` is the kill-switch back to stripped plain
     text without a release.
     """
-    return os.getenv("PHOTON_MARKDOWN", "true").strip().lower() not in {
+    return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {
         "false", "0", "no",
     }
 
@@ -712,7 +729,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # the spectrum-ts SDK authenticates with.
         stored_id, stored_sec = load_project_credentials()
         self._project_id: str = (
-            os.getenv("PHOTON_PROJECT_ID")
+            _get_scoped_secret("PHOTON_PROJECT_ID")
             or extra.get("project_id")
             or stored_id
             or ""
@@ -726,7 +743,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         # Sidecar
         self._sidecar_port = _coerce_port(
-            extra.get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
+            extra.get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"),
             _DEFAULT_SIDECAR_PORT,
         )
         self._sidecar_bind = _DEFAULT_SIDECAR_BIND
@@ -734,9 +751,9 @@ class PhotonAdapter(BasePlatformAdapter):
             _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
         )
         self._autostart_sidecar = str(
-            os.getenv("PHOTON_SIDECAR_AUTOSTART", "true")
+            _get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")
         ).lower() not in ("0", "false", "no")
-        self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
+        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
         # Presence watchdog. spectrum-ts only reconnects when its inbound
         # iterator throws or ends; a half-open ("zombie") gRPC socket makes the
@@ -759,21 +776,21 @@ class PhotonAdapter(BasePlatformAdapter):
         self._probe_interval = _coerce_float(
             _first_set(
                 extra.get("probe_interval_seconds"),
-                os.getenv("PHOTON_PROBE_INTERVAL_SECONDS"),
+                _get_scoped_secret("PHOTON_PROBE_INTERVAL_SECONDS"),
             ),
             600.0,
         )
         self._probe_timeout = _coerce_float(
             _first_set(
                 extra.get("probe_timeout_seconds"),
-                os.getenv("PHOTON_PROBE_TIMEOUT_SECONDS"),
+                _get_scoped_secret("PHOTON_PROBE_TIMEOUT_SECONDS"),
             ),
             10.0,
         )
         self._probe_max_failures = _coerce_int(
             _first_set(
                 extra.get("probe_max_failures"),
-                os.getenv("PHOTON_PROBE_MAX_FAILURES"),
+                _get_scoped_secret("PHOTON_PROBE_MAX_FAILURES"),
             ),
             3,
         )
@@ -826,14 +843,14 @@ class PhotonAdapter(BasePlatformAdapter):
         # always processed. Config key wins, then env var.
         _require_mention = extra.get("require_mention")
         if _require_mention is None:
-            _require_mention = os.getenv("PHOTON_REQUIRE_MENTION")
+            _require_mention = _get_scoped_secret("PHOTON_REQUIRE_MENTION")
         self.require_mention = str(_require_mention).strip().lower() in {
             "true", "1", "yes", "on",
         }
         self._mention_patterns = self._compile_mention_patterns(
             extra["mention_patterns"]
             if "mention_patterns" in extra
-            else os.getenv("PHOTON_MENTION_PATTERNS")
+            else _get_scoped_secret("PHOTON_MENTION_PATTERNS")
         )
 
     # -- Group-mention gating (parity with BlueBubbles) -------------------
@@ -900,11 +917,22 @@ class PhotonAdapter(BasePlatformAdapter):
             try:
                 await self._start_sidecar()
             except Exception as e:
-                self._set_fatal_error(
-                    "SIDECAR_FAILED",
-                    f"failed to start Photon sidecar: {e}",
-                    retryable=True,
-                )
+                # Honor typed classification from _start_sidecar (OOF-153):
+                # deterministic failures (deps can't install on an immutable
+                # image, node binary missing) are retryable=False so they
+                # surface as fatal instead of silently spinning in the
+                # reconnect queue. Everything else — sidecar crashed before
+                # ready, /healthz timeout — stays retryable=True; ambiguity
+                # resolves toward retry, with the gateway's NEEDS_ATTENTION
+                # escalation as the backstop for long-lived loops.
+                if isinstance(e, PhotonSidecarStartupError):
+                    self._set_fatal_error(e.code, str(e), retryable=e.retryable)
+                else:
+                    self._set_fatal_error(
+                        "SIDECAR_FAILED",
+                        f"failed to start Photon sidecar: {e}",
+                        retryable=True,
+                    )
                 # No live sidecar — make sure no stale runtime record
                 # survives to mislead standalone senders.
                 _delete_runtime_record()
@@ -940,6 +968,8 @@ class PhotonAdapter(BasePlatformAdapter):
             "[photon] connected — sidecar on %s:%d, streaming inbound over gRPC",
             self._sidecar_bind, self._sidecar_port,
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -1224,7 +1254,7 @@ class PhotonAdapter(BasePlatformAdapter):
         media_urls: List[str] = []
         media_types: List[str] = []
 
-        def _normalize_binary_payload(
+        async def _normalize_binary_payload(
             payload: Dict[str, Any]
         ) -> tuple[str, MessageType, List[str], List[str]]:
             is_voice = payload.get("type") == "voice"
@@ -1236,8 +1266,10 @@ class PhotonAdapter(BasePlatformAdapter):
             if not is_voice and (name.lower().endswith(".caf") or mime == "audio/x-caf"):
                 is_voice = True
             mtype = MessageType.VOICE if is_voice else _attachment_message_type(mime)
-            cached = _cache_inbound_attachment(
-                payload, name, mime, force_audio=is_voice
+            # Base64 decode + media-cache write (fsync-free but still disk
+            # I/O on possibly multi-MB payloads) — keep it off the event loop.
+            cached = await asyncio.to_thread(
+                _cache_inbound_attachment, payload, name, mime, force_audio=is_voice
             )
             if cached:
                 return (
@@ -1262,6 +1294,15 @@ class PhotonAdapter(BasePlatformAdapter):
             )
 
         ctype = content.get("type")
+        if ctype in {"read", "read_receipt"}:
+            # Read receipts are presence signals, not a user turn. The sidecar
+            # only forwards receipts for messages we sent, so logging the
+            # target is enough for observability without waking the agent.
+            logger.debug(
+                "[photon] outbound message read: %s",
+                content.get("targetMessageId") or "unknown",
+            )
+            return
         if ctype == "reaction":
             # Route only tapbacks on messages WE sent — those are implicitly
             # addressed to the bot (feishu precedent: synthetic text event).
@@ -1376,7 +1417,7 @@ class PhotonAdapter(BasePlatformAdapter):
             text = content.get("text") or ""
             mtype = MessageType.TEXT
         elif ctype in {"attachment", "voice"}:
-            text, mtype, media_urls, media_types = _normalize_binary_payload(content)
+            text, mtype, media_urls, media_types = await _normalize_binary_payload(content)
         elif ctype == "richlink":
             text = _format_richlink_content(content)
             mtype = MessageType.TEXT
@@ -1399,7 +1440,7 @@ class PhotonAdapter(BasePlatformAdapter):
                     text_parts.append(_format_richlink_content(item_content))
                     continue
                 if item_type in {"attachment", "voice"}:
-                    marker, item_mtype, item_urls, item_types = _normalize_binary_payload(
+                    marker, item_mtype, item_urls, item_types = await _normalize_binary_payload(
                         item_content
                     )
                     if mtype == MessageType.TEXT:
@@ -1575,10 +1616,16 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             await asyncio.to_thread(_reinstall_sidecar_deps)
             if not sidecar_deps_installed():
-                raise RuntimeError(
+                # Deterministic on managed/immutable images: npm ci failed and
+                # will fail identically on every retry (OOF-153) — surface as
+                # non-retryable so it doesn't spin silently in the reconnect
+                # queue for weeks.
+                raise PhotonSidecarStartupError(
                     f"Photon sidecar deps could not be installed into "
                     f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)"
+                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                    code="SIDECAR_DEPS_MISSING",
+                    retryable=False,
                 )
         # A `hermes update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
@@ -1642,19 +1689,28 @@ class PhotonAdapter(BasePlatformAdapter):
                 exc,
             )
 
-        self._sidecar_proc = subprocess.Popen(  # noqa: S603
-            [self._node_bin, str(_sidecar_dir() / "index.mjs")],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=(sys.platform != "win32"),
-            # Windows: run the persistent sidecar headless so it does not open
-            # (or leave) a visible console window. CREATE_NO_WINDOW only (no
-            # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
-            creationflags=windows_hide_flags(),
-        )
-
+        try:
+            self._sidecar_proc = subprocess.Popen(  # noqa: S603
+                [self._node_bin, str(_sidecar_dir() / "index.mjs")],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=(sys.platform != "win32"),
+                # Windows: run the persistent sidecar headless so it does not open
+                # (or leave) a visible console window. CREATE_NO_WINDOW only (no
+                # DETACHED_PROCESS) so the stdin/stdout pipes above stay usable.
+                creationflags=windows_hide_flags(),
+            )
+        except FileNotFoundError as exc:
+            # Deterministic: node isn't on PATH / PHOTON_NODE_BIN points at
+            # nothing. Retrying can never fix a missing binary (OOF-153).
+            raise PhotonSidecarStartupError(
+                f"node binary not found ({self._node_bin!r}) — install Node.js "
+                f"or set PHOTON_NODE_BIN: {exc}",
+                code="SIDECAR_NODE_MISSING",
+                retryable=False,
+            ) from exc
         # Pump sidecar stderr/stdout into our logger so users see crashes.
         loop = asyncio.get_event_loop()
         self._sidecar_supervisor_task = loop.create_task(
@@ -2220,7 +2276,7 @@ class PhotonAdapter(BasePlatformAdapter):
         return True
 
     def _reactions_enabled(self) -> bool:
-        return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
+        return _get_scoped_secret("PHOTON_REACTIONS", "false").strip().lower() in {
             "true", "1", "yes", "on",
         }
 
@@ -2751,7 +2807,7 @@ async def _standalone_send(
     if not HTTPX_AVAILABLE:
         return {"error": "httpx not installed"}
     port = _coerce_port(
-        (pconfig.extra or {}).get("sidecar_port") or os.getenv("PHOTON_SIDECAR_PORT"),
+        (pconfig.extra or {}).get("sidecar_port") or _get_scoped_secret("PHOTON_SIDECAR_PORT"),
         _DEFAULT_SIDECAR_PORT,
     )
     token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN")

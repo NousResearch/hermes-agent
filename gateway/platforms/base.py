@@ -4373,6 +4373,7 @@ class BasePlatformAdapter(ABC):
         content: str,
         *,
         finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't

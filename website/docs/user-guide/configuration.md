@@ -722,6 +722,23 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
+### Required author for locally created skills
+
+Set `skills.required_author` when every new local skill must carry the same
+author identity:
+
+```yaml
+skills:
+  required_author: "Hermes Agent"   # empty/unset = disabled
+```
+
+If a new skill omits `author`, Hermes inserts the configured value. If it
+declares a different author, creation fails rather than silently rewriting the
+attribution. This applies to local creation through `skill_manage` and the web
+API/UI. The normalization happens before the write-approval gate, so a pending
+diff shows the exact metadata that approval will write. Existing skills and
+skills installed from hubs are unaffected.
+
 ## Memory Configuration
 
 ```yaml

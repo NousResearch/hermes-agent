@@ -1076,6 +1076,11 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Optional provenance policy for new locally created skills. When set,
+  # Hermes injects this author if omitted and rejects conflicting author
+  # metadata. Existing skills and skills installed from hubs are unchanged.
+  # required_author: "Hermes Agent"
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

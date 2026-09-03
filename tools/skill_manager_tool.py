@@ -668,6 +668,55 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     return None
 
 
+def _configured_required_author() -> str:
+    """Return the configured author required for newly created local skills.
+
+    The policy is opt-in so upstream/default installations keep accepting
+    third-party author names.  It applies only to supported local creation
+    surfaces that dispatch through ``_create_skill`` / ``skill_manage``.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        value = cfg_get(load_config(), "skills", "required_author", default="")
+    except Exception:
+        return ""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _ensure_new_skill_author(content: str) -> Tuple[str, Optional[str]]:
+    """Inject or verify the configured author on new-skill content.
+
+    Missing author metadata is inserted without reserializing the rest of the
+    YAML block.  A conflicting explicit author fails closed rather than being
+    silently overwritten, which avoids false attribution.
+    """
+    required = _configured_required_author()
+    if not required or not content:
+        return content, None
+
+    frontmatter, _ = _parse_frontmatter(content)
+    if not isinstance(frontmatter, dict):
+        return content, None  # The ordinary frontmatter validator owns this error.
+
+    if "author" in frontmatter:
+        actual = str(frontmatter.get("author") or "").strip()
+        if actual == required:
+            return content, None
+        return content, (
+            f"New skills must use author '{required}' because "
+            "skills.required_author is configured; "
+            f"received author {actual!r}."
+        )
+
+    end_match = re.search(r'\n---\s*\n', content[3:])
+    if not end_match:
+        return content, None  # The ordinary frontmatter validator owns this error.
+    insert_at = 3 + end_match.start()
+    author_line = f"\nauthor: {json.dumps(required, ensure_ascii=False)}"
+    return content[:insert_at] + author_line + content[insert_at:], None
+
+
 def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
     """Check that content doesn't exceed the character limit for agent writes.
 
@@ -1012,6 +1061,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     err = _validate_category(category)
     if err:
         return {"success": False, "error": err}
+
+    content, author_error = _ensure_new_skill_author(content)
+    if author_error:
+        return {"success": False, "error": author_error}
 
     # Validate content
     err = _validate_frontmatter(content, new_skill=True)
@@ -1646,6 +1699,9 @@ def _skill_manage_batch(
         return tool_error("operations must be a non-empty array.", success=False)
     if len(operations) > _BATCH_MAX_OPS:
         return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.", success=False)
+    # Work on copies: author normalization is part of the staged payload, but
+    # skill_manage must not mutate the caller's operation dictionaries.
+    operations = [dict(op) if isinstance(op, dict) else op for op in operations]
     # delete: sole-op only; route through the normal single-op path so the
     # gate, archive, ledger, and curator absorbed_into semantics all apply.
     if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
@@ -1688,6 +1744,11 @@ def _skill_manage_batch(
                 "skill's other ops.",
                 success=False,
             )
+        if act == "create" and op.get("content"):
+            normalized, author_error = _ensure_new_skill_author(op["content"])
+            if author_error:
+                return tool_error(f"operations[{i}]: {author_error}", success=False)
+            op["content"] = normalized
         preflight = _background_review_preflight(act, nm)
         if preflight is not None:
             return json.dumps(preflight, ensure_ascii=False)
@@ -1962,6 +2023,13 @@ def skill_manage(
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
+
+    # Normalize before the approval gate so the staged payload and its review
+    # diff show the exact author metadata that will be written on approval.
+    if action == "create" and content:
+        content, author_error = _ensure_new_skill_author(content)
+        if author_error:
+            return tool_error(author_error, success=False)
 
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off

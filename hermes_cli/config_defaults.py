@@ -2310,6 +2310,11 @@ DEFAULT_CONFIG = {
         # against HERMES_HOME. The directory is scanned for skills alongside
         # the local dir. e.g. "/opt/brain/skills"
         "create_dir": "",
+        # Optional provenance policy for new locally created skills. When set,
+        # local creation surfaces inject this author when absent and reject a
+        # conflicting explicit author. Hub installs and existing skills are
+        # unchanged. Empty = disabled.
+        "required_author": "",
         # Project-local skill discovery: when a session starts inside a git
         # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
         # are sourced as the highest-precedence skill tier — but ONLY when the

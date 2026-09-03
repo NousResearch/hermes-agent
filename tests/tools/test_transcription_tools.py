@@ -1348,3 +1348,77 @@ class TestExplicitOpenaiSelectionError:
 
         assert result["success"] is False
         assert "No STT provider available" in result["error"]
+
+# _transcribe_openai — 5xx transcode-and-retry (#81644)
+# ============================================================================
+
+
+class TestTranscribeOpenaiFiveXxRetry:
+    """A 5xx rejection of the audio container must reach the
+    transcode-and-retry path, not propagate as a plain API error."""
+
+    def _status_error(self, status_code: int, message: str) -> Exception:
+        import httpx
+        from openai import APIStatusError
+
+        request = httpx.Request(
+            "POST", "https://api.example.com/v1/audio/transcriptions"
+        )
+        return APIStatusError(
+            message,
+            response=httpx.Response(status_code, request=request),
+            body={"type": "system_error"},
+        )
+
+    def test_server_error_triggers_transcode_and_retry(self, sample_wav, tmp_path):
+        """The provider rejects the container with a 5xx (the gapgpt case in
+        #81644): the transcode-and-retry must run and succeed."""
+        converted = tmp_path / "retry.m4a"
+        converted.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = [
+            self._status_error(503, "503 system_error"),  # first attempt: 5xx
+            "retried transcript",                          # retry after transcode
+        ]
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._transcode_audio_for_stt",
+                 return_value=(str(converted), None),
+             ):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(
+                sample_wav, "gpt-4o-transcribe", api_key="sk-test"
+            )
+
+        assert result["success"] is True
+        assert result["transcript"] == "retried transcript"
+        assert mock_client.audio.transcriptions.create.call_count == 2
+
+    def test_container_400_still_transcodes(self, sample_wav, tmp_path):
+        """The original 400-with-container-hint path keeps working."""
+        converted = tmp_path / "retry.m4a"
+        converted.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = [
+            self._status_error(
+                400, "Invalid file format: unsupported audio container"
+            ),
+            "retried transcript",
+        ]
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._transcode_audio_for_stt",
+                 return_value=(str(converted), None),
+             ):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(
+                sample_wav, "whisper-1", api_key="sk-test"
+            )
+
+        assert result["success"] is True
+        assert result["transcript"] == "retried transcript"
+        assert mock_client.audio.transcriptions.create.call_count == 2

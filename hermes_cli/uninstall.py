@@ -8,6 +8,7 @@ Provides options for:
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,34 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 from hermes_cli.colors import Colors, color
+
+
+def _rmtree_force(path: Path) -> None:
+    """Remove *path* recursively, clearing read-only bits on Windows first.
+
+    ``shutil.rmtree`` raises ``[WinError 5] Access is denied`` on read-only
+    files inside a ``.git\\objects`` tree (all pack-objects are written
+    read-only by Git to prevent corruption).  Pass an ``onerror`` (Python <
+    3.12) / ``onexc`` (Python ≥ 3.12) handler that strips the read-only
+    attribute and retries the failed operation.  On non-Windows hosts this is
+    a thin wrapper around a plain ``shutil.rmtree``.
+
+    Fixes #98574.
+    """
+    def _handle_readonly(func, path_str, exc_info):
+        # Clear the read-only bit and retry.  Any subsequent failure propagates.
+        try:
+            os.chmod(path_str, stat.S_IWRITE)
+            func(path_str)
+        except Exception:
+            raise exc_info[1].with_traceback(exc_info[2])
+
+    import sys as _sys
+    if _sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_handle_readonly)
+    else:
+        shutil.rmtree(path, onerror=_handle_readonly)
+
 
 def log_info(msg: str):
     print(f"{color('→', Colors.CYAN)} {msg}")
@@ -437,7 +466,7 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
         target = hermes_home / sub
         if target.exists():
             try:
-                shutil.rmtree(target, ignore_errors=False)
+                _rmtree_force(target)
                 removed.append(target)
             except Exception as e:
                 log_warn(f"Could not remove {target}: {e}")
@@ -569,7 +598,7 @@ def _uninstall_profile(profile) -> None:
     # 3. Wipe the profile's HERMES_HOME directory.
     try:
         if profile_home.exists():
-            shutil.rmtree(profile_home)
+            _rmtree_force(profile_home)
             log_success(f"  Removed {profile_home}")
     except Exception as e:
         log_warn(f"  Could not remove {profile_home}: {e}")
@@ -939,15 +968,15 @@ def _perform_uninstall(
     # Check if we're running from within the install dir
     # We need to be careful here
     try:
-        if project_root.exists():
+            if project_root.exists():
             # If the install is inside ~/.hermes/, just remove the hermes-agent subdir
-            if hermes_home in project_root.parents or project_root.parent == hermes_home:
-                shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
-            else:
-                # Installation is somewhere else entirely
-                shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
+                if hermes_home in project_root.parents or project_root.parent == hermes_home:
+                    _rmtree_force(project_root)
+                    log_success(f"Removed {project_root}")
+                else:
+                    # Installation is somewhere else entirely
+                    _rmtree_force(project_root)
+                    log_success(f"Removed {project_root}")
     except Exception as e:
         log_warn(f"Could not fully remove {project_root}: {e}")
         log_info("You may need to manually remove it")
@@ -981,7 +1010,7 @@ def _perform_uninstall(
         log_info("Removing configuration and data...")
         try:
             if hermes_home.exists():
-                shutil.rmtree(hermes_home)
+                _rmtree_force(hermes_home)
                 log_success(f"Removed {hermes_home}")
         except Exception as e:
             log_warn(f"Could not fully remove {hermes_home}: {e}")

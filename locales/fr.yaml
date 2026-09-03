@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ Refusé"
   cancelled:       "      ✗ Annulé"
   blocklist_message: "Cette commande est sur la liste de blocage inconditionnel et ne peut pas être approuvée."
+  execute_code_description: "Exécution de script execute_code. Le script peut générer des sous-processus ou modifier des fichiers sans passer par l'approbation des commandes de terminal ; l'approbation est unique pour cette exécution."
 
 gateway:
   approval_expired: "⚠️ Approbation expirée (l'agent n'attend plus). Demandez à l'agent de réessayer."

@@ -22,6 +22,7 @@ approval:
   denied:          "      ✗ Diúltaithe"
   cancelled:       "      ✗ Cealaithe"
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
+  execute_code_description: "Rith scripte execute_code. Is féidir leis an script fophróisis a chruthú nó comhaid a mhodhnú gan dul trí cheadú ordaithe teirminéil; is ceadú aonuaire é seo don rith seo."
 
 gateway:
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."

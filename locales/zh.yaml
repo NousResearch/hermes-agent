@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ 已拒绝"
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此命令位于无条件拦截列表中，无法被批准。"
+  execute_code_description: "execute_code 脚本执行。该脚本可衍生子进程或修改文件而无需经过终端命令审批；此审批仅对本次运行单次生效。"
 
 gateway:
   approval_expired: "⚠️ 批准已过期（代理不再等待）。请让代理重试。"

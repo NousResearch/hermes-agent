@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ Elutasítva"
   cancelled:       "      ✗ Megszakítva"
   blocklist_message: "Ez a parancs a feltétel nélküli tiltólistán van, és nem hagyható jóvá."
+  execute_code_description: "execute_code parancsfájl végrehajtása. A parancsfájl alfolyamatokat indíthat el vagy fájlokat módosíthat a terminálparancsok jóváhagyása nélkül; a jóváhagyás egyszeri erre a futtatásra."
 
 gateway:
   approval_expired: "⚠️ A jóváhagyás lejárt (az ügynök már nem vár). Kérd meg az ügynököt, hogy próbálja újra."

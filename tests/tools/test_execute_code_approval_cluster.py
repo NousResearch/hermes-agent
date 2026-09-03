@@ -499,3 +499,17 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
             is_windows=False,
         )
     assert "dropped" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_execute_code_approval_description_localized(monkeypatch):
+    """execute_code approval description honors display.language setting."""
+    from agent.i18n import t
+
+    ko_desc = t("approval.execute_code_description", lang="ko")
+    assert "execute_code 스크립트 실행" in ko_desc
+
+    zh_desc = t("approval.execute_code_description", lang="zh")
+    assert "execute_code 脚本执行" in zh_desc
+
+    en_desc = t("approval.execute_code_description", lang="en")
+    assert "execute_code script execution" in en_desc

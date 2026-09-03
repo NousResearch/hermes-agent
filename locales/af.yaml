@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ Geweier"
   cancelled:       "      ✗ Gekanselleer"
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
+  execute_code_description: "execute_code skriptuitvoering. Die skrip kan subprosesse skep of lêers verander sonder om deur terminale opdraggoedkeuring te gaan; goedkeuring is eenmalig vir hierdie uitvoering."
 
 gateway:
   approval_expired: "⚠️ Goedkeuring het verval (die agent wag nie meer nie). Vra die agent om weer te probeer."

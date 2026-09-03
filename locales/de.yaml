@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ Abgelehnt"
   cancelled:       "      ✗ Abgebrochen"
   blocklist_message: "Dieser Befehl steht auf der unbedingten Sperrliste und kann nicht genehmigt werden."
+  execute_code_description: "execute_code Skriptausführung. Das Skript kann Unterprozesse erzeugen oder Dateien ändern, ohne die Genehmigung von Terminalbefehlen zu durchlaufen; die Genehmigung gilt einmalig für diese Ausführung."
 
 gateway:
   approval_expired: "⚠️ Genehmigung abgelaufen (Agent wartet nicht mehr). Bitten Sie den Agenten, es erneut zu versuchen."

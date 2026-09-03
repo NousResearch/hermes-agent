@@ -5457,11 +5457,15 @@ def check_execute_code_guard(code: str, env_type: str,
     require approval).
     """
     pattern_key = "execute_code"
-    description = (
-        "execute_code script execution. The script can spawn subprocesses or "
-        "mutate files without passing through terminal command approval; "
-        "approval is one-shot for this run."
-    )
+    try:
+        from agent.i18n import t
+        description = t("approval.execute_code_description")
+    except Exception:
+        description = (
+            "execute_code script execution. The script can spawn subprocesses or "
+            "mutate files without passing through terminal command approval; "
+            "approval is one-shot for this run."
+        )
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops

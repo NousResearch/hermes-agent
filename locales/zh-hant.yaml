@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ 已拒絕"
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
+  execute_code_description: "execute_code 指令碼執行。該指令碼可衍生子程序或修改檔案而無需經過終端機命令審批；此審批僅對本次運行單次生效。"
 
 gateway:
   approval_expired: "⚠️ 批准已逾期（代理不再等待）。請讓代理重試。"

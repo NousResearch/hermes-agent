@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ Reddedildi"
   cancelled:       "      ✗ İptal edildi"
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
+  execute_code_description: "execute_code betik çalıştırması. Betik, terminal komut onayından geçmeden alt süreçler oluşturabilir veya dosyaları değiştirebilir; onay bu çalıştırma için tek seferliktir."
 
 gateway:
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."

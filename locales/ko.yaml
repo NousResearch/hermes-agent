@@ -18,6 +18,7 @@ approval:
   denied:          "      ✗ 거부됨"
   cancelled:       "      ✗ 취소됨"
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
+  execute_code_description: "execute_code 스크립트 실행. 이 스크립트는 terminal 명령 승인 절차를 거치지 않고 하위 프로세스를 실행하거나 파일을 변경할 수 있습니다. 이번 실행에 한해 한 번만 승인됩니다."
 
 gateway:
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."

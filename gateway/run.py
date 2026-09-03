@@ -7096,10 +7096,45 @@ class TurnRunner:
                 _run_message,
                 observed_group_context,
             )
+
+            # Cost-visibility handoff injection (LOCAL PATCH — see
+            # LOCAL_PATCHES.md and agent/cost_visibility.py). A note stored by
+            # /new is consumed exactly once and prefixed onto the first user
+            # message of the new session, so the fresh agent opens with the
+            # prior session's context.
+            #
+            # Prefixing the USER turn (rather than editing the system prompt)
+            # is deliberate: the system prompt must stay byte-stable for the
+            # life of a conversation or per-conversation prompt caching breaks.
+            # Only fires on a genuinely fresh conversation (no history), and
+            # `persist_user_message` is pinned to the user's ORIGINAL text so
+            # the stored transcript/UI shows what they actually typed.
+            _cv_handoff = ""
+            try:
+                if not agent_history:
+                    from agent import cost_visibility as _cv
+
+                    _cv_cfg_run = _cv.load_cost_visibility_config()
+                    if _cv_cfg_run.enabled and _cv_cfg_run.handoff:
+                        _cv_handoff = _cv.consume_handoff(ctx.session_key or "")
+            except Exception:
+                logger.debug("cost_visibility: handoff consume failed", exc_info=True)
+
+            if _cv_handoff:
+                _cv_block = _cv_handoff + "\n\n---\n\n"
+                if isinstance(_api_run_message, str):
+                    _api_run_message = _cv_block + _api_run_message
+                elif isinstance(_api_run_message, list):
+                    _api_run_message = [
+                        {"type": "text", "text": _cv_block}
+                    ] + _api_run_message
+
             _conversation_kwargs = {
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
             }
+            if _cv_handoff and _persist_user_message_override is None and not observed_group_context:
+                _conversation_kwargs["persist_user_message"] = ctx.message
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override
             elif observed_group_context:
@@ -13835,6 +13870,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+
+        # Cost-visibility self-check (LOCAL PATCH — see LOCAL_PATCHES.md and
+        # agent/cost_visibility.py). Confirms the module imported and reports
+        # its live config. If an upgrade drops the local patch, this logs a
+        # LOUD warning rather than letting the gateway run silently without
+        # cost visibility — the failure mode that made the $191 session
+        # invisible in the first place.
+        try:
+            from agent.cost_visibility import log_selfcheck as _cv_selfcheck
+
+            _cv_selfcheck(logger)
+        except Exception as _cv_exc:
+            logger.warning(
+                "!!! cost_visibility MODULE FAILED TO LOAD (%s) — replies will "
+                "have NO cost footer and NO spend warnings. This local patch is "
+                "probably missing after an upgrade; see LOCAL_PATCHES.md.",
+                _cv_exc,
+            )
         # Enable faulthandler for stack dumps on freezes/crashes (#70344).
         # Falls back to a log file when sys.stderr is None (Windows VBS /
         # pythonw / detached service) — otherwise the gateway would die

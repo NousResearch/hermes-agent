@@ -178,11 +178,32 @@ class GatewaySlashCommandsMixin:
         # thread (via the contextvar-preserving executor helper) with a bounded
         # timeout so the loop is never blocked.
         _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _old_agent = None
         if _cache_lock is not None:
             with _cache_lock:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
+                # Cost-visibility handoff (LOCAL PATCH — see LOCAL_PATCHES.md
+                # and agent/cost_visibility.py). Capture BEFORE resource
+                # cleanup: that step can wedge for its full timeout, and the
+                # note must not be lost to a slow teardown. Persisted keyed by
+                # session_key so it survives a gateway restart between this
+                # /new and the user's next message; it is consumed as a prefix
+                # on that next user message, never as a system-prompt edit
+                # (which would break prompt caching).
+                try:
+                    from agent import cost_visibility as _cv
+
+                    _cv_cfg = _cv.load_cost_visibility_config()
+                    if _cv_cfg.enabled and _cv_cfg.handoff:
+                        _cv_note = _cv.build_handoff_note(_old_agent, config=_cv_cfg)
+                        if _cv_note:
+                            _cv.store_handoff(session_key, _cv_note)
+                except Exception:
+                    logger.debug(
+                        "cost_visibility: handoff capture failed", exc_info=True
+                    )
                 try:
                     await asyncio.wait_for(
                         self._run_in_executor_with_context(
@@ -206,6 +227,18 @@ class GatewaySlashCommandsMixin:
                         "reset: %s (#35994)",
                         session_key, cleanup_exc,
                     )
+
+        # Clear the durable cost ledger for the expiring session: this is what
+        # resets the once-per-crossing warning latches on /new.
+        try:
+            from agent import cost_visibility as _cv_reset
+
+            _cv_reset.reset_session_state(
+                str(getattr(old_entry, "session_id", "") or "")
+            )
+        except Exception:
+            logger.debug("cost_visibility: ledger reset failed", exc_info=True)
+
         self._evict_cached_agent(session_key)
 
         # Conversation boundary: clear ALL conversation-scoped per-session

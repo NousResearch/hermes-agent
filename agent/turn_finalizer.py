@@ -610,6 +610,35 @@ def finalize_turn(
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
 
+    # Cost-visibility status footer + threshold warnings (LOCAL PATCH — see
+    # LOCAL_PATCHES.md and agent/cost_visibility.py).
+    #
+    # Placed here, before the result dict is built, so the line rides the
+    # authoritative ``final_response`` the streaming consumer receives via
+    # finish(final_text). Appending it later (in an adapter, after the stream
+    # sealed) would mutate the final after the seal and re-open the
+    # duplicate-final bug class documented in AGENTS.md.
+    #
+    # Isolated in a try/except: cost telemetry must never break a reply.
+    if final_response and not interrupted:
+        try:
+            from agent import cost_visibility as _cv
+
+            _cv_cfg = _cv.load_cost_visibility_config()
+            if _cv_cfg.enabled and _cv.surface_enabled(agent, _cv_cfg):
+                _cv_sid = getattr(agent, "session_id", "") or ""
+                # render_footer advances the durable ledger exactly once per
+                # turn; check_warnings then reads the advanced totals.
+                _cv_footer = _cv.render_footer(agent, _cv_sid, _cv_cfg)
+                _cv_warnings = _cv.check_warnings(agent, _cv_sid, _cv_cfg)
+                _cv_tail = "\n\n".join(_cv_warnings) if _cv_warnings else ""
+                if _cv_tail:
+                    final_response = final_response.rstrip() + "\n\n" + _cv_tail
+                if _cv_footer:
+                    final_response = final_response.rstrip() + "\n\n" + _cv_footer
+        except Exception as _cv_err:
+            logger.debug("cost_visibility footer failed: %s", _cv_err)
+
     _response_transformed = False
     _pre_transform_response = None
 

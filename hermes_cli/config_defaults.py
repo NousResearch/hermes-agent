@@ -823,6 +823,22 @@ DEFAULT_CONFIG = {
         "max_line_length": 2000,
     },
 
+    # User-facing cost visibility (agent/cost_visibility.py): a per-reply
+    # status footer ("ctx 42% · turn $0.31 · session $4.10"), one-shot
+    # threshold warnings, and a handoff note written at /new. Thresholds live
+    # here rather than in code so an upgrade that replaces code cannot reset
+    # them. See LOCAL_PATCHES.md.
+    "cost_visibility": {
+        "enabled": True,          # master switch for all three surfaces
+        "footer": True,           # append the status line to every reply
+        "warnings": True,         # session-cost / context-percentage warnings
+        "handoff": True,          # write + inject a handoff note on /new
+        "cost_warn_usd": 25.0,    # warn once when session spend crosses this
+        "ctx_warn_pct": 80,       # warn once when context use crosses this %
+        "handoff_max_words": 300, # hard cap on the /new handoff note
+        "include_cli": False,     # CLI/TUI already show cost in the status bar
+    },
+
     # Tool loop guardrails nudge models when they repeat failed or
     # non-progressing tool calls. Soft warnings are always-on by default;
     # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.

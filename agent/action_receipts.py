@@ -24,8 +24,8 @@ credential-bearing keys.
 symlink substituted between validation and connection open. The descriptor
 also pins the inode across a concurrent pathname replacement. The database
 file and WAL/SHM sidecars are hardened to ``0o600`` on every writable open.
-First creation uses ``O_CREAT | O_EXCL`` with mode ``0o600``, eliminating the
-initial umask exposure window. Other platforms retain regular-file validation
+Writable creation passes mode ``0o600`` to ``os.open``, eliminating the initial
+umask exposure window. Other platforms retain regular-file validation
 and immediate owner-only permission hardening.
 
 **Retention / size policy**: ``max_size_mb`` is a deterministic bound on live

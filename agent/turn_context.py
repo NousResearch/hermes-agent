@@ -40,7 +40,10 @@ from agent.conversation_compression import (
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import (
+    build_memory_context_block,
+    neutralize_replayed_memory_context,
+)
 from agent.memory_provider import is_trivial_prompt
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import (
@@ -182,8 +185,19 @@ def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
         and sidecar
         and api_msg.get("role") in ("user", "assistant")
     ):
+        sidecar = prepare_api_content_for_replay(sidecar)
         api_msg["content"] = sidecar
     return sidecar
+
+
+def prepare_api_content_for_replay(sidecar: str) -> str:
+    """Apply trust-boundary repairs before persisted bytes reach a provider.
+
+    Current sidecars remain byte-identical. Legacy memory blocks are upgraded
+    in-memory so pre-hardening provider text cannot restore raw role/control
+    delimiters after a session reload.
+    """
+    return neutralize_replayed_memory_context(sidecar)
 
 
 def drop_stale_api_content(msg: Dict[str, Any]) -> None:

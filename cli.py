@@ -3787,6 +3787,18 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
+def _pt_print_then_flush(text: str) -> None:
+    """Print via ``_pt_print`` and immediately flush ``stdout``.
+
+    Every ``_cprint`` output path — including the cross-thread
+    ``run_in_terminal`` callback — funnels through this helper so streamed
+    tokens cannot sit in the stdio buffer on Windows PowerShell or when
+    stdout is a pipe (headless orchestration, subprocess log capture).
+    """
+    _pt_print(_PT_ANSI(text))
+    sys.stdout.flush()
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -3808,7 +3820,7 @@ def _cprint(text: str):
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        _pt_print_then_flush(text)
         return
 
     app = None
@@ -3822,13 +3834,13 @@ def _cprint(text: str):
     # (spinner frames, streamed tokens, tool activity prefixes, …).
     if app is None or not getattr(app, "_is_running", False):
         try:
-            _pt_print(_PT_ANSI(text))
+            _pt_print_then_flush(text)
         except Exception:
             # Fallback when stdout is not a real console (e.g. subprocess
             # worker logging to a file). prompt_toolkit raises
             # NoConsoleScreenBufferError (Windows) or OSError (other).
             try:
-                print(text)
+                print(text, flush=True)
             except Exception:
                 pass
         return
@@ -3838,7 +3850,7 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        _pt_print_then_flush(text)
         return
 
     import asyncio as _asyncio
@@ -3854,7 +3866,7 @@ def _cprint(text: str):
         current_loop = None
     # Same thread as the app's loop → safe to print directly.
     if current_loop is loop and loop.is_running():
-        _pt_print(_PT_ANSI(text))
+        _pt_print_then_flush(text)
         return
 
     # Cross-thread emission: ask the app's event loop to schedule a
@@ -3875,7 +3887,7 @@ def _cprint(text: str):
         try:
             import asyncio as _aio
             import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+            coro = run_in_terminal(lambda: _pt_print_then_flush(text))
             if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
                 _aio.ensure_future(coro)
             # else: run_in_terminal ran the lambda synchronously; nothing more
@@ -3887,7 +3899,7 @@ def _cprint(text: str):
         loop.call_soon_threadsafe(_schedule)
     except Exception:
         try:
-            _pt_print(_PT_ANSI(text))
+            _pt_print_then_flush(text)
         except Exception:
             pass
 

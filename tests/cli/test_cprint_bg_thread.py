@@ -191,3 +191,116 @@ def test_clear_output_history_removes_replayable_lines():
     cli._clear_output_history()
 
     assert list(cli._OUTPUT_HISTORY) == []
+
+
+# ── Flush regression tests (#43356 review follow-up) ──────────────────────
+# Every _cprint output path must flush stdout after writing, otherwise
+# streamed tokens sit in the stdio buffer on Windows PowerShell and on
+# headless/orchestrated stdout pipes.
+
+class _FlushTracker:
+    """Replacement for sys.stdout that records flush() calls."""
+
+    def __init__(self):
+        self.flushes = 0
+
+    def flush(self):
+        self.flushes += 1
+
+    # Other stdout attributes are left unneeded by _cprint itself
+    # (the real writes go through _pt_print, which we monkeypatch away).
+
+
+def test_cprint_no_app_flushes_stdout(monkeypatch):
+    """Direct path (no app running) must flush after _pt_print."""
+    monkeypatch.setattr(cli, "_pt_print", lambda x: None)
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: None
+    fake_pt_app.run_in_terminal = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    tracker = _FlushTracker()
+    monkeypatch.setattr(sys, "stdout", tracker)
+
+    cli._cprint("direct")
+    assert tracker.flushes >= 1, "no-app path must call sys.stdout.flush()"
+
+
+def test_cprint_fallback_print_uses_flush(monkeypatch, capsys):
+    """When _pt_print raises (no console), the print() fallback uses flush=True."""
+    def _boom(_text):
+        raise OSError("no console")
+
+    monkeypatch.setattr(cli, "_pt_print", _boom)
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: None
+    fake_pt_app.run_in_terminal = lambda *a, **kw: None
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    # spy on builtins print to assert flush=True
+    print_calls = []
+    import builtins
+    real_print = builtins.print
+
+    def _spy_print(*args, **kwargs):
+        print_calls.append(kwargs)
+        # swallow the actual write so capsys stays clean
+    monkeypatch.setattr(builtins, "print", _spy_print)
+
+    cli._cprint("fallback-text")
+
+    assert len(print_calls) == 1
+    assert print_calls[0].get("flush") is True, (
+        "no-console fallback must call print(..., flush=True)"
+    )
+
+
+def test_cprint_cross_thread_callback_flushes(monkeypatch):
+    """The run_in_terminal callback on the cross-thread path must flush."""
+    monkeypatch.setattr(cli, "_pt_print", lambda x: None)
+    monkeypatch.setattr(cli, "_PT_ANSI", lambda t: t)
+
+    scheduled = []
+
+    class FakeLoop:
+        def is_running(self):
+            return True
+
+        def call_soon_threadsafe(self, cb, *args):
+            scheduled.append(cb)
+
+    fake_loop = FakeLoop()
+
+    # Different-thread current loop so the cross-thread branch is taken.
+    fake_current_loop = SimpleNamespace(is_running=lambda: True)
+    fake_asyncio = types.ModuleType("asyncio")
+
+    class _Policy:
+        def get_event_loop(self):
+            return fake_current_loop
+
+    fake_asyncio.get_event_loop_policy = lambda: _Policy()
+    fake_asyncio.ensure_future = lambda coro: None
+    monkeypatch.setitem(sys.modules, "asyncio", fake_asyncio)
+
+    fake_app = SimpleNamespace(_is_running=True, loop=fake_loop)
+    fake_pt_app = types.ModuleType("prompt_toolkit.application")
+    fake_pt_app.get_app_or_none = lambda: fake_app
+    fake_pt_app.run_in_terminal = lambda func, **kw: (func(), None)[1]
+    monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
+
+    tracker = _FlushTracker()
+    monkeypatch.setattr(sys, "stdout", tracker)
+
+    cli._cprint("cross-thread")
+    # Kick the scheduled callback (simulates the app loop picking it up).
+    assert scheduled, "cross-thread path must schedule a callback"
+    scheduled[0]()
+
+    assert tracker.flushes >= 1, (
+        "run_in_terminal callback must flush after _pt_print"
+    )

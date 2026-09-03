@@ -35,7 +35,7 @@ function resolveApiKeyPath(rawValue) {
   }
 
   const tempPath = join(tmpdir(), `hermes-notary-${Date.now()}-${process.pid}.p8`)
-  writeFileSync(tempPath, value, 'utf8')
+  writeFileSync(tempPath, value, { encoding: 'utf8', mode: 0o600 })
   return {
     keyPath: tempPath,
     cleanup: () => rmSync(tempPath, { force: true })
@@ -71,7 +71,7 @@ async function main() {
   }
 }
 
-main().catch(() => {
-  console.error('Notarization failed. Check configuration and command output in secure CI logs.')
+main().catch((err) => {
+  console.error('Notarization failed:', err?.message || err)
   process.exit(1)
 })

@@ -36,7 +36,7 @@ function resolveApiKeyPath(rawValue) {
   }
 
   const tempPath = path.join(os.tmpdir(), `hermes-notary-${Date.now()}-${process.pid}.p8`)
-  fs.writeFileSync(tempPath, value, 'utf8')
+  fs.writeFileSync(tempPath, value, { encoding: 'utf8', mode: 0o600 })
   return {
     keyPath: tempPath,
     cleanup: () => {

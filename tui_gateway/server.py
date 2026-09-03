@@ -7027,6 +7027,15 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     else:
         agent.compression_enabled = str(enabled_raw).lower() in {"true", "1", "yes"}
 
+    # This gate is baked onto the agent at construction time, just like the
+    # other compression authorities below.  The turn-start signature already
+    # watches checkpoint_required, so adopt the changed value here too; without
+    # this assignment an open Desktop/TUI session stays fail-closed forever
+    # after the user disables a gate its memory provider cannot satisfy.
+    agent.compression_checkpoint_required = is_truthy_value(
+        compression.get("checkpoint_required", False)
+    )
+
     agent.codex_responses_native_compaction = is_truthy_value(
         compression.get("codex_responses_native", False)
     )

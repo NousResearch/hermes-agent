@@ -55,7 +55,10 @@ def matrix_env(tmp_path, monkeypatch):
 
     def _submit(endpoint, arguments=None, headers=None):
         fal_calls.append({"endpoint": endpoint, "arguments": arguments})
-        return _FalHandle({"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}})
+        result = {"video": {"url": f"https://fake-fal/{endpoint.replace('/','_')}.mp4"}}
+        if endpoint.endswith("/draft"):
+            result["draft_cache"] = {"url": "https://fake-fal/draft-cache.bin"}
+        return _FalHandle(result)
     fake_fal.submit = _submit  # type: ignore
 
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
@@ -229,6 +232,84 @@ def test_fal_image_to_video_routes_to_image_endpoint(matrix_env, family_id):
     assert payload.get(image_key) == "https://example.com/i.png"
     other_keys = [k for k in payload if "image" in k and "url" in k and k != image_key]
     assert not other_keys, f"{family_id} sent extra image keys: {other_keys}"
+
+
+def test_flux3_keyframes_routes_through_tool_surface(matrix_env):
+    home, fal_calls, _ = matrix_env
+    keyframes = [
+        {"frame_index": 0, "image_url": "https://example.com/a.png"},
+        {"frame_index": 240, "image_url": "https://example.com/b.png"},
+    ]
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": "flux-3"}},
+        {"prompt": "move between frames", "duration": 10, "keyframes": keyframes},
+    )
+
+    assert result["success"] is True
+    assert result["modality"] == "keyframes"
+    assert fal_calls == [{
+        "endpoint": "blackforestlabs/flux-3/keyframes-to-video",
+        "arguments": {
+            "prompt": "move between frames",
+            "keyframes": keyframes,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+            "duration": 10,
+        },
+    }]
+
+
+def test_flux3_first_last_routes_through_tool_surface(matrix_env):
+    home, fal_calls, _ = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": "flux-3"}},
+        {
+            "prompt": "move between frames",
+            "image_url": "https://example.com/start.png",
+            "end_image_url": "https://example.com/end.png",
+            "duration": 8,
+        },
+    )
+
+    assert result["success"] is True
+    assert result["modality"] == "first_last"
+    assert fal_calls[0]["endpoint"] == "blackforestlabs/flux-3/first-last-frame-to-video"
+    assert fal_calls[0]["arguments"]["start_image_url"] == "https://example.com/start.png"
+    assert fal_calls[0]["arguments"]["end_image_url"] == "https://example.com/end.png"
+
+
+def test_flux3_draft_and_enhance_round_trip_through_tool_surface(matrix_env):
+    home, fal_calls, _ = matrix_env
+    cfg = {"video_gen": {"provider": "fal", "model": "flux-3"}}
+
+    draft = _invoke_tool(
+        home,
+        cfg,
+        {"prompt": "preview this shot", "draft": True},
+    )
+
+    assert draft["success"] is True
+    assert draft["draft"] is True
+    assert draft["draft_cache_url"] == "https://fake-fal/draft-cache.bin"
+    assert fal_calls[0]["endpoint"] == "blackforestlabs/flux-3/text-to-video/draft"
+    assert "resolution" not in fal_calls[0]["arguments"]
+
+    enhanced = _invoke_tool(
+        home,
+        cfg,
+        {"draft_cache_url": draft["draft_cache_url"]},
+    )
+
+    assert enhanced["success"] is True
+    assert enhanced["modality"] == "draft_enhance"
+    assert fal_calls[1] == {
+        "endpoint": "blackforestlabs/flux-3/draft-enhance",
+        "arguments": {"draft_cache_url": "https://fake-fal/draft-cache.bin"},
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────

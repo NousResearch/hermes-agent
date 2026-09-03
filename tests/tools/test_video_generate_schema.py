@@ -34,6 +34,10 @@ CAPABILITY_AXES = (
     "supports_negative_prompt",
     "supports_seed",
     "supports_upscale",
+    "supports_keyframes",
+    "supports_first_last",
+    "supports_draft",
+    "supports_draft_enhance",
     "max_reference_images",
 )
 
@@ -97,7 +101,9 @@ class TestFleetCapabilityCoverage(unittest.TestCase):
         caps = _P().capabilities()
         self.assertEqual(caps.get("modalities"), ["text"])
         for axis in ("supports_audio", "supports_negative_prompt",
-                     "supports_seed", "supports_upscale"):
+                     "supports_seed", "supports_upscale",
+                     "supports_keyframes", "supports_first_last",
+                     "supports_draft", "supports_draft_enhance"):
             self.assertFalse(caps.get(axis), axis)
         for axis in CAPABILITY_AXES:
             self.assertIn(axis, caps, f"ABC default missing {axis}")
@@ -207,16 +213,33 @@ class TestDynamicParamGating(unittest.TestCase):
         self.assertEqual(props["duration"]["maximum"], 12)
         self.assertEqual(props["aspect_ratio"]["enum"], ["16:9"])
 
+    def test_flux_extras_are_capability_gated(self):
+        schema = self._schema_with({
+            "modalities": ["text", "image"],
+            "supports_audio": False, "supports_negative_prompt": False,
+            "supports_seed": False, "supports_upscale": False,
+            "supports_keyframes": True, "supports_first_last": True,
+            "supports_draft": True, "supports_draft_enhance": True,
+            "max_reference_images": 0,
+        })
+        props = schema["parameters"]["properties"]
+        for p in ("keyframes", "end_image_url", "draft", "draft_cache_url"):
+            self.assertIn(p, props, p)
+        self.assertEqual(schema["parameters"]["required"], [])
+
     def test_minimal_backend_gets_bare_params(self):
         schema = self._schema_with({
             "modalities": ["text"],
             "supports_audio": False, "supports_negative_prompt": False,
             "supports_seed": False, "supports_upscale": False,
+            "supports_keyframes": False, "supports_first_last": False,
+            "supports_draft": False, "supports_draft_enhance": False,
             "max_reference_images": 0,
         })
         props = schema["parameters"]["properties"]
         for p in ("image_url", "reference_image_urls", "negative_prompt",
-                  "audio", "seed", "upscale"):
+                  "audio", "seed", "upscale", "keyframes", "end_image_url",
+                  "draft", "draft_cache_url"):
             self.assertNotIn(p, props, p)
         self.assertIn("text-to-video only", schema["description"])
 

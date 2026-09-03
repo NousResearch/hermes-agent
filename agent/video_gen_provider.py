@@ -150,6 +150,10 @@ class VideoGenProvider(abc.ABC):
                 "supports_negative_prompt": True,
                 "supports_seed": True,
                 "supports_upscale": True,
+                "supports_keyframes": True,
+                "supports_first_last": True,
+                "supports_draft": True,
+                "supports_draft_enhance": True,
                 "max_reference_images": 7,
             }
 
@@ -170,6 +174,10 @@ class VideoGenProvider(abc.ABC):
             "supports_negative_prompt": False,
             "supports_seed": False,
             "supports_upscale": False,
+            "supports_keyframes": False,
+            "supports_first_last": False,
+            "supports_draft": False,
+            "supports_draft_enhance": False,
             "max_reference_images": 0,
         }
 

@@ -116,3 +116,42 @@ class TestUnifiedDispatch:
 
         self._run({"prompt": "a dog"}, configured="fake")
         assert "upscale" not in provider.last_kwargs
+
+    def test_draft_enhance_schema_and_handler_allow_cache_without_prompt(self):
+        from jsonschema import validate
+        from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
+
+        args = {"draft_cache_url": "https://example.com/cache.bin"}
+        validate(args, VIDEO_GENERATE_SCHEMA["parameters"])
+
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+        result = self._run(args, configured="fake")
+
+        assert result["success"] is True
+        assert provider.last_kwargs["prompt"] == ""
+        assert provider.last_kwargs["draft_cache_url"] == args["draft_cache_url"]
+
+    @pytest.mark.parametrize(
+        "keyframes",
+        [
+            [],
+            [{"frame_index": 0, "image_url": ""}],
+            [{"frame_index": "nope", "image_url": "https://example.com/a.png"}],
+            [
+                {"frame_index": 0, "image_url": "https://example.com/a.png"},
+                {"frame_index": 0, "image_url": "https://example.com/b.png"},
+            ],
+        ],
+    )
+    def test_malformed_keyframes_fail_before_paid_provider_dispatch(self, keyframes):
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+
+        result = self._run(
+            {"prompt": "animate", "keyframes": keyframes},
+            configured="fake",
+        )
+
+        assert "error" in result
+        assert provider.last_kwargs == {}

@@ -234,19 +234,218 @@ class TestFamilyRouting:
         # Seedance uses regular image_url (not start_image_url)
         assert with_fake_fal["arguments"]["image_url"] == "https://example.com/dog.png"
 
+    def test_flux3_image_to_video_unchanged(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "animate this",
+            model="flux-3",
+            image_url="https://example.com/start.png",
+            duration=20,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "blackforestlabs/flux-3/image-to-video"
+        assert with_fake_fal["arguments"]["image_url"] == "https://example.com/start.png"
+        assert "keyframes" not in with_fake_fal["arguments"]
+
+    def test_flux3_draft_image_to_video(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "animate this",
+            model="flux-3",
+            image_url="https://example.com/start.png",
+            duration=20,
+            draft=True,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "blackforestlabs/flux-3/image-to-video/draft"
+        assert result.get("draft") is True
+        assert "resolution" not in with_fake_fal["arguments"]
+
+    def test_flux3_keyframes_to_video(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "walk from the tray to the bite",
+            model="flux-3",
+            duration=20,
+            keyframes=[
+                {"frame_index": 0, "image_url": "https://example.com/a.png"},
+                {"frame_index": 480, "image_url": "https://example.com/b.png"},
+            ],
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "blackforestlabs/flux-3/keyframes-to-video"
+        assert result["modality"] == "keyframes"
+        assert with_fake_fal["arguments"]["keyframes"] == [
+            {"frame_index": 0, "image_url": "https://example.com/a.png"},
+            {"frame_index": 480, "image_url": "https://example.com/b.png"},
+        ]
+        assert "image_url" not in with_fake_fal["arguments"]
+
+    def test_flux3_keyframes_draft(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "walk from the tray to the bite",
+            model="flux-3",
+            duration=10,
+            draft=True,
+            keyframes=[
+                {"frame_index": 0, "image_url": "https://example.com/a.png"},
+                {"frame_index": 120, "image_url": "https://example.com/b.png"},
+            ],
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "blackforestlabs/flux-3/keyframes-to-video/draft"
+
+    def test_flux3_first_last_frame(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "bite the sandwich",
+            model="flux-3",
+            image_url="https://example.com/start.png",
+            end_image_url="https://example.com/end.png",
+            duration=8,
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "blackforestlabs/flux-3/first-last-frame-to-video"
+        args = with_fake_fal["arguments"]
+        assert args["start_image_url"] == "https://example.com/start.png"
+        assert args["end_image_url"] == "https://example.com/end.png"
+        assert "image_url" not in args
+
+    def test_flux3_draft_enhance(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "",
+            model="flux-3",
+            draft_cache_url="https://example.com/cache.bin",
+        )
+        assert result["success"] is True
+        assert with_fake_fal["endpoint"] == "blackforestlabs/flux-3/draft-enhance"
+        assert with_fake_fal["arguments"] == {
+            "draft_cache_url": "https://example.com/cache.bin",
+        }
+
+    def test_flux3_keyframes_need_duration(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "x",
+            model="flux-3",
+            keyframes=[{"frame_index": 0, "image_url": "https://example.com/a.png"}],
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_request"
+
+    def test_other_family_rejects_keyframes(self, with_fake_fal):
+        from plugins.video_gen.fal import FALVideoGenProvider
+
+        result = FALVideoGenProvider().generate(
+            "x",
+            model="pixverse-v6",
+            duration=5,
+            keyframes=[{"frame_index": 0, "image_url": "https://example.com/a.png"}],
+        )
+        assert result["success"] is False
+        assert result["error_type"] == "modality_unsupported"
+
+
+def test_flux3_keyframe_draft_and_enhance_use_managed_gateway(monkeypatch):
+    """The Hermes-credit workflow must stay on managed fal-queue end to end."""
+    from plugins.video_gen import fal as fal_plugin
+
+    calls = []
+
+    class FakeHandle:
+        request_id = "managed-request-1"
+
+        def __init__(self, result):
+            self._result = result
+
+        def get(self):
+            return self._result
+
+    class ManagedClient:
+        def submit(self, endpoint, arguments=None, headers=None):
+            calls.append({
+                "endpoint": endpoint,
+                "arguments": arguments,
+                "headers": headers,
+            })
+            result = {"video": {"url": "https://managed.example/out.mp4"}}
+            if endpoint.endswith("/draft"):
+                result["draft_cache"] = {
+                    "url": "https://managed.example/draft-cache.bin",
+                }
+            return FakeHandle(result)
+
+    direct_client = Mock()
+    direct_client.submit.side_effect = AssertionError(
+        "Nous selection must not fall back to direct FAL billing"
+    )
+    managed_gateway = object()
+    managed_client = ManagedClient()
+
+    monkeypatch.setattr(fal_plugin, "_check_fal_video_available", lambda: True)
+    monkeypatch.setattr(fal_plugin, "_load_fal_client", lambda: None)
+    monkeypatch.setattr(
+        fal_plugin,
+        "_resolve_managed_fal_video_gateway",
+        lambda: managed_gateway,
+    )
+    monkeypatch.setattr(
+        fal_plugin,
+        "_get_managed_fal_video_client",
+        lambda gateway: managed_client if gateway is managed_gateway else None,
+    )
+    monkeypatch.setattr(fal_plugin, "_fal_client", direct_client)
+
+    provider = fal_plugin.FALVideoGenProvider()
+    draft = provider.generate(
+        "move between frames",
+        model="flux-3",
+        duration=10,
+        draft=True,
+        keyframes=[
+            {"frame_index": 0, "image_url": "https://example.com/a.png"},
+            {"frame_index": 240, "image_url": "https://example.com/b.png"},
+        ],
+    )
+    enhanced = provider.generate(
+        "",
+        model="flux-3",
+        draft_cache_url=draft["draft_cache_url"],
+    )
+
+    assert draft["success"] is True
+    assert enhanced["success"] is True
+    assert [call["endpoint"] for call in calls] == [
+        "blackforestlabs/flux-3/keyframes-to-video/draft",
+        "blackforestlabs/flux-3/draft-enhance",
+    ]
+    assert calls[0]["arguments"]["keyframes"][1]["frame_index"] == 240
+    assert "resolution" not in calls[0]["arguments"]
+    assert calls[1]["arguments"] == {
+        "draft_cache_url": "https://managed.example/draft-cache.bin",
+    }
+    direct_client.submit.assert_not_called()
+
 
 class TestFamilyKeyNormalization:
     def test_full_endpoint_paths_resolve_to_their_own_family(self):
         """A configured endpoint path must resolve to the family that declares
         it. The segment scan alone reads the "seedance-2.0" in
         ".../seedance-2.0/mini/..." and bills the full-price family."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _normalize_family_key
+        from plugins.video_gen.fal import FAL_FAMILIES, _family_endpoints, _normalize_family_key
 
         for fid, meta in FAL_FAMILIES.items():
-            for key in ("text_endpoint", "image_endpoint"):
-                endpoint = meta.get(key)
-                if endpoint:
-                    assert _normalize_family_key(endpoint) == fid, endpoint
+            for endpoint in _family_endpoints(meta):
+                assert _normalize_family_key(endpoint) == fid, endpoint
 
     def test_bare_and_prefixed_ids_still_resolve(self):
         from plugins.video_gen.fal import _normalize_family_key

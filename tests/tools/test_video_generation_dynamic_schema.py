@@ -118,6 +118,30 @@ class TestDynamicSchemaBuilder:
         assert props["duration"]["minimum"] == 1
         assert props["duration"]["maximum"] == 15
 
+    def test_full_fal_endpoint_uses_family_guidance(self, cfg_home, monkeypatch):
+        from plugins.video_gen.fal import FALVideoGenProvider
+        from tools.video_generation_tool import _build_dynamic_video_schema
+
+        monkeypatch.setenv("FAL_KEY", "test")
+        video_gen_registry.register_provider(FALVideoGenProvider())
+        _write_cfg(
+            cfg_home,
+            {
+                "video_gen": {
+                    "provider": "fal",
+                    "model": "blackforestlabs/flux-3/keyframes-to-video/draft",
+                }
+            },
+        )
+
+        schema = _build_dynamic_video_schema()
+        props = schema["parameters"]["properties"]
+        assert "FLUX 3 extras" in schema["description"]
+        assert props["duration"]["minimum"] == 5
+        assert props["duration"]["maximum"] == 20
+        assert {"keyframes", "end_image_url", "draft", "draft_cache_url"} <= set(props)
+        assert schema["parameters"]["required"] == []
+
     def test_i2v_only_model_does_not_claim_text_to_video(self, cfg_home):
         """A dual-modality backend with an i2v-only active model must not
         contradict the model caveat with a 'supports both' line."""

@@ -425,6 +425,10 @@ class XAIVideoGenProvider(VideoGenProvider):
             "supports_negative_prompt": False,
             "supports_seed": True,
             "supports_upscale": False,
+            "supports_keyframes": False,
+            "supports_first_last": False,
+            "supports_draft": False,
+            "supports_draft_enhance": False,
             "max_reference_images": MAX_REFERENCE_IMAGES,
         }
 
@@ -568,8 +572,9 @@ async def _generate_xai_video_async(
 
     prompt = (prompt or "").strip()
     image_input = None
-    if (image_url or "").strip():
-        image_input = _image_ref_to_xai_input(image_url)
+    image_url_norm = (image_url or "").strip()
+    if image_url_norm:
+        image_input = _image_ref_to_xai_input(image_url_norm)
         if not image_input:
             return error_response(
                 error=(
@@ -636,7 +641,7 @@ async def _generate_xai_video_async(
         resolved_model = DEFAULT_TEXT_TO_VIDEO_MODEL
 
     clamped_duration = _clamp_duration(duration, has_reference_images=bool(refs))
-    payload = {
+    payload: Dict[str, Any] = {
         "model": resolved_model,
         "prompt": prompt,
         "duration": clamped_duration,

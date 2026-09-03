@@ -21,6 +21,7 @@ Model families (most expose both t2v + i2v; gemini-omni-flash is image-to-video 
     minimax-h3         minimax/h3/text-to-video                   /  minimax/h3/image-to-video
     minimax-h3-max     minimax/h3-max/text-to-video               /  minimax/h3-max/image-to-video
     flux-3             blackforestlabs/flux-3/text-to-video       /  blackforestlabs/flux-3/image-to-video
+                       + keyframes-to-video, first-last-frame-to-video, /draft, draft-enhance
     grok-imagine-1.5   xai/grok-imagine-video/v1.5/text-to-video  /  xai/grok-imagine-video/v1.5/image-to-video
     kling-v3-4k        fal-ai/kling-video/v3/4k/text-to-video     /  fal-ai/kling-video/v3/4k/image-to-video
     happy-horse        alibaba/happy-horse/text-to-video          /  alibaba/happy-horse/image-to-video
@@ -245,10 +246,18 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
         "display": "FLUX 3 (via FAL)",
         "speed": "~60-120s",
         "price": "premium",
-        "strengths": "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
+        "strengths": "Black Forest Labs frontier video. Native audio, 5-20s, keyframes, first/last frame, draft+enhance.",
         "tier": "premium",
         "text_endpoint": "blackforestlabs/flux-3/text-to-video",
         "image_endpoint": "blackforestlabs/flux-3/image-to-video",
+        "keyframes_endpoint": "blackforestlabs/flux-3/keyframes-to-video",
+        "first_last_endpoint": "blackforestlabs/flux-3/first-last-frame-to-video",
+        "draft_enhance_endpoint": "blackforestlabs/flux-3/draft-enhance",
+        "draft": True,
+        "max_keyframes": 10,
+        "keyframe_fps": 24,
+        # Draft endpoints omit resolution; full-quality keeps hd/fhd via 720p/1080p.
+        "draft_drop_keys": ("resolution",),
         # FLUX 3 duration enum is "auto" | 5..20 as JSON integers.
         "duration_int": True,
         "aspect_ratios": ("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"),
@@ -381,7 +390,75 @@ def _load_video_gen_section() -> Dict[str, Any]:
         return {}
 
 
-_ENDPOINT_MODALITY_LEAVES = frozenset({"text-to-video", "image-to-video"})
+def _family_endpoints(meta: Dict[str, Any]) -> Tuple[str, ...]:
+    """Declared FAL app ids for a family, including draft variants."""
+    bases: List[str] = []
+    for key in (
+        "text_endpoint",
+        "image_endpoint",
+        "keyframes_endpoint",
+        "first_last_endpoint",
+        "draft_enhance_endpoint",
+    ):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            bases.append(value.strip())
+    out: List[str] = []
+    for base in bases:
+        out.append(base)
+        if not base.endswith("/draft") and not base.endswith("draft-enhance"):
+            out.append(f"{base}/draft")
+    return tuple(out)
+
+
+def _with_draft_suffix(endpoint: str, draft: bool) -> str:
+    if not draft or endpoint.endswith("/draft") or endpoint.endswith("draft-enhance"):
+        return endpoint
+    return f"{endpoint}/draft"
+
+
+def _file_url(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        url = value.get("url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return None
+
+
+def _normalize_keyframes(raw: Any) -> Optional[List[Dict[str, Any]]]:
+    """Parse ``[{frame_index, image_url}, ...]`` into FAL's keyframe objects."""
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("each keyframe must be an object with frame_index and image_url")
+        url = _file_url(item.get("image_url") or item.get("url"))
+        if not url:
+            raise ValueError("each keyframe needs image_url")
+        try:
+            index = int(item.get("frame_index"))
+        except (TypeError, ValueError):
+            raise ValueError("each keyframe needs an integer frame_index") from None
+        if index < 0:
+            raise ValueError("frame_index must be >= 0")
+        if index in seen:
+            raise ValueError(f"duplicate keyframe frame_index {index}")
+        seen.add(index)
+        out.append({"frame_index": index, "image_url": url})
+    return out
+
+
+_ENDPOINT_MODALITY_LEAVES = frozenset({
+    "text-to-video",
+    "image-to-video",
+    "keyframes-to-video",
+    "first-last-frame-to-video",
+    "draft-enhance",
+})
 
 
 def _normalize_family_key(c: str) -> Optional[str]:
@@ -401,7 +478,7 @@ def _normalize_family_key(c: str) -> Optional[str]:
     # Exact declared endpoint — unambiguous, and beats any segment scan
     # that would otherwise see "seedance-2.0" inside ".../seedance-2.0/mini/...".
     for fid, meta in FAL_FAMILIES.items():
-        if c in (meta.get("text_endpoint"), meta.get("image_endpoint")):
+        if c in _family_endpoints(meta):
             return fid
 
     # Truncated stem of a declared endpoint: "minimax/h3" or
@@ -410,9 +487,7 @@ def _normalize_family_key(c: str) -> Optional[str]:
     # Mini family's deeper ".../seedance-2.0/mini/text-to-video" path.
     stem_hits: List[Tuple[int, str]] = []
     for fid, meta in FAL_FAMILIES.items():
-        for endpoint in (meta.get("text_endpoint"), meta.get("image_endpoint")):
-            if not isinstance(endpoint, str):
-                continue
+        for endpoint in _family_endpoints(meta):
             if not endpoint.startswith(c + "/"):
                 continue
             first = endpoint[len(c) + 1:].split("/", 1)[0]
@@ -475,13 +550,26 @@ def _build_payload(
     negative_prompt: Optional[str],
     audio: Optional[bool],
     seed: Optional[int],
+    keyframes: Optional[List[Dict[str, Any]]] = None,
+    end_image_url: Optional[str] = None,
+    draft: bool = False,
+    draft_cache_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a family-specific payload, dropping keys the family doesn't declare."""
     payload: Dict[str, Any] = {}
 
+    if draft_cache_url:
+        payload["draft_cache_url"] = draft_cache_url
+        return payload
+
     if prompt:
         payload["prompt"] = prompt
-    if image_url:
+    if keyframes:
+        payload["keyframes"] = keyframes
+    elif end_image_url:
+        payload["start_image_url"] = image_url
+        payload["end_image_url"] = end_image_url
+    elif image_url:
         # Some endpoints (e.g. Kling v3 4K image-to-video) expect
         # `start_image_url` instead of `image_url`. The family entry can
         # declare an override.
@@ -527,8 +615,11 @@ def _build_payload(
 
     # Keys the family's image-to-video endpoint rejects outright (e.g.
     # Seedance 2.5 / MiniMax H3 derive aspect_ratio from the input image).
-    if image_url:
-        for key in family.get("image_drop_keys", ()):  # type: ignore[assignment]
+    if image_url and not keyframes and not end_image_url:
+        for key in family.get("image_drop_keys", ()):
+            payload.pop(key, None)
+    if draft:
+        for key in family.get("draft_drop_keys", ()):
             payload.pop(key, None)
 
     # Constant keys the endpoint requires on every request (e.g. MiniMax
@@ -780,6 +871,8 @@ class FALVideoGenProvider(VideoGenProvider):
                 modalities.append("text")
             if meta.get("image_endpoint"):
                 modalities.append("image")
+            if meta.get("keyframes_endpoint") or meta.get("first_last_endpoint"):
+                modalities.append("keyframes")
             entry: Dict[str, Any] = {
                 "id": fid,
                 "display": meta["display"],
@@ -788,6 +881,10 @@ class FALVideoGenProvider(VideoGenProvider):
                 "price": meta["price"],
                 "tier": meta.get("tier", "premium"),
                 "modalities": modalities,
+                # Config may store a full FAL endpoint rather than the family
+                # id. The generic dynamic schema uses these aliases to recover
+                # the active family's exact capabilities and guidance.
+                "aliases": list(_family_endpoints(meta)),
             }
             durs = meta.get("durations")
             if durs:
@@ -855,6 +952,10 @@ class FALVideoGenProvider(VideoGenProvider):
                 "supports_seed": bool(family.get("seed", False)),
                 # SeedVR upscaler chains for any FAL video family.
                 "supports_upscale": True,
+                "supports_keyframes": bool(family.get("keyframes_endpoint")),
+                "supports_first_last": bool(family.get("first_last_endpoint")),
+                "supports_draft": bool(family.get("draft")),
+                "supports_draft_enhance": bool(family.get("draft_enhance_endpoint")),
                 "max_reference_images": 0,
             }
         # Fallback: union across families (legacy shape).
@@ -880,6 +981,10 @@ class FALVideoGenProvider(VideoGenProvider):
             "supports_negative_prompt": True,
             "supports_seed": True,
             "supports_upscale": True,
+            "supports_keyframes": False,
+            "supports_first_last": False,
+            "supports_draft": False,
+            "supports_draft_enhance": False,
             "max_reference_images": 0,
         }
 
@@ -937,10 +1042,91 @@ class FALVideoGenProvider(VideoGenProvider):
 
         prompt = (prompt or "").strip()
         family_id, family = _resolve_family(model)
-
-        # Route: image_url → image-to-video endpoint; else → text-to-video.
+        model_id = (model or "").strip()
+        draft = bool(kwargs.get("draft")) or model_id.rstrip("/").endswith("/draft")
+        draft_cache_url = _file_url(kwargs.get("draft_cache_url"))
+        end_image_url = _file_url(kwargs.get("end_image_url"))
         image_url_norm = (image_url or "").strip() or None
-        if image_url_norm:
+        try:
+            keyframes = _normalize_keyframes(kwargs.get("keyframes"))
+        except ValueError as exc:
+            return error_response(
+                error=str(exc),
+                error_type="invalid_request",
+                provider="fal", model=family_id, prompt=prompt,
+            )
+
+        if draft_cache_url:
+            endpoint = family.get("draft_enhance_endpoint")
+            modality_used = "draft_enhance"
+            draft = False
+            if not endpoint:
+                return error_response(
+                    error=(
+                        f"FAL family {family_id} has no draft-enhance endpoint. "
+                        f"FLUX 3 is the family that supports draft_cache_url."
+                    ),
+                    error_type="modality_unsupported",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+        elif keyframes:
+            endpoint = family.get("keyframes_endpoint")
+            modality_used = "keyframes"
+            max_kf = int(family.get("max_keyframes") or 10)
+            if len(keyframes) > max_kf:
+                return error_response(
+                    error=f"at most {max_kf} keyframes are supported",
+                    error_type="invalid_request",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+            if not endpoint:
+                return error_response(
+                    error=(
+                        f"FAL family {family_id} has no keyframes-to-video "
+                        f"endpoint. Use model=flux-3."
+                    ),
+                    error_type="modality_unsupported",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+            fps = int(family.get("keyframe_fps") or 24)
+            clamped = _clamp_duration(family, duration)
+            if clamped is None:
+                return error_response(
+                    error="keyframes-to-video needs an explicit duration so frame_index can be validated (duration×24fps).",
+                    error_type="invalid_request",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+            duration = clamped
+            limit = duration * fps
+            for frame in keyframes:
+                if frame["frame_index"] > limit:
+                    return error_response(
+                        error=(
+                            f"frame_index {frame['frame_index']} is past duration {duration}s "
+                            f"({limit} frames at {fps}fps)"
+                        ),
+                        error_type="invalid_request",
+                        provider="fal", model=family_id, prompt=prompt,
+                    )
+        elif end_image_url:
+            endpoint = family.get("first_last_endpoint")
+            modality_used = "first_last"
+            if not image_url_norm:
+                return error_response(
+                    error="first/last-frame video needs image_url (start) and end_image_url",
+                    error_type="invalid_request",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+            if not endpoint:
+                return error_response(
+                    error=(
+                        f"FAL family {family_id} has no first-last-frame endpoint. "
+                        f"Use model=flux-3."
+                    ),
+                    error_type="modality_unsupported",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+        elif image_url_norm:
             endpoint = family.get("image_endpoint")
             modality_used = "image"
             if not endpoint:
@@ -967,12 +1153,23 @@ class FALVideoGenProvider(VideoGenProvider):
                     provider="fal", model=family_id, prompt=prompt,
                 )
 
-        if not prompt:
+        if modality_used != "draft_enhance" and not prompt:
             return error_response(
                 error="prompt is required.",
                 error_type="missing_prompt",
                 provider="fal", model=family_id, prompt=prompt,
             )
+        if draft:
+            if modality_used == "draft_enhance" or not endpoint:
+                draft = False
+            elif not family.get("keyframes_endpoint") and not family.get("draft_enhance_endpoint"):
+                return error_response(
+                    error=f"FAL family {family_id} does not support Flux 3 /draft endpoints.",
+                    error_type="modality_unsupported",
+                    provider="fal", model=family_id, prompt=prompt,
+                )
+            else:
+                endpoint = _with_draft_suffix(str(endpoint), True)
 
         payload = _build_payload(
             family,
@@ -984,6 +1181,10 @@ class FALVideoGenProvider(VideoGenProvider):
             negative_prompt=negative_prompt,
             audio=audio,
             seed=seed,
+            keyframes=keyframes,
+            end_image_url=end_image_url,
+            draft=draft,
+            draft_cache_url=draft_cache_url,
         )
 
         try:
@@ -1033,6 +1234,11 @@ class FALVideoGenProvider(VideoGenProvider):
         extra: Dict[str, Any] = {"endpoint": endpoint, "upscaled": upscaled}
         if upscaled:
             extra["upscale_factor"] = UPSCALER_FACTOR
+        if draft:
+            extra["draft"] = True
+            cache_url = _file_url((result or {}).get("draft_cache") if isinstance(result, dict) else None)
+            if cache_url:
+                extra["draft_cache_url"] = cache_url
         if isinstance(video, dict):
             if video.get("file_size") and not upscaled:
                 extra["file_size"] = video["file_size"]

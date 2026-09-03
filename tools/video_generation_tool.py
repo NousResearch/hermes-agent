@@ -21,10 +21,14 @@ Unified surface
 One tool covers the common cases - text-to-video, image-to-video, and
 reference-to-video - with a compact schema:
 
-    prompt                   text instruction (required)
-    image_url                drives image-to-video
+    prompt                   text instruction (required unless draft_cache_url)
+    image_url                drives image-to-video / first frame
+    end_image_url            optional last-frame still (FLUX 3 first/last)
+    keyframes                optional [{frame_index, image_url}, ...] (FLUX 3)
+    draft                    optional; FLUX 3 cheap preview (/draft)
+    draft_cache_url          optional; FLUX 3 draft-enhance of a prior draft
     reference_image_urls     list, up to provider-declared cap
-    duration                 seconds (provider clamps)
+    duration                 seconds (provider clamps; required for keyframes)
     aspect_ratio             "16:9" | "9:16" | "1:1" | ...
     resolution               "480p" | "540p" | "720p" | "1080p"
     negative_prompt          optional (Pixverse/Kling style)
@@ -64,9 +68,10 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
     # Placeholder — description AND params are rebuilt dynamically at
     # get_tool_definitions() time from the active provider's declared
     # capabilities() and the active model's catalog entry. Optional args
-    # (image_url, reference_image_urls, negative_prompt, audio, seed,
-    # upscale) are advertised ONLY when the active backend/model honors
-    # them; the handler accepts them regardless (replay compat — providers
+    # (image_url, references, negative_prompt, audio, seed, upscale,
+    # keyframes, first/last frames, and draft/enhance) are advertised ONLY
+    # when the active backend/model honors them; the handler accepts them
+    # regardless (replay compat — providers
     # clamp/ignore). See _build_dynamic_video_schema().
     "description": "(rebuilt at get_definitions() time — see _build_dynamic_video_schema)",
     "parameters": {
@@ -110,7 +115,6 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
             # per-capability by _build_dynamic_video_schema. Do not re-add
             # them statically.
         },
-        "required": ["prompt"],
     },
 }
 
@@ -262,9 +266,45 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+def _normalize_keyframes_arg(value: Any) -> Optional[List[Dict[str, Any]]]:
+    """Normalize keyframes without silently changing the requested modality."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value:
+        raise ValueError("keyframes must be a non-empty list")
+    if len(value) > 10:
+        raise ValueError("at most 10 keyframes are supported")
+
+    out: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("each keyframe must be an object with frame_index and image_url")
+        url = item.get("image_url") or item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("each keyframe needs image_url")
+        try:
+            index = int(item.get("frame_index"))
+        except (TypeError, ValueError):
+            raise ValueError("each keyframe needs an integer frame_index") from None
+        if index < 0:
+            raise ValueError("frame_index must be >= 0")
+        if index in seen:
+            raise ValueError(f"duplicate keyframe frame_index {index}")
+        seen.add(index)
+        out.append({"frame_index": index, "image_url": url.strip()})
+    return out
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
+    end_image_url = (args.get("end_image_url") or "").strip() or None
+    draft_cache_url = (args.get("draft_cache_url") or "").strip() or None
+    try:
+        keyframes = _normalize_keyframes_arg(args.get("keyframes"))
+    except ValueError as exc:
+        return tool_error(str(exc))
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
     task_id = _kw.get("task_id")
 
@@ -277,6 +317,23 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
         return confine_error
+    if end_image_url:
+        _, confined_end, confine_error = _confine_source_images(
+            None, [end_image_url], task_id)
+        if confine_error is not None:
+            return confine_error
+        if confined_end:
+            end_image_url = confined_end[0]
+    if keyframes:
+        _, confined_kf, confine_error = _confine_source_images(
+            None, [frame["image_url"] for frame in keyframes], task_id)
+        if confine_error is not None:
+            return confine_error
+        if confined_kf and len(confined_kf) == len(keyframes):
+            keyframes = [
+                {"frame_index": frame["frame_index"], "image_url": url}
+                for frame, url in zip(keyframes, confined_kf)
+            ]
     duration = _coerce_int(args.get("duration"))
     aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
@@ -286,10 +343,9 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     upscale = _coerce_bool(args.get("upscale"))
     model_override = (args.get("model") or "").strip() or None
 
-    # Soft validation — providers do their own. Prompt is required by the
-    # schema; the backend may still accept image-only on its image-to-video
-    # endpoint but our surface always needs a prompt.
-    if not prompt:
+    # Soft validation — providers do their own. Prompt is required except
+    # for FLUX 3 draft-enhance, which only needs the prior draft_cache_url.
+    if not prompt and not draft_cache_url:
         return tool_error("prompt is required for video generation")
     if "operation" in args or "video_url" in args:
         return tool_error(
@@ -310,6 +366,10 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         "model": model,
         "_model_override_explicit": bool(model_override),
         "image_url": image_url,
+        "end_image_url": end_image_url,
+        "keyframes": keyframes,
+        "draft": _coerce_bool(args.get("draft")),
+        "draft_cache_url": draft_cache_url,
         "reference_image_urls": reference_image_urls,
         "duration": duration,
         "aspect_ratio": aspect_ratio,
@@ -469,10 +529,19 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         models = []
 
     active_model = configured_model or provider.default_model()
-    model_meta = next(
-        (m for m in models if isinstance(m, dict) and m.get("id") == active_model),
-        {},
-    )
+
+    def _matches_active_model(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if entry.get("id") == active_model:
+            return True
+        aliases = entry.get("aliases")
+        return (
+            isinstance(aliases, (list, tuple, set))
+            and active_model in aliases
+        )
+
+    model_meta = next((m for m in models if _matches_active_model(m)), {})
 
     # ---- description -------------------------------------------------
     for c in _format_model_caveats(model_meta, caps):
@@ -489,6 +558,17 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         parts.append("- image-to-video only: image_url is REQUIRED")
     elif not can_i2v:
         parts.append("- text-to-video only (no image input)")
+
+    supports_keyframes = bool(caps.get("supports_keyframes"))
+    supports_first_last = bool(caps.get("supports_first_last"))
+    supports_draft = bool(caps.get("supports_draft"))
+    supports_draft_enhance = bool(caps.get("supports_draft_enhance"))
+    if any((supports_keyframes, supports_first_last, supports_draft, supports_draft_enhance)):
+        parts.append(
+            "- FLUX 3 extras: keyframes pin images at 24fps; image_url + "
+            "end_image_url pins the boundaries; draft=true creates a cheap "
+            "preview; draft_cache_url enhances that exact draft"
+        )
 
     if provider.name == "xai":
         parts.append(
@@ -528,6 +608,54 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
                     "(style or character refs)."
                 ),
             }
+
+    if supports_first_last:
+        properties["end_image_url"] = {
+            "type": "string",
+            "description": (
+                "Public HTTPS URL of the last-frame still. Pass image_url "
+                "for the first frame."
+            ),
+        }
+    if supports_keyframes:
+        properties["keyframes"] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "frame_index": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Frame position at 24fps.",
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": "Public HTTPS or data URL of the keyframe image.",
+                    },
+                },
+                "required": ["frame_index", "image_url"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "description": (
+                "FLUX 3 storyboard keyframes. Requires explicit duration; "
+                "frame_index values must be unique and <= duration*24."
+            ),
+        }
+    if supports_draft:
+        properties["draft"] = {
+            "type": "boolean",
+            "description": "Generate a cheap FLUX 3 draft preview.",
+        }
+    if supports_draft_enhance:
+        properties["draft_cache_url"] = {
+            "type": "string",
+            "description": (
+                "FLUX 3 draft cache URL returned by a prior draft. Enhances "
+                "that exact shot at full quality; prompt is not needed."
+            ),
+        }
 
     min_duration = model_meta.get("min_duration", caps.get("min_duration"))
     max_duration = model_meta.get("max_duration", caps.get("max_duration"))
@@ -591,7 +719,9 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         "parameters": {
             "type": "object",
             "properties": properties,
-            "required": ["prompt"],
+            # draft-enhance only needs the opaque cache from the draft call;
+            # the handler enforces prompt-or-cache for this capability.
+            "required": [] if supports_draft_enhance else ["prompt"],
         },
     }
 

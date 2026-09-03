@@ -69,6 +69,10 @@ class DeepInfraVideoGenProvider(OpenAICompatibleVideoGenProvider):
             "supports_negative_prompt": True,
             "supports_seed": True,
             "supports_upscale": False,
+            "supports_keyframes": False,
+            "supports_first_last": False,
+            "supports_draft": False,
+            "supports_draft_enhance": False,
             "max_reference_images": 0,
         }
 

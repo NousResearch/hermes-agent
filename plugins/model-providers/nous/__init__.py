@@ -130,6 +130,10 @@ class NousProfile(ProviderProfile):
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
         return extra_body, {}
 
+    def owns_reasoning_policy(self, **context: Any) -> bool:
+        """Nous owns reasoning emission, including intentional omission."""
+        return bool(context.get("supports_reasoning"))
+
 
 nous = NousProfile(
     name="nous",

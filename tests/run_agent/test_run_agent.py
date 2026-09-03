@@ -2796,6 +2796,71 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_omits_disabled_reasoning_for_mandatory_nous_model(
+        self, agent, monkeypatch
+    ):
+        """The summary path must honor the same Nous capability gate as a normal turn."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "_nous_reasoning_caps_failed_at", None)
+        monkeypatch.setattr(
+            models_mod,
+            "_nous_reasoning_caps_cache",
+            {
+                "stealth/ox-alpha": {
+                    "supports_reasoning": True,
+                    "supported_efforts": None,
+                    "mandatory": True,
+                }
+            },
+        )
+        agent.provider = "nous"
+        agent.base_url = "https://inference-api.nousresearch.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.model = "stealth/ox-alpha"
+        agent.reasoning_config = {"enabled": False, "effort": "none"}
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}], 32
+        )
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_unrelated_profile_override_preserves_generic_summary_reasoning(
+        self, agent, monkeypatch
+    ):
+        """An unrelated profile hook must not implicitly own reasoning policy."""
+        import providers
+        from providers.base import ProviderProfile
+
+        class UnrelatedProfile(ProviderProfile):
+            def build_api_kwargs_extras(self, **context):
+                return {}, {"user": "summary-test"}
+
+        monkeypatch.setattr(
+            providers,
+            "get_provider_profile",
+            lambda _provider: UnrelatedProfile(name="unrelated"),
+        )
+        agent.provider = "unrelated"
+        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        monkeypatch.setattr(agent, "_supports_reasoning_extra_body", lambda: True)
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "do stuff"}], 32
+        )
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == agent.reasoning_config
+        assert kwargs["user"] == "summary-test"
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""

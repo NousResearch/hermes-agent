@@ -3361,6 +3361,62 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             from agent.portal_tags import nous_portal_tags as _portal_tags
             summary_extra_body["tags"] = _portal_tags()
 
+        # The summary call bypasses ChatCompletionsTransport, so project the
+        # provider's canonical reasoning policy here as well.  This matters
+        # for reasoning-mandatory Nous routes: their profile deliberately
+        # omits an attempted disable, while the generic block above would
+        # otherwise send it and receive HTTP 400.
+        summary_profile_top_level = {}
+        provider_preferences = _provider_preferences_for_agent(agent)
+        profile_extra_body = {}
+        try:
+            from providers import get_provider_profile
+            provider_profile = get_provider_profile(agent.provider)
+            if provider_profile is not None:
+                profile_extra_body = provider_profile.build_extra_body(
+                    session_id=getattr(agent, "session_id", None),
+                    provider_preferences=provider_preferences or None,
+                    model=agent.model,
+                    base_url=agent.base_url,
+                    reasoning_config=agent.reasoning_config,
+                )
+                profile_reasoning_extra, summary_profile_top_level = (
+                    provider_profile.build_api_kwargs_extras(
+                        reasoning_config=agent.reasoning_config,
+                        supports_reasoning=agent._supports_reasoning_extra_body(),
+                        model=agent.model,
+                        base_url=agent.base_url,
+                        session_id=getattr(agent, "session_id", None),
+                    )
+                )
+                profile_reasoning_keys = {
+                    "reasoning",
+                    "reasoning_effort",
+                    "thinking",
+                    "enable_thinking",
+                }
+                profile_owns_reasoning = provider_profile.owns_reasoning_policy(
+                    reasoning_config=agent.reasoning_config,
+                    supports_reasoning=agent._supports_reasoning_extra_body(),
+                    model=agent.model,
+                    base_url=agent.base_url,
+                    session_id=getattr(agent, "session_id", None),
+                ) or bool(
+                    profile_reasoning_keys.intersection(profile_reasoning_extra or {})
+                    or profile_reasoning_keys.intersection(
+                        summary_profile_top_level or {}
+                    )
+                )
+                if profile_owns_reasoning:
+                    summary_extra_body.pop("reasoning", None)
+                summary_extra_body.update(profile_reasoning_extra or {})
+        except Exception as exc:
+            logger.warning(
+                "Summary provider policy projection failed for %s: %s",
+                agent.provider,
+                exc,
+            )
+
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
             codex_kwargs.pop("tools", None)
@@ -3379,26 +3435,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
             if _lm_reasoning_effort is not None:
                 summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+            # Profile top-level kwargs intentionally override generic summary
+            # defaults because the profile owns the provider wire contract.
+            summary_kwargs.update(summary_profile_top_level or {})
 
             # Merge the profile's canonical body even when routing is unset:
             # profiles may always emit required metadata such as Portal tags.
-            provider_preferences = _provider_preferences_for_agent(agent)
-            profile_extra_body = {}
-            try:
-                from providers import get_provider_profile
-
-                provider_profile = get_provider_profile(agent.provider)
-                if provider_profile is not None:
-                    profile_extra_body = provider_profile.build_extra_body(
-                        session_id=getattr(agent, "session_id", None),
-                        provider_preferences=provider_preferences or None,
-                        model=agent.model,
-                        base_url=agent.base_url,
-                        reasoning_config=agent.reasoning_config,
-                    )
-            except Exception:
-                pass
-
             if profile_extra_body:
                 summary_extra_body.update(profile_extra_body)
             if provider_preferences and "provider" not in profile_extra_body and (
@@ -3514,6 +3556,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
                 if _lm_reasoning_effort is not None:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
+                summary_kwargs.update(summary_profile_top_level or {})
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
 

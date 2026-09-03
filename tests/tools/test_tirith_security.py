@@ -604,8 +604,8 @@ class TestReleaseDownloadLimits:
         response.__enter__.return_value = response
         response.__exit__.return_value = False
         response.read.return_value = b""
-        urlopen = MagicMock(return_value=response)
-        monkeypatch.setattr(_tirith_mod.urllib.request, "urlopen", urlopen)
+        secure_open = MagicMock(return_value=response)
+        monkeypatch.setattr(_tirith_mod, "open_credentialed_url", secure_open)
         monkeypatch.setattr(
             "agent.secret_scope.get_secret",
             lambda key: "secret-token" if key == "GITHUB_TOKEN" else None,
@@ -617,7 +617,8 @@ class TestReleaseDownloadLimits:
             max_bytes=4,
         )
 
-        initial_request = urlopen.call_args.args[0]
+        initial_request = secure_open.call_args.args[0]
+        assert secure_open.call_args.kwargs == {"timeout": 10}
         assert initial_request.get_header("Authorization") == "token secret-token"
         redirected_request = (
             _tirith_mod.urllib.request.HTTPRedirectHandler().redirect_request(
@@ -638,8 +639,8 @@ class TestReleaseDownloadLimits:
         response.__exit__.return_value = False
         response.read.side_effect = [b"12345", b""]
         monkeypatch.setattr(
-            _tirith_mod.urllib.request,
-            "urlopen",
+            _tirith_mod,
+            "open_credentialed_url",
             MagicMock(return_value=response),
         )
         destination = tmp_path / "metadata"

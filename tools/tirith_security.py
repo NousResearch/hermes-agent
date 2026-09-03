@@ -48,6 +48,7 @@ import time
 import urllib.request
 from typing import Protocol, TypedDict, cast
 
+from hermes_cli.urllib_security import open_credentialed_url
 from hermes_constants import get_hermes_home, is_termux
 
 logger = logging.getLogger(__name__)
@@ -774,7 +775,7 @@ def _download_file(
         req.add_unredirected_header("Authorization", f"token {token}")
     written = 0
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp, open(dest, "wb") as f:
+        with open_credentialed_url(req, timeout=timeout) as resp, open(dest, "wb") as f:
             while chunk := resp.read(min(1024 * 1024, max_bytes - written + 1)):
                 written += len(chunk)
                 if written > max_bytes:

@@ -1082,9 +1082,8 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
         $errDone = Step-PipeDrain $stderrReader ([ref]$errTask) $errBuffer $errSink ([ref]$moved)
-        # Do not reset $lastProgressAt on $moved -- pipe chatter is not
-        # progress (#102283). A leaked gateway heartbeat would keep this
-        # clock fresh forever.
+        # Do not reset $lastProgressAt on $moved -- pipe chatter is not progress
+        # (#102283). A leaked gateway heartbeat would keep this clock fresh forever.
         if ($proc.HasExited) {
             if ($outDone -and $errDone) { break }
             # Clock starts at the step's exit, not at its start: a slow step is
@@ -1321,11 +1320,7 @@ exit 3
 param([int]$Hold)
 Write-Output "gateway-like chatter start"
 [Console]::Out.Flush()
-for ($i = 0; $i -lt $Hold; $i++) {
-    Write-Output ("heartbeat {0}" -f $i)
-    [Console]::Out.Flush()
-    Start-Sleep -Seconds 1
-}
+for ($i = 0; $i -lt $Hold; $i++) { Write-Output ("heartbeat {0}" -f $i); [Console]::Out.Flush(); Start-Sleep -Seconds 1 }
 exit 0
 '@
     [System.IO.File]::WriteAllText($childPs1, $childSource)

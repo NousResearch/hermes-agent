@@ -34,6 +34,15 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+
+    memory_sub.add_parser("pending", help="List staged memory writes awaiting approval")
+    _approve_parser = memory_sub.add_parser("approve", help="Approve a staged memory write")
+    _approve_parser.add_argument("id", help="Pending write id, or 'all'")
+    _reject_parser = memory_sub.add_parser("reject", help="Reject a staged memory write")
+    _reject_parser.add_argument("id", help="Pending write id, or 'all'")
+    _approval_parser = memory_sub.add_parser("approval", help="Show or set memory.write_approval")
+    _approval_parser.add_argument("mode", nargs="?", choices=["on", "off", "true", "false", "yes", "no", "1", "0"], help="Approval gate mode")
+
     _reset_parser = memory_sub.add_parser(
         "reset",
         help="Erase all built-in memory (MEMORY.md and USER.md)",

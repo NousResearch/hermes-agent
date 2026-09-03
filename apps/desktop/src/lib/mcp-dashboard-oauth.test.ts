@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { completeMcpDesktopOAuth } from './mcp-dashboard-oauth'
+import { completeMcpDesktopOAuth, isValidAuthorizationUrl } from './mcp-dashboard-oauth'
+
+describe('isValidAuthorizationUrl', () => {
+  it('accepts http(s) URLs with a host', () => {
+    expect(isValidAuthorizationUrl('https://idp.example/authorize')).toBe(true)
+    expect(isValidAuthorizationUrl('http://127.0.0.1:8080/oauth')).toBe(true)
+  })
+
+  it('rejects non-http schemes', () => {
+    expect(isValidAuthorizationUrl('javascript:alert(1)')).toBe(false)
+    expect(isValidAuthorizationUrl('file:///etc/passwd')).toBe(false)
+    expect(isValidAuthorizationUrl('not a url')).toBe(false)
+  })
+})
 
 describe('completeMcpDesktopOAuth', () => {
   it('opens the returned authorization URL and polls through approval', async () => {
@@ -40,6 +53,28 @@ describe('completeMcpDesktopOAuth', () => {
 
     expect(openExternal).toHaveBeenCalledWith('https://idp.example/authorize')
     expect(result.status).toBe('approved')
+  })
+
+  it('rejects non-http(s) authorization URLs before openExternal', async () => {
+    const openExternal = vi.fn()
+
+    await expect(
+      completeMcpDesktopOAuth({
+        serverName: 'reports',
+        start: async () => ({
+          flow_id: 'flow-bad-scheme',
+          server_name: 'reports',
+          status: 'authorization_required',
+          authorization_url: 'file:///etc/passwd',
+          error: null
+        }),
+        status: vi.fn(),
+        openExternal,
+        sleep: async () => {}
+      })
+    ).rejects.toThrow(/http\(s\) URL/)
+
+    expect(openExternal).not.toHaveBeenCalled()
   })
 
   it('retries a transient status failure', async () => {

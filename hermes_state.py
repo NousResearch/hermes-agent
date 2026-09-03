@@ -312,9 +312,13 @@ def _answer_interrupted_tool_calls(
     if idx < 0 or messages[idx].get("role") != "assistant":
         return messages
     synthetic = []
+    skipped_idless = 0
     for tc in messages[idx].get("tool_calls") or []:
         call_id = coalesce_tool_call_id(tc)
-        if not call_id or call_id in answered:
+        if not call_id:
+            skipped_idless += 1
+            continue
+        if call_id in answered:
             continue
         fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
         name = (fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)) or ""
@@ -329,6 +333,11 @@ def _answer_interrupted_tool_calls(
         logger.info(
             "Answered %d interrupted tool call(s) while restoring session (#99869)",
             len(synthetic),
+        )
+    if skipped_idless:
+        logger.debug(
+            "Skipped %d trailing tool call(s) with no pairing id while restoring session",
+            skipped_idless,
         )
     return messages + synthetic
 

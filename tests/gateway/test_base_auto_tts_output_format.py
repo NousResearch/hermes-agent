@@ -116,7 +116,7 @@ async def _run_auto_tts(adapter: _DummyAdapter, platform: Platform):
 
 
 @pytest.mark.asyncio
-async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
+async def test_base_auto_tts_logs_and_skips_playback_when_tool_reports_failure(caplog):
     """A success=False tool result must not deliver a stale/partial file."""
     adapter = _DummyAdapter(Platform.TELEGRAM)
     adapter._keep_typing = _hold_typing()
@@ -139,5 +139,6 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
         )
 
     adapter.play_tts.assert_not_awaited()
+    assert "[Telegram] Auto-TTS failed: backend exploded" in caplog.text
     # Text reply still goes out.
     assert adapter.sent and adapter.sent[0]["content"] == "reply text"

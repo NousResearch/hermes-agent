@@ -3414,6 +3414,24 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
 # ===========================================================================
 # Main tool function
 # ===========================================================================
+def _get_tts_write_error(path: Path) -> Optional[str]:
+    """Return the classified fail-closed error for a TTS output path."""
+    from agent.file_safety import (
+        get_write_denied_error,
+        is_write_approval_required,
+    )
+
+    error = get_write_denied_error(str(path), verb="TTS write")
+    if error is not None:
+        return error
+    if is_write_approval_required(str(path)):
+        return (
+            f"TTS write denied: '{path}' requires explicit approval. "
+            "Choose a normal audio output location."
+        )
+    return None
+
+
 def _text_to_speech_single(
     text: str,
     output_path: Optional[str] = None,
@@ -3506,15 +3524,11 @@ def _text_to_speech_single(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
-        from agent.file_safety import is_write_approval_required, is_write_denied
-
-        if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
+        write_error = _get_tts_write_error(file_path)
+        if write_error is not None:
             return json.dumps({
                 "success": False,
-                "error": (
-                    f"output_path targets a protected credential or system path: "
-                    f"{file_path}. Choose a normal audio output location."
-                ),
+                "error": write_error,
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -3865,14 +3879,11 @@ def text_to_speech_tool(
             base_path = _configured_command_tts_output_path(
                 base_path, command_provider_config,
             )
-        from agent.file_safety import is_write_approval_required, is_write_denied
-        if is_write_denied(str(base_path)) or is_write_approval_required(str(base_path)):
+        write_error = _get_tts_write_error(base_path)
+        if write_error is not None:
             return json.dumps({
                 "success": False,
-                "error": (
-                    f"output_path targets a protected credential or system path: "
-                    f"{base_path}. Choose a normal audio output location."
-                ),
+                "error": write_error,
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")

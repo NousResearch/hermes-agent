@@ -6840,6 +6840,12 @@ class BasePlatformAdapter(ABC):
                                     if path and Path(path).exists()
                                 ]
                                 _tts_path = _tts_paths[0] if _tts_paths else None
+                            else:
+                                logger.warning(
+                                    "[%s] Auto-TTS failed: %s",
+                                    self.name,
+                                    tts_data.get("error") or "unknown tool error",
+                                )
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 

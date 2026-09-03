@@ -47,19 +47,24 @@ _TOOLS = (
 )
 
 
-def _on_session_end(**kwargs) -> None:
+def _on_session_finalize(**kwargs) -> None:
     """Best-effort cleanup — if a meet bot is still running when the session
-    ends, leave the call so we don't orphan a headless Chromium.
+    actually ends (CLI/TUI/gateway teardown or /reset), leave the call so we
+    don't orphan a headless Chromium.
 
-    No-ops when nothing is active. Swallows all exceptions — session end must
-    not fail because the bot cleanup hit an edge case.
+    Registered on ``on_session_finalize`` — the real session-boundary hook —
+    NOT ``on_session_end``, which fires at the end of every agent turn and
+    would kill the bot right after the first turn completes.
+
+    No-ops when nothing is active. Swallows all exceptions — session finalize
+    must not fail because the bot cleanup hit an edge case.
     """
     try:
         status = pm.status()
         if status.get("ok") and status.get("alive"):
-            pm.stop(reason="session ended")
+            pm.stop(reason="session finalized")
     except Exception as e:  # pragma: no cover — defensive
-        logger.debug("google_meet on_session_end cleanup failed: %s", e)
+        logger.debug("google_meet on_session_finalize cleanup failed: %s", e)
 
 
 def register(ctx) -> None:
@@ -100,4 +105,4 @@ def register(ctx) -> None:
         ),
     )
 
-    ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("on_session_finalize", _on_session_finalize)

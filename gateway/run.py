@@ -16929,6 +16929,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            # Quiesce cron and deferred agent workers BEFORE the session databases
+            # are closed. These workers can write to the database (e.g. cron job
+            # state, delivery obligations) and must be fully stopped before we
+            # checkpoint/close the DB to avoid page-0 corruption (#102198).
+            _writer_quiesce_budget = max(
+                0.0,
+                min(
+                    5.0,  # cap at 5s to not block shutdown indefinitely
+                    resolve_shutdown_watchdog_delay(timeout)
+                    - _phase_elapsed()
+                    - 1.0,
+                ),
+            )
+            if _writer_quiesce_budget > 0:
+                logger.info(
+                    "Shutdown phase: quiescing cron/deferred workers (budget %.2fs)",
+                    _writer_quiesce_budget,
+                )
+                _writer_deadline = asyncio.get_running_loop().time() + _writer_quiesce_budget
+                while (
+                    self._active_cron_job_count() > 0
+                    or _deferred_worker_count() > 0
+                ) and asyncio.get_running_loop().time() < _writer_deadline:
+                    await asyncio.sleep(0.05)
+                _remaining_cron = self._active_cron_job_count()
+                _remaining_deferred = _deferred_worker_count()
+                if _remaining_cron or _remaining_deferred:
+                    logger.warning(
+                        "Shutdown: %d cron job(s) and %d deferred worker(s) still live "
+                        "after quiesce budget — proceeding with DB close",
+                        _remaining_cron, _remaining_deferred,
+                    )
+                else:
+                    logger.info(
+                        "Shutdown phase: cron/deferred workers quiesced at +%.2fs",
+                        _phase_elapsed(),
+                    )
+
             # Reap the process-global auxiliary-client cache once at the very
             # end of teardown.  Per-turn cleanup runs in _cleanup_agent_resources
             # for each active agent, but clients bound to worker-thread loops

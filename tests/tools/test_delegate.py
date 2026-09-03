@@ -2355,5 +2355,151 @@ class TestRegistrySurfaceChain(unittest.TestCase):
             self.assertNotIn("api_key", entry)
 
 
+# =========================================================================
+# KENSEI delegation fidelity: receipts, nested schemas, auto-continue
+# =========================================================================
+
+
+class TestHasReceipts(unittest.TestCase):
+    """_has_receipts detects verifiable handles, ignores bare prose."""
+
+    def test_absolute_path_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("Wrote /home/kensei/repos/KenseiAgent/a.py"))
+
+    def test_diff_stat_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("3 files changed, 10 insertions(+)"))
+
+    def test_full_hash_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("Committed 1fc3d37d619b6e06491af4d914c26eb8b14ff79a on main"))
+
+    def test_short_hash_needs_commit_context(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("commit 1fc3d37 on main"))
+        self.assertFalse(_has_receipts("id sa-0-8c826e03 finished ok"))
+
+    def test_no_files_statement_counts(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertTrue(_has_receipts("Research only, no files changed."))
+
+    def test_bare_prose_does_not_count(self):
+        from tools.delegate_tool import _has_receipts
+        self.assertFalse(_has_receipts("All done, everything works great."))
+        self.assertFalse(_has_receipts(""))
+        self.assertFalse(_has_receipts(None))
+
+
+class TestNestedDefaultSchema(unittest.TestCase):
+    """Nested spawns get a shape even when the caller supplies none."""
+
+    def test_nested_spawn_gets_default_contract(self):
+        from tools.delegate_tool import _NESTED_DEFAULT_SCHEMA
+        parent = _make_mock_parent(depth=1)
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"max_spawn_depth": 3}):
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.model = "test"
+                mock_child.session_prompt_tokens = 0
+                mock_child.session_completion_tokens = 0
+                mock_child.run_conversation.return_value = {
+                    "final_response": "done",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+                MockAgent.return_value = mock_child
+                delegate_task(goal="nested shape test", parent_agent=parent)
+                attached = mock_child._delegate_output_schema
+                self.assertIsInstance(attached, dict)
+                self.assertIn("summary", attached["required"])
+                self.assertEqual(attached, _NESTED_DEFAULT_SCHEMA)
+
+    def test_default_schema_coerces_clean(self):
+        from tools.delegation_output_schema import coerce_output_schema
+        from tools.delegate_tool import _NESTED_DEFAULT_SCHEMA
+        schema, err = coerce_output_schema(_NESTED_DEFAULT_SCHEMA)
+        self.assertIsNone(err)
+        self.assertIsInstance(schema, dict)
+
+
+class TestTruncationAutoContinue(unittest.TestCase):
+    """One bounded continuation turn rescues cut-but-summarized work."""
+
+    def _run_truncated(self, kill_switch=None):
+        parent = _make_mock_parent(depth=0)
+        cfg = {}
+        if kill_switch is not None:
+            cfg["continue_on_truncation"] = kill_switch
+        with patch("tools.delegate_tool._load_config", return_value=cfg):
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                mock_child.model = "test"
+                mock_child.session_prompt_tokens = 0
+                mock_child.session_completion_tokens = 0
+                mock_child.run_conversation.side_effect = [
+                    {
+                        "final_response": "partial work in /tmp/x.py",
+                        "completed": False,
+                        "interrupted": False,
+                        "api_calls": 2,
+                        "messages": [],
+                    },
+                    {
+                        "final_response": "finished the rest",
+                        "completed": True,
+                        "interrupted": False,
+                        "api_calls": 1,
+                        "messages": [],
+                    },
+                ]
+                MockAgent.return_value = mock_child
+                result = json.loads(
+                    delegate_task(goal="cut work test", parent_agent=parent)
+                )
+                return result["results"][0], mock_child
+
+    def test_continuation_runs_and_marks(self):
+        entry, mock_child = self._run_truncated()
+        self.assertEqual(mock_child.run_conversation.call_count, 2)
+        self.assertTrue(entry["truncated"])
+        self.assertTrue(entry["continued"])
+        self.assertEqual(entry["continuation"], "finished the rest")
+        self.assertEqual(entry["api_calls"], 3)
+        self.assertTrue(entry["receipts_present"])
+
+    def test_kill_switch_skips_continuation(self):
+        entry, mock_child = self._run_truncated(kill_switch=False)
+        self.assertEqual(mock_child.run_conversation.call_count, 1)
+        self.assertTrue(entry["truncated"])
+        self.assertFalse(entry["continued"])
+        self.assertIsNone(entry["continuation"])
+
+    def test_receipts_flag_off_without_handles(self):
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "test"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "All done, everything works great.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+            result = json.loads(
+                delegate_task(goal="no handles test", parent_agent=parent)
+            )
+            entry = result["results"][0]
+            self.assertFalse(entry["receipts_present"])
+            self.assertFalse(entry["continued"])
+
+
 if __name__ == "__main__":
     unittest.main()

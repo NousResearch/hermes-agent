@@ -283,6 +283,90 @@ def _check_delegation_cycle(parent_agent, profile_name: str | None) -> None:
             )
         _cur = _ancestor
 
+# KENSEI: delegation fidelity helpers (direct fix, 2026-09-04).
+# 1) Receipts — every child summary must carry verifiable handles.
+# 2) Nested default schema — nested spawns get a shape even when the
+#    caller supplies none, so the existing validate + one-retry path
+#    always has a contract to enforce.
+# 3) Truncation auto-continue — one bounded extra turn carrying forward
+#    what was already established, instead of dropping the cut work.
+
+# Heuristic receipt signals: absolute paths, diff stats, commit hashes,
+# or an explicit no-files statement. Documented as heuristic — the flag
+# is advisory (parent-visible), never a spawn blocker.
+_RECEIPT_PATH_RE = None  # compiled lazily to keep import cost flat
+_RECEIPT_DIFF_RE = None
+_RECEIPT_HASH_RE = None
+
+
+def _receipt_res() -> tuple:
+    """Compile (once) the receipt-signal regexes."""
+    import re as _re
+
+    global _RECEIPT_PATH_RE, _RECEIPT_DIFF_RE, _RECEIPT_HASH_RE
+    if _RECEIPT_PATH_RE is None:
+        _RECEIPT_PATH_RE = _re.compile(r"(?:/home/|/tmp/|[\w.\-]+/[\w.\-/]+(?:\.[\w]+)?)")
+        _RECEIPT_DIFF_RE = _re.compile(r"\d+\s+insertions?\(\+\)|\d+\s+files?\s+changed|diff\s+--git")
+        _RECEIPT_HASH_RE = _re.compile(r"\b[0-9a-f]{40}\b|\b[0-9a-f]{7,12}\b(?=\s+(?:on|main|commit)|\s*$)")
+    return _RECEIPT_PATH_RE, _RECEIPT_DIFF_RE, _RECEIPT_HASH_RE
+
+
+def _has_receipts(text: str | None) -> bool:
+    """True when a summary carries verifiable handles (heuristic).
+
+    Counts: absolute/relative file paths, diff stats, full or short
+    commit hashes in a commit context, or an explicit no-files-changed
+    statement. Short-hash matches require a commit-ish context word so
+    random hex (ids, tokens) does not count.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    _lower = text.lower()
+    if "no files" in _lower and ("change" in _lower or "modified" in _lower or "touched" in _lower):
+        return True
+    _path_re, _diff_re, _hash_re = _receipt_res()
+    if _diff_re.search(text):
+        return True
+    if _hash_re.search(text):
+        return True
+    for _m in _path_re.finditer(text):
+        _hit = _m.group(0)
+        if "/" in _hit and ("." in _hit or _hit.startswith("/")):
+            return True
+    return False
+
+
+# Minimal shape for nested spawns that arrive without a contract.
+# summary required; receipts encouraged (flagged, not hard-failed —
+# a research child may legitimately touch no files).
+_NESTED_DEFAULT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "receipts": {"type": "array", "items": {"type": "string"}},
+        "status": {"type": "string"},
+    },
+    "required": ["summary"],
+    "additionalProperties": True,
+}
+
+# Cap on quoted prior-output inside a continuation turn so the rescue
+# turn itself cannot flood the child's remaining budget.
+_CONTINUATION_QUOTE_CAP = 4000
+
+
+def _get_continue_on_truncation_enabled() -> bool:
+    """Kill switch for truncation auto-continue (default on).
+
+    Set delegation.continue_on_truncation: false in config.yaml to keep
+    cut-but-summarized results as-is without the extra turn.
+    """
+    try:
+        return is_truthy_value(_load_config().get("continue_on_truncation", True))
+    except Exception:
+        return True
+
+
 # Depth/cycle/budget guards for nested delegation.
 # - Depth: parent depth + 1 must be < max_spawn_depth.
 # - Cycle: walk _delegate_parent_ref weakref chain; reject if ancestor is child.
@@ -1600,6 +1684,11 @@ def _build_child_system_prompt(
         "points over paragraphs, and don't replay your whole process. Your "
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
+        "\n\nRECEIPTS (mandatory): end your summary with verifiable handles — "
+        "every file you created or modified as an exact path, plus the git "
+        "diff stat line if you changed tracked files. If you changed no "
+        "files, say so explicitly ('no files changed'). Claims without "
+        "receipts are treated as unverified by your parent."
     )
     if role == "orchestrator":
         child_note = (
@@ -3798,6 +3887,69 @@ def _run_single_child(
                         _retry_text, _output_schema
                     )
 
+        # KENSEI: truncation auto-continue — exactly one bounded extra turn.
+        # A child cut by iteration budget (completed=False, no failure, real
+        # output) gets a single continuation carrying forward what was
+        # already established, instead of dropping the unfinished remainder.
+        # Mirrors the schema-retry shape above (same channel, same
+        # accumulation); the original exit fields are preserved so
+        # truncated stays truthful and the extra text lands separately.
+        _continued = False
+        _continuation_text = ""
+        if (
+            _get_continue_on_truncation_enabled()
+            and child is not None
+            and not result.get("interrupted", False)
+            and not result.get("failed")
+            and not result.get("error")
+            and not result.get("completed", False)
+        ):
+            _prior_out = (result.get("final_response") or "").strip()
+            if _prior_out and _prior_out != "(empty)":
+                if len(_prior_out) > _CONTINUATION_QUOTE_CAP:
+                    _quote = (
+                        _prior_out[:3000]
+                        + "\n...[middle cut for budget]...\n"
+                        + _prior_out[-1000:]
+                    )
+                else:
+                    _quote = _prior_out
+                _cont_result = None
+                try:
+                    _cont_result = child.run_conversation(
+                        user_message=(
+                            "You were cut off by your iteration budget "
+                            "before finishing. Already established — do NOT "
+                            "redo any of this, only continue what is "
+                            f"unfinished:\n{_quote}\nReply with ONLY the "
+                            "unfinished remainder, ending with your RECEIPTS."
+                        ),
+                        task_id=child_task_id,
+                        stream_callback=_relay_child_text,
+                    )
+                except Exception as _cont_exc:
+                    logger.warning(
+                        "Subagent %d continuation turn failed: %s",
+                        task_index,
+                        _cont_exc,
+                    )
+                if isinstance(_cont_result, dict):
+                    _cont_text = _cont_result.get("final_response") or ""
+                    if _cont_text.strip():
+                        _continuation_text = _cont_text
+                        _continued = True
+                    try:
+                        result["api_calls"] = int(
+                            result.get("api_calls", 0) or 0
+                        ) + int(_cont_result.get("api_calls", 0) or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    _cont_messages = _cont_result.get("messages")
+                    if isinstance(_cont_messages, list) and isinstance(
+                        result.get("messages"), list
+                    ):
+                        result["messages"] = result["messages"] + _cont_messages
+
         # Linearization boundary for registry steering. From this point on the
         # child cannot consume another steer. Closing under the registry lock
         # either rejects a concurrent caller or drains every previously accepted
@@ -3944,6 +4096,14 @@ def _run_single_child(
             # work except by parsing the summary prose. exit_reason is computed
             # authoritatively from the child's `completed` flag.
             "truncated": exit_reason == "max_iterations",
+            # KENSEI fidelity flags: receipts_present is heuristic evidence
+            # detection over summary + continuation; continued marks the
+            # one bounded auto-continue turn whose text rides separately.
+            "receipts_present": _has_receipts(
+                (summary or "") + "\n" + (_continuation_text or "")
+            ),
+            "continued": _continued,
+            "continuation": _continuation_text or None,
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0
@@ -4719,10 +4879,21 @@ def delegate_task(
     from tools.delegation_output_schema import coerce_output_schema
 
     task_schemas: List[Optional[Dict[str, Any]]] = []
+    # KENSEI: nested spawns must carry a shape. A depth>=1 parent spawning
+    # without a contract gets the minimal nested default so the existing
+    # validate + one-retry path always has something to enforce. Top-level
+    # (depth-0) calls keep the old opt-in behavior.
+    _nested_default = (
+        _NESTED_DEFAULT_SCHEMA
+        if getattr(parent_agent, "_delegate_depth", 0) >= 1
+        else None
+    )
     for i, task in enumerate(task_list):
         raw_schema = task.get("output_schema")
         if raw_schema is None and len(task_list) == 1 and output_schema is not None:
             raw_schema = output_schema
+        if raw_schema is None and _nested_default is not None:
+            raw_schema = _nested_default
         coerced_schema, schema_err = coerce_output_schema(raw_schema)
         if schema_err:
             return tool_error(f"Task {i} output_schema invalid: {schema_err}")
@@ -5158,7 +5329,10 @@ def delegate_task(
                         "Synthesize the following findings from {n} parallel "
                         "sub-agents into a single coherent output. Resolve "
                         "contradictions. Deduplicate overlapping content. "
-                        "Flag confidence levels.\n\n"
+                        "Flag confidence levels. Treat claims without "
+                        "verifiable receipts (file paths, diff stats) as "
+                        "unverified — say so instead of repeating them as "
+                        "fact.\n\n"
                         "{summary_block}\n\n"
                         "Provide your synthesis as a structured report."
                     )

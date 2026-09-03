@@ -63,6 +63,94 @@ def _event(tmp_path: Path, **context_overrides):
     )
 
 
+class _TestPlatformAdapter(platform_base.BasePlatformAdapter):
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        return platform_base.SendResult(success=True)
+
+    async def get_chat_info(self, chat_id):
+        return {"name": chat_id, "type": "dm"}
+
+
+def _test_adapter() -> _TestPlatformAdapter:
+    return _TestPlatformAdapter(
+        SimpleNamespace(typing_indicator=False, extra={}),
+        Platform.WEBHOOK,
+    )
+
+
+def test_base_platform_exposes_explicit_stateless_turn_contract():
+    adapter = _test_adapter()
+    target = "agent:main:webhook:contractor"
+    sibling = "agent:main:webhook:ordinary"
+    adapter._active_sessions = {
+        target: asyncio.Event(),
+        sibling: asyncio.Event(),
+    }
+    adapter._pending_messages = {
+        target: Mock(),
+        sibling: Mock(),
+    }
+    adapter._session_tasks = {
+        target: Mock(),
+        sibling: Mock(),
+    }
+    adapter._post_delivery_callbacks = {
+        target: Mock(),
+        sibling: Mock(),
+    }
+
+    assert platform_base.BasePlatformAdapter.close_after_turn is False
+    adapter.clear_session(target)
+
+    for store in (
+        adapter._active_sessions,
+        adapter._pending_messages,
+        adapter._session_tasks,
+        adapter._post_delivery_callbacks,
+    ):
+        assert target not in store
+        assert sibling in store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("close_after_turn", "contractor_turn", "expected_clear"),
+    [
+        (True, False, True),
+        (False, True, True),
+        (False, False, False),
+    ],
+)
+async def test_platform_clears_session_after_each_stateless_turn(
+    tmp_path, close_after_turn, contractor_turn, expected_clear
+):
+    adapter = _test_adapter()
+    adapter.close_after_turn = close_after_turn
+    adapter._message_handler = AsyncMock(return_value=None)
+    session_key = "agent:main:webhook:contractor"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._session_tasks[session_key] = asyncio.current_task()
+    real_clear_session = adapter.clear_session
+    adapter.clear_session = Mock(side_effect=real_clear_session)
+    event = (
+        _event(tmp_path)
+        if contractor_turn
+        else platform_base.MessageEvent(text="hello", source=_source())
+    )
+
+    await adapter._process_message_background(event, session_key)
+
+    assert adapter.clear_session.called is expected_clear
+    assert session_key not in adapter._active_sessions
+    assert session_key not in adapter._session_tasks
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
@@ -366,7 +454,6 @@ def test_agent_is_fresh_memoryless_unpersisted_and_uses_configured_runtime(
         "request_overrides": {"service_tier": "priority"},
     }
     runner._refresh_fallback_model = lambda: {"model": "fallback"}
-    runner._cleanup_agent_resources = lambda agent: setattr(agent, "cleaned", True)
 
     monkeypatch.setattr(
         gateway_run,
@@ -386,7 +473,7 @@ def test_agent_is_fresh_memoryless_unpersisted_and_uses_configured_runtime(
             ]
             self.model = kwargs["model"]
             self.memory_notifications = "on"
-            self.cleaned = False
+            self.closed = False
             instances.append(self)
 
         def run_conversation(self, message, **kwargs):
@@ -402,6 +489,9 @@ def test_agent_is_fresh_memoryless_unpersisted_and_uses_configured_runtime(
                     {"role": "assistant", "content": "finished"},
                 ],
             }
+
+        def close(self):
+            self.closed = True
 
     monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
     context = _context(tmp_path)
@@ -436,7 +526,7 @@ def test_agent_is_fresh_memoryless_unpersisted_and_uses_configured_runtime(
         assert agent.memory_notifications == "off"
         assert agent.run_kwargs["conversation_history"] == []
         assert agent.run_kwargs["task_id"] == kwargs["session_id"]
-        assert agent.cleaned is True
+        assert agent.closed is True
 
 
 def test_memory_or_history_tool_leak_fails_before_model_execution(tmp_path, monkeypatch):

@@ -3239,6 +3239,12 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
+    # Explicit lifecycle contract for transports whose conversations end with
+    # each request. Such adapters opt in once at the class level; contractor
+    # events also enforce this boundary independently so a plugin cannot
+    # accidentally retain adapter-owned session state by omitting the flag.
+    close_after_turn: bool = False
+
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the
@@ -6180,6 +6186,20 @@ class BasePlatformAdapter(ABC):
         if state is not None and state.task is not None and not state.task.done():
             state.task.cancel()
 
+    def clear_session(self, session_key: str) -> None:
+        """Clear adapter-owned state for one completed stateless turn.
+
+        The persistent conversation store is owned by ``GatewayRunner`` and is
+        intentionally not touched here. This method removes every transient
+        adapter cache keyed by ``session_key`` so all platform subclasses share
+        the same close-after-turn behavior without bespoke cleanup hooks.
+        """
+        self._active_sessions.pop(session_key, None)
+        self._pending_messages.pop(session_key, None)
+        self._session_tasks.pop(session_key, None)
+        self._post_delivery_callbacks.pop(session_key, None)
+        self._discard_text_debounce(session_key)
+
     # ------------------------------------------------------------------
     # Session task + guard ownership helpers
     # ------------------------------------------------------------------
@@ -7438,7 +7458,13 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
-                    self._cleanup_finished_session_task(session_key, interrupt_event)
+                    if (
+                        getattr(self, "close_after_turn", False) is True
+                        or getattr(event, "contractor_context", None) is not None
+                    ):
+                        self.clear_session(session_key)
+                    else:
+                        self._cleanup_finished_session_task(session_key, interrupt_event)
     
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]

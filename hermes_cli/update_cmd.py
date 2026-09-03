@@ -7973,6 +7973,18 @@ def _rebuild_desktop_after_update(
         print("  ✓ Desktop app up to date")
         return True
 
+    # Prebuilt ladder (SHA → nearest tagged release → source). A miss or
+    # checksum/extract failure is not an update failure — the source rebuild
+    # below stays the last rung for forks, dev checkouts, and unsupported arch.
+    try:
+        from hermes_cli.desktop_prebuilt import try_install_prebuilt_desktop
+
+        if try_install_prebuilt_desktop(desktop_dir, project_root=_m().PROJECT_ROOT):
+            print("  ✓ Desktop app updated from prebuilt artifact")
+            return True
+    except Exception as exc:
+        logger.debug("desktop prebuilt artifact skipped: %s", exc)
+
     desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
     # Capture the (very loud) Electron/vite build output into update.log
     # instead of streaming it to the terminal. On the rare nonzero exit,

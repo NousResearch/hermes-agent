@@ -4049,6 +4049,17 @@ DEFAULT_CONFIG = {
         # microphone) survive every update. Empty keeps the default stable
         # ad-hoc signing (identifier-pinned requirement).
         "macos_signing_identity": "",
+        # Prebuilt Desktop artifacts for `hermes update`. When a packaged
+        # Desktop app is installed, update tries a SHA-keyed artifact, then
+        # the nearest tagged release within ``compatibility_window`` commits,
+        # then falls back to a local source rebuild. Empty ``index_url``
+        # discovers ``desktop-index.json`` on GitHub Releases. No env var —
+        # this is behavioral config, not a secret.
+        "prebuilt_artifacts": {
+            "enabled": True,
+            "index_url": "",
+            "compatibility_window": 64,
+        },
         # Auto-continue a turn that was killed mid-run by an app/backend/machine
         # crash: resuming that session re-submits the interrupted prompt (shown
         # as a "resumed interrupted turn" event) if the interruption is fresh.

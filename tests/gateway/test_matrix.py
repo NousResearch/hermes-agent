@@ -1826,6 +1826,31 @@ class TestMatrixLinkSanitization:
         assert '"' not in result
         assert "&quot;" in result
 
+    def test_entity_encoded_scheme_is_rejected(self):
+        # A Matrix client decodes character references in an href before
+        # navigating, so a scheme hidden behind entities must not survive
+        # sanitization into a live javascript:/data:/vbscript: URL (#42727).
+        import html
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        payloads = [
+            "&#x6a;avascript:alert(1)",   # hex entity for 'j'
+            "java&#x73;cript:alert(1)",   # hex entity mid-scheme
+            "&#106;avascript:alert(1)",   # decimal entity for 'j'
+            "data&#x3a;text/html,x",      # entity-encoded colon
+        ]
+        for payload in payloads:
+            decoded = html.unescape(MatrixAdapter._sanitize_link_url(payload)).lower()
+            assert "javascript:" not in decoded, payload
+            assert "vbscript:" not in decoded, payload
+            assert not decoded.startswith("data:"), payload
+
+    def test_entity_in_query_string_is_preserved(self):
+        # An entity outside the scheme (e.g. & in a query string) is safe and
+        # must not be blocked.
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+        url = "https://example.com/a?x=1&amp;y=2"
+        assert MatrixAdapter._sanitize_link_url(url) == url
+
 
 # ---------------------------------------------------------------------------
 # Reactions

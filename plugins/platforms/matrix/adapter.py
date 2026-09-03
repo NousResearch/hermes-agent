@@ -65,7 +65,7 @@ import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
-from html import escape as _html_escape
+from html import escape as _html_escape, unescape as _html_unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
@@ -5061,7 +5061,14 @@ class MatrixAdapter(BasePlatformAdapter):
     def _sanitize_link_url(url: str) -> str:
         """Sanitize a URL for use in an href attribute."""
         stripped = url.strip()
-        scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
+        # A Matrix client decodes HTML character references in an href value
+        # before navigating, so a scheme hidden behind entities (e.g.
+        # "&#x6a;avascript:", "java&#x73;cript:", or an entity-encoded colon
+        # "data&#x3a;...") would reconstitute into a live javascript:/data:/
+        # vbscript: URL once the client decodes it. Evaluate the denylist
+        # against the decoded scheme, not the raw text.
+        decoded = _html_unescape(stripped)
+        scheme = decoded.split(":", 1)[0].lower().strip() if ":" in decoded else ""
         if scheme in {"javascript", "data", "vbscript"}:
             return ""
         return stripped.replace('"', "&quot;")

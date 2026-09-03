@@ -13313,6 +13313,64 @@ def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
 
 
 
+def _execution_to_session_info(exec_row: Dict[str, Any], job_id: str, profile: Optional[str]) -> Dict[str, Any]:
+    """Project a ``cron/executions`` ledger row into a SessionInfo-shaped dict.
+
+    ``no_agent`` (script-only) cron jobs short-circuit in ``run_job`` *before*
+    any ``sessions`` row is created (cron/scheduler.py:5469), so they never
+    appear in ``SessionDB.list_cron_job_runs``. But every attempt — including
+    no_agent — is already recorded in the durable execution ledger by
+    ``run_one_job`` (create_execution/finish_execution). Surface those here so
+    the Desktop run-history list is not empty for no_agent jobs.
+
+    The projected row deliberately carries no transcript (there is no agent
+    conversation to open) and reuses the ``cron`` source badge so the UI treats
+    it like any other cron run. The id prefix ``exec_`` can never collide with
+    the ``cron_{job_id}_`` session ids.
+    """
+    from datetime import datetime as _dt
+
+    def _iso_to_ts(value: Optional[str]) -> Optional[float]:
+        if not value:
+            return None
+        try:
+            return _dt.fromisoformat(value).timestamp()
+        except (ValueError, TypeError):
+            return None
+
+    started = _iso_to_ts(exec_row.get("started_at")) or _iso_to_ts(exec_row.get("claimed_at")) or 0.0
+    ended = _iso_to_ts(exec_row.get("finished_at"))
+    status = exec_row.get("status") or "unknown"
+    is_active = status in ("claimed", "running")
+    error = exec_row.get("error")
+    preview = (str(error) if error else f"no_agent run: {status}") if status != "completed" else f"no_agent run: {status}"
+    info: Dict[str, Any] = {
+        "id": f"exec_{job_id}_{exec_row.get('claimed_at', '')}",
+        "source": "cron",
+        "title": f"cron {job_id}",
+        "preview": preview,
+        "started_at": started,
+        "ended_at": ended,
+        "last_active": ended or started,
+        "is_active": is_active,
+        "archived": False,
+        "message_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "tool_call_count": 0,
+        "actual_cost_usd": None,
+        "estimated_cost_usd": None,
+        "model": None,
+        "cwd": None,
+        "parent_session_id": None,
+        "pinned": False,
+        "unread": False,
+    }
+    if profile:
+        info["profile"] = profile
+    return info
+
+
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
@@ -13327,6 +13385,14 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     id-range scan, not the compression-chain CTE used for the recents list,
     so the cost scales with the requested window and not the (unbounded) total
     cron history.
+
+    ``no_agent`` (script-only) jobs never open a ``sessions`` row (by design —
+    see cron/scheduler.py:5653, they must not pay for SessionDB/AIAgent
+    construction), yet ``run_one_job`` still records every attempt in the
+    durable execution ledger (cron/executions.db). Merge that ledger in so
+    no_agent runs are visible in run-history without changing the no_agent
+    cost model. The two sources are keyed by disjoint id prefixes
+    (``cron_`` vs ``exec_``) so there is nothing to de-duplicate.
     """
     selected = profile or _find_cron_job_profile(job_id)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
@@ -13353,6 +13419,28 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
             s["archived"] = bool(s.get("archived"))
             if selected:
                 s["profile"] = selected
+
+        # Merge the durable execution ledger so no_agent (script-only) jobs,
+        # which never create a `sessions` row, still show in run-history.
+        try:
+            from cron.executions import EXECUTIONS_FILE, list_executions
+
+            if EXECUTIONS_FILE is None and selected:
+                _prof_name, _prof_home = _cron_profile_home(selected)
+                import cron.executions as _exec_mod
+
+                _exec_mod.EXECUTIONS_FILE = _prof_home / "cron" / "executions.db"
+            ledger = list_executions(job_id=canonical, limit=limit_n)
+            for _row in ledger:
+                runs.append(_execution_to_session_info(_row, canonical, selected))
+        except Exception:
+            # A missing/corrupt ledger must never break the session-backed list.
+            _log.debug("Job '%s': execution-ledger merge skipped", canonical, exc_info=True)
+
+        # Newest-first across both sources; ledger rows use claimed_at as their
+        # stable anchor so ordering is deterministic.
+        runs.sort(key=lambda r: r.get("started_at", 0), reverse=True)
+        runs = runs[:limit_n]
         return {"runs": runs, "limit": limit_n}
     finally:
         db.close()

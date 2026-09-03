@@ -21,6 +21,7 @@ time — no import cycle).
 
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -1241,6 +1242,26 @@ def cmd_sessions(args, sessions_parser=None):
             if db_path.exists()
             else 0.0
         )
+
+        # Optional retention cleanup (added by 5-Agent system contribution)
+        retention_days = getattr(args, "retention_days", 0) or 0
+        dry_run = getattr(args, "dry_run", False)
+        if retention_days > 0:
+            print(
+                f"Retention: pruning sessions inactive for {retention_days}+ days..."
+            )
+            if dry_run:
+                print(f"  [DRY-RUN] --retention-days active, but skipping actual delete")
+            else:
+                pruned = db.prune_sessions(older_than_days=retention_days)
+                print(f"  pruned {pruned} session(s)")
+                if pruned > 0:
+                    # FTS rebuild after deletion (best-effort)
+                    try:
+                        db.optimize_fts()
+                    except Exception as e:
+                        print(f"  [WARN] FTS optimize skipped: {e}")
+
         print("Optimizing session store (FTS merge + VACUUM)…")
         try:
             # vacuum() merges FTS5 segments (optimize_fts) then VACUUMs,

@@ -2126,6 +2126,25 @@ def warm_nous_reasoning_caps_async() -> None:
     _warm_reasoning_caps_async(_refresh_nous_reasoning_caps)
 
 
+def refresh_reasoning_caps_async(provider: Optional[str]) -> None:
+    """Force a background re-fetch of *provider*'s reasoning-capability catalog.
+
+    The in-memory cache is otherwise held for the process lifetime, so a
+    route that flips to reasoning-mandatory mid-process (GLM-5.3-flash, Sep
+    2026) keeps being sent disables it now rejects. Called from the
+    conversation loop's reasoning_mandatory recovery so the profile guard is
+    right again on the next request; no-op for providers without a catalog.
+    """
+    refresh = {
+        "nous": _refresh_nous_reasoning_caps,
+        "nous-portal": _refresh_nous_reasoning_caps,
+        "nousresearch": _refresh_nous_reasoning_caps,
+        "openrouter": _refresh_openrouter_reasoning_caps,
+    }.get(str(provider or "").strip().lower())
+    if refresh is not None:
+        _warm_reasoning_caps_async(refresh)
+
+
 # Canonical low→high ordering used for nearest-level clamping. Kept as an
 # alias of the single source of truth in ``agent.reasoning_effort``.
 from agent.reasoning_effort import EFFORT_LADDER as _REASONING_EFFORT_ORDER

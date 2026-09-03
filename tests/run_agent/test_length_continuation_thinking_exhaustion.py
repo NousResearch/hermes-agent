@@ -68,6 +68,22 @@ class TestReasoningOffOneShotOverride:
         cfg = _reasoning_config_for_wire(agent)
         assert cfg == {"enabled": False, "effort": "none"}
 
+    def test_rejected_disable_drops_every_disable_but_keeps_enabled(self):
+        """After a 'reasoning is mandatory' 400, no disable reaches the wire —
+        neither the configured one nor the one-shot continuation override —
+        while an enabled config still passes through."""
+        from agent.chat_completion_helpers import _reasoning_config_for_wire
+
+        agent = _AgentStandIn({"enabled": False})
+        agent._reasoning_disable_rejected = True
+        assert _reasoning_config_for_wire(agent) is None
+        agent._ephemeral_reasoning_off = True
+        assert _reasoning_config_for_wire(agent) is None
+        assert agent._ephemeral_reasoning_off is False
+
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "high"}
+
 
 @pytest.fixture()
 def loop_agent():

@@ -1969,14 +1969,24 @@ def _consume_ephemeral_reasoning_off(agent) -> bool:
 
 
 def _reasoning_config_for_wire(agent):
-    """``agent.reasoning_config`` with the one-shot reasoning-off override applied."""
+    """``agent.reasoning_config`` with the one-shot reasoning-off override applied.
+
+    Once the route has answered a disable with "reasoning is mandatory"
+    (``agent._reasoning_disable_rejected``), every disable — configured or
+    the one-shot continuation override — is dropped for the rest of the
+    session: the request goes out without a reasoning config and the route
+    applies its own default.
+    """
+    cfg = agent.reasoning_config
     if _consume_ephemeral_reasoning_off(agent):
-        return {
-            **(agent.reasoning_config or {}),
-            "enabled": False,
-            "effort": "none",
-        }
-    return agent.reasoning_config
+        cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
+    if (
+        getattr(agent, "_reasoning_disable_rejected", False)
+        and isinstance(cfg, dict)
+        and (cfg.get("enabled") is False or cfg.get("effort") == "none")
+    ):
+        return None
+    return cfg
 
 
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:

@@ -313,4 +313,118 @@ def build_verify_on_stop_nudge(
     )
 
 
-__all__ = ["build_verify_on_stop_nudge", "verify_on_stop_enabled"]
+# ── Prose grounding gate ──────────────────────────────────────────────────
+# The code-verification gate above intentionally drops prose/markdown (a README
+# or SKILL.md has nothing to compile). But that leaves analytical prose
+# deliverables — analysis reports, research briefs, audits, summaries — with no
+# automated truth-check, which is exactly where a model can fabricate: write a
+# confident "analysis" of files it never read. This gate closes that hole with a
+# mechanically-checkable heuristic: if a turn produced an ANALYTICAL prose
+# deliverable but the whole session made ZERO read/search/fetch/shell tool calls,
+# nothing was actually inspected, so nudge the model to ground its claims (or
+# mark them unverified) before finishing. Any grounding activity at all → stay
+# silent. Bounded + fail-safe, mirroring ``build_verify_on_stop_nudge``.
+
+_ANALYTICAL_DELIVERABLE_MARKERS = (
+    "analysis", "analyse", "analyze", "report", "finding", "audit", "review",
+    "assessment", "assess", "summary", "research", "brief", "evaluation",
+    "investigation", "result", "comparison", "benchmark",
+)
+
+# Substrings marking a tool call as genuine grounding (reading/fetching real
+# data), compared against the lowercased tool-call function name.
+_GROUNDING_TOOL_MARKERS = (
+    "read", "search", "grep", "glob", "fetch", "web", "http", "curl", "ssh",
+    "terminal", "shell", "bash", "find", "list_", "view", "browse", "open_file",
+    "cat", "download", "scrape", "crawl", "lookup", "query",
+    # execute_code is terminal-class (see agent/display.py, which groups it with
+    # "terminal") and can read files exactly as a shell can, so excluding it while
+    # including "terminal" would nudge a genuinely grounded session. "vision"
+    # covers vision_analyze, the image-reading tool surfaced in every session.
+    "execute_code", "vision",
+)
+
+# Tool-name substrings that are writes/control, never grounding — checked first
+# so e.g. ``kanban_list`` or ``write_file`` never count as "inspected a source".
+_NON_GROUNDING_TOOL_HINTS = (
+    "kanban", "write", "patch", "create", "edit", "complete", "apply", "delete",
+    "commit", "push",
+)
+
+
+def _analytical_prose_deliverables(paths: Iterable[str]) -> list[str]:
+    """Prose files whose name implies factual claims about external material."""
+    out: list[str] = []
+    for raw in paths:
+        if not raw or not _is_non_code_path(raw):
+            continue
+        name = Path(str(raw)).name.lower()
+        if any(marker in name for marker in _ANALYTICAL_DELIVERABLE_MARKERS):
+            out.append(str(raw))
+    return sorted(set(out))
+
+
+def _session_did_grounding(session_messages) -> bool:
+    """True if any assistant turn called a read/search/fetch/shell tool."""
+    try:
+        for msg in session_messages or []:
+            if not isinstance(msg, dict):
+                continue
+            for tc in (msg.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = str(((tc.get("function") or {}).get("name") or "")).lower()
+                if not fn:
+                    continue
+                if any(hint in fn for hint in _NON_GROUNDING_TOOL_HINTS):
+                    continue
+                if any(marker in fn for marker in _GROUNDING_TOOL_MARKERS):
+                    return True
+    except Exception:
+        # Fail-safe: on any inspection error, assume grounded and never nudge.
+        return True
+    return False
+
+
+def build_grounding_nudge(
+    *,
+    changed_paths: Iterable[str],
+    session_messages,
+    attempts: int = 0,
+    max_attempts: int = 2,
+) -> "str | None":
+    """Return a follow-up when an analytical prose deliverable lacks grounding.
+
+    Complements :func:`build_verify_on_stop_nudge` (the code path). Returns
+    ``None`` — stay silent — unless a turn produced an analysis/report/summary
+    -type prose file AND the session performed no read/search/fetch/shell tool
+    call. Bounded by ``attempts``; every failure mode returns ``None`` so it can
+    never break the stop loop or fire spuriously on error.
+    """
+    try:
+        if attempts >= max_attempts:
+            return None
+        deliverables = _analytical_prose_deliverables(changed_paths)
+        if not deliverables:
+            return None
+        if _session_did_grounding(session_messages):
+            return None
+        return (
+            "[System: This turn wrote an analytical deliverable:\n"
+            f"{_format_changed_paths(deliverables)}\n\n"
+            "but this session made no read, search, or fetch tool call — no "
+            "source material was actually inspected. An analysis, report, or "
+            "summary that is not grounded in real sources is a fabrication risk "
+            "and cannot be trusted.\n\n"
+            "Before finishing: actually read the files or fetch the sources you "
+            "describe (e.g. `read_file`, a search, or a shell command), then "
+            "revise the deliverable so every claim reflects what you truly "
+            "found. If a source is genuinely unreachable, say so explicitly in "
+            "the file rather than inventing its contents. Do not present unread "
+            "material as analyzed.]"
+        )
+    except Exception:
+        return None
+
+
+__all__ = ["build_grounding_nudge", "build_verify_on_stop_nudge", "verify_on_stop_enabled"]

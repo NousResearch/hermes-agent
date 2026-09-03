@@ -810,11 +810,20 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
 
 
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
-    runtime = resolve_runtime_provider(
-        requested="openrouter",
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-    )
+    if base_url and api_key:
+        # Full explicit credentials: skip runtime-provider resolution entirely.
+        # resolve_runtime_provider is heavyweight (config load, credential-pool
+        # walk, can raise on disabled providers) and is only needed as a
+        # fallback when the caller has no creds — an advisory quota probe must
+        # never trigger it as a side effect (regression:
+        # test_cli_provider_resolution.py::test_runtime_resolution_failure_is_not_sticky).
+        runtime = {"base_url": base_url, "api_key": api_key}
+    else:
+        runtime = resolve_runtime_provider(
+            requested="openrouter",
+            explicit_base_url=base_url,
+            explicit_api_key=api_key,
+        )
     token = str(runtime.get("api_key", "") or "").strip()
     if not token:
         return None

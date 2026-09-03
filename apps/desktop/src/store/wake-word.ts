@@ -59,7 +59,22 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
   try {
     clientCapture = await startClientWakeCapture({
       frameLength: result.frame_length,
-      request: gatewayRequester
+      request: gatewayRequester,
+      // A silent input is the one wake failure with no visible symptom: the ear
+      // arms, PCM streams, and nothing ever fires. Say so in the tooltip the
+      // moment we detect it instead of leaving a permanently deaf listener.
+      onDeviceChosen: ({ label, live }) => {
+        if (live) {
+          return
+        }
+
+        const current = $wakeWord.get()
+
+        $wakeWord.set({
+          ...current,
+          notice: `mic "${label}" is silent — pick a real input device on this machine`
+        })
+      }
     })
   } catch (error) {
     const current = $wakeWord.get()
@@ -136,7 +151,17 @@ export type WakeRequester = <T>(method: string, params?: Record<string, unknown>
 // First-use wake.start lazy-installs the detection engine (onnxruntime is a
 // large wheel) — that legitimately takes minutes. The default 30s WS timeout
 // fired mid-install, leaving a dead button that went blue on its own later.
-const WAKE_START_TIMEOUT_MS = 180_000
+//
+// wake.status needs the same allowance: it runs the SAME
+// check_wake_word_requirements() probe, which on a freshly restarted backend
+// imports faster-whisper, the TTS stack and the tflite runtime before it can
+// answer. Leaving it on the 30s default made auto-arm fail silently after every
+// backend restart — armWakeWord awaits wake.status first, so the timeout threw
+// before it ever reached wake.start and the ear just never came back on. A
+// manual click still worked, which made it look like a UI bug rather than a
+// timeout.
+const WAKE_RPC_TIMEOUT_MS = 180_000
+const WAKE_SLOW_METHODS = new Set(['wake.start', 'wake.status'])
 
 const gatewayRequester: WakeRequester = async <T>(method: string, params: Record<string, unknown> = {}) => {
   const gateway = $gateway.get()
@@ -145,8 +170,8 @@ const gatewayRequester: WakeRequester = async <T>(method: string, params: Record
     throw new Error('Hermes gateway unavailable')
   }
 
-  return method === 'wake.start'
-    ? gateway.request<T>(method, params, WAKE_START_TIMEOUT_MS)
+  return WAKE_SLOW_METHODS.has(method)
+    ? gateway.request<T>(method, params, WAKE_RPC_TIMEOUT_MS)
     : gateway.request<T>(method, params)
 }
 
@@ -280,8 +305,18 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
     })
 
     applyWakeStartResult(result)
-  } catch {
-    // Older backends / transient failures — keep whatever we last knew.
+  } catch (error) {
+    // Older backends legitimately lack wake.* — stay quiet there. Anything else
+    // (notably a wake.status timeout on a cold backend) used to vanish here,
+    // leaving an ear that was off with no reason shown. Surface it in the
+    // tooltip so "it just stopped listening" is diagnosable from the UI.
+    const message = error instanceof Error ? error.message : String(error)
+
+    if (!/unknown method|not supported|no such method/i.test(message)) {
+      const current = $wakeWord.get()
+
+      $wakeWord.set({ ...current, notice: `auto-arm failed: ${message}`, pending: false })
+    }
   }
 }
 

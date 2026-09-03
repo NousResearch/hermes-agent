@@ -472,8 +472,70 @@ def _resample_audio_frame(np, frame, output_length: int):
     return np.rint(values).clip(-32768, 32767).astype(np.int16)
 
 
-def silent_audio_hint(details: Dict[str, Any]) -> str:
-    """Platform-specific remediation for an armed stream delivering silence."""
+_WAKE_DEBUG_MARKER = os.path.expanduser("~/.hermes/.wake_debug")
+_WAKE_DEBUG_WAV = os.path.expanduser("~/.hermes/logs/wake_debug.wav")
+_WAKE_DEBUG_MAX_SAMPLES = SAMPLE_RATE * 30  # 30s ceiling
+_wake_debug_buf: list = []
+_wake_debug_lock = threading.Lock()
+
+
+def _wake_debug_write(arr) -> None:
+    """Append client PCM to a debug WAV while ~/.hermes/.wake_debug exists.
+
+    Diagnostic only, and off unless the marker file is present. Writes the exact
+    int16 stream handed to the engine, so the captured file answers "is the
+    audio the model sees actually intelligible?" directly.
+    """
+    if not os.path.exists(_WAKE_DEBUG_MARKER):
+        return
+    try:
+        import wave as _wave
+
+        with _wake_debug_lock:
+            _wake_debug_buf.append(bytes(arr.tobytes()))
+            total = sum(len(b) for b in _wake_debug_buf) // 2
+            if total < _WAKE_DEBUG_MAX_SAMPLES:
+                return
+            data = b"".join(_wake_debug_buf)
+            _wake_debug_buf.clear()
+        with _wave.open(_WAKE_DEBUG_WAV, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            w.writeframes(data)
+        os.unlink(_WAKE_DEBUG_MARKER)  # one-shot
+        logger.warning("wake word: debug capture written to %s (%d samples)",
+                       _WAKE_DEBUG_WAV, len(data) // 2)
+    except Exception as e:
+        logger.debug("wake debug capture failed: %s", e)
+
+
+def silent_audio_hint(details: Dict[str, Any], *,
+                      external_audio: bool = False,
+                      frames_seen: bool = True) -> str:
+    """Platform-specific remediation for an armed stream delivering silence.
+
+    With client capture the microphone is on the DESKTOP, not this host, so the
+    backend's own mic permission is irrelevant — pointing at it sends people to
+    the wrong machine. Split the two client failures apart as well: no frames at
+    all means the desktop never opened its mic, while silent frames mean it
+    opened the wrong input (a virtual loopback like BlackHole/MMAudio, or a
+    Bluetooth headset that is paired but not delivering audio).
+    """
+    if external_audio:
+        if not frames_seen:
+            return (
+                "The desktop app is not streaming microphone audio. Check that it "
+                "has microphone access (System Settings > Privacy & Security > "
+                "Microphone on the desktop machine), then toggle the wake word."
+            )
+        return (
+            "The desktop app is streaming silence — its selected microphone "
+            "produces no signal. Pick a real input device as the default on the "
+            "desktop machine (virtual loopbacks like BlackHole or MMAudio always "
+            "read as silence, and Bluetooth headsets go silent when idle), then "
+            "toggle the wake word."
+        )
     if sys.platform == "darwin":
         return (
             "Microphone delivers only silence. Grant the Hermes backend "
@@ -1024,6 +1086,10 @@ class WakeWordDetector:
         # from "deaf".
         self.audio_silent = False
         self._silent_frames = 0
+        # Client capture only: has ANY wake.feed frame ever arrived? Separates
+        # "the desktop never opened its mic" from "the desktop is feeding
+        # silence" — the two look identical in the silent-frame counter.
+        self._external_frames_seen = False
 
     @property
     def running(self) -> bool:
@@ -1046,6 +1112,11 @@ class WakeWordDetector:
             arr = np.frombuffer(pcm_int16, dtype=np.int16)
         else:
             arr = np.asarray(pcm_int16, dtype=np.int16).reshape(-1)
+        # DEBUG (opt-in): touch ~/.hermes/.wake_debug to dump exactly the PCM the
+        # engine scores, so a "listening but never fires" report can be settled by
+        # replaying the real client audio offline instead of guessing at the
+        # capture chain. Capped, then self-disarms by removing the marker.
+        _wake_debug_write(arr)
         fl = int(self.engine.frame_length)
         if fl <= 0:
             return
@@ -1206,7 +1277,17 @@ class WakeWordDetector:
                             self._silent_frames += 1
                             if self._silent_frames == silent_alert_frames:
                                 self.audio_silent = True
+                                logger.warning(
+                                    "wake word: no client PCM received for %ds; %s",
+                                    _SILENCE_ALERT_SECONDS,
+                                    silent_audio_hint(
+                                        self.input_device_details,
+                                        external_audio=True,
+                                        frames_seen=self._external_frames_seen,
+                                    ),
+                                )
                             continue
+                        self._external_frames_seen = True
                         data = frame
                     else:
                         data, _overflow = stream.read(capture_frame_length)
@@ -1228,7 +1309,11 @@ class WakeWordDetector:
                         logger.warning(
                             "wake word: mic delivers only silence (peak<=%d for %ds); %s",
                             _SILENCE_PEAK, _SILENCE_ALERT_SECONDS,
-                            silent_audio_hint(self.input_device_details),
+                            silent_audio_hint(
+                                self.input_device_details,
+                                external_audio=self.external_audio,
+                                frames_seen=self._external_frames_seen,
+                            ),
                         )
                 elif self._silent_frames:
                     if self.audio_silent:
@@ -1505,4 +1590,7 @@ def detector_frame_info() -> Dict[str, Any]:
         "sample_rate": SAMPLE_RATE,
         "frame_length": int(getattr(det.engine, "frame_length", 1280) or 1280),
         "external_audio": bool(det.external_audio),
+        # Client capture: whether any wake.feed frame has ever landed, so
+        # status can say "never opened its mic" vs "feeding silence".
+        "frames_seen": bool(det._external_frames_seen),
     }

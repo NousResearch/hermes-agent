@@ -10,6 +10,33 @@
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
+// How long to listen to a candidate input before judging it dead (ms).
+const PROBE_MS = 700
+
+// Virtual/loopback inputs enumerate exactly like real microphones but emit
+// bit-perfect digital silence unless something is routed into them. macOS boxes
+// commonly carry several (BlackHole, MMAudio, Loopback, Soundflower), and
+// Chromium will happily hand one back as the "default" device — which is how a
+// wake word ends up armed, streaming, and permanently deaf. Deprioritise them.
+const VIRTUAL_INPUT_PATTERNS = [
+  'blackhole',
+  'mmaudio',
+  'loopback',
+  'soundflower',
+  'ui sounds',
+  'aggregate',
+  'multi-output',
+  'virtual',
+  'ndi',
+  'obs'
+]
+
+const isVirtualInput = (label: string): boolean => {
+  const l = label.toLowerCase()
+
+  return VIRTUAL_INPUT_PATTERNS.some(p => l.includes(p))
+}
+
 export type WakeFeedRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
 export interface ClientWakeCaptureOptions {
@@ -17,11 +44,17 @@ export interface ClientWakeCaptureOptions {
   frameLength?: number
   request: WakeFeedRequester
   onError?: (error: Error) => void
+  /** Reports which input won and whether it carried any signal at all. */
+  onDeviceChosen?: (info: { label: string; live: boolean }) => void
 }
 
 export interface ClientWakeCaptureHandle {
   stop: () => void
   readonly active: boolean
+  /** Label of the input actually opened (for the ear tooltip / logs). */
+  readonly deviceLabel: string
+  /** False when every candidate input returned pure digital silence. */
+  readonly live: boolean
 }
 
 function downsampleTo16k(input: Float32Array, inputRate: number): Float32Array {
@@ -78,8 +111,129 @@ function bytesToBase64(buf: ArrayBuffer): string {
   return btoa(binary)
 }
 
+/** Audio constraints for the wake stream.
+ *
+ * `echoCancellation` matters: Hermes speaks its replies through the same
+ * headset it listens on, and without AEC its own TTS can trigger the wake word.
+ * `noiseSuppression` is deliberately OFF — an aggressive gate can zero out a
+ * quiet room entirely, which both hurts detection and would defeat the
+ * liveness probe below. */
+const wakeAudioConstraints = (deviceId?: string): MediaTrackConstraints => ({
+  channelCount: 1,
+  echoCancellation: true,
+  noiseSuppression: false,
+  autoGainControl: true,
+  ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+})
+
 /**
- * Start streaming the default microphone to `wake.feed`.
+ * Candidate inputs, best first: real devices before known virtual loopbacks.
+ * An empty list means "just take the browser default".
+ */
+async function orderedInputCandidates(): Promise<Array<{ deviceId: string; label: string }>> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    const inputs = devices
+      .filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'communications')
+      .map(d => ({ deviceId: d.deviceId, label: d.label || d.deviceId }))
+    // Stable partition — real inputs keep their enumeration order (which puts
+    // the system default first), virtual loopbacks go to the back as fallback.
+    return [...inputs.filter(d => !isVirtualInput(d.label)), ...inputs.filter(d => isVirtualInput(d.label))]
+  } catch {
+    return []
+  }
+}
+
+/**
+ * True when the stream carries any nonzero sample within PROBE_MS.
+ *
+ * This is an exact-zero test, not a loudness threshold: a real microphone in a
+ * silent room still has a noise floor, while a dead or virtual input returns
+ * bit-perfect zeros forever. That distinction is the whole point — a threshold
+ * would reject a working mic just for being in a quiet room.
+ */
+async function streamIsLive(context: AudioContext, stream: MediaStream): Promise<boolean> {
+  const source = context.createMediaStreamSource(stream)
+  const analyser = context.createAnalyser()
+  analyser.fftSize = 2048
+  source.connect(analyser)
+
+  const buf = new Float32Array(analyser.fftSize)
+  const deadline = performance.now() + PROBE_MS
+
+  try {
+    while (performance.now() < deadline) {
+      analyser.getFloatTimeDomainData(buf)
+
+      for (let i = 0; i < buf.length; i++) {
+        if (buf[i] !== 0) {
+          return true
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    return false
+  } finally {
+    try {
+      source.disconnect()
+      analyser.disconnect()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Open the first input that actually carries audio.
+ *
+ * Falls back to the first candidate (still streaming, just silent) so the ear
+ * arms rather than failing outright — the backend surfaces the silence and the
+ * handle reports `live: false` for the tooltip.
+ */
+async function openLiveInput(
+  context: AudioContext
+): Promise<{ stream: MediaStream; label: string; live: boolean }> {
+  const candidates = await orderedInputCandidates()
+  let fallback: { stream: MediaStream; label: string } | null = null
+
+  for (const candidate of candidates.length ? candidates : [null]) {
+    let stream: MediaStream
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: wakeAudioConstraints(candidate?.deviceId),
+        video: false
+      })
+    } catch {
+      continue // device vanished / blocked — try the next one
+    }
+
+    const label = candidate?.label || stream.getAudioTracks()[0]?.label || 'system default'
+
+    if (await streamIsLive(context, stream)) {
+      fallback?.stream.getTracks().forEach(t => t.stop())
+
+      return { stream, label, live: true }
+    }
+
+    if (fallback) {
+      stream.getTracks().forEach(t => t.stop())
+    } else {
+      fallback = { stream, label }
+    }
+  }
+
+  if (fallback) {
+    return { ...fallback, live: false }
+  }
+
+  throw new Error('No usable microphone for client wake capture')
+}
+
+/**
+ * Start streaming the microphone to `wake.feed`.
  * Returns a handle whose `stop()` ends tracks + audio graph.
  */
 export async function startClientWakeCapture(options: ClientWakeCaptureOptions): Promise<ClientWakeCaptureHandle> {
@@ -95,17 +249,25 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     throw new Error('getUserMedia unavailable for client wake capture')
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    },
-    video: false
-  })
-
   const context = new AudioContextCtor()
+
+  if (context.state === 'suspended') {
+    await context.resume().catch(() => undefined)
+  }
+
+  let stream: MediaStream
+  let deviceLabel: string
+  let live: boolean
+
+  try {
+    ;({ stream, label: deviceLabel, live } = await openLiveInput(context))
+  } catch (error) {
+    void context.close().catch(() => undefined)
+    throw error
+  }
+
+  options.onDeviceChosen?.({ label: deviceLabel, live })
+
   const source = context.createMediaStreamSource(stream)
   // ScriptProcessor is deprecated but widely available and simple for PCM export.
   // Buffer size 4096 keeps callback rate reasonable on desktop.
@@ -210,6 +372,12 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   return {
     get active() {
       return !stopped
+    },
+    get deviceLabel() {
+      return deviceLabel
+    },
+    get live() {
+      return live
     },
     stop() {
       if (stopped) {

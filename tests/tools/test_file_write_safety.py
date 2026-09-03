@@ -65,6 +65,33 @@ class TestSshConfigApprovalGate:
 
         assert is_write_approval_required(str(tmp_path / "notes.txt")) is False
 
+    def test_relative_path_uses_task_cwd_for_approval(self, monkeypatch):
+        import tools.approval as approval
+        import tools.file_tools as file_tools
+        import tools.terminal_tool as terminal_tool
+
+        task_id = "ssh-config-approval-task-cwd"
+        ssh_dir = Path.home() / ".ssh"
+        resolved = str((ssh_dir / "config").resolve())
+        gate_args = {}
+
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+        terminal_tool.record_session_cwd(task_id, str(ssh_dir))
+
+        def deny_approval(**kwargs):
+            gate_args.update(kwargs)
+            return {"approved": False, "message": "approval denied"}
+
+        monkeypatch.setattr(approval, "_run_approval_gate", deny_approval)
+
+        result = file_tools._check_approval_required_write(
+            ["config"], task_id=task_id
+        )
+
+        assert result == "approval denied"
+        assert resolved in gate_args["description"]
+        assert resolved in gate_args["display_target"]
+
 
 
 class TestSafeWriteRoot:

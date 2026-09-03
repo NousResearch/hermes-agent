@@ -351,16 +351,22 @@ class TestPrintMigrationReport:
 
 class TestDetectOpenclawProcesses:
     def test_returns_match_when_pgrep_finds_openclaw(self):
-        with patch.object(claw_mod, "subprocess") as mock_subprocess:
-            # systemd check misses, pgrep finds openclaw
-            mock_subprocess.run.side_effect = [
-                MagicMock(returncode=1, stdout=""),  # systemctl
-                MagicMock(returncode=0, stdout="1234\n"),  # pgrep
-            ]
-            mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
-            result = claw_mod._detect_openclaw_processes()
-            assert len(result) == 1
-            assert "1234" in result[0]
+        """Validated pgrep hits are reported (POSIX scan helper directly,
+        so the assertion holds regardless of the host OS)."""
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "pgrep":
+                return MagicMock(returncode=0, stdout="1234\n")
+            if cmd[0] == "ps":
+                return MagicMock(returncode=0, stdout="/usr/local/bin/openclaw gateway\n")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch.object(claw_mod.subprocess, "run", side_effect=fake_run), patch.object(
+            claw_mod.os, "getpid", return_value=999999
+        ):
+            result = claw_mod._posix_pgrep_openclaw_hits()
+        assert len(result) == 1
+        assert "1234" in result[0]
 
 
     @pytest.mark.windows_only
@@ -396,3 +402,107 @@ class TestWarnIfOpenclawRunning:
         assert "OpenClaw appears to be running" in captured.out
 
 
+
+
+class TestLooksLikeOpenclawCommand:
+    def test_real_executable_basenames(self):
+        assert claw_mod._looks_like_openclaw_command("openclaw gateway --port 1") is True
+        assert claw_mod._looks_like_openclaw_command("/usr/local/bin/openclaw") is True
+        assert claw_mod._looks_like_openclaw_command("openclaw-gateway serve") is True
+        assert claw_mod._looks_like_openclaw_command("clawd --daemon") is True
+
+    def test_node_hosted_installs_detected(self):
+        assert (
+            claw_mod._looks_like_openclaw_command(
+                "node /home/u/.openclaw/gateway.js"
+            )
+            is True
+        )
+        assert (
+            claw_mod._looks_like_openclaw_command(
+                "node /srv/app/node_modules/openclaw/dist/index.js"
+            )
+            is True
+        )
+        assert (
+            claw_mod._looks_like_openclaw_command(
+                "node server.js --config /home/u/.clawdbot/config.yaml"
+            )
+            is True
+        )
+
+    def test_incidental_mentions_rejected(self):
+        # An editor with an openclaw-ish path, a grep over docs, and this
+        # migration's own skill path are NOT running gateways.
+        assert (
+            claw_mod._looks_like_openclaw_command(
+                "vim /home/u/openclaw-notes/a.md"
+            )
+            is False
+        )
+        assert claw_mod._looks_like_openclaw_command("grep openclaw notes.txt") is False
+        assert (
+            claw_mod._looks_like_openclaw_command("hermes claw cleanup") is False
+        )
+        assert (
+            claw_mod._looks_like_openclaw_command("python skills/openclaw-migration/openclaw_to_hermes.py")
+            is False
+        )
+        assert claw_mod._looks_like_openclaw_command("") is False
+
+
+class TestPgrepHitsValidated:
+    """pgrep -f hits must be filtered to validated OpenClaw commands."""
+
+    def test_unrelated_cmdline_not_reported(self):
+        pgrep_result = MagicMock(returncode=0, stdout="111 222\n")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "pgrep":
+                return pgrep_result
+            if cmd[0] == "ps":
+                pid = cmd[cmd.index("-p") + 1]
+                lines = {
+                    "111": "vim /home/u/openclaw-notes/x.md\n",
+                    "222": "/usr/local/bin/openclaw gateway\n",
+                }
+                return MagicMock(returncode=0, stdout=lines.get(pid, ""))
+            return MagicMock(returncode=1, stdout="")
+
+        with patch.object(claw_mod.subprocess, "run", side_effect=fake_run), patch.object(
+            claw_mod.os, "getpid", return_value=999999
+        ):
+            found = claw_mod._posix_pgrep_openclaw_hits()
+        joined = "\n".join(found)
+        assert "111" not in joined, "unrelated process flagged as OpenClaw"
+        assert any("222" in f for f in found), "real openclaw process lost"
+
+    def test_self_pid_excluded(self):
+        me = claw_mod.os.getpid()
+        pgrep_result = MagicMock(returncode=0, stdout=f"{me}\n")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "pgrep":
+                return pgrep_result
+            if cmd[0] == "ps":
+                return MagicMock(returncode=0, stdout="openclaw serve\n")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch.object(claw_mod.subprocess, "run", side_effect=fake_run):
+            found = claw_mod._posix_pgrep_openclaw_hits()
+        assert found == []
+
+    def test_all_hits_invalid_means_no_detection(self):
+        pgrep_result = MagicMock(returncode=0, stdout="300 301 302\n")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "pgrep":
+                return pgrep_result
+            if cmd[0] == "ps":
+                return MagicMock(returncode=0, stdout="tail -f /var/log/syslog\n")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch.object(claw_mod.subprocess, "run", side_effect=fake_run), patch.object(
+            claw_mod.os, "getpid", return_value=1
+        ):
+            assert claw_mod._posix_pgrep_openclaw_hits() == []

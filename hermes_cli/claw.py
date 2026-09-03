@@ -12,6 +12,7 @@ Usage:
 
 import importlib.util
 import logging
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -54,6 +55,94 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+
+# Executable basenames that identify a real OpenClaw runtime process.
+_OPENCLAW_EXECUTABLE_NAMES = ("openclaw", "clawd")
+
+# Path fragments identifying a Node-hosted OpenClaw install when they
+# appear in a process argument (install dir or package path, current +
+# legacy names).
+_OPENCLAW_PATH_MARKERS = (
+    ".openclaw/",
+    ".openclaw\\",
+    ".clawdbot/",
+    ".clawdbot\\",
+    ".moltbot/",
+    ".moltbot\\",
+    "node_modules/openclaw",
+    "node_modules/clawd",
+)
+
+
+def _looks_like_openclaw_command(cmdline: str) -> bool:
+    """Validate that a process command line is an actual OpenClaw runtime.
+
+    ``pgrep -f openclaw`` matches every process whose full argv merely
+    mentions the string (an editor with an ``openclaw-notes`` path open,
+    a grep over docs, this very migration's script paths). A match only
+    counts as a running gateway when the executable itself is OpenClaw
+    (basename ``openclaw*``/``clawd``) or when some argument points into
+    an OpenClaw install (known dot-dirs / node_modules layout) — which
+    keeps Node.js-hosted launches detected.
+    """
+    if not cmdline or not cmdline.strip():
+        return False
+    parts = cmdline.strip().split()
+    exe = os.path.basename(parts[0]).lower()
+    if exe in _OPENCLAW_EXECUTABLE_NAMES or exe.startswith(
+        ("openclaw-", "clawd-")
+    ):
+        return True
+    lowered = cmdline.lower()
+    return any(marker in lowered for marker in _OPENCLAW_PATH_MARKERS)
+
+
+def _validated_openclaw_pids(pids: list[str]) -> list[str]:
+    """Filter pgrep hits down to processes whose command validates as OpenClaw.
+
+    Unknown/unreadable commands are dropped (fail toward fewer false
+    positives). Our own PID is always excluded.
+    """
+    me = str(os.getpid())
+    validated: list[str] = []
+    for pid in pids:
+        if pid == me:
+            continue
+        try:
+            result = subprocess.run(
+                ["ps", "-p", pid, "-o", "args="],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        cmdline = (result.stdout or "").strip()
+        if cmdline and _looks_like_openclaw_command(cmdline):
+            validated.append(pid)
+    return validated
+
+def _posix_pgrep_openclaw_hits() -> list[str]:
+    """POSIX process scan: pgrep hits validated against real commands.
+
+    Split out from :func:`_detect_openclaw_processes` so the pgrep path is
+    testable without faking the host OS.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "openclaw"],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
+        )
+        if result.returncode == 0:
+            pids = result.stdout.strip().split()
+            # pgrep -f matches the bare substring anywhere in any command
+            # line (editors, greps, this migration's own paths). Validate
+            # each hit's real command before claiming a running OpenClaw.
+            pids = _validated_openclaw_pids(pids)
+            if pids:
+                return [f"openclaw process(es) (PIDs: {', '.join(pids)})"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return []
+
 
 def _detect_openclaw_processes() -> list[str]:
     """Detect running OpenClaw processes and services.
@@ -108,16 +197,7 @@ def _detect_openclaw_processes() -> list[str]:
         except Exception:
             pass
     else:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "openclaw"],
-                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3,
-            )
-            if result.returncode == 0:
-                pids = result.stdout.strip().split()
-                found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        found.extend(_posix_pgrep_openclaw_hits())
 
     return found
 

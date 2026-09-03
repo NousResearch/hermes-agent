@@ -5669,7 +5669,7 @@ def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
 
-    cron_command(args)
+    return cron_command(args)
 
 
 def cmd_sync(args):

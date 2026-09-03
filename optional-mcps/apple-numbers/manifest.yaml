@@ -14,21 +14,24 @@ source: https://github.com/sweetrb/apple-numbers-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-numbers-mcp@1.2.1`:
+# On macOS, `npx -y apple-numbers-mcp@1.2.2`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     1.2.1 — i.e. the bytes npx resolved are the bytes pinned here;
+#     1.2.2 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 26 tools, every one carrying a description;
 #   - resolves all 6 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
 # default_enabled — widening the default surface is the maintainers' call.
-# Re-run all three checks before moving this pin.
+# Re-run all three checks before moving this pin. (Re-pinned immediately
+# outside the normal >=2-week age policy: 1.2.2 fixes a fast-uri security
+# vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
+# validation on every tool call regardless of default_enabled.)
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-numbers-mcp@1.2.1"
+    - "apple-numbers-mcp@1.2.2"
 
 # Reads/writes .numbers files via a numbers-parser Python sidecar plus
 # AppleScript for formatting/formulas; no credentials.

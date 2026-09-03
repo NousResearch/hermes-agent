@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.7.5`:
+# On macOS, `npx -y apple-notes-mcp@2.8.2`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.7.5 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.8.2 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 36 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -24,20 +24,20 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # default_enabled — widening the default surface is the maintainers' call.
 # Re-run all three checks before moving this pin.
 #
-# Deliberately NOT moved to 2.8.0 (published 2026-08-31, one day old at this
-# check): this catalog's own policy requires a pin to be >=2 weeks old, and
-# 2.8.0's only change (note-mutation write-safety hardening: update/append/
-# delete/move/batch-delete) touches no tool in default_enabled below, so
-# there is no fix here for a stale pin to be hiding. 2.7.5 (2026-08-14) is
-# both policy-compliant on age and current on everything default_enabled
-# exposes — moving to a one-day-old release for zero reachable benefit would
-# make the pin worse on the axis that matters, not better.
+# Jumped straight from 2.7.5 to 2.8.2 (skipping 2.8.0/2.8.1) OUTSIDE this
+# catalog's normal >=2-week pin-age policy: unlike 2.8.0's note-mutation
+# write-safety hardening (correctly declined below for touching no
+# default_enabled tool), 2.8.2 fixes a fast-uri security vulnerability (4
+# GHSAs, high severity) reachable via ajv's JSON-schema validation on every
+# tool call — universal reach, not gated by default_enabled. Per this
+# catalog's own precedent of re-pinning immediately for security releases,
+# the age policy yields to a security fix.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.7.5"
+    - "apple-notes-mcp@2.8.2"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

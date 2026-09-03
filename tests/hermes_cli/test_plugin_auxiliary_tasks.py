@@ -79,6 +79,29 @@ def test_register_auxiliary_task_basic():
     assert entry["defaults"]["timeout"] == 60
 
 
+def test_get_plugin_auxiliary_tasks_can_skip_discovery(monkeypatch):
+    """Import-time config bridges must not execute user-plugin registration."""
+    from hermes_cli import plugins as plugins_mod
+
+    manager = PluginManager()
+    manager._discovered = True
+    manifest = PluginManifest(name="already_loaded")
+    PluginContext(manifest, manager).register_auxiliary_task(
+        key="loaded_task",
+        display_name="Loaded task",
+        description="already registered",
+    )
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+
+    def fail_discovery(*args, **kwargs):
+        raise AssertionError("plugin discovery must not run")
+
+    monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", fail_discovery)
+    entries = get_plugin_auxiliary_tasks(discover=False)
+
+    assert [entry["key"] for entry in entries] == ["loaded_task"]
+
+
 
 
 # ── PluginManager state lifecycle ────────────────────────────────────────────

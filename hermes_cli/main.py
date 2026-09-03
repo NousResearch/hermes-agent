@@ -8364,17 +8364,79 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
         return True
 
+    # The helper needs root:root 4755, which takes elevated privileges.
+    #
+    # A bare `sudo` can only prompt when a TTY is attached. Launched from the
+    # .desktop entry there is none, so sudo fails with "no tty present", the
+    # helper stays misconfigured, and the caller quietly downgrades the launch
+    # to --no-sandbox: the app starts, but unsandboxed, for a reason the user
+    # never sees (Terminal=false). Every rebuild resets the helper's mode, so
+    # this recurs on each update. Try the non-interactive and graphical paths
+    # before giving up.
     sudo = shutil.which("sudo")
-    if not sudo:
-        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
+    pkexec = shutil.which("pkexec")
+    if not sudo and not pkexec:
+        print(
+            "✗ Hermes Desktop requires sudo or pkexec to configure "
+            "Electron's Linux sandbox helper."
+        )
         return False
 
-    print("→ Configuring Electron Linux sandbox helper (sudo required)...")
-    for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
-        if subprocess.run(command, check=False).returncode != 0:
-            print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
-            return False
-    return True
+    shell = shutil.which("sh")
+    if not shell:
+        print("✗ Cannot configure Electron's Linux sandbox helper: sh not found.")
+        return False
+
+    # One elevated call does both changes, so the user is prompted once rather
+    # than twice. The path is shell-quoted; it is also already proven to be a
+    # regular file (not a symlink) by the lstat checks above.
+    quoted = shlex.quote(str(sandbox))
+    script = f"chown root:root {quoted} && chmod 4755 {quoted}"
+
+    try:
+        has_tty = sys.stdin is not None and sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        has_tty = False
+
+    attempts: list[tuple[str, list[str]]] = []
+    if sudo:
+        # Cached credentials or a NOPASSWD rule: succeeds without prompting.
+        attempts.append(("sudo -n", [sudo, "-n", shell, "-c", script]))
+        if has_tty:
+            attempts.append(("sudo", [sudo, shell, "-c", script]))
+    if not has_tty and pkexec:
+        # No TTY, so let polkit raise its own graphical password prompt.
+        attempts.append(("pkexec", [pkexec, shell, "-c", script]))
+
+    if not attempts:
+        print(
+            "✗ Hermes Desktop requires sudo or pkexec to configure "
+            "Electron's Linux sandbox helper."
+        )
+        return False
+
+    print("→ Configuring Electron Linux sandbox helper (elevated privileges required)...")
+    for label, command in attempts:
+        if subprocess.run(command, check=False).returncode == 0:
+            return True
+        print(f"  … {label} did not succeed")
+
+    print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
+    if not has_tty:
+        # Nothing printed above reaches a launcher-started process; surface the
+        # reason where the user will see it, and name the command that fixes it.
+        notify = shutil.which("notify-send")
+        if notify:
+            subprocess.run(
+                [
+                    notify,
+                    "Hermes Desktop",
+                    "Could not configure the Electron sandbox helper. "
+                    "Run `hermes desktop` once from a terminal.",
+                ],
+                check=False,
+            )
+    return False
 
 
 def _desktop_linux_needs_disable_setuid_sandbox(packaged_executable: Path) -> bool:

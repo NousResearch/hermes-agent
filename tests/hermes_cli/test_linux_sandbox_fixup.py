@@ -161,3 +161,97 @@ class TestDesktopLinuxNeedsDisableSetuidSandbox:
         exe = unpacked / "Hermes"
         exe.write_text("", encoding="utf-8")
         assert cli_main._desktop_linux_needs_disable_setuid_sandbox(exe) is False
+
+
+class TestDesktopLinuxSandboxFixupEscalation:
+    """The escalation path when userns is unavailable and the helper needs setuid.
+
+    On such hosts the fixup must still reach root, but a bare ``sudo`` can only
+    prompt with a TTY. Launched from the .desktop entry there is none, so it
+    must not be attempted; ``sudo -n`` (cached creds / NOPASSWD) and ``pkexec``
+    (graphical polkit prompt) are the paths that can succeed there.
+    """
+
+    def _fake_packaged_app(self, tmp_path):
+        unpacked = tmp_path / "linux-unpacked"
+        unpacked.mkdir()
+        exe = unpacked / "Hermes"
+        exe.write_text("", encoding="utf-8")
+        sandbox = unpacked / "chrome-sandbox"
+        sandbox.write_text("", encoding="utf-8")
+        sandbox.chmod(0o755)
+        return exe
+
+    def _which(self, available):
+        return lambda name: f"/usr/bin/{name}" if name in available else None
+
+    def test_no_tty_uses_pkexec_and_never_bare_sudo(self, monkeypatch, tmp_path):
+        """Without a TTY, bare sudo must never run — it can only fail there."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(
+                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=False
+             ), \
+             patch.object(cli_main.shutil, "which",
+                          side_effect=self._which({"sh", "sudo", "pkexec"})), \
+             patch.object(cli_main.sys.stdin, "isatty", return_value=False), \
+             patch.object(cli_main.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 1)
+            cli_main._desktop_linux_sandbox_fixup(exe)
+
+        argvs = [call.args[0] for call in run.call_args_list]
+        assert any(a[0].endswith("pkexec") for a in argvs), "pkexec must be attempted"
+        sudo_calls = [a for a in argvs if a[0].endswith("sudo")]
+        assert sudo_calls, "sudo -n must be attempted"
+        for a in sudo_calls:
+            assert a[1] == "-n", f"bare sudo must not run without a TTY: {a}"
+
+    def test_pkexec_success_returns_true(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(
+                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=False
+             ), \
+             patch.object(cli_main.shutil, "which",
+                          side_effect=self._which({"sh", "pkexec"})), \
+             patch.object(cli_main.sys.stdin, "isatty", return_value=False), \
+             patch.object(cli_main.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0)
+            assert cli_main._desktop_linux_sandbox_fixup(exe) is True
+
+    def test_tty_host_may_use_interactive_sudo(self, monkeypatch, tmp_path):
+        """With a TTY, bare sudo is a legitimate second attempt."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(
+                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=False
+             ), \
+             patch.object(cli_main.shutil, "which",
+                          side_effect=self._which({"sh", "sudo"})), \
+             patch.object(cli_main.sys.stdin, "isatty", return_value=True), \
+             patch.object(cli_main.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 1)
+            assert cli_main._desktop_linux_sandbox_fixup(exe) is False
+
+        argvs = [call.args[0] for call in run.call_args_list]
+        assert any(a[0].endswith("sudo") and a[1] == "-n" for a in argvs)
+        assert any(a[0].endswith("sudo") and a[1] != "-n" for a in argvs)
+
+    def test_headless_failure_notifies_the_user(self, monkeypatch, tmp_path):
+        """A launcher-started process shows no stdout — surface the reason."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        exe = self._fake_packaged_app(tmp_path)
+        with patch.object(
+                 cli_main, "_desktop_linux_userns_sandbox_available", return_value=False
+             ), \
+             patch.object(cli_main.shutil, "which",
+                          side_effect=self._which({"sh", "pkexec", "notify-send"})), \
+             patch.object(cli_main.sys.stdin, "isatty", return_value=False), \
+             patch.object(cli_main.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 1)
+            assert cli_main._desktop_linux_sandbox_fixup(exe) is False
+
+        argvs = [call.args[0] for call in run.call_args_list]
+        assert any(
+            a[0].endswith("notify-send") for a in argvs
+        ), "must notify on headless failure"

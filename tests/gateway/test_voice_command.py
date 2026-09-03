@@ -252,7 +252,7 @@ class TestAutoVoiceReply:
     # | Slack         | text  | all        | skip | yes    | 1 audio      |
     #
     # * skip_double: voice input → base already handles
-    # † Discord play_tts override skips when in VC
+    # † Discord base auto-TTS owns voice-input playback in VC
 
     # -- Telegram/Slack/Web: voice input, base handles ---------------------
 
@@ -296,10 +296,11 @@ class TestSendVoiceReply:
         return _make_runner(tmp_path)
 
     @pytest.mark.asyncio
-    async def test_calls_tts_and_send_voice(self, runner):
+    async def test_calls_tts_and_play_tts(self, runner):
         from gateway.config import Platform
 
         mock_adapter = AsyncMock()
+        mock_adapter.play_tts = AsyncMock()
         mock_adapter.send_voice = AsyncMock()
         event = _make_event()
         event.source.platform = Platform.TELEGRAM
@@ -314,9 +315,10 @@ class TestSendVoiceReply:
              patch("os.makedirs"):
             await runner._send_voice_reply(event, "Hello world")
 
-        mock_adapter.send_voice.assert_called_once()
+        mock_adapter.play_tts.assert_called_once()
+        mock_adapter.send_voice.assert_not_called()
         assert mock_tts.call_args.kwargs["output_path"].endswith(".ogg")
-        call_args = mock_adapter.send_voice.call_args
+        call_args = mock_adapter.play_tts.call_args
         assert call_args.kwargs.get("chat_id") == "123"
 
 
@@ -325,6 +327,7 @@ class TestSendVoiceReply:
         from gateway.config import Platform
 
         mock_adapter = AsyncMock()
+        mock_adapter.play_tts = AsyncMock()
         mock_adapter.send_voice = AsyncMock()
         event = _make_event()
         event.source.platform = Platform.TELEGRAM
@@ -342,8 +345,9 @@ class TestSendVoiceReply:
              patch("os.makedirs"):
             await runner._send_voice_reply(event, "Hello world")
 
-        mock_adapter.send_voice.assert_called_once()
-        call_kwargs = mock_adapter.send_voice.call_args.kwargs
+        mock_adapter.play_tts.assert_called_once()
+        mock_adapter.send_voice.assert_not_called()
+        call_kwargs = mock_adapter.play_tts.call_args.kwargs
         assert call_kwargs["reply_to"] == "462"
         assert call_kwargs["metadata"] == {
             "thread_id": "20197",
@@ -357,11 +361,11 @@ class TestSendVoiceReply:
 
 
 # =====================================================================
-# Discord play_tts skip when in voice channel
+# Discord play_tts routing when in voice channel
 # =====================================================================
 
-class TestDiscordPlayTtsSkip:
-    """Discord adapter skips play_tts when bot is in a voice channel."""
+class TestDiscordPlayTtsRouting:
+    """Discord adapter routes play_tts into a bound voice channel."""
 
     def _make_discord_adapter(self):
         from plugins.platforms.discord.adapter import DiscordAdapter

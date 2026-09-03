@@ -49,8 +49,9 @@ class TestAutoVoiceReplyFormat:
             await runner._send_voice_reply(event, "hello from auto tts")
 
         assert requested_paths and requested_paths[0].endswith(".ogg")
-        adapter.send_voice.assert_awaited_once()
-        assert adapter.send_voice.await_args.kwargs["audio_path"].endswith(".ogg")
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["audio_path"].endswith(".ogg")
+        adapter.send_voice.assert_not_awaited()
 
     def test_should_send_voice_reply_streamed_global_auto_tts_fires(self):
         """Streamed reply + global voice.auto_tts (no /voice opt-in) sends voice.
@@ -104,6 +105,7 @@ def _make_runner() -> GatewayRunner:
 def _make_adapter(platform: Platform) -> MagicMock:
     adapter = MagicMock()
     adapter.platform = platform
+    adapter.play_tts = AsyncMock()
     adapter.send_voice = AsyncMock()
     return adapter
 

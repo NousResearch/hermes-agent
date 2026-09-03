@@ -633,7 +633,7 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
         def __init__(self):
             self.controls = []
 
-        def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0):
+        def control(self, sid, *, route_name, payload=None, wait=True, timeout=30.0, on_late_ack=None):
             self.controls.append((sid, route_name, dict(payload or {}), wait))
             return {
                 "type": "control.ack",
@@ -3937,7 +3937,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -4001,7 +4001,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     import tools.terminal_tool as terminal_tool
 
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
@@ -5534,7 +5534,7 @@ def test_superseded_runtime_finalized_without_reclaimed_broadcast(monkeypatch):
         # mark it finalized-for-lookup via a different stored key is wrong —
         # instead simulate the mint race by removing it from lookup).
         old["_finalized"] = False
-        monkeypatch.setattr(server, "_find_live_session_by_key", lambda _k: None)
+        monkeypatch.setattr(server, "_find_live_session_by_key", lambda _k, *_a: None)
 
         result = server._claim_or_reuse_live("new-sid", "stored-super", fresh, None)
 
@@ -5763,6 +5763,147 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     monkeypatch.setattr(server.threading, "Timer", _Timer)
     server._schedule_ws_orphan_reap("any-sid")
     assert fired["timer"] is False
+
+
+def test_ws_orphan_reap_defers_running_turn_with_fresh_activity(monkeypatch):
+    """#98028/#100325: a client-absent turn whose activity clock is fresh is
+    NOT interrupted — it keeps running detached and the reaper re-polls at the
+    grace interval. Once the clock goes stale the wedged-turn interrupt fires,
+    and after the turn settles the session is reaped as before."""
+    callbacks = []
+    delays = []
+    interrupted = []
+    torn_down = []
+
+    class _Timer:
+        def __init__(self, delay, callback):
+            delays.append(delay)
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    activity = {"seconds_since_activity": 1.0}
+    agent = types.SimpleNamespace(
+        get_activity_summary=lambda: dict(activity),
+        interrupt=lambda message=None: interrupted.append("interrupted"),
+    )
+
+    class _DeadThread:
+        def is_alive(self):
+            return False
+
+    session = _session(
+        agent=agent,
+        transport=server._detached_ws_transport,
+        running=True,
+        _run_thread=_DeadThread(),
+    )
+    server._sessions["fresh-sid"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 300.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        server,
+        "_teardown_popped_session",
+        lambda claimed, *, end_reason: torn_down.append((claimed, end_reason)) or True,
+    )
+
+    try:
+        server._schedule_ws_orphan_reap("fresh-sid")
+
+        # Two grace cycles with fresh activity: no interrupt, reschedule at
+        # the GRACE interval (not the 1s interrupt-settle poll).
+        for _ in range(2):
+            callbacks.pop(0)()
+            assert interrupted == []
+            assert not session.get("_client_gone_interrupt_requested")
+            assert delays[-1] == server._WS_ORPHAN_REAP_GRACE_S
+            assert "fresh-sid" in server._sessions
+
+        # Activity goes stale (turn wedged) -> interrupt fires on next poll.
+        activity["seconds_since_activity"] = 301.0
+        callbacks.pop(0)()
+        assert interrupted == ["interrupted"]
+        assert session["_client_gone_interrupt_requested"] is True
+
+        # Turn settles -> reap proceeds exactly as today.
+        session["running"] = False
+        callbacks.pop(0)()
+        assert "fresh-sid" not in server._sessions
+        assert torn_down == [(session, "ws_orphan_reap")]
+    finally:
+        server._sessions.pop("fresh-sid", None)
+
+
+def test_ws_orphan_activity_gate_zero_restores_interrupt_at_grace(monkeypatch):
+    """ws_orphan_activity_stale_s=0 opts out: fresh activity no longer defers
+    the client-gone interrupt (pre-#98028 behaviour)."""
+    callbacks = []
+    interrupted = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    agent = types.SimpleNamespace(
+        get_activity_summary=lambda: {"seconds_since_activity": 0.5},
+        interrupt=lambda message=None: interrupted.append("interrupted"),
+    )
+    session = _session(
+        agent=agent,
+        transport=server._detached_ws_transport,
+        running=True,
+        _run_thread=_LiveThread(),
+    )
+    server._sessions["optout-sid"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    try:
+        server._schedule_ws_orphan_reap("optout-sid")
+        callbacks.pop(0)()
+        assert interrupted == ["interrupted"]
+        assert session["_client_gone_interrupt_requested"] is True
+    finally:
+        server._sessions.pop("optout-sid", None)
+
+
+def test_ws_orphan_activity_gate_unreadable_summary_stays_eligible(monkeypatch):
+    """A broken/opaque activity summary must fail CLOSED (not fresh): the
+    wedged-turn interrupt-at-grace safety net is preserved."""
+
+    def _boom():
+        raise RuntimeError("summary unavailable")
+
+    agent = types.SimpleNamespace(get_activity_summary=_boom)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 300.0)
+    assert server._ws_orphan_turn_activity_is_fresh({"agent": agent}) is False
+    # No agent / no summary method: same conservative answer.
+    assert server._ws_orphan_turn_activity_is_fresh({"agent": None}) is False
+    assert (
+        server._ws_orphan_turn_activity_is_fresh(
+            {"agent": types.SimpleNamespace()}
+        )
+        is False
+    )
+    # Never-stamped clock (None) is not fresh either.
+    agent2 = types.SimpleNamespace(
+        get_activity_summary=lambda: {"seconds_since_activity": None}
+    )
+    assert server._ws_orphan_turn_activity_is_fresh({"agent": agent2}) is False
 
 
 def test_init_session_fires_reset_hook(monkeypatch):
@@ -7755,7 +7896,7 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr("hermes_state.SessionDB", _ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", _ProfileDB)
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row(
@@ -8363,7 +8504,7 @@ def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
-        lambda _model_id: {"service_tier": "priority"},
+        lambda _model_id, **_route: {"service_tier": "priority"},
     )
 
     try:
@@ -8442,7 +8583,7 @@ def test_config_set_fast_rejects_unsupported_model(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.models.resolve_fast_mode_overrides",
-        lambda _model_id: None,
+        lambda _model_id, **_route: None,
     )
 
     try:
@@ -8762,7 +8903,7 @@ def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
 
 
 def test_setup_status_reports_provider_config(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
 
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
@@ -8784,7 +8925,7 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 
 
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None: {
@@ -8806,7 +8947,7 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
 
 
 def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None: {
@@ -8823,7 +8964,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
 
 
 def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: False)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None: {
@@ -8841,7 +8982,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
 
 def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     """Onboarding must be able to validate the provider the user just connected."""
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
 
     def fake_resolve(requested=None, **kwargs):
         if requested == "nous":
@@ -8870,6 +9011,67 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
     assert default["result"]["ok"] is False
     assert default["result"]["provider"] == "anthropic"
+
+
+def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
+    """#94071: the Desktop preflights a freshly created bot on its target
+    backend. ``profile`` binds THAT profile's home + .env — launch-process
+    credentials must not make an unconfigured bot look ready, and the bot's
+    own .env must be what the strict check sees."""
+    from agent import secret_scope
+    from hermes_constants import get_hermes_home
+
+    bot_home = tmp_path / "profiles" / "bot"
+    bot_home.mkdir(parents=True)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile-secret-0000")
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: name == "bot")
+    monkeypatch.setattr(server, "_profile_home", lambda profile: bot_home if profile == "bot" else None)
+    seen = {}
+
+    def fake_resolve(requested=None, **kwargs):
+        seen["home"] = Path(str(get_hermes_home())).resolve()
+        seen["secret"] = secret_scope.get_secret("OPENROUTER_API_KEY")
+        return {"provider": "openrouter", "api_key": seen["secret"] or "", "source": "env"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        status = server.handle_request(
+            {"id": "1", "method": "setup.status", "params": {"profile": "bot"}}
+        )
+        assert status["result"] == {"provider_configured": False, "profile": "bot"}
+
+        (bot_home / ".env").write_text("OPENROUTER_API_KEY=sk-or-bot-profile-secret-00001\n")
+        status = server.handle_request(
+            {"id": "2", "method": "setup.status", "params": {"profile": "bot"}}
+        )
+        runtime = server.handle_request(
+            {"id": "3", "method": "setup.runtime_check", "params": {"profile": "bot"}}
+        )
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert status["result"] == {"provider_configured": True, "profile": "bot"}
+    assert runtime["result"]["ok"] is True
+    assert runtime["result"]["profile"] == "bot"
+    assert seen == {"home": bot_home.resolve(), "secret": "sk-or-bot-profile-secret-00001"}
+    assert Path(str(get_hermes_home())).resolve() != bot_home.resolve()
+
+
+def test_setup_readiness_unknown_profile_never_answers_for_launch_profile(monkeypatch):
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, **kw: {"provider": "openrouter", "api_key": "sk-or-launch-0000000000", "source": "env"},
+    )
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: False)
+
+    for method in ("setup.status", "setup.runtime_check"):
+        resp = server.handle_request({"id": "1", "method": method, "params": {"profile": "ghost"}})
+        assert resp["result"]["ok"] is False
+        assert resp["result"]["profile"] == "ghost"
+        assert "does not exist" in resp["result"]["error"]
 
 
 def test_complete_slash_drops_removed_provider_alias():
@@ -9591,7 +9793,7 @@ def test_config_set_model_recovers_failed_profile_resume_after_build_completes(
         "hermes_cli.model_selection_guards.combined_selection_warning",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr("hermes_state.SessionDB", FakeDb)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", FakeDb)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_transfer_db_to_agent", barrier_transfer)
     monkeypatch.setattr(
@@ -10359,7 +10561,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
     }
 
 
-def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch):
+def test_session_compress_forwards_config_ceiling_budget_to_compute_host(monkeypatch):
     session = _session(agent=None, _compute_host_active=True)
     server._sessions["sid"] = session
     calls = []
@@ -10378,6 +10580,9 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
 
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: True)
     monkeypatch.setattr(server, "_send_compute_host_control", send_control)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"compression": {"context_total_ceiling_seconds": 300}}
+    )
 
     try:
         resp = server.handle_request(
@@ -10387,17 +10592,17 @@ def test_session_compress_forwards_120_second_budget_to_compute_host(monkeypatch
         server._sessions.pop("sid", None)
 
     assert resp["result"]["status"] == "compressed"
-    assert calls == [
-        (
-            ("sid",),
-            {
-                "route_name": "session.compress",
-                "command": "/compress",
-                "wait": True,
-                "timeout": 120.0,
-            },
-        )
-    ]
+    assert len(calls) == 1
+    (sid_arg,), kwargs = calls[0]
+    assert sid_arg == "sid"
+    assert kwargs["route_name"] == "session.compress"
+    assert kwargs["command"] == "/compress"
+    assert kwargs["wait"] is True
+    # #97948: the waiter follows compression.context_total_ceiling_seconds
+    # (+30s slack) instead of a hard-coded 120s, and registers a late-ack
+    # handler so a compress that outlives it is still adopted.
+    assert kwargs["timeout"] == 330.0
+    assert callable(kwargs["on_late_ack"])
 
 
 def test_session_compress_preserves_compute_host_aborted_summary(monkeypatch):
@@ -13547,7 +13752,13 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
 def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     """When the build itself FAILS (agent_error set when ready fires), the
     prompt must not run and the failure must reach the client as a visible
-    error event — never a silent drop."""
+    error event — never a silent drop.
+
+    prompt.submit retries a completed failed build once (fresh provider
+    resolution un-wedges sessions whose failure cause was fixed), so the
+    build stub here is a faithful failing build: it sets agent_error and
+    fires the session's CURRENT ready event (the retry installs a new one).
+    A no-op stub would leave that event unset and hang the patient wait."""
     threads = []
     emitted = []
     calls = {"run_prompt": 0}
@@ -13570,12 +13781,16 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     session["agent_error"] = "No LLM provider configured"  # ...but failed
     server._sessions["sid"] = session
 
+    def _failing_build(sid, session):
+        session["agent_error"] = "No LLM provider configured"
+        session["agent_ready"].set()
+
     try:
         monkeypatch.setattr(server.threading, "Thread", _FakeThread)
         monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
         monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
         monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
-        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_start_agent_build", _failing_build)
         monkeypatch.setattr(
             server,
             "_run_prompt_submit",
@@ -14402,6 +14617,11 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
             raise RuntimeError("locking protocol")
 
     fake_mod.SessionDB = _BrokenSessionDB
+
+    def _broken_shared(_db_path=None):
+        raise RuntimeError("locking protocol")
+
+    fake_mod.get_shared_session_db = _broken_shared
     monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
@@ -14420,6 +14640,11 @@ def test_ensure_session_db_row_false_when_store_unavailable(monkeypatch):
             raise RuntimeError("utf-8 boom")
 
     fake_mod.SessionDB = _BrokenSessionDB
+
+    def _broken_shared(_db_path=None):
+        raise RuntimeError("utf-8 boom")
+
+    fake_mod.get_shared_session_db = _broken_shared
     monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
     monkeypatch.setattr(server, "_db", None)
     monkeypatch.setattr(server, "_db_error", None)
@@ -14772,7 +14997,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
 
     resp = server.handle_request(
         {
@@ -14813,7 +15038,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB2)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB2)
 
     resp = server.handle_request(
         {
@@ -14823,6 +15048,73 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         }
     )
     assert resp["result"]["session_id"] == "ml-tip"
+
+
+def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
+    """Handoff validation must read the owning session's gateway config."""
+    import contextlib
+
+    from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+    from hermes_cli.config import get_hermes_home
+    from tui_gateway import methods_session
+
+    methods_session.register(server)
+    profile_home = tmp_path / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    seen_homes = []
+
+    def load_config():
+        home = get_hermes_home()
+        seen_homes.append(home)
+        config = GatewayConfig()
+        if home == profile_home:
+            config.platforms[Platform.DISCORD] = PlatformConfig(
+                enabled=True,
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="discord-home",
+                    name="Hermes / #chat-coding",
+                ),
+            )
+        return config
+
+    class ProfileDB:
+        def get_session(self, _key):
+            return {"id": _key}
+
+        def request_handoff(self, _key, platform):
+            return platform == "discord"
+
+    @contextlib.contextmanager
+    def profile_db(_session):
+        yield ProfileDB()
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", load_config)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_session_db", profile_db)
+    server._sessions["handoff-profile"] = {
+        "running": False,
+        "session_key": "desktop-coder-session",
+        "profile_home": str(profile_home),
+    }
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "handoff.request",
+                "params": {
+                    "session_id": "handoff-profile",
+                    "platform": "discord",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("handoff-profile", None)
+
+    assert "result" in resp, resp
+    assert resp["result"]["queued"] is True
+    assert seen_homes == [profile_home]
+    assert get_hermes_home() != profile_home
 
 
 def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
@@ -14873,7 +15165,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
 
     resp = server.handle_request(
         {
@@ -14940,7 +15232,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     try:
         set_resp = server.handle_request(
             {
@@ -14997,7 +15289,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.history", "params": {"session_id": "sid"}}
@@ -15084,7 +15376,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
         "last_active": 1.0,
     }
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     try:
         resp = server.handle_request(
             {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
@@ -15126,7 +15418,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
             seen["closed"] = True
 
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     session = {
         "session_key": "ml-sess",
         "profile_home": str(profile_home),
@@ -15219,7 +15511,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
 
     def _fake_make_agent(*a, **k):
@@ -15261,6 +15553,312 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         for k in list(server._sessions):
             server._sessions.pop(k, None)
 
+
+def test_session_create_persists_seeded_branch_child(monkeypatch):
+    """A desktop branch (session.create with parent_session_id + seeded
+    messages) must persist its row + transcript immediately (#93959).
+
+    The renderer re-fetches the fresh child via REST and defer_history
+    hydration right after create; both read the DB. An unpersisted child
+    404s/hydrates empty, the client fail-latch refuses to bind it, and the
+    user gets an infinite spinner whose optimistic row vanishes on restart.
+    """
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    seen: dict = {}
+
+    class _FakeDB:
+        def get_session_title(self, key):
+            seen["parent_title"] = key
+            return "My Parent Session"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, key, **kwargs):
+            seen["created"] = key
+            seen["parent"] = kwargs.get("parent_session_id")
+            seen["branched_from"] = (kwargs.get("model_config") or {}).get("_branched_from")
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            seen["messages"] = list(messages)
+
+        def set_session_title(self, key, title):
+            seen["title"] = title
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    seeded = [
+        {"role": "user", "content": "hello from parent"},
+        {"role": "assistant", "content": "parent reply"},
+    ]
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "cols": 96,
+                "source": "desktop",
+                "parent_session_id": "20260823_084113_6de211",
+                "messages": seeded,
+            },
+        }
+    )
+
+    assert "result" in resp, resp
+    key = resp["result"]["stored_session_id"]
+
+    # Row persisted up front with lineage linkage and a lineage title —
+    # not deferred to the first prompt.
+    assert seen.get("created") == key
+    assert seen.get("parent") == "20260823_084113_6de211"
+    assert seen.get("branched_from") == "20260823_084113_6de211"
+    assert seen.get("title") == "My Parent Session #2"
+
+    # Seeded transcript copied into the durable row so REST prefetch and
+    # defer_history hydration both find it immediately.
+    assert len(seen.get("messages") or []) == 2
+    assert seen["messages"][0]["content"] == "hello from parent"
+
+    # The live record no longer queues the title — the DB already holds it.
+    runtime_sid = resp["result"]["session_id"]
+    assert server._sessions[runtime_sid]["pending_title"] is None
+
+    server._sessions.pop(runtime_sid, None)
+
+
+def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
+    """Best-effort persistence: a broken DB must not fail session.create."""
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    class _BrokenDB:
+        def get_session_title(self, key):
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "source": "desktop",
+                "parent_session_id": "parent-1",
+                "messages": [{"role": "user", "content": "seed"}],
+            },
+        }
+    )
+
+    # Create itself still succeeds — the lazy first-prompt path remains as
+    # the fallback for the seed.
+    assert "result" in resp
+
+    server._sessions.pop(resp["result"]["stored_session_id"], None)
+
+
+def test_session_create_seed_failure_after_row_compensates(monkeypatch):
+    """Partial-failure compensation (#93959 review): if the row commits but
+    the transcript copy fails, the just-created child is DELETED so the lazy
+    first-prompt fallback can retry cleanly. Without this, a durable empty
+    row defeats _ensure_session_db_row's INSERT OR IGNORE and the renderer
+    fail-latches on a transcript-less session again."""
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    seen: dict = {}
+
+    class _FakeDB:
+        def get_session_title(self, key):
+            return "Parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, key, **kwargs):
+            seen["created"] = key
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            raise RuntimeError("transcript write failed")
+
+        def delete_session(self, session_id):
+            seen["deleted"] = session_id
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {
+                "source": "desktop",
+                "parent_session_id": "parent-1",
+                "title": "My Branch",
+                "messages": [{"role": "user", "content": "seed"}],
+            },
+        }
+    )
+
+    assert "result" in resp
+    key = resp["result"]["stored_session_id"]
+    # The half-written child was rolled back — no durable empty row left to
+    # shadow the lazy seed path.
+    assert seen.get("deleted") == key
+    # pending_title survived: it still lands via the lazy post-turn apply.
+    runtime_sid = resp["result"]["session_id"]
+    assert server._sessions[runtime_sid]["pending_title"] == "My Branch"
+
+    server._sessions.pop(runtime_sid, None)
+
+
+def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
+    """Disk-full is NOT compensated: the row stays (deleting data on a full
+    disk can make things worse), create still succeeds, and the failure is
+    observable at warning level (#93959 review)."""
+
+    import logging as _logging
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    class _FakeDB:
+        def get_session_title(self, key):
+            return "Parent"
+
+        def get_next_title_in_lineage(self, current):
+            return f"{current} #2"
+
+        def create_session(self, key, **kwargs):
+            pass
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    records: list = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=_logging.WARNING)
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.create",
+                "params": {
+                    "source": "desktop",
+                    "parent_session_id": "parent-1",
+                    "messages": [{"role": "user", "content": "seed"}],
+                },
+            }
+        )
+    finally:
+        root.removeHandler(handler)
+
+    assert "result" in resp
+    # The failure surfaced at WARNING (observable), not buried at debug.
+    warnings = [r for r in records if r.levelno >= _logging.WARNING]
+    assert any("seeded-branch persistence failed" in r.getMessage() for r in warnings)
+
+    server._sessions.pop(resp["result"]["stored_session_id"], None)
+
+
+def test_session_create_without_parent_still_defers_row(monkeypatch):
+    """Plain drafts keep the lazy-row contract: no parent + no explicit branch
+    intent means no eager persistence (the original draft-hygiene invariant)."""
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "test-model"
+
+    calls: dict = {"create": 0}
+
+    class _FakeDB:
+        def create_session(self, *a, **k):
+            calls["create"] += 1
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
+    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a, *a2: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+    sid = resp["result"]["session_id"]
+    server._sessions[sid]["agent_ready"].wait(timeout=2.0)
+
+    assert calls["create"] == 0, "plain drafts must not persist eagerly"
+
+    server._sessions.pop(sid, None)
 
 def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_path):
     """The branched agent must be built under the parent profile's secrets.
@@ -15335,7 +15933,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: ProfileDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
 
     def _fake_make_agent(*a, **k):
@@ -15452,7 +16050,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     }
     server._sessions["parent"] = parent
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: FakeAgent())
     monkeypatch.setattr(server, "_set_session_context", lambda *args, **kwargs: {})
@@ -15512,7 +16110,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
             seen["closed"] = True
 
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state.SessionDB", ProfileDB)
+    monkeypatch.setattr("hermes_state.get_shared_session_db", ProfileDB)
     session = {
         "session_key": "ml-sess",
         "pending_title": "deferred-title",

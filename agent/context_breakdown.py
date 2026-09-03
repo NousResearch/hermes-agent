@@ -135,9 +135,20 @@ def compute_session_context_breakdown(
     # after the response) and far more accurate than the heuristic total.
     from agent.model_metadata import anchored_context_tokens
 
+    # Prefer the turn-base anchor (first response of the current turn): on
+    # reasoning models, later same-turn responses inflate prompt_tokens with
+    # replayed thinking that evaporates at the turn boundary, so anchoring on
+    # the LAST response makes the meter sawtooth. Fall back to the last-
+    # response anchor, then to measured/estimated figures.
     anchored_used = anchored_context_tokens(
-        messages or [], getattr(agent, "_usage_anchor", None)
+        messages or [],
+        getattr(agent, "_turn_base_usage_anchor", None),
+        charge_stale_thinking=False,
     )
+    if anchored_used is None:
+        anchored_used = anchored_context_tokens(
+            messages or [], getattr(agent, "_usage_anchor", None)
+        )
     measured_used = int(getattr(comp, "last_prompt_tokens", 0) or 0) if comp else 0
     if anchored_used is not None:
         context_used = anchored_used

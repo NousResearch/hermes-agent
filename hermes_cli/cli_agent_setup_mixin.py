@@ -353,12 +353,18 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
+        if service_tier != "priority":
+            # None (normal) or auto/cold — the bounded window is applied per
+            # request by agent.fast_mode, not pinned into request_overrides.
             route["request_overrides"] = None
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(
+                route["model"],
+                provider=runtime["provider"],
+                base_url=runtime["base_url"],
+            )
         except Exception:
             overrides = None
         route["request_overrides"] = overrides
@@ -646,29 +652,16 @@ class CLIAgentSetupMixin:
         if not self._session_db:
             return None
         from hermes_state import (
-            SessionExportTooLargeError,
             SessionResumeTooLargeError,
-            resolved_max_resume_messages,
         )
 
         try:
+            safety_check = getattr(self._session_db, "assert_resume_safe", None)
+            if not callable(safety_check):
+                return None
             if tip_only:
-                tip_check = getattr(self._session_db, "assert_export_safe", None)
-                if not callable(tip_check):
-                    return None
-                limit = resolved_max_resume_messages()
-                if limit <= 0:
-                    return None
-                try:
-                    tip_check(self.session_id, max_messages=limit)
-                except SessionExportTooLargeError as exc:
-                    raise SessionResumeTooLargeError(
-                        exc.message_count, limit, scope="in its tip segment"
-                    ) from exc
+                safety_check(self.session_id, tip_only=True)
             else:
-                safety_check = getattr(self._session_db, "assert_resume_safe", None)
-                if not callable(safety_check):
-                    return None
                 safety_check(self.session_id)
         except SessionResumeTooLargeError as exc:
             return str(exc)

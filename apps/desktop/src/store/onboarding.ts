@@ -11,6 +11,7 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
@@ -175,6 +176,30 @@ function clearPoll() {
     window.clearInterval(pollTimer)
     pollTimer = null
   }
+
+  clearPollExpiry()
+}
+
+let pollExpiryTimer: number | null = null
+
+function clearPollExpiry() {
+  if (pollExpiryTimer !== null) {
+    window.clearTimeout(pollExpiryTimer)
+    pollExpiryTimer = null
+  }
+}
+
+/** Lapse a device-code session locally when its window expires, instead of
+ * polling a dead session forever. Uses the flow's own `expires_in`; the
+ * backend poller may still flip the session to error first, and its message
+ * (surfaced by `pollSession`) is preferred whenever it arrives in time. */
+function schedulePollExpiry(start: DeviceStart, onExpire: () => void) {
+  clearPollExpiry()
+  const ttlMs = Math.max(1, Number(start.expires_in) || 0) * 1000
+  pollExpiryTimer = window.setTimeout(() => {
+    pollExpiryTimer = null
+    onExpire()
+  }, ttlMs)
 }
 
 async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string): Promise<RuntimeReadinessResult> {
@@ -630,6 +655,14 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     }
 
     setFlow({ status: 'polling', provider, start, copied: false })
+    schedulePollExpiry(start, () =>
+      setFlow({
+        status: 'error',
+        provider,
+        start,
+        message: translateNow('onboarding.signInExpired')
+      })
+    )
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
     setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })

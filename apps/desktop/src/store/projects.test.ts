@@ -12,13 +12,9 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
-  $removedSessionIds,
-  $sessionMutationsInFlight,
   $worktreeRefreshToken,
   ALL_PROJECTS,
-  beginSessionMutation,
   createProject,
-  endSessionMutation,
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
@@ -31,9 +27,15 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
-  startWorkInRepo,
-  tombstoneSessions
+  startWorkInRepo
 } from './projects'
+import {
+  $removedSessionIds,
+  $sessionMutationsInFlight,
+  beginSessionMutation,
+  endSessionMutation,
+  tombstoneSessions
+} from './session-removal'
 
 vi.mock('@/i18n', () => ({
   translateNow: (key: string) => key

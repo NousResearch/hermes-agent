@@ -82,6 +82,7 @@ def _custom_provider_ssl_context(base_url: str):
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5.1",             ""),
     ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-5",                ""),
     ("anthropic/claude-opus-5-fast",           "2x price, higher output speed"),
@@ -101,6 +102,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",                    ""),
     # Google
     ("google/gemini-3.1-pro-preview",          ""),
+    ("google/gemini-3.8-flash",                ""),
     ("google/gemini-3.7-flash",                ""),
     # xAI
     ("x-ai/grok-4.6",                          ""),
@@ -131,6 +133,9 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     # Meta
     ("meta/muse-spark-1.2",                    ""),
+    ("meta/muse-spark-1.2-contributor",        ""),
+    ("meta/muse-spark-1.3",                    ""),
+    ("meta/muse-spark-1.3-contributor",        ""),
     # Sakana
     ("sakana/fugu-ultra",                      ""),
     # OpenRouter routers
@@ -266,6 +271,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5.1",
         "anthropic/claude-fable-5",
         "anthropic/claude-opus-5",
         "anthropic/claude-opus-4.8",
@@ -283,6 +289,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-mini",
         # Google
         "google/gemini-3.1-pro-preview",
+        "google/gemini-3.8-flash",
         "google/gemini-3.7-flash",
         # xAI
         "x-ai/grok-4.6",
@@ -572,6 +579,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",
+        "muse-spark-1.3-contributor-free",
     ],
     # OpenCode free tier — keyless (no OpenCode account needed). This is the
     # OFFLINE FLOOR only: provider_model_ids("opencode-free") revalidates live
@@ -592,6 +600,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free",
+        "muse-spark-1.3-contributor-free",
     ],
     # Synced against https://opencode.ai/docs/go/ + live GET /zen/go/v1/models
     # (2026-08-20).
@@ -624,6 +633,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "hy3",
         "hy3-preview",
         "muse-spark-1.2-contributor",
+        "muse-spark-1.3-contributor",
         # Go-subscription twin of the Zen keyless Ox Alpha (live go/v1
         # catalog 2026-08-21; NOT keyless — Go relay requires a Go key).
         "ox-alpha-free",
@@ -1027,35 +1037,61 @@ def union_with_portal_paid_recommendations(
 # session while still picking up upgrades quickly.
 # ---------------------------------------------------------------------------
 _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
-_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+_free_tier_cache: dict[str, tuple[bool, float]] = {}
 
 
-def check_nous_free_tier(*, force_fresh: bool = False) -> bool:
+def _pricing_profile_key() -> str:
+    """Return the stable profile identity for process-local pricing caches."""
+    from hermes_constants import hermes_home_key
+
+    return hermes_home_key()
+
+
+def get_cached_nous_free_tier() -> Optional[bool]:
+    """Return this profile's live cached entitlement, or ``None`` if unknown."""
+    cached = _free_tier_cache.get(_pricing_profile_key())
+    if cached is None:
+        return None
+    result, cached_at = cached
+    if time.monotonic() - cached_at >= _FREE_TIER_CACHE_TTL:
+        return None
+    return result
+
+
+def check_nous_free_tier(
+    *, force_fresh: bool = False, cached_only: bool = False
+) -> bool:
     """Check if the current Nous Portal user is on a free (unpaid) tier.
 
     Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
     hitting the Portal API on every call.  The cache is short-lived so
     that an account upgrade is reflected within a few minutes.
 
+    ``cached_only`` returns a live cached answer or the fail-open ``False``
+    default without contacting Portal.
+
     Returns True only when entitlement is known to be free.  Unknown/error
     states return False so this compatibility wrapper does not block users.
     """
-    global _free_tier_cache
     now = time.monotonic()
-    if not force_fresh and _free_tier_cache is not None:
-        cached_result, cached_at = _free_tier_cache
-        if now - cached_at < _FREE_TIER_CACHE_TTL:
+    profile_key = _pricing_profile_key()
+    if not force_fresh:
+        cached_result = get_cached_nous_free_tier()
+        if cached_result is not None:
             return cached_result
+
+    if cached_only:
+        return False
 
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
 
         account_info = get_nous_portal_account_info(force_fresh=force_fresh)
         result = account_info.is_free_tier
-        _free_tier_cache = (result, now)
+        _free_tier_cache[profile_key] = (result, now)
         return result
     except Exception:
-        _free_tier_cache = (False, now)
+        _free_tier_cache[profile_key] = (False, now)
         return False  # default to paid on error — don't block users
 
 
@@ -2090,6 +2126,25 @@ def warm_nous_reasoning_caps_async() -> None:
     _warm_reasoning_caps_async(_refresh_nous_reasoning_caps)
 
 
+def refresh_reasoning_caps_async(provider: Optional[str]) -> None:
+    """Force a background re-fetch of *provider*'s reasoning-capability catalog.
+
+    The in-memory cache is otherwise held for the process lifetime, so a
+    route that flips to reasoning-mandatory mid-process (GLM-5.3-flash, Sep
+    2026) keeps being sent disables it now rejects. Called from the
+    conversation loop's reasoning_mandatory recovery so the profile guard is
+    right again on the next request; no-op for providers without a catalog.
+    """
+    refresh = {
+        "nous": _refresh_nous_reasoning_caps,
+        "nous-portal": _refresh_nous_reasoning_caps,
+        "nousresearch": _refresh_nous_reasoning_caps,
+        "openrouter": _refresh_openrouter_reasoning_caps,
+    }.get(str(provider or "").strip().lower())
+    if refresh is not None:
+        _warm_reasoning_caps_async(refresh)
+
+
 # Canonical low→high ordering used for nearest-level clamping. Kept as an
 # alias of the single source of truth in ``agent.reasoning_effort``.
 from agent.reasoning_effort import EFFORT_LADDER as _REASONING_EFFORT_ORDER
@@ -2317,6 +2372,7 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
+_pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 
 # A failed fetch caches its empty result too, so an unreachable endpoint isn't
 # re-dialed on every call — but only until this deadline. Cached forever, one
@@ -2343,17 +2399,67 @@ def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
 
 
 def _cache_catalog(
-    cache_key: str, result: dict[str, dict[str, Any]]
+    cache_key: str,
+    result: dict[str, dict[str, Any]],
+    ttl_seconds: Optional[float] = None,
 ) -> dict[str, dict[str, Any]]:
-    """Cache a catalog result, giving an empty one an expiry."""
+    """Cache a catalog result, giving an empty one an expiry.
+
+    *ttl_seconds* expires a non-empty result too. Only a catalog whose contents
+    depend on server-side state the client cannot observe needs it — an org's
+    model policy can change while a long-lived process holds the entry.
+    """
     _pricing_cache[cache_key] = result
     if result:
-        _pricing_cache_retry_after.pop(cache_key, None)
+        if ttl_seconds:
+            _pricing_cache_retry_after[cache_key] = time.monotonic() + ttl_seconds
+        else:
+            _pricing_cache_retry_after.pop(cache_key, None)
     else:
         _pricing_cache_retry_after[cache_key] = (
             time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
         )
     return result
+
+
+# NUL cannot appear in a URL, so this cannot collide with a real base URL.
+_PRICING_AUTH_KEY_PREFIX = "\x00auth:"
+
+
+def _pricing_auth_fingerprint(api_key: str | None) -> str:
+    """Key suffix identifying the credential a catalog was read with.
+
+    A governed endpoint answers each token with the catalog its org may reach,
+    so two credentials cannot share an entry. blake2b for cache-key
+    fingerprinting only, same rationale as :func:`_custom_endpoint_fingerprint`.
+    """
+    if not api_key:
+        return ""
+    import hashlib
+
+    digest = hashlib.blake2b(api_key.encode("utf-8", errors="replace"), digest_size=8)
+    return _PRICING_AUTH_KEY_PREFIX + digest.hexdigest()
+
+
+def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
+    """Pricing already cached for *base_url*, or ``{}``. Never fetches.
+
+    Accepts a ``/v1``-suffixed URL as well as the pre-``/v1`` root the fetchers
+    key on, and prefers an authenticated catalog. Scans rather than rebuilding a
+    key, because callers hold a base URL but no credential — newest first, and
+    skipping expired entries, so a rotated credential does not keep answering
+    from the catalog its predecessor read.
+    """
+    root = (base_url or "").rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    authed_prefix = root + _PRICING_AUTH_KEY_PREFIX
+    for key in reversed(list(_pricing_cache)):
+        if key.startswith(authed_prefix):
+            cached = _cached_catalog(key)
+            if cached:
+                return cached
+    return _cached_catalog(root) or {}
 
 
 def _format_price_per_mtok(per_token_str: str) -> str:
@@ -2489,10 +2595,12 @@ def fetch_models_with_pricing(
     *,
     force_refresh: bool = False,
     include_sale_original: bool = False,
+    cache_ttl_seconds: Optional[float] = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
 
-    Results are cached per *base_url* so repeated calls are free.
+    Results are cached per *base_url* and per credential, so repeated calls are
+    free and one caller's catalog never answers another's read.
     Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
 
     When *include_sale_original* is true (Nous Portal only) and the gateway
@@ -2503,13 +2611,14 @@ def fetch_models_with_pricing(
     ``{prompt, completion}`` shape even if a response happens to nest
     ``original``.
     """
-    cache_key = (base_url or "").rstrip("/")
+    url_root = (base_url or "").rstrip("/")
+    cache_key = url_root + _pricing_auth_fingerprint(api_key)
     if not force_refresh:
         cached = _cached_catalog(cache_key)
         if cached is not None:
             return cached
 
-    url = cache_key + "/v1/models"
+    url = url_root + "/v1/models"
     headers: dict[str, str] = {
         "Accept": "application/json",
         "User-Agent": _HERMES_USER_AGENT,
@@ -2560,7 +2669,7 @@ def fetch_models_with_pricing(
                         entry["original"] = orig_entry
             result[mid] = entry
 
-    return _cache_catalog(cache_key, result)
+    return _cache_catalog(cache_key, result, cache_ttl_seconds)
 
 
 def fetch_ai_gateway_pricing(
@@ -2670,32 +2779,232 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     return (api_key, base_url)
 
 
-def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita)."""
+def nous_policy_allowed_ids(*, force_refresh: bool = False) -> Optional[set[str]]:
+    """The Nous model ids the caller's org may reach, or ``None`` to not filter.
+
+    The gateway omits policy-blocked rows from an authenticated
+    ``GET /v1/models``, so that response's keys are the reachable set.
+
+    ``None`` means "leave the caller's list alone", for the three states that
+    cannot support narrowing one: no policy (or a token too old to say), an
+    anonymous read whose catalog is unfiltered, and an empty read, which is a
+    fetch failure rather than an org that may reach nothing.
+    """
+    try:
+        from hermes_cli.nous_account import nous_policy_present
+
+        if nous_policy_present() is not True:
+            return None
+    except Exception:
+        return None
+
+    api_key, base_url = _resolve_nous_pricing_credentials()
+    if not api_key or not base_url:
+        return None
+
+    # Same arguments as get_pricing_for_provider's nous branch, so a caller
+    # asking for pricing too shares this entry instead of paying for a second
+    # request.
+    pricing = fetch_models_with_pricing(
+        api_key=api_key,
+        base_url=base_url,
+        force_refresh=force_refresh,
+        include_sale_original=True,
+        cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
+    )
+    return set(pricing) or None
+
+
+# Past this size an allowed set reads as a whole catalog rather than an
+# allowlist, and is not worth showing in place of an empty picker.
+_NOUS_POLICY_APPEND_MAX = 64
+
+# How long a Nous catalog stays trusted. Its contents depend on the org's
+# policy, which an admin can change at any time and the client cannot observe,
+# so a long-lived process must re-ask instead of holding the first answer for
+# its whole life. Other providers' catalogs carry no such state and keep the
+# default no-expiry caching.
+_NOUS_CATALOG_TTL_SECONDS = 300.0
+
+
+def restrict_to_nous_policy(
+    model_ids: list[str],
+    allowed: Optional[set[str]],
+    *,
+    rescue_empty: bool = False,
+) -> list[str]:
+    """*model_ids* narrowed to *allowed*, preserving the caller's order.
+
+    A ``None`` or empty *allowed* leaves the list untouched.
+
+    A ``:free`` sibling is kept when its base model is reachable, mirroring the
+    gateway, which admits a row when any of its requestable ids passes. Prefer
+    over-listing: that costs a 403 from the authoritative gate, while hiding a
+    row the gate would serve is unrecoverable from the client.
+    """
+    if not allowed:
+        return list(model_ids)
+    kept = [
+        mid
+        for mid in model_ids
+        if mid in allowed or mid.split(":", 1)[0] in allowed
+    ]
+
+    # An allowlist can name only models the curated manifest lacks, leaving an
+    # empty picker — worse than no filter, since the models the org may use are
+    # the ones dropped. Opt-in per list: an already-empty list (a paid tier's
+    # gated models) means "nothing to gate", not "nothing survived".
+    if rescue_empty and not kept and len(allowed) <= _NOUS_POLICY_APPEND_MAX:
+        return sorted(allowed)
+    return kept
+
+
+def get_cached_nous_inference_base_url() -> str:
+    """Return the profile's persisted Nous endpoint without refreshing auth."""
+    try:
+        from hermes_cli.auth import (
+            _load_auth_store,
+            _load_provider_state,
+            _optional_base_url,
+            _validate_nous_inference_url_from_network,
+        )
+
+        state = _load_provider_state(_load_auth_store(), "nous") or {}
+        return (
+            _validate_nous_inference_url_from_network(
+                _optional_base_url(state.get("inference_base_url"))
+            )
+            or ""
+        ).rstrip("/").removesuffix("/v1")
+    except Exception:
+        return ""
+
+
+def pricing_cache_scope(
+    provider: str,
+    *,
+    current_provider: str = "",
+    current_base_url: str = "",
+) -> str:
+    """Return the current endpoint identity used by a provider's pricing cache.
+
+    This only resolves local configuration; it never fetches a catalog. Picker
+    prewarm single-flight uses the result to let an endpoint rotation start a
+    new worker while the previous endpoint is still slow or unreachable.
+    """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
+        return "https://openrouter.ai/api"
+    if normalized == "ai-gateway":
+        from hermes_constants import AI_GATEWAY_BASE_URL
+
+        return AI_GATEWAY_BASE_URL.rstrip("/")
+    if normalized == "novita":
+        return (
+            os.getenv("NOVITA_BASE_URL", "").strip()
+            or "https://api.novita.ai/openai/v1"
+        ).rstrip("/")
+    if normalized == "deepinfra":
+        cache_key, _url = _deepinfra_catalog_url()
+        return cache_key
+    if normalized == "fireworks":
+        return "models.dev/fireworks"
+    if normalized == "nous":
+        try:
+            from hermes_cli.auth import _nous_inference_env_override
+
+            env_base = _nous_inference_env_override()
+        except Exception:
+            env_base = None
+        if env_base:
+            return env_base.rstrip("/").removesuffix("/v1")
+        if normalize_provider(current_provider) == "nous" and current_base_url:
+            return current_base_url.rstrip("/").removesuffix("/v1")
+        persisted_base = get_cached_nous_inference_base_url()
+        if persisted_base:
+            return persisted_base
+        return _pricing_provider_cache_keys.get(
+            (_pricing_profile_key(), normalized), _DEFAULT_NOUS_INFERENCE_BASE
+        )
+    return ""
+
+
+def get_pricing_for_provider(
+    provider: str,
+    *,
+    force_refresh: bool = False,
+    cached_only: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Return pricing for providers that publish it.
+
+    ``cached_only`` never starts provider I/O. Normal picker opens use it so
+    cold endpoints cannot hold the response path; a background prewarm fills
+    the same caches for later opens.
+    """
+    normalized = normalize_provider(provider)
+    if cached_only:
+        if normalized == "deepinfra":
+            cache_key, _url = _deepinfra_catalog_url()
+            if cache_key not in _deepinfra_catalog_cache:
+                return {}
+            return _fetch_deepinfra_pricing()
+
+        cache_key = _pricing_provider_cache_keys.get(
+            (_pricing_profile_key(), normalized)
+        )
+        if cache_key is None:
+            if normalized == "openrouter":
+                cache_key = "https://openrouter.ai/api"
+            elif normalized == "ai-gateway":
+                from hermes_constants import AI_GATEWAY_BASE_URL
+
+                cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
+            elif normalized == "fireworks":
+                cache_key = "models.dev/fireworks"
+        return (_cached_catalog(cache_key) or {}) if cache_key else {}
+
+    if normalized == "openrouter":
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = "https://openrouter.ai/api"
         return fetch_models_with_pricing(
             api_key=_resolve_openrouter_api_key(),
             base_url="https://openrouter.ai/api",
             force_refresh=force_refresh,
         )
     if normalized == "ai-gateway":
+        from hermes_constants import AI_GATEWAY_BASE_URL
+
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = AI_GATEWAY_BASE_URL.rstrip("/")
         return fetch_ai_gateway_pricing(force_refresh=force_refresh)
     if normalized == "novita":
+        base_url = os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1"
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = base_url.rstrip("/")
         return _fetch_novita_pricing(force_refresh=force_refresh)
     if normalized == "deepinfra":
         return _fetch_deepinfra_pricing(force_refresh=force_refresh)
     if normalized == "fireworks":
+        _pricing_provider_cache_keys[
+            (_pricing_profile_key(), normalized)
+        ] = "models.dev/fireworks"
         return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
+            _pricing_provider_cache_keys[
+                (_pricing_profile_key(), normalized)
+            ] = base_url.rstrip("/")
             return fetch_models_with_pricing(
                 api_key=api_key,
                 base_url=base_url,
                 force_refresh=force_refresh,
                 # Sale chrome (pricing.original) is Nous Portal-only.
                 include_sale_original=True,
+                cache_ttl_seconds=_NOUS_CATALOG_TTL_SECONDS,
             )
     return {}
 
@@ -3465,7 +3774,7 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 # Zen / Go re-expose dozens of upstream vendors and rotate them frequently, so
 # their stale curated entries must not pollute the top of the picker. (#49129)
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset(
-    {"opencode-zen", "opencode-go"}
+    {"opencode-zen", "opencode-go", "meta-ai"}
 )
 
 
@@ -3612,6 +3921,69 @@ def detect_static_provider_for_model(
     return None
 
 
+def _configured_provider_ids() -> set[str]:
+    """Provider ids defined in the user's config ``providers:`` block.
+
+    Includes both top-level ids (``ollama``, ``nous``) and ``custom:*``
+    profile ids. Returns an empty set when config is unreadable — callers
+    treat that as "no user-defined providers" and fall through to built-in
+    catalogs only.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        providers = cfg.get("providers")
+        if not isinstance(providers, dict):
+            return set()
+        ids: set[str] = set()
+        for pid in providers:
+            key = str(pid).strip().lower()
+            if key:
+                ids.add(key)
+        return ids
+    except Exception:
+        return set()
+
+
+def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
+    """Resolve an explicit ``vendor/model`` prefix to a configured provider.
+
+    ``nous/deepseek-v4-pro`` or ``ollama/qwen3.5:4b`` should route to the
+    named provider instead of falling back to the configured default (which
+    silently sends non-default models to the wrong endpoint, #87189).
+
+    Only vendors the user actually defined in their ``providers:`` config
+    block (by raw name or alias) are routed here. Built-in vendor prefixes
+    (``google/gemini-2.5-flash``, ``deepseek/deepseek-chat``) deliberately
+    stay on the existing catalog / OpenRouter-slug / default-provider path:
+    those slug forms are aggregator-native, and rerouting them to the vendor
+    provider would change established provider-switch behavior (see
+    ``TestDenormalizeProviderSwitch`` in tests/hermes_cli/test_web_server.py).
+    The returned model is the suffix with the prefix stripped — the target
+    provider's API expects the bare id.
+    """
+    if "/" not in model_name:
+        return None
+    vendor, model = model_name.split("/", 1)
+    vendor = vendor.strip().lower()
+    model = model.strip()
+    if not vendor or not model:
+        return None
+    configured = _configured_provider_ids()
+    if not configured:
+        return None
+    # A provider block the user explicitly named (``ollama:``) wins over the
+    # built-in alias table, which may canonicalize the same name elsewhere
+    # (``ollama`` → ``custom``) and route to the wrong endpoint.
+    if vendor in configured:
+        return (vendor, model)
+    canonical = _PROVIDER_ALIASES.get(vendor, vendor)
+    if canonical in configured:
+        return (canonical, model)
+    return None
+
+
 def detect_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -3647,6 +4019,16 @@ def detect_provider_for_model(
         if or_slug != name:
             return ("openrouter", or_slug)
         return None  # already on openrouter with matching name
+
+    # --- Step 3: explicit ``vendor/model`` prefix naming a configured provider ---
+    # Checked after the OpenRouter slug lookup so aggregator-native slugs
+    # (e.g. ``deepseek/deepseek-chat``) keep their existing routing; only
+    # vendors the user defined in their ``providers:`` block route here,
+    # so catalog/default behavior for built-in vendor prefixes is unchanged
+    # (#87189).
+    prefix_match = _resolve_provider_prefix(name)
+    if prefix_match is not None:
+        return prefix_match
 
     return None
 
@@ -3760,23 +4142,60 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
-    This gates the *speed=fast request parameter*, which Anthropic supports on
-    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
-    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
-    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
-    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
-    test. Keep this in lock-step with that adapter gate so the UI never shows a
-    Fast toggle that the runtime would silently drop.
+    This gates the *speed=fast request parameter*, which Anthropic supports
+    on Opus 4.8 and Opus 5 (research preview, Claude API only). It is
+    deliberately NOT a general "is this a fast model" check:
+
+    - Opus 4.6 had fast mode at launch and LOST it (2026-06-29) — the param
+      is silently ignored (standard speed, standard billing), so exposing a
+      toggle for it would show users a switch that does nothing.
+    - Opus 4.7 hard-400s on the parameter.
+    - Dedicated ``…-fast`` model ids (e.g. OpenRouter's
+      ``claude-opus-4.8-fast``) select fast inference via the model field
+      and must not also receive the speed parameter.
+
+    Keep this in lock-step with ``agent.anthropic_adapter._supports_fast_mode``
+    so the UI never shows a Fast toggle that the runtime would drop.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports the speed=fast parameter at present.
-    return "opus-4-6" in base or "opus-4.6" in base
+    if "-fast" in base:
+        return False
+    return any(v in base for v in ("opus-4-8", "opus-4.8", "opus-5"))
 
 
-def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
+def _fast_mode_route_supported(
+    model_id: Optional[str], provider: Optional[str], base_url: Optional[str]
+) -> bool:
+    """Only the first-party endpoint that bills for fast mode may receive its params.
+
+    OpenRouter, Nous, Copilot, Azure, Bedrock, and custom base_urls either
+    strip ``service_tier``/``speed`` (charging nothing) or 400 on them.
+    """
+    from urllib.parse import urlparse
+
+    from agent.model_metadata import is_grok_46_family
+
+    if _is_anthropic_fast_model(model_id):
+        allowed = {"anthropic": "api.anthropic.com"}
+    elif is_grok_46_family(str(model_id or "")):
+        allowed = {"xai": "api.x.ai"}
+    else:
+        allowed = {"openai": "api.openai.com", "openai-codex": "chatgpt.com"}
+    if provider and normalize_provider(provider) not in allowed:
+        return False
+    host = (urlparse(str(base_url or "")).hostname or "").lower()
+    return not host or host in allowed.values()
+
+
+def resolve_fast_mode_overrides(
+    model_id: Optional[str],
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> dict[str, Any] | None:
     """Return request_overrides for fast/priority mode, or None if unsupported.
 
     Returns provider-appropriate overrides:
@@ -3784,11 +4203,20 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
     - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
     - Grok 4.6: ``{"service_tier": "priority"}`` (xAI Priority Processing)
 
+    When ``provider``/``base_url`` are given the result is also gated on the
+    route (see ``_fast_mode_route_supported``) so proxies never see the
+    params. This is the single fast-mode gate for static ``/fast fast`` and
+    the bounded ``auto``/``cold`` windows in ``agent.fast_mode``.
+
     The overrides are injected into the API request kwargs by
-    ``_build_api_kwargs`` in run_agent.py — each API path handles its own
-    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+    ``build_api_kwargs`` — each API path handles its own keys
+    (service_tier for OpenAI/Codex, speed for Anthropic Messages).
     """
     if not model_supports_fast_mode(model_id):
+        return None
+    if (provider or base_url) and not _fast_mode_route_supported(
+        model_id, provider, base_url
+    ):
         return None
     if _is_anthropic_fast_model(model_id):
         return {"speed": "fast"}
@@ -3807,13 +4235,18 @@ def _resolve_copilot_catalog_api_key() -> str:
          ``auth.json`` under ``credential_pool.copilot[]``. The pool is
          populated by ``hermes auth add copilot`` and by ``_seed_from_env``
          when the env var is set in ``~/.hermes/.env``.
+      3. ``~/.copilot/config.json`` ``copilotTokens`` — the GitHub Copilot
+         CLI's own store, written by ``copilot login`` on hosts without an
+         OS keychain. Without it, a user whose ONLY credential is the ACP
+         CLI login sees the copilot-acp picker fall back to the stale
+         curated list instead of the models their subscription serves.
 
-    Without (2), users whose only Copilot credential is in the pool see
-    the ``/model`` picker fall back to a stale hardcoded list because the
-    live catalog fetch silently 401s. To avoid wedging on a malformed pool
-    entry, each candidate is exchanged via ``exchange_copilot_token`` —
-    only entries that actually exchange successfully are returned, so a
-    later valid entry is reachable when an earlier one is unsupported.
+    Without (2)/(3), users without env-var credentials see the ``/model``
+    picker fall back to a stale hardcoded list because the live catalog
+    fetch silently 401s. To avoid wedging on a malformed entry, each
+    candidate is exchanged via ``exchange_copilot_token`` — only entries
+    that actually exchange successfully are returned, so a later valid
+    entry is reachable when an earlier one is unsupported.
     """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -3842,11 +4275,50 @@ def _resolve_copilot_catalog_api_key() -> str:
             if not valid:
                 continue
             try:
-                api_token, _expires_at = exchange_copilot_token(raw)
+                # exchange_copilot_token returns (api_token, expires_at,
+                # base_url) — a 2-name unpack raises ValueError, which the
+                # except below silently swallowed, disabling this entire
+                # resolution path.
+                api_token = exchange_copilot_token(raw)[0]
             except Exception:
                 continue
             if api_token:
                 return api_token
+    except Exception:
+        pass
+
+    # 3. Copilot CLI plaintext token store (JSONC — strip //-comment lines).
+    try:
+        import json as _json
+
+        from hermes_cli.copilot_auth import (
+            exchange_copilot_token,
+            validate_copilot_token,
+        )
+
+        cli_config = os.path.expanduser("~/.copilot/config.json")
+        if os.path.isfile(cli_config):
+            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+                raw_text = "\n".join(
+                    line for line in fh.read().splitlines()
+                    if not line.lstrip().startswith("//")
+                )
+            data = _json.loads(raw_text) if raw_text.strip() else {}
+            tokens = data.get("copilotTokens")
+            if isinstance(tokens, dict):
+                for raw in tokens.values():
+                    raw = str(raw or "").strip()
+                    if not raw:
+                        continue
+                    valid, _ = validate_copilot_token(raw)
+                    if not valid:
+                        continue
+                    try:
+                        api_token = exchange_copilot_token(raw)[0]
+                    except Exception:
+                        continue
+                    if api_token:
+                        return api_token
     except Exception:
         pass
 
@@ -4807,12 +5279,14 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
         }
 
 
-def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
+def _copilot_catalog_item_is_text_model(
+    item: dict[str, Any], *, ignore_picker_flag: bool = False
+) -> bool:
     model_id = str(item.get("id") or "").strip()
     if not model_id:
         return False
 
-    if item.get("model_picker_enabled") is False:
+    if not ignore_picker_flag and item.get("model_picker_enabled") is False:
         return False
 
     capabilities = item.get("capabilities")
@@ -4891,6 +5365,25 @@ def fetch_github_model_catalog(
                         continue
                     seen_ids.add(model_id)
                     models.append(item)
+                if not models and items:
+                    # GitHub has been observed returning
+                    # ``model_picker_enabled: false`` for EVERY model on some
+                    # accounts/token types, which would silently reject the
+                    # whole live catalog and strand the picker on the stale
+                    # curated fallback. The flag is a display hint, not an
+                    # availability contract — when honoring it empties the
+                    # catalog, retry without it (chat/endpoint checks still
+                    # apply, so embeddings and non-chat rows stay excluded).
+                    for item in items:
+                        if not _copilot_catalog_item_is_text_model(
+                            item, ignore_picker_flag=True
+                        ):
+                            continue
+                        model_id = str(item.get("id") or "").strip()
+                        if not model_id or model_id in seen_ids:
+                            continue
+                        seen_ids.add(model_id)
+                        models.append(item)
                 if models:
                     _github_model_catalog_cache = copy.deepcopy(models)
                     _github_model_catalog_cache_key = api_key

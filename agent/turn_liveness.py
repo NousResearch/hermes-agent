@@ -157,7 +157,8 @@ def resolve_turn_liveness_settings(
 
 
 class TurnLivenessWatchdog:
-    """Sampled-idle watchdog thread bound to one conversation turn.
+    """Sampled-idle watchdog bound to one conversation turn (polls on the
+    shared periodic scheduler thread).
 
     ``run_agent.py`` owns the turn-lease state (stop event, turn-active
     flag, interrupt plumbing); this class only reads the activity clock
@@ -189,59 +190,53 @@ class TurnLivenessWatchdog:
         self._commit_abort = commit_abort
         self._deactivate_turn = deactivate_turn
 
-    def make_thread(self) -> threading.Thread:
-        """Build the (not yet started) watcher thread.
+    def schedule(self):
+        """Start polling on the shared periodic scheduler thread.
 
         ``run_agent.py`` creates the watchdog before the turn begins but
-        starts the thread at turn entry, right after the turn-active flag
-        and the activity clock are stamped.
+        schedules it at turn entry, right after the turn-active flag and
+        the activity clock are stamped.  Returns the cancel handle.
         """
-        return threading.Thread(
-            target=self._watch,
-            name="turn-liveness-watchdog",
-            daemon=True,
-        )
+        from agent.periodic_scheduler import schedule
 
-    def start(self) -> threading.Thread:
-        """Spawn the watcher thread and return it (already running)."""
-        thread = self.make_thread()
-        thread.start()
-        return thread
+        return schedule(self._tick, self._poll_s)
 
-    def _watch(self) -> None:
-        while not self._stop_event.wait(self._poll_s):
-            snapshot = self._sample()
-            if snapshot is None:
-                # Turn is no longer active; nothing to watch.
-                return
-            if snapshot.idle_seconds < self._timeout_s:
-                continue
-            # Pre-commit surface is OBSERVATIONAL only: it reports the
-            # stall and that a recovery attempt is beginning. It must not
-            # claim the abort or the lease withdrawal has committed — the
-            # next operation can still veto the outcome. The definitive
-            # aborted/lease-stopped settlement is published by
-            # _surface_committed_abort only after _commit_abort succeeds
-            # and the turn is deactivated (#95663 review).
-            self._surface_stall(snapshot)
-            # Commit point: bind the abort to the sampled generation/ts
-            # and revalidate under the lock shared with `_touch_activity`.
-            # If progress resumed while the stall was being surfaced, the
-            # turn continues and this loop resumes sampling — the lease
-            # keeps renewing. The commit also carries the revalidated
-            # generation into the interrupt path, which reserves it as a
-            # claim, survives every blocking boundary (compression
-            # fence), and consumes it at the final mutation edge — progress
-            # landing anywhere in that window declines the abort.
-            if not self._commit_abort(snapshot, self._abort_message(snapshot)):
-                continue
-            # Stop renewing the durable lease: a wedge the hard interrupt
-            # cannot unwind must not keep the lease alive forever (the
-            # issue's "lease keeps renewing" masking). The TTL expiry then
-            # lets stale-turn cleanup reclaim the row.
-            self._deactivate_turn()
-            self._surface_committed_abort(snapshot)
-            return
+    def _tick(self):
+        """One poll. Returns False when the watchdog is finished."""
+        if self._stop_event.is_set():
+            return False
+        snapshot = self._sample()
+        if snapshot is None:
+            # Turn is no longer active; nothing to watch.
+            return False
+        if snapshot.idle_seconds < self._timeout_s:
+            return None
+        # Pre-commit surface is OBSERVATIONAL only: it reports the
+        # stall and that a recovery attempt is beginning. It must not
+        # claim the abort or the lease withdrawal has committed — the
+        # next operation can still veto the outcome. The definitive
+        # aborted/lease-stopped settlement is published by
+        # _surface_committed_abort only after _commit_abort succeeds
+        # and the turn is deactivated (#95663 review).
+        self._surface_stall(snapshot)
+        # Commit point: bind the abort to the sampled generation/ts
+        # and revalidate under the lock shared with `_touch_activity`.
+        # If progress resumed while the stall was being surfaced, the
+        # turn continues and this loop resumes sampling — the lease
+        # keeps renewing. The commit also carries the revalidated
+        # generation into the interrupt path, which reserves it as a
+        # claim, survives every blocking boundary (compression
+        # fence), and consumes it at the final mutation edge — progress
+        # landing anywhere in that window declines the abort.
+        if not self._commit_abort(snapshot, self._abort_message(snapshot)):
+            return None
+        # Stop renewing the durable lease: a wedge the hard interrupt
+        # cannot unwind must not keep the lease alive forever (the
+        # issue's "lease keeps renewing" masking). The TTL expiry then
+        # lets stale-turn cleanup reclaim the row.
+        self._deactivate_turn()
+        self._surface_committed_abort(snapshot)
+        return False
 
     def _sample(self) -> Optional[ActivitySnapshot]:
         with self._activity_lock:

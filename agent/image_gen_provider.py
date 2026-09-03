@@ -242,19 +242,49 @@ def _images_cache_dir() -> Path:
     return path
 
 
+def _sniff_image_extension(raw: bytes) -> str:
+    """Sniff the real image format from magic bytes.
+
+    ponytail: 12 bytes is enough for all supported formats; no imghdr
+    dependency needed.
+    """
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    return "png"
+
+
 def save_b64_image(
     b64_data: str,
     *,
     prefix: str = "image",
-    extension: str = "png",
+    extension: str = "",
+    data_uri_mime: str = "",
 ) -> Path:
     """Decode base64 image data and write it under ``$HERMES_HOME/cache/images/``.
 
-    Returns the absolute :class:`Path` to the saved file.
+    Extension resolved in priority order:
+    1. Caller-supplied ``extension`` (explicit override)
+    2. ``data_uri_mime`` parsed from ``data:image/...;base64`` prefix
+    3. Magic-byte sniffing on decoded bytes
 
-    Filename format: ``<prefix>_<YYYYMMDD_HHMMSS>_<short-uuid>.<ext>``.
+    Returns the absolute :class:`Path` to the saved file.
     """
     raw = base64.b64decode(b64_data)
+    if not extension:
+        mime_map = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }
+        extension = mime_map.get(data_uri_mime, "") or _sniff_image_extension(raw)
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     short = uuid.uuid4().hex[:8]
     path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"

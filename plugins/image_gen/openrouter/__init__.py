@@ -1408,8 +1408,20 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             first = images[0]
             try:
                 if first.startswith("data:"):
+                    # Parse MIME from data URI so save_b64_image names
+                    # the file with the correct extension.
+                    mime_header = ""
+                    end = -1
+                    for i, ch in enumerate(first):
+                        if ch in (',', ';'):
+                            end = i
+                            break
+                    if end > 5 and '/' in first[5:end]:
+                        mime_header = first[5:end]
                     b64 = first.split(",", 1)[1] if "," in first else ""
-                    saved_path = save_b64_image(b64, prefix=f"{self._name}_gen")
+                    saved_path = save_b64_image(
+                        b64, prefix=f"{self._name}_gen", data_uri_mime=mime_header,
+                    )
                 else:
                     saved_path = save_url_image(first, prefix=f"{self._name}_gen")
             except Exception as exc:  # noqa: BLE001

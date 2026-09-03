@@ -114,7 +114,8 @@ class TestAgentCloseMethod:
                 agent.close()
 
                 mock_registry.kill_all.assert_called_once_with(
-                    task_id="test-close-cleanup"
+                    task_id="test-close-cleanup",
+                    session_key="test-close-cleanup",
                 )
                 mock_cleanup_vm.assert_called_once_with("test-close-cleanup")
                 mock_cleanup_browser.assert_called_once_with("test-close-cleanup")

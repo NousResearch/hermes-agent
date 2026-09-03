@@ -8,6 +8,7 @@ external provider and assert which ``on_memory_write`` calls land.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,3 +103,83 @@ def test_build_metadata_callback_is_merged_per_op():
             "metadata": {"session_id": "s1", "tool_name": "memory"},
         }
     ]
+
+
+def test_plugin_handled_write_is_not_mirrored_again():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True, "native_write": False}),
+        {"action": "add", "target": "memory", "content": "routed fact"},
+    )
+    assert provider.calls == []
+
+
+def test_batch_mirror_derives_one_idempotency_key_per_operation():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {
+            "target": "memory",
+            "operations": [
+                {"action": "add", "content": "first"},
+                {"action": "add", "content": "second"},
+            ],
+        },
+        build_metadata=lambda: {"operation_id": "batch-1"},
+    )
+
+    assert [call["metadata"] for call in provider.calls] == [
+        {
+            "operation_id": "batch-1:0",
+            "operation_index": 0,
+            "parent_operation_id": "batch-1",
+        },
+        {
+            "operation_id": "batch-1:1",
+            "operation_index": 1,
+            "parent_operation_id": "batch-1",
+        },
+    ]
+
+
+def test_write_metadata_identifies_source_window_and_stable_operation():
+    from agent.background_review import build_memory_write_metadata
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    tokens = set_session_vars(
+        platform="",
+        source="desktop",
+        session_id="conversation-1",
+        ui_session_id="window-2",
+        profile="shared",
+    )
+    agent = SimpleNamespace(
+        _memory_write_context="foreground",
+        _memory_write_origin="assistant_tool",
+        _parent_session_id="parent-1",
+        platform="desktop",
+        session_id="conversation-1",
+    )
+    try:
+        metadata = build_memory_write_metadata(
+            agent,
+            task_id="task-3",
+            tool_call_id="call-4",
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert metadata == {
+        "operation_id": "conversation-1:call-4",
+        "write_origin": "assistant_tool",
+        "execution_context": "foreground",
+        "session_id": "conversation-1",
+        "parent_session_id": "parent-1",
+        "ui_session_id": "window-2",
+        "platform": "desktop",
+        "source": "desktop",
+        "profile_name": "shared",
+        "tool_name": "memory",
+        "task_id": "task-3",
+        "tool_call_id": "call-4",
+    }

@@ -108,6 +108,54 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
 
+def test_memory_approval_replay_preserves_write_provenance(hermes_home, monkeypatch):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    from tools.memory_tool import MemoryStore, memory_tool
+
+    _set_approval("memory", True)
+    store = MemoryStore()
+    store.load_from_disk()
+    provenance = {
+        "operation_id": "approval-operation-1",
+        "session_id": "conversation-1",
+        "ui_session_id": "window-1",
+        "source": "desktop",
+    }
+
+    staged = json.loads(
+        memory_tool(
+            "add",
+            "memory",
+            "route after approval",
+            store=store,
+            provenance=provenance,
+        )
+    )
+    record = wa.get_pending(wa.MEMORY, staged["pending_id"])
+    assert record["payload"]["provenance"] == provenance
+
+    observed = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.has_hook", lambda name: name == "pre_memory_write"
+    )
+
+    def allow(name, **kwargs):
+        observed.append(kwargs["provenance"])
+        return [{"action": "allow"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", allow)
+    out = handle_pending_subcommand(
+        wa.MEMORY,
+        ["approve", staged["pending_id"]],
+        memory_store=store,
+    )
+
+    assert "Approved 1" in out
+    assert observed == [provenance]
+    assert store.memory_entries == ["route after approval"]
+
+
 def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
     """Fresh approval stores must match the live agent's limits and target gates."""
     from tools.memory_tool import load_on_disk_store

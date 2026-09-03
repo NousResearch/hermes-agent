@@ -927,6 +927,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | optional directive: `{"action": "block", "message": ...}` vetoes the call; `{"action": "approve", "message": ...}` escalates to the human-approval gate |
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
+| [`transform_memory_context`](/user-guide/features/hooks#built-in-memory-governance) | Native memory snapshot build | `target: str, entries: tuple, char_limit: int` | replacement entry list/tuple or explicit allow; missing/malformed decisions fail closed |
+| [`pre_memory_write`](/user-guide/features/hooks#built-in-memory-governance) | Before a native durable memory mutation | proposed write fields + advisory entries + provenance | block/skip/transform/allow dict; missing/malformed decisions fail closed |
+| [`post_memory_write`](/user-guide/features/hooks#built-in-memory-governance) | After a native durable memory mutation | committed write fields + resulting entries + provenance | ignored |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
@@ -941,7 +944,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
 
-Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
+Most hooks are fire-and-forget observers — their return values are ignored. The
+catalog documents the exceptions, including `pre_llm_call`, `pre_tool_call`,
+and the built-in memory governance transforms/directives.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 

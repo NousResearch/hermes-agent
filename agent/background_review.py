@@ -22,6 +22,7 @@ import copy
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -950,17 +951,52 @@ def build_memory_write_metadata(
     execution_context: Optional[str] = None,
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    operation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build provenance metadata for external memory-provider mirrors."""
+    """Build provenance metadata for memory writes and provider mirrors."""
+    try:
+        from gateway.session_context import get_session_env
+
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+        session_source = get_session_env("HERMES_SESSION_SOURCE", "")
+        ui_session_id = get_session_env("HERMES_UI_SESSION_ID", "")
+        profile_name = get_session_env("HERMES_SESSION_PROFILE", "")
+    except Exception:
+        session_platform = ""
+        session_source = ""
+        ui_session_id = ""
+        profile_name = ""
+
+    if not profile_name:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            profile_name = get_active_profile_name() or "default"
+        except Exception:
+            profile_name = "default"
+
+    session_id = agent.session_id or ""
+    resolved_operation_id = str(operation_id or "").strip()
+    if not resolved_operation_id and tool_call_id:
+        resolved_operation_id = (
+            f"{session_id}:{tool_call_id}" if session_id else str(tool_call_id)
+        )
+    if not resolved_operation_id:
+        resolved_operation_id = uuid.uuid4().hex
+
     metadata: Dict[str, Any] = {
+        "operation_id": resolved_operation_id,
         "write_origin": write_origin or getattr(agent, "_memory_write_origin", "assistant_tool"),
         "execution_context": (
             execution_context
             or getattr(agent, "_memory_write_context", "foreground")
         ),
-        "session_id": agent.session_id or "",
+        "session_id": session_id,
         "parent_session_id": agent._parent_session_id or "",
-        "platform": agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+        "ui_session_id": ui_session_id,
+        "platform": agent.platform or session_platform or session_source or "cli",
+        "source": session_source or session_platform or agent.platform or "cli",
+        "profile_name": profile_name,
         "tool_name": "memory",
     }
     if task_id:

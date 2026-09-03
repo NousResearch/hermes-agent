@@ -15,7 +15,12 @@ Hermes has four hook systems that run custom code at key lifecycle points:
 | **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
 | **[Outbound webhooks](#outbound-webhooks)** | `hooks.outbound:` list in `~/.hermes/config.yaml` | CLI + Gateway | Push signed lifecycle events to external HTTP endpoints — CI, dashboards, other agents |
 
-Hook callback errors are isolated and logged rather than crashing the agent. Hooks are not all passive: directive/control hooks can change flow, transforms can replace content, and a shell `pre_tool_call` hook can block or fail closed.
+Hook callback errors are normally isolated and logged rather than crashing the
+agent. Built-in memory governance is the deliberate exception: registered
+`pre_memory_write` and `transform_memory_context` callbacks fail closed so a
+broken policy backend cannot write or inject unfiltered native memory. Hooks
+are not all passive: directive/control hooks can change flow, transforms can
+replace content, and a shell `pre_tool_call` hook can block or fail closed.
 
 ## Gateway Event Hooks
 
@@ -440,6 +445,9 @@ Payload fields below are the exact event-specific fields supplied by each call s
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; first valid `block` or `approve` directive wins, and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
+| `transform_memory_context` | Transform/control | While the built-in MEMORY.md / USER.md snapshot is loaded; the first valid string-list result replaces that target's prompt-only entries. Explicit `{"action": "allow"}` keeps the native entries. Missing or malformed decisions fail closed. The result is bounded, threat-scanned, and frozen with the native snapshot. | `target`, `entries` (tuple), `char_limit` | Exposes persistent user/profile data. Returned entries enter the system prompt. |
+| `pre_memory_write` | Directive/control + transform | Before every built-in add, replace, remove, or atomic batch and before acquiring the file lock. Results use deterministic priority: block, invalid/failure, skip, first transform, explicit allow. Transformed content is threat-scanned. | `action`, `target`, `content`, `old_text`, `operations`, `provenance`, `entries` (advisory tuple), `char_limit` | Exposes existing persistent entries, proposed writes, and session provenance, which may contain personal data. |
+| `post_memory_write` | Observer | Exactly once after a successful durable built-in memory mutation and after the file lock is released; return ignored. | `action`, `target`, `content`, `old_text`, `operations`, `provenance`, `entries` (persisted tuple), `char_count` | Exposes the resulting persistent entries, proposed write, and session provenance. |
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
@@ -601,6 +609,116 @@ def warn_dangerous(tool_name, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_tool_call", warn_dangerous)
+```
+
+---
+
+### Built-in memory governance
+
+These hooks govern Hermes' native bounded `MEMORY.md` and `USER.md` stores.
+They do not replace a configured external memory provider.
+
+`transform_memory_context` runs when `MemoryStore.load_from_disk()` creates the
+prompt snapshot. Return a list (or tuple) of entry strings to replace the
+prompt-only view for that target. Return `{"action": "allow"}` to deliberately
+keep the native entries for a target:
+
+```python
+def filter_native_profile(target, entries, **kwargs):
+    if target != "user":
+        return {"action": "allow"}
+    return [entry for entry in entries if not entry.startswith("managed:")]
+```
+
+The live store and files are not changed. Hermes applies the native character
+limit and promptware scan to the result, then freezes it with the native
+snapshot. The hook is not re-run per turn; it runs again only when Hermes would
+already reload native memory (a new session or context-compression rebuild), so
+it does not introduce extra prompt-cache invalidations.
+
+`pre_memory_write` runs at the durable write boundary for `add`, `replace`,
+`remove`, and atomic `batch` operations, including writes replayed after user
+approval. It runs before Hermes acquires the memory file lock. The first valid
+dict return may:
+
+```python
+return {"action": "block", "message": "managed by the profile service"}
+return {"action": "skip", "message": "redirected to the canonical store"}
+return {"action": "allow"}  # deliberate native write
+return {"content": "normalized fact"}
+return {"old_text": "canonical selector", "content": "normalized replacement"}
+return {"operations": [{"action": "add", "content": "normalized fact"}]}
+```
+
+`reject` is accepted as an alias for `block`, and `pass` as an alias for
+`allow`. A `block` or `skip` directive may include a complete tool-result dict
+in `response`. Hermes evaluates every registered result before acting:
+`block` wins over malformed/failing output, which wins over `skip`, the first
+valid transform, and explicit `allow`. This prevents an early transform from
+hiding a later policy rejection. Hermes validates required fields and
+threat-scans all add/replace content after transformation. Batch operations
+must be objects; malformed items reject the entire batch before governance or
+disk access. The `entries` input is an advisory pre-lock snapshot; use
+`post_memory_write` when an observer needs the committed state.
+
+Both write hooks receive the same `provenance` dict. Its fields are metadata;
+hook return values cannot transform them. Hermes assigns one stable
+`operation_id` to the write attempt and preserves it through an approval
+replay. Agent-originated calls also include the fields available for
+that surface: `write_origin`, `execution_context`, `session_id`,
+`parent_session_id`, `ui_session_id`, `platform`, `source`, `profile_name`,
+`task_id`, `tool_call_id`, and `tool_name`. Optional fields are omitted when
+the caller has no corresponding session context. Direct `MemoryStore` callers
+still receive an `operation_id`, but should not be assumed to have a platform,
+window, or session identity.
+
+A standalone plugin can use this metadata to route several windows or
+processes that share one Hermes home. Persist externally before returning
+`skip`; Hermes then reports the operation as plugin-handled, does not mutate
+the native file, does not emit `post_memory_write`, and does not mirror the
+write a second time to a configured memory provider:
+
+```python
+def route_shared_memory(action, target, content=None, provenance=None, **kwargs):
+    provenance = provenance or {}
+    route = provenance.get("ui_session_id") or provenance.get("session_id")
+    operation_id = provenance.get("operation_id")
+    if not route or not operation_id:
+        return {"action": "block", "message": "write provenance required"}
+
+    canonical_store.write_idempotent(
+        route=route,
+        operation_id=operation_id,
+        action=action,
+        target=target,
+        content=content,
+    )
+    return {"action": "skip", "message": "routed to canonical memory"}
+```
+
+The external commit and Hermes' returned `skip` are not a distributed
+transaction. Routers should therefore make `operation_id` idempotent and
+return `skip` only after the external store confirms durability.
+
+`post_memory_write` runs after a successful durable mutation and after lock
+release. It receives the final `entries` tuple and `char_count`; return values
+are ignored. Duplicate-add no-ops, blocked/skipped writes, validation failures,
+and over-limit failures do not emit it.
+
+Memory governance control failures are fail closed. Once at least one callback
+is registered, `None` means abstain rather than allow. If all callbacks abstain,
+any result is malformed, or a callback raises, Hermes blocks the native write
+or omits that target's native entries from the frozen prompt snapshot. Use an
+explicit `allow` directive for intentional passthrough. Because policy is
+composed fail closed, one failing or malformed callback disables the native
+operation for all callbacks registered on that boundary. `post_memory_write`
+remains an isolated best-effort observer.
+
+```python
+def register(ctx):
+    ctx.register_hook("transform_memory_context", filter_native_profile)
+    ctx.register_hook("pre_memory_write", govern_native_write)
+    ctx.register_hook("post_memory_write", index_committed_write)
 ```
 
 ---

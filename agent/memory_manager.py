@@ -1263,7 +1263,11 @@ class MemoryManager:
                 return False
         if not isinstance(result, dict):
             return False
-        return result.get("success") is True and result.get("staged") is not True
+        return (
+            result.get("success") is True
+            and result.get("staged") is not True
+            and result.get("native_write") is not False
+        )
 
     def notify_memory_tool_write(
         self,
@@ -1302,7 +1306,7 @@ class MemoryManager:
                 "old_text": tool_args.get("old_text"),
             }]
 
-        for op in raw_operations:
+        for operation_index, op in enumerate(raw_operations):
             if not isinstance(op, dict):
                 continue
             action = str(op.get("action") or "")
@@ -1310,6 +1314,14 @@ class MemoryManager:
                 continue
             try:
                 metadata = dict(build_metadata() if build_metadata else {})
+                root_operation_id = str(metadata.get("operation_id") or "")
+                if len(raw_operations) > 1:
+                    metadata["operation_index"] = operation_index
+                    if root_operation_id:
+                        metadata["parent_operation_id"] = root_operation_id
+                        metadata["operation_id"] = (
+                            f"{root_operation_id}:{operation_index}"
+                        )
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)

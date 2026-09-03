@@ -3639,6 +3639,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             target = next_args.get("target", "memory")
             operations = next_args.get("operations")
             from tools.memory_tool import memory_tool as _memory_tool
+            provenance = agent._build_memory_write_metadata(
+                task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+            )
             result = _memory_tool(
                 action=next_args.get("action"),
                 target=target,
@@ -3646,6 +3650,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 old_text=next_args.get("old_text"),
                 operations=operations,
                 store=agent._memory_store,
+                provenance=provenance,
             )
             # Mirror successful built-in memory writes to external providers.
             # All gating/op-expansion lives behind the manager interface
@@ -3654,10 +3659,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 agent._memory_manager.notify_memory_tool_write(
                     result,
                     next_args,
-                    build_metadata=lambda: agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
+                    build_metadata=lambda: dict(provenance),
                 )
             return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):

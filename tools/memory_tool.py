@@ -27,6 +27,7 @@ import copy
 import json
 import logging
 import time
+import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -76,6 +77,16 @@ MEMORY_BLOCK_HEADERS = {
 }
 
 ENTRY_DELIMITER = "\n§\n"
+
+
+def _normalize_write_provenance(
+    provenance: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return an isolated write context with a stable attempt identifier."""
+    normalized = dict(provenance or {})
+    operation_id = str(normalized.get("operation_id") or "").strip()
+    normalized["operation_id"] = operation_id or uuid.uuid4().hex
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -251,17 +262,105 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Give plugins one deterministic opportunity to filter or replace the
+        # native context before it becomes part of the frozen system prompt.
+        # The result is still scanned below; a transform cannot bypass the
+        # promptware guard. Live state and the files on disk remain untouched.
+        prompt_memory = self._transform_prompt_entries("memory", self.memory_entries)
+        prompt_user = self._transform_prompt_entries("user", self.user_entries)
+
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
         # can see + remove poisoned entries via the memory tool.
-        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
-        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+        sanitized_memory = self._sanitize_entries_for_snapshot(prompt_memory, "MEMORY.md")
+        sanitized_user = self._sanitize_entries_for_snapshot(prompt_user, "USER.md")
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+
+    def _transform_prompt_entries(self, target: str, entries: List[str]) -> List[str]:
+        """Apply a fail-closed context decision without changing live state.
+
+        Hooks run only while the session snapshot is built. This preserves the
+        prompt-cache invariant: the transformed block is frozen for the same
+        lifetime as the native MEMORY.md / USER.md snapshot. Once at least one
+        governor is registered, raw passthrough requires an explicit
+        ``{"action": "allow"}``; abstention or malformed output omits the
+        target from the prompt snapshot.
+        """
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if not has_hook("transform_memory_context"):
+                return list(entries)
+            results = invoke_hook(
+                "transform_memory_context",
+                _propagate_callback_errors=True,
+                target=target,
+                entries=tuple(entries),
+                char_limit=self._char_limit(target),
+            )
+        except Exception:
+            logger.warning(
+                "Memory context governance failed for %s; omitting native entries",
+                target,
+                exc_info=True,
+            )
+            return []
+
+        first_transform: Optional[List[str]] = None
+        explicit_allow = False
+        invalid_result = False
+        for result in results:
+            if isinstance(result, dict):
+                directive = str(result.get("action") or "").strip().lower()
+                if directive in {"allow", "pass"}:
+                    explicit_allow = True
+                else:
+                    invalid_result = True
+                continue
+            if not isinstance(result, (list, tuple)):
+                invalid_result = True
+                continue
+            if not all(isinstance(entry, str) for entry in result):
+                logger.warning(
+                    "Invalid transform_memory_context result for %s: entries must be strings",
+                    target,
+                )
+                invalid_result = True
+                continue
+            transformed = [entry.strip() for entry in result if entry.strip()]
+            rendered_chars = len(ENTRY_DELIMITER.join(transformed)) if transformed else 0
+            if rendered_chars > self._char_limit(target):
+                logger.warning(
+                    "Invalid transform_memory_context result for %s: %s chars exceeds %s-char limit",
+                    target,
+                    rendered_chars,
+                    self._char_limit(target),
+                )
+                invalid_result = True
+                continue
+            if first_transform is None:
+                first_transform = transformed
+
+        if invalid_result:
+            logger.warning(
+                "Memory context governance returned an invalid result for %s; omitting native entries",
+                target,
+            )
+            return []
+        if first_transform is not None:
+            return first_transform
+        if explicit_allow:
+            return list(entries)
+        logger.warning(
+            "Memory context governance returned no decision for %s; omitting native entries",
+            target,
+        )
+        return []
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -411,16 +510,226 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
-        content = content.strip()
-        if not content:
-            return {"success": False, "error": "Content cannot be empty."}
+    def _prepare_write(
+        self,
+        action: str,
+        target: str,
+        *,
+        content: Optional[str] = None,
+        old_text: Optional[str] = None,
+        operations: Optional[List[Dict[str, Any]]] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Apply a pre-write directive and validate the resulting payload.
 
-        # Scan for injection/exfiltration before accepting
-        scan_error = _scan_memory_content(content)
-        if scan_error:
-            return {"success": False, "error": scan_error}
+        The hook runs before the file lock is acquired so plugin callbacks can
+        never hold or re-enter Hermes' memory lock. All registered results are
+        evaluated with deterministic priority: block, invalid/failure, skip,
+        first transform, then explicit allow. A plugin may transform
+        ``content`` / ``old_text`` / ``operations``, return ``action=block``
+        (``reject`` is accepted as an alias), return ``action=skip`` when it
+        handled the write elsewhere, or return ``action=allow`` for deliberate
+        native passthrough. Abstention is not implicit permission.
+
+        Any transformed content is scanned again before persistence.
+        """
+        invalid_batch_input = operations is not None and not all(
+            isinstance(operation, dict) for operation in operations
+        )
+        payload: Dict[str, Any] = {
+            "action": action,
+            "target": target,
+            "content": content.strip() if content is not None else None,
+            "old_text": old_text.strip() if old_text is not None else None,
+            "operations": [dict(operation) for operation in operations]
+            if operations is not None and not invalid_batch_input
+            else ([] if operations is not None else None),
+            "provenance": _normalize_write_provenance(provenance),
+        }
+        if invalid_batch_input:
+            return payload, {
+                "success": False,
+                "error": "operations must contain only objects.",
+            }
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            governor_registered = has_hook("pre_memory_write")
+            if governor_registered:
+                hook_payload = dict(payload)
+                hook_payload["provenance"] = dict(payload["provenance"])
+                results = invoke_hook(
+                    "pre_memory_write",
+                    _propagate_callback_errors=True,
+                    **hook_payload,
+                    entries=tuple(self._entries_for(target)),
+                    char_limit=self._char_limit(target),
+                )
+            else:
+                results = []
+        except Exception:
+            logger.warning(
+                "Memory write governance failed; blocking %s on %s",
+                action,
+                target,
+                exc_info=True,
+            )
+            return payload, {
+                "success": False,
+                "error": "Memory write blocked because a governance plugin failed.",
+            }
+
+        first_block: Optional[Dict[str, Any]] = None
+        first_skip: Optional[Dict[str, Any]] = None
+        first_transform: Optional[Dict[str, Any]] = None
+        explicit_allow = not governor_registered
+        invalid_result = False
+
+        for result in results:
+            if not isinstance(result, dict):
+                invalid_result = True
+                continue
+            directive = str(result.get("action") or "").strip().lower()
+            if directive in {"block", "reject"}:
+                if first_block is None:
+                    first_block = result
+                continue
+            if directive == "skip":
+                if first_skip is None:
+                    first_skip = result
+                continue
+            if directive in {"allow", "pass"}:
+                explicit_allow = True
+
+            changed = False
+            for field in ("content", "old_text"):
+                if field in result:
+                    if isinstance(result[field], str):
+                        changed = True
+                    else:
+                        invalid_result = True
+            if "operations" in result:
+                if isinstance(result["operations"], list) and all(
+                    isinstance(operation, dict) for operation in result["operations"]
+                ):
+                    changed = True
+                else:
+                    invalid_result = True
+            if changed and first_transform is None:
+                first_transform = result
+            elif not changed and directive not in {
+                "allow",
+                "pass",
+                "block",
+                "reject",
+                "skip",
+            }:
+                invalid_result = True
+
+        if first_block is not None:
+            response = first_block.get("response")
+            if isinstance(response, dict):
+                return payload, response
+            return payload, {
+                "success": False,
+                "error": str(first_block.get("message") or "Memory write blocked by plugin."),
+            }
+        if invalid_result:
+            logger.warning(
+                "Memory write governance returned an invalid result; blocking %s on %s",
+                action,
+                target,
+            )
+            return payload, {
+                "success": False,
+                "error": "Memory write blocked because a governance plugin failed.",
+            }
+        if first_skip is not None:
+            response = first_skip.get("response")
+            if isinstance(response, dict):
+                handled = dict(response)
+            else:
+                handled = self._success_response(
+                    target,
+                    str(first_skip.get("message") or "Memory write handled by plugin."),
+                )
+            handled["native_write"] = False
+            handled["handled_by_plugin"] = True
+            return payload, handled
+        if first_transform is not None:
+            for field in ("content", "old_text"):
+                if field in first_transform:
+                    payload[field] = first_transform[field].strip()
+            if "operations" in first_transform:
+                payload["operations"] = [
+                    dict(operation) for operation in first_transform["operations"]
+                ]
+        elif not explicit_allow:
+            logger.warning(
+                "Memory write governance returned no decision; blocking %s on %s",
+                action,
+                target,
+            )
+            return payload, {
+                "success": False,
+                "error": "Memory write blocked because a governance plugin failed.",
+            }
+
+        if action == "add" and not (payload["content"] or "").strip():
+            return payload, {"success": False, "error": "Content cannot be empty."}
+        if action == "replace":
+            if not (payload["old_text"] or "").strip():
+                return payload, {"success": False, "error": "old_text cannot be empty."}
+            if not (payload["content"] or "").strip():
+                return payload, {
+                    "success": False,
+                    "error": "new_content cannot be empty. Use 'remove' to delete entries.",
+                }
+        if action == "remove" and not (payload["old_text"] or "").strip():
+            return payload, {"success": False, "error": "old_text cannot be empty."}
+        if action == "batch" and not payload["operations"]:
+            return payload, {"success": False, "error": "operations list is empty."}
+
+        candidate_operations = payload["operations"] if action == "batch" else [payload]
+        for index, operation in enumerate(candidate_operations or []):
+            operation_action = operation.get("action")
+            candidate = operation.get("content")
+            if operation_action in {"add", "replace"} and candidate:
+                scan_error = _scan_memory_content(str(candidate))
+                if scan_error:
+                    prefix = f"Operation {index + 1}: " if action == "batch" else ""
+                    return payload, {"success": False, "error": prefix + scan_error}
+        return payload, None
+
+    def _emit_post_write(self, payload: Dict[str, Any]) -> None:
+        """Notify observers after the durable write and after lock release."""
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+
+            if has_hook("post_memory_write"):
+                invoke_hook(
+                    "post_memory_write",
+                    **payload,
+                    entries=tuple(self._entries_for(payload["target"])),
+                    char_count=self._char_count(payload["target"]),
+                )
+        except Exception:
+            pass
+
+    def add(
+        self,
+        target: str,
+        content: str,
+        *,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Append a new entry. Returns error if it would exceed the char limit."""
+        payload, early = self._prepare_write(
+            "add", target, content=content, provenance=provenance
+        )
+        if early is not None:
+            return early
+        content = payload["content"]
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
@@ -441,7 +750,6 @@ class MemoryStore:
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
@@ -468,21 +776,29 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        self._emit_post_write(payload)
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(
+        self,
+        target: str,
+        old_text: str,
+        new_content: str,
+        *,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
-        old_text = old_text.strip()
-        new_content = new_content.strip()
-        if not old_text:
-            return {"success": False, "error": "old_text cannot be empty."}
-        if not new_content:
-            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
-
-        # Scan replacement content for injection/exfiltration
-        scan_error = _scan_memory_content(new_content)
-        if scan_error:
-            return {"success": False, "error": scan_error}
+        payload, early = self._prepare_write(
+            "replace",
+            target,
+            content=new_content,
+            old_text=old_text,
+            provenance=provenance,
+        )
+        if early is not None:
+            return early
+        old_text = payload["old_text"]
+        new_content = payload["content"]
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -539,13 +855,23 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        self._emit_post_write(payload)
         return self._success_response(target, "Entry replaced.")
 
-    def remove(self, target: str, old_text: str) -> Dict[str, Any]:
+    def remove(
+        self,
+        target: str,
+        old_text: str,
+        *,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
-        old_text = old_text.strip()
-        if not old_text:
-            return {"success": False, "error": "old_text cannot be empty."}
+        payload, early = self._prepare_write(
+            "remove", target, old_text=old_text, provenance=provenance
+        )
+        if early is not None:
+            return early
+        old_text = payload["old_text"]
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -581,9 +907,16 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        self._emit_post_write(payload)
         return self._success_response(target, "Entry removed.")
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(
+        self,
+        target: str,
+        operations: List[Dict[str, Any]],
+        *,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
 
         All operations are validated and applied against the FINAL budget --
@@ -596,18 +929,12 @@ class MemoryStore:
         the net result would exceed the char limit, NOTHING is written and an
         error is returned describing the first failure plus the live state.
         """
-        if not operations:
-            return {"success": False, "error": "operations list is empty."}
-
-        # Scan every add/replace content for injection/exfil BEFORE touching
-        # disk -- a single poisoned op rejects the whole batch.
-        for i, op in enumerate(operations):
-            act = (op or {}).get("action")
-            new_content = (op or {}).get("content")
-            if act in {"add", "replace"} and new_content:
-                scan_error = _scan_memory_content(new_content)
-                if scan_error:
-                    return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
+        payload, early = self._prepare_write(
+            "batch", target, operations=operations, provenance=provenance
+        )
+        if early is not None:
+            return early
+        operations = payload["operations"]
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -690,6 +1017,7 @@ class MemoryStore:
             self._set_entries(target, working)
             self.save_to_disk(target)
 
+        self._emit_post_write(payload)
         return self._success_response(target, f"Applied {len(operations)} operation(s).")
 
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
@@ -947,7 +1275,8 @@ def load_on_disk_store() -> "MemoryStore":
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str],
+                      provenance: Dict[str, Any]) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
@@ -990,6 +1319,7 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         "target": target,
         "content": content,
         "old_text": old_text,
+        "provenance": provenance,
     }
     record = wa.stage_write(
         wa.MEMORY, payload,
@@ -1003,7 +1333,11 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Optional[str]:
+def _apply_batch_write_gate(
+    target: str,
+    operations: List[Dict[str, Any]],
+    provenance: Dict[str, Any],
+) -> Optional[str]:
     """Evaluate the write gate for a batch of memory operations.
 
     Returns a JSON tool-result string when the batch should NOT proceed
@@ -1038,7 +1372,12 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
     if decision.blocked:
         return tool_error(decision.message, success=False)
 
-    payload = {"action": "batch", "target": target, "operations": operations}
+    payload = {
+        "action": "batch",
+        "target": target,
+        "operations": operations,
+        "provenance": provenance,
+    }
     record = wa.stage_write(
         wa.MEMORY, payload,
         summary=f"{summary}: {detail[:120]}",
@@ -1091,6 +1430,7 @@ def memory_tool(
     new_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
     store: Optional[MemoryStore] = None,
+    provenance: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -1116,6 +1456,8 @@ def memory_tool(
     if content is None and new_text is not None:
         content = new_text
 
+    provenance = _normalize_write_provenance(provenance)
+
     # Some strict providers fill optional schema fields with JSON null rather
     # than omitting them.  Treat ``target: null`` as omitted so memory writes
     # still use the documented default store instead of failing validation.
@@ -1130,10 +1472,10 @@ def memory_tool(
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
-        gate_result = _apply_batch_write_gate(target, operations)
+        gate_result = _apply_batch_write_gate(target, operations, provenance)
         if gate_result is not None:
             return gate_result
-        result = store.apply_batch(target, operations)
+        result = store.apply_batch(target, operations, provenance=provenance)
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
@@ -1155,18 +1497,22 @@ def memory_tool(
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(
+        action, target, content, old_text, provenance
+    )
     if gate_result is not None:
         return gate_result
 
     if action == "add":
-        result = store.add(target, content)
+        result = store.add(target, content, provenance=provenance)
 
     elif action == "replace":
-        result = store.replace(target, old_text, content)
+        result = store.replace(
+            target, old_text, content, provenance=provenance
+        )
 
     elif action == "remove":
-        result = store.remove(target, old_text)
+        result = store.remove(target, old_text, provenance=provenance)
 
     else:
         return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
@@ -1247,14 +1593,21 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
         return target_error
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
+    provenance = _normalize_write_provenance(payload.get("provenance"))
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
+        return store.apply_batch(
+            target,
+            payload.get("operations") or [],
+            provenance=provenance,
+        )
     if action == "add":
-        return store.add(target, content)
+        return store.add(target, content, provenance=provenance)
     if action == "replace":
-        return store.replace(target, old_text, content)
+        return store.replace(
+            target, old_text, content, provenance=provenance
+        )
     if action == "remove":
-        return store.remove(target, old_text)
+        return store.remove(target, old_text, provenance=provenance)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
@@ -1383,12 +1736,9 @@ registry.register(
         old_text=args.get("old_text"),
         new_text=args.get("new_text"),
         operations=args.get("operations"),
-        store=kw.get("store")),
+        store=kw.get("store"),
+        provenance=kw.get("provenance")),
     check_fn=check_memory_requirements,
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides,
 )
-
-
-
-

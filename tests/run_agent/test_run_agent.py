@@ -1749,9 +1749,16 @@ class TestExecuteToolCalls:
         agent._memory_manager = FakeMemoryManager()
         agent._memory_store = object()
 
-        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps({"success": True}),
+        ) as memory_call:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
+        provenance = memory_call.call_args.kwargs["provenance"]
+        assert provenance["operation_id"] == f"{agent.session_id}:mem-1"
+        assert provenance["tool_call_id"] == "mem-1"
+        assert provenance["session_id"] == agent.session_id
         assert len(calls) == 1
         action, target, content, metadata = calls[0]
         assert (action, target, content) == ("remove", "memory", "")

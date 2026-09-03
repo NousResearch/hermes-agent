@@ -8383,6 +8383,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # archaeology, no hand-off contract required.
             _ledger_backends = _m()._ledger_reapable_backend_pids(_venv_holders)
             if _ledger_backends:
+                if _refuse_gateway_ancestor_tree_kill(
+                    _ledger_backends, gateway_mode=gateway_mode
+                ):
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    sys.exit(2)
                 print(
                     f"  ⚠ {len(_ledger_backends)} ledger-identified orphaned "
                     "Hermes backend process(es) hold the venv; stopping their trees"
@@ -8403,6 +8410,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # is still alive never reach here (_orphaned_desktop_
                 # backend_pids returns None for them) — that path keeps the
                 # refusal, because the app would just respawn what we kill.
+                # _orphaned_desktop_backend_pids returns (pid, create_time)
+                # identity pairs, not bare pids -- unwrap before handing them
+                # to the ancestor check, which still takes plain pids. Same
+                # int-or-tuple tolerance as _stop_process_trees() below.
+                if _refuse_gateway_ancestor_tree_kill(
+                    [
+                        entry[0] if isinstance(entry, tuple) else int(entry)
+                        for entry in _orphan_backends
+                    ],
+                    gateway_mode=gateway_mode,
+                ):
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    sys.exit(2)
                 print(
                     f"  ⚠ {len(_orphan_backends)} orphaned Desktop backend "
                     "process(es) still hold the venv; stopping their trees"
@@ -8424,14 +8446,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # back on the SAME bind after the update — success or failure.
             _serve_entries = _m()._ledger_manual_serve_holders(_venv_holders)
             if _serve_entries:
+                _serve_pids = [int(e["pid"]) for e in _serve_entries]
+                if _refuse_gateway_ancestor_tree_kill(
+                    _serve_pids, gateway_mode=gateway_mode
+                ):
+                    _m()._resume_windows_gateways_after_update(
+                        _windows_gateway_resume
+                    )
+                    sys.exit(2)
                 print(
                     f"  ⚠ {len(_serve_entries)} manual serve/dashboard "
                     "backend(s) hold the venv; stopping them for the update "
                     "(they will be relaunched on their recorded endpoints)"
                 )
-                _m()._stop_process_trees(
-                    [int(e["pid"]) for e in _serve_entries]
-                )
+                _m()._stop_process_trees(_serve_pids)
                 _serve_resume_token = {
                     "pending": True,
                     "entries": _serve_entries,
@@ -8482,6 +8510,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _handoff and _no_live_shim:
                 _handoff_backends = _m()._handoff_reapable_backend_pids(_venv_holders)
                 if _handoff_backends:
+                    # No ancestor-refusal guard here: this rung only runs
+                    # when `_handoff` is True, which requires
+                    # `args.gateway` -- and the real caller
+                    # (hermes_cli/main.py) always derives `gateway_mode`
+                    # from that same `args.gateway`, so `gateway_mode` is
+                    # already True on every path that reaches this print.
+                    # _refuse_gateway_ancestor_tree_kill() itself exempts
+                    # gateway_mode unconditionally (the supported
+                    # `--gateway` hand-off), so adding the same call here
+                    # would be unreachable dead code, unlike the three
+                    # rungs above (all reachable with gateway_mode=False).
                     print(
                         f"  ⚠ {len(_handoff_backends)} Hermes backend process(es) "
                         "still hold the venv after the Desktop hand-off; "

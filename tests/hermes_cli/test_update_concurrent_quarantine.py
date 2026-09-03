@@ -1103,6 +1103,159 @@ def test_update_impl_refuses_before_terminating_gateway_ancestor(
     assert "`/update`" in output
 
 
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_impl_refuses_before_reaping_ledger_backend_ancestor(
+    _winp, monkeypatch, capsys
+):
+    """#98814-class residual gap: the class fix above only wired the
+    ancestor-refusal guard into the pausable-gateway rung. The
+    ledger-identified-orphan rung two steps below it -- reachable even when
+    every holder isn't a pausable gateway, since "gateway" is itself a
+    REAPABLE_PURPOSES entry -- called _stop_process_trees() unconditionally
+    and could still taskkill /T its own ancestor gateway."""
+    import hermes_cli.gateway as gateway_cli
+
+    holder = (
+        300,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main gateway run",
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", return_value=None
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
+    ), patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=[holder]
+    ), patch.object(
+        cli_main, "_leftover_pausable_gateway_pids", return_value=None
+    ), patch.object(
+        cli_main, "_ledger_reapable_backend_pids", return_value=[300]
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update"
+    ) as resume, patch.object(
+        cli_main, "_stop_process_trees"
+    ) as stop_trees:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert excinfo.value.code == 2
+    stop_trees.assert_not_called()
+    resume.assert_called_once_with(None)
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_impl_refuses_before_reaping_orphan_backend_ancestor(
+    _winp, monkeypatch, capsys
+):
+    """Same residual gap as the ledger rung, one step further down the
+    cascade: the orphaned-Desktop-backend rung also called
+    _stop_process_trees() unconditionally."""
+    import hermes_cli.gateway as gateway_cli
+
+    holder = (
+        300,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main gateway run",
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", return_value=None
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
+    ), patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=[holder]
+    ), patch.object(
+        cli_main, "_leftover_pausable_gateway_pids", return_value=None
+    ), patch.object(
+        cli_main, "_ledger_reapable_backend_pids", return_value=None
+    ), patch.object(
+        cli_main, "_orphaned_desktop_backend_pids", return_value=[(300, 10000)]
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update"
+    ) as resume, patch.object(
+        cli_main, "_stop_process_trees"
+    ) as stop_trees:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert excinfo.value.code == 2
+    stop_trees.assert_not_called()
+    resume.assert_called_once_with(None)
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
+def test_update_impl_refuses_before_reaping_manual_serve_ancestor(
+    _winp, monkeypatch, capsys
+):
+    """Same residual gap, at the manual serve/dashboard rung (#63206):
+    _stop_process_trees() was called unconditionally on the ledger-derived
+    serve-holder PIDs."""
+    import hermes_cli.gateway as gateway_cli
+
+    holder = (
+        300,
+        "python.exe",
+        r"C:\x\venv\Scripts\python.exe -m hermes_cli.main gateway run",
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "_is_pid_ancestor_of_current_process",
+        lambda pid: pid == 300,
+    )
+
+    with patch.object(
+        cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_run_pre_update_backup", return_value=None
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", return_value=None
+    ), patch.object(
+        cli_main, "_detect_venv_python_processes", return_value=[holder]
+    ), patch.object(
+        cli_main, "_leftover_pausable_gateway_pids", return_value=None
+    ), patch.object(
+        cli_main, "_ledger_reapable_backend_pids", return_value=None
+    ), patch.object(
+        cli_main, "_orphaned_desktop_backend_pids", return_value=None
+    ), patch.object(
+        cli_main, "_ledger_manual_serve_holders", return_value=[{"pid": 300}]
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update"
+    ) as resume, patch.object(
+        cli_main, "_stop_process_trees"
+    ) as stop_trees:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert excinfo.value.code == 2
+    stop_trees.assert_not_called()
+    resume.assert_called_once_with(None)
+    output = capsys.readouterr().out
+    assert "taskkill /T" in output
+    assert "`/update`" in output
+
+
 def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):
     import hermes_cli.update_cmd as update_cmd
 

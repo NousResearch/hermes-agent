@@ -9522,6 +9522,24 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._telegram_require_mention():
             return False
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+            return False
+        allowed = self._telegram_allowed_chats()
+        if allowed and chat_id_str not in allowed:
+            return False
+        allowed_topics = self._telegram_allowed_topics()
+        if allowed_topics:
+            thread_id = self._effective_message_thread_id(message)
+            topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+            if topic_id not in allowed_topics:
+                return False
+        thread_id = self._effective_message_thread_id(message)
+        if thread_id is not None:
+            try:
+                if int(thread_id) in self._telegram_ignored_threads():
+                    return False
+            except (TypeError, ValueError):
+                pass
         if chat_id_str in self._telegram_free_response_chats():
             return False
         if self._telegram_is_free_response_topic(message):

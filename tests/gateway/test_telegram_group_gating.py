@@ -937,6 +937,13 @@ def test_needs_eager_voice_mention_gate_is_narrow():
     no_patterns = _make_adapter(require_mention=True, mention_patterns=[])
     assert no_patterns._needs_eager_voice_mention_gate(_voice_group_message()) is False
 
+    outside_allowlist = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"(?i)\bhermes\b"],
+        allowed_chats=["-999"],
+    )
+    assert outside_allowlist._needs_eager_voice_mention_gate(_voice_group_message()) is False
+
 
 @pytest.mark.asyncio
 async def test_handle_media_message_accepts_voice_via_transcript():

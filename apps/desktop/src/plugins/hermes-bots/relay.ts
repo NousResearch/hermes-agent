@@ -253,6 +253,14 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
       // bounded warm/readiness handshake used by delivery recovery; hold its
       // lease through this roster pass so profiles.list cannot race the SSH
       // dashboard startup.
+      if (typeof host.warmAgent === 'function') {
+        try {
+          await host.warmAgent(id, targetProfile)
+        } catch {
+          continue
+        }
+      }
+
       if (typeof host.retainProfile === 'function') {
         try {
           seeded.recoveryRelease = await host.retainProfile(seeded.route)
@@ -381,9 +389,7 @@ async function bootstrapRelayConnections() {
         .filter(Boolean)
     )
 
-    for (const id of ids) {
-      host.warmAgent(id, 'default')
-    }
+    await Promise.all([...ids].map(id => host.warmAgent(id, 'default')))
 
     const deadline = Date.now() + RELAY_ROUTE_RECONNECT_GRACE_MS
 

@@ -416,6 +416,7 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     expect(hostMock.retainProfile).toHaveBeenCalledWith(
       expect.objectContaining({ connectionId: 'm5', profile: 'default' })
     )
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('m5', 'default')
     expect(calls).toContainEqual(
       expect.objectContaining({ connectionId: 'm5', method: 'profiles.list' })
     )

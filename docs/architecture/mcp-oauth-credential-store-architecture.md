@@ -675,7 +675,7 @@ Under the administrative lock:
 
 1. Load all legacy artifacts for the configured server.
 2. Validate token, client, metadata, server URL, and issuer relationships.
-3. Construct a versioned bundle.
+3. Construct a versioned bundle, reconstructing the token time model (§4.2) from the legacy anchors — the file mtime stands in for `accepted_at_utc`, and `original_expires_in` is derived from `expires_at - mtime` or the raw legacy `expires_in`, or left `None`. The `CLOCK_SLACK` cushion (§4.3) absorbs the imprecision.
 4. Check the destination.
 5. If destination is empty, write the bundle.
 6. Read it back and verify all non-secret fields plus secret-value equality in constant-process memory.
@@ -759,12 +759,16 @@ Server: todoist
 Profile: default
 Backend: apple-keychain
 Credential: present
+Expiration: refresh_due
 Expires: 2026-09-01T18:30:00Z
 Refreshable: yes
 Issuer binding: valid
+Last probe: authenticated
 Migration: complete
 Reauthorization: idle
 ```
+
+`Last probe` is `deferred` for a credential committed past an indeterminate probe (§6.3) that no live request has since confirmed. The full projection type is `OAuthCredentialStatus` — see `../design/mcp-oauth-07-migration-diagnostics-cleanup.md`.
 
 ## 16. Security boundaries
 

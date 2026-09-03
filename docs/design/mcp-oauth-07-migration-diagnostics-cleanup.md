@@ -3,7 +3,7 @@
 Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: file bundle and Apple Keychain backends (Chunks 5–6)
 Finalizes: shared OAuth credential-store rollout
-Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1, §4.3, §14, §15
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1, §4.3, §6.3, §13, §14, §15, §18 (Phase 5), §19
 Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-7 revision-prefix bound, F-6 repair command, F-2 probe state, F-5 migration)
 
 ## Purpose

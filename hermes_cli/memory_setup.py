@@ -529,7 +529,23 @@ def cmd_status(args) -> None:
 
         if provider:
             print("\n  Plugin:    installed ✓")
-            if provider.is_available():
+            runtime_available = provider.is_available()
+            # The runtime retain path decides availability via the
+            # lazy-deps predicate ensure("memory.<provider>") — e.g.
+            # hindsight's cloud client SDK — not provider config alone.
+            # Mirror the same predicate here with the check-only
+            # is_available() so status never triggers an install;
+            # providers without a registered lazy feature pass through.
+            from tools.lazy_deps import feature_specs
+            from tools.lazy_deps import is_available as _lazy_feature_available
+            lazy_feature = f"memory.{provider_name}"
+            try:
+                feature_specs(lazy_feature)
+            except KeyError:
+                pass
+            else:
+                runtime_available = runtime_available and _lazy_feature_available(lazy_feature)
+            if runtime_available:
                 print("  Status:    available ✓")
             else:
                 print("  Status:    not available ✗")

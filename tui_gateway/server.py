@@ -6814,6 +6814,10 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     # Capability surface changed — rebuild the agent in place. Same
     # session_id/key, so the DB-backed history and (epoch-refreshed) system
     # prompt carry over; only tool definitions and prompt bytes change.
+    # Keep the live agent's session handle: _make_agent falls back to the
+    # module-level _get_db() (the launch profile's store), which would
+    # silently persist this named profile's Bot Chat turns into the launch
+    # profile's state.db (#101719).
     try:
         tokens = _set_session_context(sid, cwd=_session_cwd(session))
         try:
@@ -6821,6 +6825,7 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
                 sid,
                 session["session_key"],
                 session_id=session["session_key"],
+                session_db=getattr(agent, "_session_db", None),
                 platform_override=_session_source(session),
             )
         finally:
@@ -9010,10 +9015,15 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session.pop("create_reasoning_override", None)
         session.pop("create_service_tier_override", None)
         session.pop("one_turn_model_restore", None)
+        # Reuse the live agent's session handle so a named profile's /new
+        # (and the toolset/MCP-change rebuild) keeps writing to that
+        # profile's store — _make_agent's _get_db() fallback is the launch
+        # profile's shared handle (#101719).
         new_agent = _make_agent(
             sid,
             session["session_key"],
             session_id=session["session_key"],
+            session_db=getattr(session.get("agent"), "_session_db", None),
             platform_override=_session_source(session),
             context_cwd_is_launch_artifact=(
                 _context_cwd_is_launch_artifact(session)

@@ -789,7 +789,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     # --- dispatch ---
     p_disp = sub.add_parser(
         "dispatch",
-        help="One dispatcher pass: reclaim stale, promote ready, spawn workers",
+        help=(
+            "One dispatcher pass: reclaim stale, promote ready, spawn workers "
+            "(honors the global ESTOP pause and spawns nothing while paused)"
+        ),
+        description=(
+            "Run one dispatcher pass. When the global Hermes emergency stop "
+            "(ESTOP) is engaged, no workers are spawned."
+        ),
     )
     p_disp.add_argument("--dry-run", action="store_true",
                         help="Don't actually spawn processes; just print what would happen")
@@ -2740,6 +2747,25 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
+    # Check the shared emergency stop before loading config or entering the
+    # dispatcher.  The gateway and cron paths already honor this sentinel;
+    # the CLI must not provide a way around it.
+    from agent import estop
+
+    if estop.is_engaged():
+        state = estop.get_state() or {}
+        payload = {
+            "paused": True,
+            "reason": state.get("reason"),
+            "spawned": [],
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2))
+        else:
+            reason = f" ({payload['reason']})" if payload["reason"] else ""
+            print(f"Dispatch paused by global emergency stop{reason}; no workers spawned.")
+        return 0
+
     # Honour kanban.default_assignee as the fallback for unassigned ready
     # tasks (#27145), kanban.max_in_progress as the global concurrency cap
     # (#33488), kanban.max_in_progress_per_profile as the per-profile
@@ -2793,6 +2819,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if getattr(args, "json", False):
         print(json.dumps({
+            "paused": False,
+            "reason": None,
             "reclaimed": res.reclaimed,
             "crashed": res.crashed,
             "timed_out": res.timed_out,

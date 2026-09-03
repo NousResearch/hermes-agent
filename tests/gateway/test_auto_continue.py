@@ -6,6 +6,12 @@ this and prepends an API-only system note to the next user message so the model
 does not re-execute stale interrupted tool calls before addressing new input.
 """
 
+from agent.recovery_checkpoint import (
+    MODE_CONTINUE_SAFE,
+    MODE_RECONCILE_REQUIRED,
+    build_recovery_checkpoint,
+)
+
 
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     """Reproduce the auto-continue injection logic from _run_agent().
@@ -32,10 +38,21 @@ class TestAutoDetection:
     def test_trailing_tool_result_triggers_note(self):
         history = [
             {"role": "user", "content": "deploy the app"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
-            ]},
-            {"role": "tool", "tool_call_id": "call_1", "content": "deployed successfully"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "deployed successfully",
+            },
         ]
         result = _simulate_auto_continue(history, "what happened?")
         assert "[System note:" in result
@@ -43,7 +60,6 @@ class TestAutoDetection:
         assert "NEW message" in result
         assert "Do NOT re-execute" in result
         assert "what happened?" in result
-
 
     def test_empty_history_no_note(self):
         result = _simulate_auto_continue([], "hello")
@@ -60,7 +76,10 @@ class TestInterruptedReplayFiltering:
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [
-                    {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
+                    {
+                        "id": "call_1",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    },
                 ],
             },
             {
@@ -77,7 +96,7 @@ class TestInterruptedReplayFiltering:
         assert agent_history[-1]["role"] == "tool"
         assert agent_history[-1]["tool_call_id"] == "call_1"
         assert agent_history[-1]["effect_disposition"] == "unknown"
-
+        assert build_recovery_checkpoint(agent_history).mode == MODE_RECONCILE_REQUIRED
 
     def test_dangling_unanswered_side_effect_is_replayed_as_unknown(self):
         """A trailing side-effecting call gets an UNKNOWN result, not a retry.
@@ -113,5 +132,126 @@ class TestInterruptedReplayFiltering:
         assert agent_history[-1]["role"] == "tool"
         assert agent_history[-1]["tool_call_id"] == "call_1"
         assert agent_history[-1]["effect_disposition"] == "unknown"
+        assert build_recovery_checkpoint(agent_history).mode == MODE_RECONCILE_REQUIRED
+
+    def test_completed_side_effect_before_model_ack_is_not_replayed(self):
+        """A crash after result persistence but before model acknowledgement
+        resumes after the exact result instead of retrying the side effect."""
+        from gateway.run import _build_gateway_agent_history
+
+        history = [
+            {"role": "user", "content": "deploy the app"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_deploy",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command":"deploy"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_deploy",
+                "content": '{"exit_code":0,"output":"deployed"}',
+            },
+        ]
+
+        agent_history, _ = _build_gateway_agent_history(history)
+        checkpoint = build_recovery_checkpoint(agent_history)
+
+        assert checkpoint.mode == MODE_CONTINUE_SAFE
+        assert checkpoint.recorded_result_ids == ("call_deploy",)
+        assert checkpoint.unknown_effects == ()
 
 
+def _recovery_call(call_id: str, name: str, arguments: str = "{}") -> dict:
+    return {
+        "id": call_id,
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
+def _recovery_assistant(*calls: dict) -> dict:
+    return {"role": "assistant", "content": None, "tool_calls": list(calls)}
+
+
+def _recovery_result(
+    call_id: str,
+    *,
+    disposition: str | None = None,
+    content: str = "recorded result",
+) -> dict:
+    message = {
+        "role": "tool",
+        "name": "terminal",
+        "tool_call_id": call_id,
+        "content": content,
+    }
+    if disposition is not None:
+        message["effect_disposition"] = disposition
+    return message
+
+
+class TestStructuredRecoveryCheckpoint:
+    def test_checkpoint_uses_only_active_user_turn(self):
+        checkpoint = build_recovery_checkpoint([
+            {"role": "user", "content": "old task"},
+            _recovery_assistant(_recovery_call("old", "terminal")),
+            _recovery_result("old", disposition="unknown"),
+            {"role": "user", "content": "new task"},
+            _recovery_assistant(_recovery_call("new", "read_file")),
+            _recovery_result("new", disposition="none"),
+        ])
+
+        assert checkpoint.mode == MODE_CONTINUE_SAFE
+        assert checkpoint.recorded_result_ids == ("new",)
+        assert checkpoint.unknown_effects == ()
+
+    def test_failed_side_effect_result_requires_reconciliation(self):
+        checkpoint = build_recovery_checkpoint([
+            {"role": "user", "content": "deploy it"},
+            _recovery_assistant(_recovery_call("call_failed", "terminal")),
+            _recovery_result(
+                "call_failed",
+                content='{"exit_code": 1, "error": "connection lost"}',
+            ),
+        ])
+
+        assert checkpoint.mode == MODE_RECONCILE_REQUIRED
+        assert checkpoint.unknown_effects[0].tool_call_id == "call_failed"
+
+    def test_dangling_read_only_call_is_retryable(self):
+        checkpoint = build_recovery_checkpoint([
+            {"role": "user", "content": "inspect it"},
+            _recovery_assistant(_recovery_call("call_read", "read_file")),
+        ])
+
+        assert checkpoint.mode == MODE_CONTINUE_SAFE
+        assert checkpoint.retryable_read_only_ids == ("call_read",)
+
+    def test_rendered_checkpoint_does_not_leak_tool_arguments(self):
+        from agent.recovery_checkpoint import render_recovery_checkpoint
+
+        rendered = render_recovery_checkpoint(
+            build_recovery_checkpoint([
+                {"role": "user", "content": "deploy it"},
+                _recovery_assistant(
+                    _recovery_call(
+                        "call_deploy",
+                        "terminal",
+                        '{"command":"deploy --token SECRET_VALUE"}',
+                    )
+                ),
+            ])
+        )
+
+        assert "mode=RECONCILE_REQUIRED" in rendered
+        assert "read-only/status" in rendered
+        assert "normal approval gates" in rendered
+        assert "SECRET_VALUE" not in rendered
+        assert "deploy --token" not in rendered

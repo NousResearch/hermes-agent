@@ -65,6 +65,11 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.compaction_display import project_compaction_message_for_display
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
+from agent.recovery_checkpoint import (
+    RecoveryCheckpoint,
+    build_recovery_checkpoint,
+    render_recovery_checkpoint,
+)
 from agent.turn_context import (
     compression_made_progress,
 )
@@ -1543,6 +1548,7 @@ def build_resume_recovery_note(
     message: str = "",
     *,
     interactive: bool = True,
+    recovery_checkpoint: Optional[RecoveryCheckpoint] = None,
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
@@ -1552,13 +1558,12 @@ def build_resume_recovery_note(
     startup auto-resume turn synthesized by
     ``_schedule_resume_pending_sessions`` with no human message attached.
 
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    ``interactive`` is retained for adapter API compatibility. Empty synthesized
+    startup events now behave the same on every platform: there is no newer
+    human instruction to prioritize, so the resumed turn reviews the preserved
+    transcript and continues the interrupted work. This avoids abandoning work
+    behind a "session restored" acknowledgement on interactive platforms while
+    preserving the duplicate-tool-call guard (#57056).
     """
     reason_phrase = (
         "a gateway restart"
@@ -1576,35 +1581,28 @@ def build_resume_recovery_note(
             "Do NOT re-execute old tool calls — skip any "
             "unfinished work from the conversation history."
         )
-    elif interactive:
-        resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
-        )
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
-        )
     else:
         resume_guidance = (
-            "No user is present on this non-interactive platform, "
-            "so do NOT emit a 'session restored' acknowledgement "
-            "or ask questions. Review the conversation history and "
-            "CONTINUE the interrupted task to completion."
+            "There is no newer user message attached to this recovery event, "
+            "so do NOT emit a 'session restored' acknowledgement or ask what "
+            "to do next. Review the conversation history and CONTINUE the "
+            "interrupted task to completion."
         )
         tail_guidance = (
             "Do NOT re-run tool calls whose results already "
             "appear in the history — resume from the first step "
             "that has no recorded result."
         )
-    return (
+    recovery_note = (
         f"[System note: The previous turn was interrupted by "
         f"{reason_phrase}; the gateway is now back online. "
         f"Any restart/shutdown command in the history has already "
         f"run — do NOT re-execute or verify it. {resume_guidance} "
         f"{tail_guidance}]"
-        + (f"\n\n{message}" if message else "")
     )
+    if not message and recovery_checkpoint is not None:
+        recovery_note += "\n\n" + render_recovery_checkpoint(recovery_checkpoint)
+    return recovery_note + (f"\n\n{message}" if message else "")
 
 
 def _prepare_resume_pending_message(
@@ -1612,6 +1610,7 @@ def _prepare_resume_pending_message(
     message: Optional[str],
     *,
     interactive: bool = True,
+    recovery_checkpoint: Optional[RecoveryCheckpoint] = None,
 ) -> tuple[str, str]:
     """Return the recovery message and the user text to persist.
 
@@ -1625,7 +1624,10 @@ def _prepare_resume_pending_message(
     non-empty row never trips the sanitizer.
     """
     recovery_message = build_resume_recovery_note(
-        reason, message or "", interactive=interactive,
+        reason,
+        message or "",
+        interactive=interactive,
+        recovery_checkpoint=recovery_checkpoint,
     )
     persist_message = (
         message if isinstance(message, str) and message.strip() else recovery_message
@@ -2038,7 +2040,9 @@ from agent.replay_cleanup import (  # noqa: E402
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
+_RESUME_PENDING_NOTE_PREFIX = "[System note: The previous turn"
 _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
+_RECOVERY_CHECKPOINT_PREFIX = "[Recovery checkpoint —"
 
 
 def _is_auto_continue_noise(content: Any) -> bool:
@@ -2048,6 +2052,7 @@ def _is_auto_continue_noise(content: Any) -> bool:
         return False
     return (
         content.startswith(_AUTO_CONTINUE_NOTE_PREFIX)
+        or content.startswith(_RESUME_PENDING_NOTE_PREFIX)
         or content.startswith(_AUTO_CONTINUE_FALLBACK_PREFIX)
     )
 
@@ -2063,6 +2068,15 @@ def _strip_auto_continue_noise(content: Any) -> Any:
     if not _is_auto_continue_noise(content):
         return content
     text = str(content)
+    # Structured checkpoints are appended only to synthesized empty startup
+    # turns. They contain no human text, so drop the complete persisted payload
+    # rather than leaving the deterministic ledger block behind as a fake user
+    # instruction on the next replay.
+    if (
+        text.startswith(_RESUME_PENDING_NOTE_PREFIX)
+        and f"\n\n{_RECOVERY_CHECKPOINT_PREFIX}" in text
+    ):
+        return ""
     while _is_auto_continue_noise(text):
         end = text.find("]")
         if end < 0:
@@ -6996,18 +7010,19 @@ class TurnRunner:
             _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
             # The empty-message case is the auto-resume startup turn
             # synthesized by _schedule_resume_pending_sessions — there is
-            # no NEW user message to address.  Guidance is adapter-aware:
-            # interactive platforms report the restore and ask what next;
-            # non-interactive event platforms (webhook, API server)
-            # continue the interrupted work instead, because nobody is
-            # present to answer and an acknowledgement would silently
-            # abandon the task (#57056).
+            # no NEW user message to address. Every adapter now continues from
+            # a deterministic checkpoint built from the persisted tool ledger;
+            # ``interactive`` remains an adapter compatibility field only.
             _resume_adapter = self._runner._adapter_for_source(ctx.source)
             _interactive_resume = bool(
                 getattr(_resume_adapter, "interactive_resume", True)
             )
+            _recovery_checkpoint = build_recovery_checkpoint(agent_history)
             ctx.message, _persist_user_message_override = _prepare_resume_pending_message(
-                _reason, ctx.message, interactive=_interactive_resume,
+                _reason,
+                ctx.message,
+                interactive=_interactive_resume,
+                recovery_checkpoint=_recovery_checkpoint,
             )
         elif _has_fresh_tool_tail:
             _persist_user_message_override = ctx.message
@@ -7055,6 +7070,7 @@ class TurnRunner:
                 interactive=bool(
                     getattr(_sn_adapter, "interactive_resume", True)
                 ),
+                recovery_checkpoint=build_recovery_checkpoint(agent_history),
             )
 
         _approval_session_key = ctx.session_key or ""
@@ -20544,7 +20560,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
-        if _is_shared_multi_user and source.user_name:
+        if (
+            _is_shared_multi_user
+            and source.user_name
+            and not (event.internal and not message_text.strip())
+        ):
+            # Internal empty events are gateway-synthesized control turns (for
+            # example restart recovery), not new speaker messages. Keeping them
+            # empty lets the resume path append its structured checkpoint instead
+            # of misclassifying ``[sender]`` as newer user input.
             # source.user_name is the platform display name — attacker-
             # influenceable on any platform that lets participants set their
             # own name. Neutralize embedded newlines/control chars before

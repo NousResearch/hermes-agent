@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.recovery_checkpoint import build_recovery_checkpoint
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
@@ -42,6 +43,7 @@ from gateway.run import (
     _last_transcript_timestamp,
     _prepare_resume_pending_message,
     _should_clear_resume_pending_after_turn,
+    _strip_auto_continue_noise,
     build_resume_recovery_note,
 )
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -301,11 +303,14 @@ class TestResumePendingSystemNote:
         )
 
 
-    def test_empty_message_noninteractive_note_continues_task(self):
-        """Non-interactive platforms (webhook, API server): nobody can answer
-        'what next?', so the resumed turn must complete the interrupted work
-        instead of acknowledging (#57056)."""
-        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
+    @pytest.mark.parametrize("interactive", [True, False])
+    def test_empty_message_note_continues_task_on_every_platform(self, interactive):
+        """A synthesized startup resume has no new user instruction, so both
+        interactive and non-interactive platforms must recover the transcript
+        and finish the interrupted work instead of asking what to do next."""
+        note = build_resume_recovery_note(
+            "restart_timeout", "", interactive=interactive
+        )
         assert "CONTINUE the interrupted task" in note
         assert "session was restored" not in note
         assert "ask what they would like to do next" not in note
@@ -313,6 +318,63 @@ class TestResumePendingSystemNote:
         assert "skip any unfinished work" not in note
         # But still guards against re-running already-recorded tool calls.
         assert "already appear in the history" in note
+
+    def test_empty_resume_note_embeds_deterministic_reconciliation_checkpoint(self):
+        history = [
+            {"role": "user", "content": "deploy it"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_deploy",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_call_id": "call_deploy",
+                "content": "[Orphan recovery: effect is UNKNOWN.]",
+                "effect_disposition": "unknown",
+            },
+        ]
+        checkpoint = build_recovery_checkpoint(history)
+
+        note = build_resume_recovery_note(
+            "restart_timeout", "", recovery_checkpoint=checkpoint
+        )
+
+        assert "mode=RECONCILE_REQUIRED" in note
+        assert "terminal call_id=call_deploy" in note
+        assert "read-only/status" in note
+        assert "Do not repeat an unknown-effect action" in note
+
+    def test_new_user_message_does_not_continue_old_checkpoint(self):
+        checkpoint = build_recovery_checkpoint([
+            {"role": "user", "content": "deploy it"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_deploy",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+        ])
+
+        note = build_resume_recovery_note(
+            "restart_timeout",
+            "stop that and work on the new request",
+            recovery_checkpoint=checkpoint,
+        )
+
+        assert "NEW message" in note
+        assert "mode=RECONCILE_REQUIRED" not in note
+        assert "stop that and work on the new request" in note
 
 
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
@@ -325,6 +387,30 @@ class TestResumePendingSystemNote:
         assert "CONTINUE the interrupted task" in message
         assert persisted == message
         assert persisted != ""
+
+    def test_persisted_structured_recovery_note_is_not_replayed_as_user_text(self):
+        checkpoint = build_recovery_checkpoint([
+            {"role": "user", "content": "deploy it"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_deploy",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+        ])
+        message, persisted = _prepare_resume_pending_message(
+            "shutdown_timeout",
+            "",
+            recovery_checkpoint=checkpoint,
+        )
+
+        assert persisted == message
+        assert "Recovery checkpoint" in persisted
+        assert _strip_auto_continue_noise(persisted) == ""
 
     def test_whitespace_only_message_also_persists_the_note(self):
         """A whitespace-only startup event is as blank as an empty one —

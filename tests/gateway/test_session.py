@@ -346,6 +346,20 @@ class TestSenderPrefixWithBackfill:
         assert "[Alice] [Recent" not in result
 
     @pytest.mark.asyncio
+    async def test_internal_empty_resume_event_skips_sender_prefix(self, runner, source):
+        """Startup recovery must stay empty until checkpoint injection runs.
+
+        Shared Discord sessions normally prefix the speaker name, but a synthesized
+        resume event has no new speaker message. Prefixing it turns an empty event
+        into ``[Alice]`` and falsely selects the newer-message recovery path.
+        """
+        event = MessageEvent(text="", source=source, internal=True)
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[],
+        )
+        assert result == ""
+
+    @pytest.mark.asyncio
     async def test_malicious_display_name_cannot_inject_markdown_section(self, runner):
         """A hostile platform display name must not break out onto its own line.
 

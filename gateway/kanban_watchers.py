@@ -37,6 +37,116 @@ _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
 
 
+# Buckets a DispatchResult uses to say "I chose not to spawn, and here is why". Each is a working
+# dispatcher declining work for a reason an operator either already knows about or cannot act on,
+# so none of them is evidence of a fault. ``spawn_gated`` is read defensively: it lands with the
+# kanban.spawn_gate feature and must not make this check depend on that feature's presence.
+_BENIGN_DEFERRAL_FIELDS = (
+    "skipped_per_profile_capped",
+    "skipped_nonspawnable",
+    "respawn_guarded",
+    "spawn_gated",
+    "memory_pressure",
+    "skipped_locked",
+)
+
+
+def _dispatch_tick_is_stuck(
+    *,
+    ready: bool,
+    spawned_any: bool,
+    results: "list[tuple[str, Any]]",
+    running_total: int,
+    running_by_assignee: "dict[str, int]",
+    ready_assignees: "set[str]",
+    max_in_progress: Optional[int],
+    max_in_progress_per_profile: Optional[int],
+) -> bool:
+    """Is a tick that spawned nothing evidence of a BROKEN dispatcher?
+
+    ``ready_nonempty()`` asks only whether a ready+assigned+unclaimed task exists whose assignee is
+    a real profile. The dispatcher applies three more gates before it spawns: the per-profile cap,
+    the host-level ``max_in_progress`` cap, and the respawn guard. So a fleet running at capacity
+    with a queue behind it -- the design goal, not a fault -- satisfies the probe on every tick,
+    forever, and the alarm that exists to report a broken PATH / missing venv / lost credentials
+    instead reports a busy fleet.
+
+    A zero-spawn tick is only "stuck" when nothing accounts for the zero:
+
+      1. the tick declined work and said why (:data:`_BENIGN_DEFERRAL_FIELDS`);
+      2. the host cap is saturated -- ``dispatch_once`` returns BEFORE it buckets anything in that
+         case, so this is invisible in the results and has to be recognised from the running count;
+      3. every assignee with ready work is at its own per-profile cap.
+
+    ``skipped_unassigned`` is deliberately NOT benign: a ready task with no assignee is something
+    the operator can fix, and staying silent about it is how it stays unfixed.
+
+    Known gap: ``max_spawn`` (the per-BOARD cap) has the same unbucketed early return as
+    ``max_in_progress``, and is not modelled here because that would need per-board running counts
+    for a cap almost nobody sets. A fleet that sets ``max_spawn`` and saturates a board can still
+    see a spurious warning.
+    """
+    if not ready or spawned_any:
+        return False
+    for _slug, res in results or []:
+        if res is None:  # board failed to tick (corrupt / quarantined)
+            continue
+        for field_name in _BENIGN_DEFERRAL_FIELDS:
+            if getattr(res, field_name, None):
+                return False
+    if max_in_progress is not None and running_total >= max_in_progress:
+        return False
+    if (
+        max_in_progress_per_profile is not None
+        and ready_assignees
+        and all(running_by_assignee.get(name, 0) >= max_in_progress_per_profile
+                for name in ready_assignees)
+    ):
+        return False
+    return True
+
+
+def _running_census(_kb) -> "tuple[int, dict[str, int], set[str]]":
+    """One sweep for the health check: how much is running, and who is waiting. Returns
+    ``(running_total, running_by_assignee, ready_assignees)``.
+
+    Only called on a tick that already looks bad (ready work, zero spawns), so the common healthy
+    tick pays nothing for it. The caps it feeds are host-level, hence the sweep across every board
+    rather than the current one. Fails open per board, like every other sweep here: one unreadable
+    board must not decide the fleet's health.
+    """
+    running_total = 0
+    running_by_assignee: dict[str, int] = {}
+    ready_assignees: set[str] = set()
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+    for b in boards:
+        slug = b.get("slug") or _kb.DEFAULT_BOARD
+        conn = None
+        try:
+            conn = _kb.connect(board=slug)
+            for status, assignee in conn.execute(
+                "SELECT status, assignee FROM tasks "
+                "WHERE status IN ('running', 'ready') AND assignee IS NOT NULL"
+            ):
+                if status == "running":
+                    running_total += 1
+                    running_by_assignee[assignee] = running_by_assignee.get(assignee, 0) + 1
+                else:
+                    ready_assignees.add(assignee)
+        except Exception:
+            continue
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return running_total, running_by_assignee, ready_assignees
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -302,7 +412,24 @@ class GatewayKanbanWatchersMixin:
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    # A zero-spawn tick is not automatically a fault: the caps and the respawn
+                    # guard produce exactly this shape on a fleet that is simply full. See
+                    # _dispatch_tick_is_stuck for what still counts as stuck.
+                    _stuck = False
+                    if ready_pending and not any_spawned:
+                        census = await _to_thread_process_service(_running_census, _kb)
+                        running_total, running_by_assignee, ready_assignees = census
+                        _stuck = _dispatch_tick_is_stuck(
+                            ready=True,
+                            spawned_any=False,
+                            results=results or [],
+                            running_total=running_total,
+                            running_by_assignee=running_by_assignee,
+                            ready_assignees=ready_assignees,
+                            max_in_progress=settings.max_in_progress,
+                            max_in_progress_per_profile=settings.max_in_progress_per_profile,
+                        )
+                    bad_ticks = bad_ticks + 1 if _stuck else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     held = _kbd.describe_suppression(res for _slug, res in (results or []))

@@ -35,33 +35,23 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
-def test_picker_synthesizes_900k_variants_for_verified_slugs():
-    """Every live-verified large-context slug gets an explicit ``-900k``
-    picker variant directly after its base entry; slugs that genuinely
-    enforce 272K (gpt-5.5, gpt-5.4-mini) never get one. Base slugs stay
-    in the list as the cheaper 272K default."""
+def test_picker_lists_each_base_slug_once_and_never_synthesizes_900k_variants():
+    """Regression guard: the picker shows each base Codex slug exactly once
+    and never synthesizes ``-900k`` pseudo-model aliases. That experiment
+    was removed at source — a model id is the provider's id, not a
+    Hermes-invented one."""
     model_ids = get_codex_model_ids()  # offline curated path
 
     for base in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4"):
-        assert base in model_ids
-        assert f"{base}-900k" in model_ids
-        assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
+        assert model_ids.count(base) == 1
+    assert not [m for m in model_ids if m.endswith("-900k")]
 
-    assert "gpt-5.5-900k" not in model_ids
-    assert "gpt-5.4-mini-900k" not in model_ids
-    assert "gpt-5.3-codex-900k" not in model_ids
-
-
-def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
-    """Eligibility is an exact predicate, not a family-prefix match:
-    ``-pro`` slugs are not routable on Codex OAuth (backend 400s them) and
-    unknown future descendants were never probed — neither may gain a
-    synthetic ``-900k`` entry (#92797 review)."""
+    # The forward-compat finalize seam behaves the same: ids pass through
+    # without ever gaining synthetic context variants.
     from hermes_cli.codex_models import _finalize_codex_models
 
     out = _finalize_codex_models(["gpt-5.6-sol-pro", "gpt-5.6-nova"])
-    assert "gpt-5.6-sol-pro-900k" not in out
-    assert "gpt-5.6-nova-900k" not in out
+    assert not [m for m in out if m.endswith("-900k")]
 
 
 

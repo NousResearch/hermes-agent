@@ -19,6 +19,7 @@ import urllib.request
 import urllib.error
 import time
 from difflib import get_close_matches
+import re
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, TYPE_CHECKING
 
@@ -7037,6 +7038,35 @@ def validate_requested_model(
       - recognized: whether it matched a known provider catalog
       - message: optional warning / guidance for the user
     """
+
+    def _version_only_diff(requested: str, corrected: str) -> bool:
+        """Check if requested and corrected differ ONLY in version digits.
+        
+        Returns True if the sole difference is in numeric segments
+        (e.g. "gemini-3.8-flash" vs "gemini-3.6-flash"), indicating a
+        model-version substitution rather than a typo fix (e.g. "gpt-5.44" vs
+        "gpt-5.4" is a typo, not a version swap).
+        """
+        req_digits = re.findall(r'\d+', requested)
+        cor_digits = re.findall(r'\d+', corrected)
+        if not req_digits or not cor_digits or len(req_digits) != len(cor_digits):
+            return False
+        # Compare non-digit structure (case-insensitive)
+        req_stripped = re.sub(r'\d+', '', requested.lower())
+        cor_stripped = re.sub(r'\d+', '', corrected.lower())
+        if req_stripped != cor_stripped:
+            return False
+        # Check if all numeric diffs are small (version-like, not typo-like)
+        for r, c in zip(req_digits, cor_digits):
+            if r != c:
+                try:
+                    if abs(int(r) - int(c)) > 5:
+                        # Large numeric diff (e.g. 44→4) → likely a typo
+                        return False
+                except ValueError:
+                    pass
+        # At least one numeric segment must differ (otherwise not a diff at all)
+        return req_digits != cor_digits
     requested = (model_name or "").strip()
     normalized = normalize_provider(provider)
     if normalized == "openrouter" and base_url and not base_url_host_matches(base_url, "openrouter.ai"):
@@ -7269,13 +7299,17 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
-                }
+                if _version_only_diff(requested_for_lookup, auto[0]):
+                    # Version-only substitution: block auto-correction (#101975)
+                    pass
+                else:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": auto[0],
+                        "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    }
 
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
@@ -7375,13 +7409,16 @@ def validate_requested_model(
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
             if auto:
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
-                }
+                if _version_only_diff(requested_for_lookup, auto[0]):
+                    pass
+                else:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": auto[0],
+                        "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    }
             suggestions = get_close_matches(requested_for_lookup, catalog_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -7450,14 +7487,17 @@ def validate_requested_model(
             catalog_lower_list = list(catalog_lower.keys())
             auto = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9)
             if auto:
-                corrected = catalog_lower[auto[0]]
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": corrected,
-                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
-                }
+                if _version_only_diff(requested_for_lookup, catalog_lower[auto[0]]):
+                    pass
+                else:
+                    corrected = catalog_lower[auto[0]]
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": corrected,
+                        "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                    }
             suggestions = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -7495,13 +7535,16 @@ def validate_requested_model(
                 }
             auto = get_close_matches(requested_for_lookup, anthropic_models, n=1, cutoff=0.9)
             if auto:
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
-                }
+                if _version_only_diff(requested_for_lookup, auto[0]):
+                    pass
+                else:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": auto[0],
+                        "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    }
             suggestions = get_close_matches(requested, anthropic_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -7536,15 +7579,18 @@ def validate_requested_model(
                 }
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
             if auto:
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
-                }
+                if _version_only_diff(requested_for_lookup, auto[0]):
+                    pass
+                else:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": auto[0],
+                        "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                    }
         # Probe failed or model not found — accept anyway (proxy likely
-        # doesn't implement the Anthropic Models API).
+        # doesn't implement the Anthropic Messages API).
         return {
             "accepted": True,
             "persist": True,
@@ -7605,15 +7651,20 @@ def validate_requested_model(
 
             # Auto-correct if the top match is very similar (e.g. typo)
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            version_swap_blocked = False
             if auto:
-                corrected = _with_preset_suffix(auto[0])
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": corrected,
-                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
-                }
+                if _version_only_diff(requested_for_lookup, auto[0]):
+                    # Version-only substitution: block auto-correction (#101975)
+                    version_swap_blocked = True
+                else:
+                    corrected = _with_preset_suffix(auto[0])
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "corrected_model": corrected,
+                        "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                    }
 
             suggestions = get_close_matches(
                 requested_for_lookup, api_models, n=3, cutoff=0.5
@@ -7688,6 +7739,19 @@ def validate_requested_model(
                             f"listing but is a current Nous Portal recommendation — accepted."
                         ),
                     }
+
+            # Non-OpenAI providers soft-accept version-swapped requests as-is
+            # with suggestions; OpenAI-official rejects them (authoritative listing).
+            if version_swap_blocked and normalized not in {"openai", "openai-api"}:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": (
+                        f"Note: `{requested}` was not found in this provider's model listing."
+                        f"{suggestion_text}"
+                    ),
+                }
 
         return {
             "accepted": False,
@@ -7780,17 +7844,20 @@ def validate_requested_model(
             requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9
         )
         if auto:
-            corrected = catalog_lower[auto[0]]
-            corrected_with_suffix = _with_preset_suffix(corrected)
-            return {
-                "accepted": True,
-                "persist": True,
-                "recognized": True,
-                "corrected_model": corrected_with_suffix,
-                "message": (
-                    f"Auto-corrected `{requested}` → `{corrected_with_suffix}`"
-                ),
-            }
+            if _version_only_diff(requested_for_lookup, catalog_lower[auto[0]]):
+                pass
+            else:
+                corrected = catalog_lower[auto[0]]
+                corrected_with_suffix = _with_preset_suffix(corrected)
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": corrected_with_suffix,
+                    "message": (
+                        f"Auto-corrected `{requested}` → `{corrected_with_suffix}`"
+                    ),
+                }
         suggestions = get_close_matches(
             requested_for_lookup.lower(), catalog_lower_list, n=3, cutoff=0.5
         )

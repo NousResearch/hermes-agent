@@ -11601,6 +11601,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._session_state(session_key).turn.busy_ack_ts = now
 
+        # Reaction-first busy ack: when the adapter supports send_reaction
+        # and the platform opt-in is enabled, acknowledge with a mode-aware
+        # emoji reaction on the user's message instead of a text bubble.
+        # Falls back to the text bubble when the reaction cannot be
+        # delivered (unsupported adapter, missing message id, send failure).
+        _BUSY_ACK_REACTIONS = {
+            "redirect": "↪️",
+            "steer": "⏩",
+            "queue": "⏳",
+            "interrupt": "⚡",
+        }
+        _ack_mode = (
+            "steer" if is_steer_mode
+            else "redirect" if is_redirect_mode
+            else "queue" if is_queue_mode
+            else "interrupt"
+        )
+        _reaction_ack_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(),
+                platform_key,
+                "busy_ack_reaction",
+                False,
+            )
+        )
+        if (
+            _reaction_ack_enabled
+            and event.message_id
+            and getattr(adapter, "send_reaction", None) is not None
+        ):
+            try:
+                reacted = await adapter.send_reaction(
+                    chat_id=event.source.chat_id,
+                    message_id=event.message_id,
+                    emoji=_BUSY_ACK_REACTIONS.get(_ack_mode, "⚡"),
+                )
+                if reacted:
+                    return True
+                logger.debug(
+                    "Busy reaction-ack not accepted for session %s; using text bubble",
+                    session_key,
+                )
+            except Exception:
+                logger.debug("Busy reaction-ack failed; falling back to text", exc_info=True)
+
         # Build a status-rich acknowledgment. Mobile chat defaults keep this
         # terse; detailed iteration/tool state is still available in logs and
         # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.

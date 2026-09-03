@@ -29,6 +29,7 @@ import type { ProfileRoute } from './types'
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
   clearBotAttentionMock: vi.fn(),
   hostMock: {
+    agents: vi.fn(),
     connections: vi.fn(),
     onEvent: vi.fn(),
     profileRoutes: vi.fn(),
@@ -133,6 +134,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   vi.clearAllMocks()
   hostMock.onEvent = vi.fn(() => vi.fn())
+  hostMock.agents = vi.fn(async () => ({ agents: [], sources: [] }))
   hostMock.connections = vi.fn(async () => [])
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
   hostMock.requestProfile = vi.fn(async () => ({}))
@@ -403,10 +405,27 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
       { id: 'm5', kind: 'ssh' }
     ])
     hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
+    hostMock.agents = vi.fn(async () => ({
+      agents: [
+        {
+          connectionId: 'm5',
+          connectionKind: 'ssh',
+          connectionLabel: 'M5',
+          profile: 'default',
+          targetProfile: 'default',
+          handle: 'hermes-m5'
+        }
+      ],
+      sources: []
+    }))
 
-    const calls = respondWith(call =>
-      call.method === 'profiles.list' ? { profiles: [{ name: 'default' }] } : {}
-    )
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list' && call.connectionId === 'm5') {
+        throw new Error('lazy profile route not materialized')
+      }
+
+      return call.method === 'profiles.list' ? { profiles: [{ name: 'default' }] } : {}
+    })
 
     const { startBotRelay, stopBotRelay } = await loadRelay()
 

@@ -257,7 +257,9 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
         try {
           await host.warmAgent(id, targetProfile)
         } catch {
-          continue
+          // Keep the registered seed in the inventory. The union agent roster
+          // below can still supply its last verified rows while this route is
+          // reconnecting, and healthy peers must not forget the machine.
         }
       }
 
@@ -265,7 +267,8 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
         try {
           seeded.recoveryRelease = await host.retainProfile(seeded.route)
         } catch {
-          continue
+          // Same fail-soft rule as warmAgent: retain readiness governs direct
+          // RPCs, not whether a configured peer exists in roster truth.
         }
       }
 
@@ -472,6 +475,41 @@ async function syncRelayRosters() {
     }
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
+    const unionByConnection = new Map<string, RelayAgentRow[]>()
+
+    // Electron's union registry is the Desktop-wide discovery authority and
+    // already preserves registered sources across lazy SSH route churn. Use
+    // its thin rows only as a fallback when a gateway's richer profiles.list
+    // RPC fails; a genuine empty profile list remains authoritative.
+    if (typeof host.agents === 'function') {
+      try {
+        const union = await host.agents()
+
+        for (const agent of Array.isArray(union?.agents) ? union.agents : []) {
+          const id = String(agent?.connectionId || '')
+          const profile = String(agent?.targetProfile || agent?.profile || '')
+
+          if (!id || !profile) {
+            continue
+          }
+
+          const rows = unionByConnection.get(id) || []
+
+          rows.push({
+            profile,
+            handle: String(agent?.handle || botHandle(profile, { name: profile })),
+            connection_id: id,
+            connection_label: String(agent?.connectionLabel || id),
+            title: '',
+            description: ''
+          })
+          unionByConnection.set(id, rows)
+        }
+      } catch {
+        // Older shells keep using per-gateway discovery only.
+      }
+    }
+
     await Promise.all(
       connections.map(async connection => {
         const agents = await relayAgentsOn(connection)
@@ -481,7 +519,11 @@ async function syncRelayRosters() {
           // connection (or contribute nothing this cycle) so the pushed
           // roster never drops a live machine's agents — absence from a
           // fresh roster means offline to the gateway-side fail-fast.
-          agentsByConnection.set(connection.id, relayAgentsCache.get(connection.id) || [])
+          const cached = relayAgentsCache.get(connection.id) || []
+          agentsByConnection.set(
+            connection.id,
+            cached.length > 0 ? cached : unionByConnection.get(connection.id) || []
+          )
         } else {
           relayAgentsCache.set(connection.id, agents)
           agentsByConnection.set(connection.id, agents)

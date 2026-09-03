@@ -1571,7 +1571,16 @@ def _(rid, params: dict) -> dict:
     """
     session, err = _sess_nowait(params, rid)
     if err:
-        return err
+        # Reactions are durable message mutations. A multi-agent tile can
+        # retain the stored session key while its short-lived UI runtime id is
+        # re-minted, so resolve that durable key against current live records
+        # before surfacing a stale-session error.
+        code = (err.get("error") or {}).get("code")
+        target = str(params.get("session_id") or "").strip()
+        live = _find_live_session_by_key(target) if code == 4001 and target else None
+        if live is None:
+            return err
+        session = live[1]
 
     # A live message hasn't round-tripped through a resume, so the desktop has
     # no durable row id for it yet. It can instead name the ROLE whose newest

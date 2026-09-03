@@ -1334,6 +1334,8 @@ class TestApprovalTimeoutIsNotConsent:
         """Reset module state and force a tight approval timeout for fast tests."""
         from tools import approval as mod
         mod._gateway_queues.clear()
+        if hasattr(mod, "_gateway_request_sessions"):
+            mod._gateway_request_sessions.clear()
         mod._gateway_notify_cbs.clear()
         mod._session_approved.clear()
         mod._permanent_approved.clear()
@@ -1511,6 +1513,7 @@ class TestApprovalTimeoutIsNotConsent:
             "notify_failed": True,
         }
         assert self.SESSION_KEY not in mod._gateway_queues
+        assert not mod._gateway_request_sessions
         assert [name for name, _ in hook_calls] == [
             "pre_approval_request",
             "post_approval_response",
@@ -1545,6 +1548,68 @@ class TestApprovalTimeoutIsNotConsent:
         ) == 1
         thread.join(timeout=5)
         assert result_holder["result"]["approved"] is True
+
+    def test_request_index_tracks_enqueue_and_resolution(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        monkeypatch.setattr(mod, "_fire_approval_hook", lambda *_args, **_kwargs: None)
+        notified = []
+        result_holder = {}
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result",
+                mod._await_gateway_decision(
+                    self.SESSION_KEY,
+                    notified.append,
+                    {
+                        "command": "redacted-command",
+                        "description": "redacted-description",
+                        "pattern_key": "dangerous",
+                        "pattern_keys": ["dangerous"],
+                    },
+                ),
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if notified:
+                break
+            time.sleep(0.005)
+
+        request_id = notified[0]["request_id"]
+        assert mod.find_gateway_approval_session(request_id) == self.SESSION_KEY
+        assert mod._gateway_request_sessions == {request_id: self.SESSION_KEY}
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+
+        assert result_holder["result"] == {
+            "resolved": True,
+            "choice": "once",
+            "reason": None,
+        }
+        assert mod.find_gateway_approval_session(request_id) is None
+        assert request_id not in mod._gateway_request_sessions
+
+    @pytest.mark.parametrize("cleanup", ["unregister", "clear"])
+    def test_session_cleanup_removes_request_index(self, cleanup):
+        from tools import approval as mod
+
+        entry = mod._ApprovalEntry({"request_id": f"req-{cleanup}"})
+        with mod._lock:
+            mod._gateway_queues[self.SESSION_KEY] = [entry]
+            mod._index_gateway_entry_locked(self.SESSION_KEY, entry)
+
+        if cleanup == "unregister":
+            mod.unregister_gateway_notify(self.SESSION_KEY)
+        else:
+            mod.clear_session(self.SESSION_KEY)
+
+        assert mod.find_gateway_approval_session(f"req-{cleanup}") is None
+        assert f"req-{cleanup}" not in mod._gateway_request_sessions
+        assert entry.event.is_set()
 
     def test_stale_request_id_cannot_resolve_current_approval(self, monkeypatch):
         from tools import approval as mod

@@ -1850,17 +1850,27 @@ def _approval_respond_session_fallback(params: dict):
     request_id = str(params.get("request_id") or "")
     if request_id:
         try:
-            from tools.approval import list_gateway_approvals
+            from tools.approval import (
+                find_gateway_approval_session,
+                list_gateway_approvals,
+            )
 
+            session_key = find_gateway_approval_session(request_id)
+            if session_key:
+                return {"session_key": session_key}
+            # Compatibility fallback for approval stores supplied by older
+            # integrations that expose snapshots but not the core queue.
             with _sessions_lock:
                 live = list(_sessions.items())
-            for sid, session in live:
+            for _, session in live:
                 key = str(session.get("session_key") or "")
                 if not key:
                     continue
-                for pending in list_gateway_approvals(key):
-                    if str(pending.get("request_id") or "") == request_id:
-                        return session
+                if any(
+                    str(pending.get("request_id") or "") == request_id
+                    for pending in list_gateway_approvals(key)
+                ):
+                    return session
         except Exception:
             logger.debug(
                 "approval.respond request_id fallback failed", exc_info=True

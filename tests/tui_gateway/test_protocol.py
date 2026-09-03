@@ -683,6 +683,45 @@ def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
     ]
 
 
+def test_approval_respond_finds_exact_request_after_live_session_record_is_gone(server):
+    """A still-blocked approval remains answerable after its UI runtime is re-minted."""
+    from tools import approval
+
+    session_key = "orphaned-agent-session"
+    request_id = "req-orphaned-approval"
+    entry = approval._ApprovalEntry(
+        {
+            "command": "git branch -D stale-branch",
+            "description": "force delete a local branch",
+            "request_id": request_id,
+        }
+    )
+    with approval._lock:
+        approval._gateway_queues[session_key] = [entry]
+        approval._index_gateway_entry_locked(session_key, entry)
+    try:
+        response = server.handle_request(
+            {
+                "id": "r-orphaned-approval",
+                "method": "approval.respond",
+                "params": {
+                    "session_id": "gone-ui-session",
+                    "request_id": request_id,
+                    "choice": "once",
+                },
+            }
+        )
+
+        assert response["result"] == {"resolved": 1}
+        assert entry.result == "once"
+        assert entry.event.is_set()
+        assert approval.list_gateway_approvals(session_key) == []
+    finally:
+        with approval._lock:
+            entries = approval._gateway_queues.pop(session_key, [])
+            approval._unindex_gateway_entries_locked(session_key, entries)
+
+
 def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     from tools import approval
 
@@ -696,6 +735,44 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     )
 
     assert response["error"]["code"] == 4001
+
+
+def test_message_react_accepts_stored_session_key_after_runtime_id_remint(server, monkeypatch):
+    """Multi-agent UI actions may retain the durable key after the live id changes."""
+    stored_key = "stored-parent-session"
+    server._sessions["reminted-runtime-id"] = {
+        "session_key": stored_key,
+        "history": [],
+    }
+    db = MagicMock()
+    db.set_message_reaction.return_value = [
+        {"emoji": "👍", "author": "user", "at": 1.0}
+    ]
+    db_context = MagicMock()
+    db_context.__enter__.return_value = db
+    db_context.__exit__.return_value = False
+    monkeypatch.setattr(server, "_session_db", lambda _session: db_context)
+
+    response = server.handle_request(
+        {
+            "id": "r-react-reminted",
+            "method": "message.react",
+            "params": {
+                "session_id": stored_key,
+                "row_id": 42,
+                "emoji": "👍",
+                "author": "user",
+            },
+        }
+    )
+
+    assert response["result"] == {
+        "row_id": 42,
+        "reactions": [{"emoji": "👍", "author": "user", "at": 1.0}],
+    }
+    db.set_message_reaction.assert_called_once_with(
+        stored_key, 42, "👍", author="user"
+    )
 
 
 def test_clear_pending(server):

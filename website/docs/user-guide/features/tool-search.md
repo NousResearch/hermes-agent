@@ -130,6 +130,134 @@ tools:
   tool_search: true   # equivalent to {enabled: auto}
 ```
 
+## Embedding reranker
+
+BM25 ranks by token overlap, weighted by how rare each token is and
+normalized by document length. That works when the query shares the
+tool's vocabulary, and fails in two ways that show up constantly on
+large REST-style catalogs:
+
+- **Long names win on co-occurrence.** Against Cloudflare's 1,938-tool
+  server, `"list accounts"` returns `get_accounts_rules_lists_by_list_id`,
+  `get_accounts_rules_lists`, ... — every name that contains *both*
+  `accounts` and `list` — and never the 2-token `get_accounts`.
+- **Intent phrases have no lexical overlap.** `"remind me tonight"`
+  shares no token with `calendar_create_event`; BM25 scores nothing and
+  the substring fallback finds nothing either.
+
+The optional embedding reranker fixes both. It is **default OFF**.
+When enabled, `tool_search` embeds the query and every deferred tool
+through an OpenAI-compatible `/v1/embeddings` endpoint and reorders the
+results by cosine similarity. Tool vectors are computed once per catalog
+(keyed by content hash) and cached in memory, so after the first search
+each query costs one small embed call plus a dot product per tool
+(~30 ms for 2K tools in pure Python; no numpy).
+
+### Local setup with Ollama
+
+No API key, nothing leaves the machine:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+```yaml
+tools:
+  tool_search:
+    reranker:
+      enabled: true
+      endpoint: http://localhost:11434/v1/embeddings
+      model: nomic-embed-text
+      mode: rerank          # or rrf
+```
+
+Any OpenAI-compatible embeddings endpoint works (OpenAI, vLLM,
+llama.cpp server, LM Studio, ...). If the endpoint needs a bearer
+token, set `HERMES_EMBED_API_KEY` in `.env`; it is never read from
+`config.yaml`.
+
+### Modes
+
+| Mode | Behavior | When to pick it |
+| --- | --- | --- |
+| `rerank` (default) | Sort the whole catalog by embedding cosine similarity; BM25 is bypassed except for exact-name pins. | Intent-style queries, weak/local models that do not guess endpoint tokens. |
+| `rrf` | Reciprocal Rank Fusion: `score = Σ 1/(rrf_k + rank)` over the BM25 and embedding rankings. | Mixed traffic: keeps BM25's precision on exact token matches while pulling in semantic hits. |
+
+Exact tool-name queries (`"get_zones"`) are pinned first in both modes —
+an exact name is the model repeating something it already saw and must
+always resolve.
+
+### Measured on a real catalog
+
+Replay of the queries an agent actually issued in one session
+(Cloudflare MCP server, 1,938 tools, task "create a snake game and
+publish it on Cloudflare Pages"; `nomic-embed-text` via Ollama on a
+laptop GPU). "Hit" = the tool the agent needed appears in the top-5:
+
+| Ranker | Hits / 12 queries | Per-query latency (warm cache) |
+| --- | --- | --- |
+| BM25 (default) | 4 | ~5 ms |
+| `rerank`, nomic-embed-text | 8 | ~55 ms |
+| `rrf` k=10, nomic-embed-text | 9 | ~55 ms |
+
+One-time catalog embed for the 1,938 tools: ~9 s. Queries BM25 missed
+and the reranker recovered include `"list my accounts"` →
+`get_accounts`, `"zones"` → `get_zones`, `"deploy to pages"` →
+`post_accounts_pages_projects_deployments`. Neither ranker recovers
+`"cloudflare authentication whoami"` → `get_user`; that is a
+vocabulary gap in the tool description, not a ranking problem.
+
+### Configuration
+
+```yaml
+tools:
+  tool_search:
+    reranker:
+      enabled: false                                  # default
+      endpoint: http://localhost:11434/v1/embeddings  # required when enabled
+      model: nomic-embed-text
+      mode: rerank            # rerank | rrf
+      rrf_k: 10               # RRF smoothing constant (mode: rrf)
+      query_prefix: "search_query: "     # nomic task prefixes
+      doc_prefix: "search_document: "
+      timeout: 5.0            # seconds per embed request
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `reranker.enabled` | `false` | Turn the reranker on. Also requires `endpoint`. |
+| `reranker.endpoint` | `""` | OpenAI-compatible `/v1/embeddings` URL. |
+| `reranker.model` | `nomic-embed-text` | Model name sent in the request body. |
+| `reranker.mode` | `rerank` | `rerank` (cosine order) or `rrf` (fuse BM25 + embedding ranks). |
+| `reranker.rrf_k` | `10` | RRF smoothing constant. Lower boosts top-ranked items more. |
+| `reranker.query_prefix` | `"search_query: "` | Prepended to the query before embedding. |
+| `reranker.doc_prefix` | `"search_document: "` | Prepended to each tool's text before embedding. |
+| `reranker.timeout` | `5.0` | Seconds per embeddings request. On expiry the search falls back to BM25. |
+
+:::caution Task prefixes are model-specific
+`nomic-embed-text` is trained with `search_query:` / `search_document:`
+prefixes and loses a large share of its retrieval quality without them.
+Models that do not use task prefixes (`text-embedding-3-*`,
+`all-MiniLM-*`, `bge-*`) should set **both** prefixes to `""`. The
+mismatch is silent — vectors still come back well-formed, scores are just
+worse — so check your model's documentation.
+:::
+
+### Failure behavior
+
+Any endpoint failure — connection refused, timeout, non-JSON body,
+missing vectors, a dimension mismatch after a model swap — is logged at
+`DEBUG` and the query returns the plain BM25 result. Tool discovery is
+never blocked by the reranker. Partial progress is kept: a large catalog
+is embedded in batches, and batches that succeeded before a timeout stay
+cached, so the next query only embeds the remainder.
+
+The reranker runs entirely inside the `tool_search` call. It adds no
+tool, changes no schema, and touches nothing in the prompt prefix, so
+prompt caching is unaffected. Each distinct catalog scope (a subagent
+with a narrower toolset, a second gateway session) gets its own cached
+reranker; the scope cache is bounded (8 entries, FIFO).
+
 ## When NOT to use it
 
 Tool Search trades a fixed per-turn token cost (the three bridge tool
@@ -182,7 +310,10 @@ to any progressive-disclosure design, not specific to this implementation:
   morphological variants match ("issues" finds `create_issue`). Falls
   back to a literal substring match on the tool name when no query
   token matches any document (e.g. searching `"hub"` where the token is
-  `github`).
+  `github`). With the optional [embedding reranker](#embedding-reranker)
+  enabled, the BM25 candidates are reordered by embedding similarity
+  (or rank-fused with it); on any endpoint failure the BM25 order is
+  returned unchanged.
 - **Parallel execution unwraps the bridge.** The batch planner decides
   concurrency on the *underlying* tool of a `tool_call`, not on the
   literal bridge name — so an MCP server opted in via

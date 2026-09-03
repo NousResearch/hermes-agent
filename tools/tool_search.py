@@ -38,17 +38,31 @@ for the full rationale):
 * Display and trajectory unwrap is implemented here so the user (CLI activity
   feed, gateway, saved trajectories) always sees the underlying tool, not
   the bridge.
+
+Optional enhancement — **embedding reranker** (``tools.tool_search.reranker``,
+default OFF): reorders BM25 candidates by semantic similarity using an
+OpenAI-compatible ``/v1/embeddings`` endpoint (a local Ollama
+``nomic-embed-text`` works out of the box). Two modes: ``rerank`` (pure
+cosine over the whole catalog) and ``rrf`` (Reciprocal Rank Fusion of the
+BM25 and embedding rankings). When disabled, or on ANY endpoint failure, the
+search path is byte-identical to plain BM25.
 """
 
 from __future__ import annotations
 
+import array
+import collections
 import copy
 import functools
+import hashlib
 import json
 import logging
 import math
+import operator
+import os
 import re
 import threading
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
@@ -57,6 +71,10 @@ import snowballstemmer
 from tools.registry import tool_error
 
 logger = logging.getLogger("tools.tool_search")
+
+# Guards the scope-keyed reranker cache and each reranker's embedding cache
+# against torn writes when bridge dispatch runs on parallel tool-call threads.
+_RERANKER_LOCK = threading.Lock()
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
 
@@ -90,6 +108,79 @@ _MAX_DESCRIBE_NAMES_PER_CALL = 10
 
 
 @dataclass(frozen=True)
+class RerankerConfig:
+    """Configuration for the optional embedding reranker.
+
+    Default OFF. When enabled, ``endpoint`` must point at an OpenAI-compatible
+    ``/v1/embeddings`` URL (Ollama serves one at
+    ``http://localhost:11434/v1/embeddings``).
+
+    ``query_prefix`` / ``doc_prefix`` default to the nomic task prefixes
+    (``search_query: `` / ``search_document: ``). nomic-embed models are
+    trained with them and lose a large fraction of their retrieval quality
+    without them; models that do not use task prefixes (``text-embedding-3-*``,
+    ``all-MiniLM-*``, ...) should set both to ``""``.
+
+    ``api_key`` is read from the ``HERMES_EMBED_API_KEY`` environment variable
+    (``.env``) — it is deliberately NOT a ``config.yaml`` key, per the repo's
+    secrets-in-.env convention — and is excluded from ``repr`` so a logged
+    config cannot leak it.
+    """
+
+    enabled: bool = False
+    endpoint: str = ""           # OpenAI-compatible /v1/embeddings URL
+    model: str = "nomic-embed-text"
+    mode: str = "rerank"         # "rerank" (pure cosine) | "rrf" (fusion with BM25)
+    rrf_k: int = 10              # RRF smoothing constant (only used in mode=rrf)
+    query_prefix: str = "search_query: "
+    doc_prefix: str = "search_document: "
+    timeout: float = 5.0         # HTTP timeout in seconds; on expiry -> BM25
+    api_key: str = field(default="", repr=False)
+
+    @classmethod
+    def from_raw(cls, raw: Any) -> "RerankerConfig":
+        """Parse ``tools.tool_search.reranker``.
+
+        Malformed values fall back to safe defaults rather than raising, so a
+        typo in user config never breaks tool discovery. A non-dict value
+        (missing key, legacy bool shapes) yields the disabled default.
+        """
+        api_key = os.environ.get("HERMES_EMBED_API_KEY", "").strip()
+        if not isinstance(raw, dict):
+            return cls(api_key=api_key)
+
+        enabled_raw = raw.get("enabled", False)
+        if isinstance(enabled_raw, str):
+            enabled = enabled_raw.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            enabled = bool(enabled_raw)
+        endpoint = str(raw.get("endpoint") or "").strip()
+        model = str(raw.get("model") or "nomic-embed-text").strip()
+        mode_raw = str(raw.get("mode") or "rerank").strip().lower()
+        mode = mode_raw if mode_raw in ("rerank", "rrf") else "rerank"
+        rrf_k = max(1, _safe_int(raw.get("rrf_k"), 10))
+        query_prefix = raw.get("query_prefix", "search_query: ")
+        doc_prefix = raw.get("doc_prefix", "search_document: ")
+        timeout = max(0.1, min(120.0, _safe_float(raw.get("timeout"), 5.0)))
+        return cls(
+            enabled=enabled,
+            endpoint=endpoint,
+            model=model,
+            mode=mode,
+            rrf_k=rrf_k,
+            query_prefix="" if query_prefix is None else str(query_prefix),
+            doc_prefix="" if doc_prefix is None else str(doc_prefix),
+            timeout=timeout,
+            api_key=api_key,
+        )
+
+    @property
+    def active(self) -> bool:
+        """True when the reranker is both enabled and has an endpoint."""
+        return bool(self.enabled and self.endpoint)
+
+
+@dataclass(frozen=True)
 class ToolSearchConfig:
     """Resolved, validated tool-search configuration for a single assembly."""
 
@@ -117,6 +208,8 @@ class ToolSearchConfig:
     # default (_DEFAULT_DEFERRED_TOOLS); an explicit list from config
     # replaces the default wholesale ([] = defer no core tools — legacy).
     defer_tools: Optional[frozenset] = None
+    # Optional embedding reranker over BM25 candidates. Default OFF.
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
 
     @property
     def effective_defer_tools(self) -> frozenset:
@@ -186,6 +279,7 @@ class ToolSearchConfig:
             listing=listing,
             listing_max_tokens=listing_max_tokens,
             defer_tools=defer_tools,
+            reranker=RerankerConfig.from_raw(raw.get("reranker")),
         )
 
 
@@ -451,6 +545,9 @@ class CatalogEntry:
 
     # Pre-tokenized fields for BM25.
     _tokens: List[str] = field(default_factory=list)
+    # Text embedded by the optional reranker (name + description; no
+    # parameter noise). Built eagerly — it is a cheap string concat.
+    _embed_text: str = ""
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
@@ -518,6 +615,27 @@ def _entry_search_text(td: Dict[str, Any], source_label: str = "") -> str:
     return f"{name_words} {extra} {desc} {param_names}"
 
 
+def _entry_embed_text(td: Dict[str, Any], source_label: str = "") -> str:
+    """Build the text the optional reranker embeds for one tool.
+
+    Deliberately concise — ``[source] name: description`` — with the
+    ``mcp__`` prefix stripped and the name's separators broken into words so
+    a subword-tokenized embedding model sees ``get accounts`` rather than one
+    opaque identifier. Parameter names are excluded: they dilute the
+    semantic signal without improving recall. The description is clipped so
+    a chatty MCP server cannot push a single document past the embedding
+    model's context window.
+    """
+    fn = td.get("function") or {}
+    name = fn.get("name", "")
+    if name.startswith("mcp__"):
+        name = name[len("mcp__"):]
+    desc = " ".join((fn.get("description", "") or "").split())[:1000]
+    name_words = name.replace("_", " ").replace(".", " ").replace("-", " ").replace(":", " ")
+    prefix = f"{source_label} " if source_label else ""
+    return f"{prefix}{name_words}: {desc}" if desc else f"{prefix}{name_words}"
+
+
 def _classify_source(name: str) -> Tuple[str, str]:
     """Return (source_kind, source_name) for a registered tool name."""
     try:
@@ -557,6 +675,7 @@ def build_catalog(tool_defs: List[Dict[str, Any]]) -> List[CatalogEntry]:
             source=source,
             source_name=source_name,
             _tokens=_tokenize(_entry_search_text(td, source_label)),
+            _embed_text=_entry_embed_text(td, source_label),
         )
         catalog.append(entry)
     return catalog
@@ -613,6 +732,7 @@ def search_catalog(
     limit: int = 5,
     *,
     corpus_stats: Optional[_CorpusStats] = None,
+    reranker: Optional["EmbeddingReranker"] = None,
 ) -> List[CatalogEntry]:
     """Return the top-``limit`` catalog entries for ``query`` by BM25.
 
@@ -623,6 +743,14 @@ def search_catalog(
     ``log(1 + (N - df + 0.5) / (df + 0.5))``, is strictly positive even
     when a term appears in every document, so the fallback only runs when
     no query token appears in any document.
+
+    When a ``reranker`` is supplied (see :class:`EmbeddingReranker`), the
+    BM25 scoring is handed to it and the returned order reflects embedding
+    similarity (``mode=rerank``) or a BM25/embedding rank fusion
+    (``mode=rrf``). Exact-name matches stay pinned first either way. Any
+    reranker failure is logged at debug level and this function returns the
+    plain BM25 result — so with ``reranker=None`` (the default) or a broken
+    endpoint the behavior is identical to the BM25-only path.
     """
     if not catalog or limit <= 0:
         return []
@@ -645,6 +773,12 @@ def search_catalog(
         if s > 0:
             scored.append((s, entry))
 
+    if reranker is not None:
+        try:
+            return reranker.rerank(query, catalog, scored, limit)
+        except Exception as exc:
+            logger.debug("tool_search reranker failed, falling back to BM25: %s", exc)
+
     if not scored:
         # Substring fallback against the original tool name.
         ql = query.lower()
@@ -654,6 +788,228 @@ def search_catalog(
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
+
+
+# ---------------------------------------------------------------------------
+# Optional embedding reranker
+# ---------------------------------------------------------------------------
+#
+# BM25 over tool names rewards token co-occurrence in long names: on a flat
+# REST-style catalog (Cloudflare's 1,938 tools) the query "list accounts"
+# ranks get_accounts_rules_lists_by_list_id above get_accounts, and an
+# intent phrase like "remind me tonight" cannot reach create_calendar_event
+# at all. The reranker embeds the query and every catalog entry with an
+# OpenAI-compatible /v1/embeddings endpoint and reorders by cosine
+# similarity (mode=rerank) or fuses the BM25 and embedding rankings with
+# Reciprocal Rank Fusion (mode=rrf).
+#
+# The full catalog is scored, not a BM25 shortlist: tool embeddings are
+# computed once per scope and cached by content hash, so per-query cost is
+# one small embed call plus a dot product per tool (~30 ms for ~2K tools in
+# pure Python). Restricting to a BM25 top-N would silently discard exactly
+# the cases the reranker exists for — targets that BM25 ranks far down.
+
+
+# Documents per /v1/embeddings request. Bounded so one request stays well
+# inside the configured timeout and the cache fills progressively: if a
+# large catalog's warm-up is cut short, the batches already embedded are
+# kept and the next query only has to embed the remainder.
+_EMBED_BATCH_SIZE = 128
+
+
+def _dot(a: "array.array", b: "array.array") -> float:
+    """Dot product of two equal-length vectors (pure Python, no numpy)."""
+    return sum(map(operator.mul, a, b))
+
+
+def _unit(vec: List[float]) -> "array.array":
+    """Return ``vec`` L2-normalized as a compact float32 array.
+
+    Normalizing once at cache time turns every later cosine into a plain dot
+    product. A zero vector stays zero (cosine 0 against everything).
+    """
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm == 0.0:
+        return array.array("f", vec)
+    return array.array("f", [x / norm for x in vec])
+
+
+def _rrf_fuse(
+    bm25_ranked: List[Tuple[float, CatalogEntry]],
+    embed_ranked: List[Tuple[float, CatalogEntry]],
+    k: int,
+    top_n: int,
+) -> List[CatalogEntry]:
+    """Reciprocal Rank Fusion of the BM25 and embedding rankings.
+
+    ``score(doc) = sum over lists of 1 / (k + rank)``; a document absent
+    from one list simply gets no contribution from it. Lower ``k`` boosts
+    top-ranked items more aggressively, which suits tool selection where the
+    right tool usually has strong lexical OR semantic signal (k=10 beat the
+    textbook k=60 in the original benchmark, PR #35457).
+    """
+    scores: Dict[str, float] = {}
+    by_name: Dict[str, CatalogEntry] = {}
+    for rank, (_, entry) in enumerate(bm25_ranked, start=1):
+        scores[entry.name] = scores.get(entry.name, 0.0) + 1.0 / (k + rank)
+        by_name[entry.name] = entry
+    for rank, (_, entry) in enumerate(embed_ranked, start=1):
+        scores[entry.name] = scores.get(entry.name, 0.0) + 1.0 / (k + rank)
+        by_name[entry.name] = entry
+    fused = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    return [by_name[name] for name, _ in fused[:top_n]]
+
+
+class EmbeddingReranker:
+    """Reorders BM25 candidates by embedding similarity.
+
+    One instance serves one catalog scope (see :func:`_get_reranker`). Tool
+    vectors are cached by ``md5(model + text)`` so a catalog is embedded once
+    per process and every later query costs a single query-embed call.
+
+    Any failure (endpoint down, timeout, malformed response, dimension
+    mismatch) raises; :func:`search_catalog` catches it and returns the
+    plain BM25 result, so a misconfigured reranker can never block tool
+    discovery.
+    """
+
+    def __init__(self, cfg: RerankerConfig) -> None:
+        self._cfg = cfg
+        # md5(model + text) -> unit-normalized float32 vector
+        self._cache: Dict[str, "array.array"] = {}
+
+    def _embed(self, texts: List[str]) -> List[List[float]]:
+        """POST one batch to the OpenAI-compatible embeddings endpoint."""
+        cfg = self._cfg
+        payload = json.dumps({"model": cfg.model, "input": texts}).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        req = urllib.request.Request(cfg.endpoint, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+        items = sorted(data["data"], key=lambda item: item["index"])
+        return [item["embedding"] for item in items]
+
+    def _embed_with_cache(self, texts: List[str]) -> List["array.array"]:
+        """Return unit vectors for ``texts``, embedding only the uncached ones.
+
+        Misses are fetched in ``_EMBED_BATCH_SIZE`` chunks and written to the
+        cache after each chunk, so a timeout part-way through a large
+        warm-up keeps the progress made. The HTTP call runs outside the lock;
+        two threads may occasionally embed the same text concurrently, which
+        is harmless (same text -> same vector, last write wins).
+        """
+        cfg = self._cfg
+        keys = [hashlib.md5((cfg.model + t).encode("utf-8"), usedforsecurity=False).hexdigest()
+                for t in texts]
+        missing = [i for i, k in enumerate(keys) if k not in self._cache]
+        for start in range(0, len(missing), _EMBED_BATCH_SIZE):
+            chunk = missing[start:start + _EMBED_BATCH_SIZE]
+            with _RERANKER_LOCK:
+                chunk = [i for i in chunk if keys[i] not in self._cache]
+            if not chunk:
+                continue
+            vectors = self._embed([texts[i] for i in chunk])
+            if len(vectors) != len(chunk):
+                raise ValueError(
+                    f"embedding endpoint returned {len(vectors)} vectors "
+                    f"for {len(chunk)} texts"
+                )
+            fetched = {keys[i]: _unit(vec) for i, vec in zip(chunk, vectors)}
+            with _RERANKER_LOCK:
+                self._cache.update(fetched)
+        return [self._cache[k] for k in keys]
+
+    def rerank(
+        self,
+        query: str,
+        catalog: List[CatalogEntry],
+        bm25_scored: List[Tuple[float, CatalogEntry]],
+        limit: int,
+    ) -> List[CatalogEntry]:
+        """Return the top-``limit`` entries for ``query``.
+
+        ``bm25_scored`` is the unsorted ``(score, entry)`` list produced by
+        :func:`search_catalog` (positive BM25 scores plus ``inf`` for exact
+        name matches). Exact-name matches are pinned to the front of the
+        result regardless of mode — an exact name is the model repeating a
+        name it already saw, and must always resolve.
+        """
+        cfg = self._cfg
+        exact = [e for s, e in bm25_scored if s == float("inf")]
+        exact_names = {e.name for e in exact}
+        candidates = [e for e in catalog if e.name not in exact_names]
+        if not candidates:
+            return exact[:limit]
+
+        doc_vecs = self._embed_with_cache([f"{cfg.doc_prefix}{e._embed_text}" for e in candidates])
+        (q_vec,) = self._embed_with_cache([f"{cfg.query_prefix}{query}"])
+
+        q_dim = len(q_vec)
+        if q_dim == 0:
+            raise ValueError("embedding endpoint returned an empty query vector")
+        for entry, vec in zip(candidates, doc_vecs):
+            if len(vec) != q_dim:
+                raise ValueError(
+                    f"embedding dimension mismatch: query dim={q_dim}, "
+                    f"tool '{entry.name}' dim={len(vec)} (model changed mid-session?)"
+                )
+
+        embed_ranked = [(_dot(q_vec, vec), e) for e, vec in zip(candidates, doc_vecs)]
+        embed_ranked.sort(key=lambda x: x[0], reverse=True)
+
+        if cfg.mode == "rrf":
+            bm25_ranked = sorted(
+                ((s, e) for s, e in bm25_scored if e.name not in exact_names),
+                key=lambda x: x[0], reverse=True,
+            )
+            fused = _rrf_fuse(bm25_ranked, embed_ranked, k=cfg.rrf_k, top_n=limit)
+            return (exact + fused)[:limit]
+
+        return (exact + [e for _, e in embed_ranked])[:limit]
+
+
+# Scope-keyed, bounded reranker cache. Keyed on the behavior-affecting
+# config fields plus the catalog's tool names, so (a) concurrent sessions
+# with different toolsets (a main agent and its subagents, two gateway
+# chats) each keep their own embedded catalog instead of evicting each
+# other, and (b) a config hot-reload that changes model/mode/prefixes never
+# serves stale vectors. FIFO eviction keeps peak memory bounded; a typical
+# process has 2-4 live scopes.
+_RERANKER_CACHE_MAX = 8
+_reranker_cache: "collections.OrderedDict[str, EmbeddingReranker]" = collections.OrderedDict()
+
+
+def _get_reranker(cfg: RerankerConfig, catalog: List[CatalogEntry]) -> Optional[EmbeddingReranker]:
+    """Return the reranker for this config + catalog scope, building it if needed.
+
+    Returns ``None`` when the reranker is disabled or has no endpoint, so the
+    caller can pass the result straight to :func:`search_catalog`.
+    """
+    if not cfg.active:
+        return None
+    # NUL separator: tool names cannot contain it, so ["a,b"] and ["a","b"]
+    # cannot collide the way a comma-joined key would.
+    key_material = "\x00".join([
+        cfg.endpoint, cfg.model, cfg.mode, str(cfg.rrf_k),
+        cfg.query_prefix, cfg.doc_prefix,
+        *(e.name for e in catalog),
+    ])
+    scope_key = hashlib.md5(key_material.encode("utf-8"), usedforsecurity=False).hexdigest()
+
+    # dict.get() is atomic under the GIL; `in` followed by `[]` is not (a
+    # concurrent popitem() between them raises KeyError).
+    cached = _reranker_cache.get(scope_key)
+    if cached is not None:
+        return cached
+    with _RERANKER_LOCK:
+        cached = _reranker_cache.get(scope_key)
+        if cached is None:
+            while len(_reranker_cache) >= _RERANKER_CACHE_MAX:
+                _reranker_cache.popitem(last=False)
+            cached = _reranker_cache[scope_key] = EmbeddingReranker(cfg)
+        return cached
 
 
 # ---------------------------------------------------------------------------
@@ -1145,9 +1501,14 @@ def dispatch_tool_search(args: Dict[str, Any],
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
     corpus_stats = _corpus_stats(catalog)
+    # None unless tools.tool_search.reranker is enabled with an endpoint;
+    # search_catalog then behaves exactly as before.
+    reranker = _get_reranker(config.reranker, catalog) if catalog else None
     available_sources = _available_source_summary(catalog) if catalog else []
     for query in queries:
-        hits = search_catalog(catalog, query, limit=limit, corpus_stats=corpus_stats)
+        hits = search_catalog(
+            catalog, query, limit=limit, corpus_stats=corpus_stats, reranker=reranker,
+        )
         for h in hits:
             if h.name not in tools_map:
                 tools_map[h.name] = _shared_tool_record(h)

@@ -777,6 +777,29 @@ def _credits_state_from_account(info) -> Optional[CreditsState]:
         return None
 
 
+# Process-lifetime memory of the usage band last SHOWN for a given
+# agent.session_id, so a desktop reap/resume rebuild doesn't re-announce a
+# band the user already saw. Desktop creates a brand-new AIAgent (and thus a
+# brand-new, empty _credits_latch — see agent_init.new_credits_latch()) on
+# every idle-reap/resume cycle, but agent.session_id is stable across those
+# rebuilds. Deliberately NOT persisted anywhere durable: a genuinely new
+# process (app restart, gateway restart) is a genuinely fresh "session open"
+# observation, and the cold-start seed SHOULD warn immediately in that case.
+# Bounded so a long-running gateway juggling many distinct sessions can't
+# grow this without limit.
+_seen_usage_bands: dict = {}
+_SEEN_USAGE_BANDS_MAX = 500
+
+
+def _remember_shown_band(session_id: str, band) -> None:
+    if not session_id:
+        return
+    _seen_usage_bands.pop(session_id, None)  # refresh insertion order (MRU-last)
+    _seen_usage_bands[session_id] = band
+    if len(_seen_usage_bands) > _SEEN_USAGE_BANDS_MAX:
+        _seen_usage_bands.pop(next(iter(_seen_usage_bands)))
+
+
 def _hydrate_seed_state(agent, state) -> None:
     """Install a seed CreditsState on the agent and fire the notice policy once.
 
@@ -784,16 +807,28 @@ def _hydrate_seed_state(agent, state) -> None:
     gate (the cold-start snapshot IS the first observation, so a session that opens
     already in a band warns immediately — the live header path keeps true crossing
     semantics), then emits. Safe to call from a worker thread: emit already runs
-    off-thread in the TUI build path."""
+    off-thread in the TUI build path.
+
+    Also restores the usage band already shown for agent.session_id (if any) from
+    a prior incarnation of this same logical session, before evaluating — without
+    this, every desktop reap/resume rebuild starts from a blank latch and
+    re-announces the CURRENT band as if it had just been crossed, even though the
+    user saw that exact notice moments ago (#101578)."""
     agent._credits_state = state
     if getattr(agent, "_credits_session_start_micros", None) is None:
         agent._credits_session_start_micros = state.remaining_micros
     _latch = getattr(agent, "_credits_latch", None)
+    _sid = getattr(agent, "session_id", None)
     if isinstance(_latch, dict) and state.used_fraction is not None:
         # Prime ONLY seen_below_90 (open-high band warnings are wanted at open).
         # Never prime seen_grant_unspent here: a seed observing grant-spent is a
         # steady state, and priming it would revive the every-session nag.
         _latch["seen_below_90"] = True
+        if _sid and _sid in _seen_usage_bands:
+            _prior_band = _seen_usage_bands[_sid]
+            _latch["usage_band"] = _prior_band
+            if _prior_band is not None:
+                _latch["active"].add(CREDITS_USAGE_KEY)
     emit = getattr(agent, "_emit_credits_notices", None)
     if callable(emit):
         emit()

@@ -4791,6 +4791,14 @@ class AIAgent:
                 self._emit_notice_clear(key)
             for notice in to_show:      # … then shows (depleted lands last in a latest-wins slot)
                 self._emit_notice(notice)
+            # Remember the band just shown for this session, so a desktop
+            # reap/resume rebuild (a fresh AIAgent + a fresh, empty
+            # _credits_latch — see agent_init.new_credits_latch()) restores it
+            # instead of re-announcing the current band as a brand-new
+            # crossing (#101578). Covers both this warm path and the
+            # cold-start seed, which also routes through this method.
+            from agent.credits_tracker import _remember_shown_band
+            _remember_shown_band(getattr(self, "session_id", None), latch.get("usage_band"))
         except Exception:
             logger.warning("credits notice evaluation/emit failed", exc_info=True)
 

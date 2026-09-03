@@ -111,8 +111,8 @@ def _coerce_arguments(arguments: Any) -> str:
     return arguments.strip() or "{}"
 
 
-# Category Cf as a character class.  The obvious spelling of the guard below \u2014
-# ``any(unicodedata.category(char) == "Cf" for char in text)`` \u2014 is a
+# Category Cf as a character class.  The obvious spelling of the guard below —
+# ``any(unicodedata.category(char) == "Cf" for char in text)`` — is a
 # Python-level loop with one C call per character, and preflight runs it over
 # every string in the request.  On a long history (hundreds of KB per call,
 # dozens of calls per turn) that single line dominates preflight cost.  Cf is
@@ -121,16 +121,35 @@ def _coerce_arguments(arguments: Any) -> str:
 #
 # Hardcoded rather than derived at import: building it from ``unicodedata``
 # costs ~80ms of startup per process, and this module is imported by every
-# short-lived agent subprocess.  ``test_cf_class_matches_unicodedata``
-# re-derives the set and fails if a future Unicode revision adds a codepoint,
-# so drift is caught in CI rather than silently narrowing the guard.
-_FORMAT_CONTROL_RE = re.compile(
-    "[\U000000ad\U00000600-\U00000605\U0000061c\U000006dd\U0000070f"
+# short-lived agent subprocess. CPython 3.11 uses Unicode 14 while 3.12/3.13
+# use Unicode 15.x, where the Egyptian Hieroglyph format-control range gained
+# seven codepoints. Keep one pre-generated table per supported Unicode version
+# so the optimization remains byte-for-byte equivalent on every supported
+# Python. ``test_cf_class_matches_unicodedata`` reports exact missing/extra
+# codepoints if a future Unicode revision drifts from these tables.
+_FORMAT_CONTROL_UNICODE_VERSION = unicodedata.unidata_version
+_FORMAT_CONTROL_COMMON_PREFIX = (
+    "\U000000ad\U00000600-\U00000605\U0000061c\U000006dd\U0000070f"
     "\U00000890-\U00000891\U000008e2\U0000180e\U0000200b-\U0000200f"
     "\U0000202a-\U0000202e\U00002060-\U00002064\U00002066-\U0000206f"
     "\U0000feff\U0000fff9-\U0000fffb\U000110bd\U000110cd"
-    "\U00013430-\U00013438\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
-    "\U000e0001\U000e0020-\U000e007f]"
+)
+_FORMAT_CONTROL_COMMON_SUFFIX = (
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    "\U000e0001\U000e0020-\U000e007f"
+)
+_FORMAT_CONTROL_PATTERNS = {
+    "14.0.0": f"[{_FORMAT_CONTROL_COMMON_PREFIX}\U00013430-\U00013438{_FORMAT_CONTROL_COMMON_SUFFIX}]",
+    "15.0.0": f"[{_FORMAT_CONTROL_COMMON_PREFIX}\U00013430-\U0001343f{_FORMAT_CONTROL_COMMON_SUFFIX}]",
+    "15.1.0": f"[{_FORMAT_CONTROL_COMMON_PREFIX}\U00013430-\U0001343f{_FORMAT_CONTROL_COMMON_SUFFIX}]",
+}
+# Unknown future runtimes use the latest known superset; the drift test then
+# fails with an actionable missing/extra list instead of an opaque mismatch.
+_FORMAT_CONTROL_RE = re.compile(
+    _FORMAT_CONTROL_PATTERNS.get(
+        _FORMAT_CONTROL_UNICODE_VERSION,
+        _FORMAT_CONTROL_PATTERNS["15.1.0"],
+    )
 )
 
 

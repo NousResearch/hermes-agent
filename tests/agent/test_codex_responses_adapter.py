@@ -6,6 +6,8 @@ import pytest
 
 from agent.codex_responses_adapter import (
     _FORMAT_CONTROL_RE,
+    _FORMAT_CONTROL_UNICODE_VERSION,
+    _HARMONY_CONTROL_TOKEN_RE,
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _sanitize_replayed_fn_name,
@@ -75,6 +77,40 @@ def _harmony_token(name: str) -> str:
     return f"<\x7c{name}\x7c>"
 
 
+def _reference_neutralize_harmony_tokens(text: str) -> str:
+    """Pre-#98340 implementation, retained for differential regression tests."""
+    if not text or "<" not in text or "|" not in text:
+        return text
+
+    replacement = r"<｜\1｜>"
+    if not any(unicodedata.category(char) == "Cf" for char in text):
+        return _HARMONY_CONTROL_TOKEN_RE.sub(replacement, text)
+
+    visible_chars = []
+    original_positions = []
+    for index, char in enumerate(text):
+        if unicodedata.category(char) == "Cf":
+            continue
+        visible_chars.append(char)
+        original_positions.append(index)
+
+    visible_text = "".join(visible_chars)
+    matches = list(_HARMONY_CONTROL_TOKEN_RE.finditer(visible_text))
+    if not matches:
+        return text
+
+    result = []
+    original_cursor = 0
+    for match in matches:
+        original_start = original_positions[match.start()]
+        original_end = original_positions[match.end() - 1] + 1
+        result.append(text[original_cursor:original_start])
+        result.append(f"<｜{match.group(1)}｜>")
+        original_cursor = original_end
+    result.append(text[original_cursor:])
+    return "".join(result)
+
+
 def test_codex_preflight_gate_off_preserves_harmony_tokens_byte_for_byte():
     raw = [{
         "type": "function_call_output",
@@ -125,6 +161,113 @@ def test_harmony_neutralizer_handles_format_controls_anywhere_in_token():
         assert _neutralize_harmony_tokens(token) == "<｜start｜>"
 
 
+_REPRESENTATIVE_FORMAT_CONTROLS = (
+    pytest.param("\u200c", id="zwnj"),
+    pytest.param("\u200d", id="zwj"),
+    pytest.param("\u2060", id="word-joiner"),
+    pytest.param("\u200e", id="bidi-mark"),
+    pytest.param("\u00ad", id="soft-hyphen"),
+    pytest.param("\ufeff", id="bom"),
+)
+
+
+def _format_control_matrix_text(control: str, placement: str) -> str:
+    token = _harmony_token("start")
+    return {
+        "outside-token": f"prefix{control} {token} suffix",
+        "inside-delimiter": f"<{control}|start|>",
+        "between-token-chars": f"<|st{control}art|>",
+        "beginning": f"{control}{token}",
+        "end": f"{token}{control}",
+    }[placement]
+
+
+@pytest.mark.parametrize("control", _REPRESENTATIVE_FORMAT_CONTROLS)
+@pytest.mark.parametrize(
+    "placement",
+    ("outside-token", "inside-delimiter", "between-token-chars", "beginning", "end"),
+)
+def test_harmony_neutralizer_matches_previous_implementation(control, placement):
+    text = _format_control_matrix_text(control, placement)
+
+    assert _neutralize_harmony_tokens(text) == _reference_neutralize_harmony_tokens(text)
+
+
+def _run_preflight_text_carrier(carrier: str, text: str) -> str:
+    kwargs = {
+        "model": "gpt-5-codex",
+        "instructions": "plain instructions",
+        "input": [{"role": "user", "content": "plain input"}],
+        "store": False,
+    }
+
+    if carrier == "instructions":
+        kwargs["instructions"] = text
+    elif carrier in ("user-content", "assistant-content"):
+        kwargs["input"] = [{"role": carrier.removesuffix("-content"), "content": text}]
+    elif carrier == "tool-arguments":
+        kwargs["input"] = [{
+            "type": "function_call",
+            "call_id": "call_args",
+            "name": "terminal",
+            "arguments": text,
+        }]
+    elif carrier == "tool-result":
+        kwargs["input"] = [{
+            "type": "function_call_output",
+            "call_id": "call_result",
+            "output": text,
+        }]
+    elif carrier == "tool-schema":
+        kwargs["tools"] = [{
+            "type": "function",
+            "name": "inspect_text",
+            "description": text,
+            "parameters": {"type": "object", "properties": {}},
+        }]
+    else:  # pragma: no cover - parametrization owns this value
+        raise AssertionError(f"unknown carrier: {carrier}")
+
+    normalized = _preflight_codex_api_kwargs(kwargs, sanitize_harmony_tokens=True)
+    if carrier == "instructions":
+        return normalized["instructions"]
+    if carrier in ("user-content", "assistant-content"):
+        return normalized["input"][0]["content"]
+    if carrier == "tool-arguments":
+        return normalized["input"][0]["arguments"]
+    if carrier == "tool-result":
+        return normalized["input"][0]["output"]
+    return normalized["tools"][0]["description"]
+
+
+@pytest.mark.parametrize("control", _REPRESENTATIVE_FORMAT_CONTROLS)
+@pytest.mark.parametrize(
+    "placement",
+    ("outside-token", "inside-delimiter", "between-token-chars", "beginning", "end"),
+)
+@pytest.mark.parametrize(
+    "carrier",
+    ("instructions", "user-content", "assistant-content", "tool-arguments", "tool-result", "tool-schema"),
+)
+def test_preflight_carriers_match_previous_neutralizer(control, placement, carrier):
+    text = _format_control_matrix_text(control, placement)
+
+    assert _run_preflight_text_carrier(carrier, text) == _reference_neutralize_harmony_tokens(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "family 👩‍👩‍👧‍👦 stays intact <not|reserved>",
+        "bidi \u200eleft-to-right \u200fright-to-left <not|reserved>",
+        "identifier kullanıcı\u200cadı remains intact <not|reserved>",
+    ),
+)
+def test_harmony_neutralizer_preserves_non_token_format_controls(text):
+    assert _has_format_control(text) is True
+    assert _neutralize_harmony_tokens(text) == text
+
+
 def test_cf_class_matches_unicodedata():
     """The hardcoded Cf character class must stay equal to the live category.
 
@@ -138,10 +281,15 @@ def test_cf_class_matches_unicodedata():
     matched = {cp for cp in range(sys.maxunicode + 1)
                if _FORMAT_CONTROL_RE.fullmatch(chr(cp))}
 
-    assert matched == derived, (
-        "hardcoded Cf class drifted from unicodedata "
-        f"(unicode {unicodedata.unidata_version}); "
-        f"missing={sorted(derived - matched)[:8]} extra={sorted(matched - derived)[:8]}"
+    missing = derived - matched
+    extra = matched - derived
+    render = lambda points: [f"U+{point:04X}" for point in sorted(points)]
+
+    assert not missing and not extra, (
+        "hardcoded Cf class drifted from unicodedata; "
+        f"generated_unicode={_FORMAT_CONTROL_UNICODE_VERSION} "
+        f"runtime_unicode={unicodedata.unidata_version}; "
+        f"missing={render(missing)} extra={render(extra)}"
     )
 
 

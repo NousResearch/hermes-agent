@@ -39,9 +39,9 @@ Rules:
 MEMORY TO AUDIT:
 {memory}"""
 
-CHUNK_SIZE = 2500
+CHUNK_SIZE = 1800
 CHUNK_OVERLAP = 400
-MAX_RETRIES = 4
+MAX_RETRIES = 6
 RETRY_BASE_DELAY = 20  # seconds — DeepSeek peak-hour latency
 
 

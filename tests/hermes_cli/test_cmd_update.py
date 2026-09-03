@@ -1025,6 +1025,57 @@ class TestCmdUpdateZipBranchRefusal:
         assert "Downloading latest version" not in out
 
 
+class TestFixInstallOwnership:
+    def test_fix_install_ownership_windows_noop(self, tmp_path):
+        from hermes_cli.update_cmd import _fix_install_ownership
+        import os
+
+        if os.name == "nt":
+            called = False
+
+            def fake_walk(*a):
+                nonlocal called
+                called = True
+                return []
+
+            _fix_install_ownership(tmp_path)
+            assert not called
+
+    def test_fix_install_ownership_chowns_root_files(self, monkeypatch, tmp_path):
+        from hermes_cli.update_cmd import _fix_install_ownership
+        import sys
+
+        monkeypatch.setenv("SUDO_UID", "1000")
+        monkeypatch.setenv("SUDO_GID", "1000")
+
+        file_path = tmp_path / "root_owned_file"
+        file_path.touch()
+
+        chowned = []
+
+        def fake_lstat(p):
+            from collections import namedtuple
+            Stat = namedtuple("Stat", ["st_uid", "st_gid"])
+            return Stat(st_uid=0, st_gid=0)
+
+        def fake_lchown(p, uid, gid):
+            chowned.append((p, uid, gid))
+
+        monkeypatch.setattr("os.lstat", fake_lstat, raising=False)
+        monkeypatch.setattr("os.lchown", fake_lchown, raising=False)
+        # Mock os.name to posix only during function call
+        old_name = sys.modules["os"].name
+        try:
+            sys.modules["os"].name = "posix"
+            _fix_install_ownership(tmp_path)
+        finally:
+            sys.modules["os"].name = old_name
+
+        assert len(chowned) > 0
+        assert chowned[0][1] == 1000
+        assert chowned[0][2] == 1000
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

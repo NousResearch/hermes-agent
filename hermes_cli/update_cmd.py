@@ -2186,6 +2186,42 @@ def _verify_and_restore_state_dbs_post_update() -> None:
         logger.debug("Sibling-profile state.db guard sweep failed: %s", exc)
 
 
+def _fix_install_ownership(install_root: Path) -> None:
+    """Fix ownership of install tree if update created root-owned files.
+
+    When `hermes update` runs via sudo or git operations create files as root,
+    subsequent non-root runs fail with permission errors. This function walks
+    the install tree and chowns any root-owned files back to the invoking user.
+
+    Defensive fix for #102193.
+    """
+    import os
+
+    # On Windows this is a no-op.
+    if os.name == "nt":
+        return
+
+    try:
+        real_uid = int(os.getenv("SUDO_UID") or os.getuid())
+        real_gid = int(os.getenv("SUDO_GID") or os.getgid())
+    except Exception:
+        return
+
+    fixed = 0
+    for root, dirs, files in os.walk(install_root):
+        for name in files + dirs:
+            p = os.path.join(root, name)
+            try:
+                st = os.lstat(p)
+                if st.st_uid == 0 and st.st_gid == 0:
+                    os.lchown(p, real_uid, real_gid)
+                    fixed += 1
+            except Exception:
+                pass
+    if fixed:
+        logger.info("Post-update: fixed ownership of %d root-owned file(s)/dir(s)", fixed)
+
+
 def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -9608,6 +9644,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _verify_and_restore_state_dbs_post_update()
         except Exception as exc:
             logger.debug("Post-update state.db integrity check failed: %s", exc)
+
+        # Fix file ownership if update created root-owned files (#102193).
+        # When update runs via sudo or git operations create files as root,
+        # subsequent non-root runs fail. Chown the install tree back to the
+        # invoking user so future updates work without permission errors.
+        try:
+            _fix_install_ownership(_m().PROJECT_ROOT)
+        except Exception as _e:
+            logger.debug("Post-update ownership fix skipped: %s", _e)
 
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at

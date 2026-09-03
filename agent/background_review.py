@@ -927,7 +927,7 @@ def _log_review_completion(usage: dict[str, Any], result: str) -> None:
 # byte-identical prompt/tools bytes.
 _PROVIDER_PIN_ATTRS = (
     "providers_allowed", "providers_ignored", "providers_order", "provider_sort",
-    "provider_require_parameters", "provider_data_collection",
+    "provider_require_parameters", "provider_data_collection", "provider_extra",
 )
 
 

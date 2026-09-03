@@ -9,6 +9,7 @@ from agent.i18n import t
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.session import SessionSource
+from hermes_constants import provider_routing_extra
 
 logger = logging.getLogger("gateway.run")
 
@@ -100,6 +101,7 @@ class GatewayBackgroundMixin:
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    provider_extra=provider_routing_extra(pr),
                     session_id=task_id,
                     platform=platform_key, side_agent=True,
                     **{k: getattr(source, k) for k in (

@@ -680,6 +680,9 @@ def _resolve_child_runtime(
             parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
             pinned=bool(override_provider or override_base_url or model)),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
+        # Passthrough keys are inherited like min_coding_score (OpenRouter-scoped, not a routing filter
+        # to reset under a pinned provider).
+        "provider_extra": dict(getattr(parent_agent, "provider_extra", None) or {}),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},
     }

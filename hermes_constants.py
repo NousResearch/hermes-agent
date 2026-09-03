@@ -1306,6 +1306,41 @@ def resolve_per_model_provider_routing(model: str, models: dict | None) -> dict:
     return {}
 
 
+# provider_routing keys consumed as typed agent attributes (plus the per-model map).
+# Anything else in the config block is passed through verbatim into the OpenRouter
+# provider object (see provider_routing_extra).
+_TYPED_PROVIDER_ROUTING_KEYS = frozenset({
+    "sort", "only", "ignore", "order", "require_parameters", "data_collection", "models",
+})
+
+
+def provider_routing_extra(pr: dict | None) -> dict:
+    """Extract unrecognized ``provider_routing`` keys for OpenRouter passthrough.
+
+    Typed keys (sort/only/ignore/order/require_parameters/data_collection and the
+    per-model ``models`` map) are consumed as agent attributes; anything else is
+    forwarded verbatim into the request's ``provider`` object so current and future
+    OpenRouter routing fields (zdr, quantizations, max_price, allow_fallbacks,
+    enforce_distillable_text, …) work without a Hermes release per new field. Warns
+    on each forwarded key so typos surface immediately.
+    """
+    import logging
+
+    extra: dict = {}
+    for key, val in (pr or {}).items():
+        if key in _TYPED_PROVIDER_ROUTING_KEYS:
+            continue
+        if not isinstance(key, str) or not key:
+            logging.getLogger(__name__).warning("provider_routing: skipping non-string/empty key %r", key)
+            continue
+        logging.getLogger(__name__).warning(
+            "provider_routing: forwarding unrecognized key %r to the provider routing object "
+            "(OpenRouter passthrough)", key,
+        )
+        extra[key] = val
+    return extra
+
+
 def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     """Effective reasoning config for *model*: per-model override, then global ``agent.reasoning_effort``.
 

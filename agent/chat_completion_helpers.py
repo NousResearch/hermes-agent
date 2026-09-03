@@ -478,9 +478,22 @@ def _provider_preferences_for_agent(agent) -> dict[str, Any]:
         from hermes_constants import resolve_per_model_provider_routing
         _pr = load_config_readonly().get("provider_routing")
         per_model = resolve_per_model_provider_routing(agent.model, (_pr or {}).get("models") if isinstance(_pr, dict) else None)
-    merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
+    merged = {**flat, **per_model}
     merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])
     merged["require_parameters"] = True if merged["require_parameters"] else None
+    # Passthrough: unrecognized provider_routing keys from config are merged after the
+    # typed keys, which always win on conflict (DEBUG-logged). Per-model entries
+    # (provider_routing.models.<id>, including their own unrecognized keys) are already
+    # in ``merged`` and outrank the flat passthrough below. Falsy values are dropped by
+    # the final filter, so an unset key is never sent on the wire.
+    for _extra_key, _extra_val in (getattr(agent, "provider_extra", None) or {}).items():
+        if _extra_key in merged:
+            logger.debug(
+                "provider_routing passthrough: typed key %r wins over config passthrough value",
+                _extra_key,
+            )
+            continue
+        merged[_extra_key] = _extra_val
     return {key: value for key, value in merged.items() if value}
 
 

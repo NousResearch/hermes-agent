@@ -17,6 +17,7 @@ import uuid
 
 from gateway.session_busy_controls import authorize
 from persistence.core.errors import AuthorityRefusal
+from hermes_constants import provider_routing_extra
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ def _side_agent(authority, policy, live, task_id, **overrides):
         providers_allowed=pr.get('only'), providers_ignored=pr.get('ignore'), providers_order=pr.get('order'),
         provider_sort=pr.get('sort'), provider_require_parameters=pr.get('require_parameters', False),
         provider_data_collection=pr.get('data_collection'),
+        provider_extra=provider_routing_extra(pr),
         # Its own session in the owning profile's store, like the sidecar's ``bg_*`` rows.
         session_id=task_id, platform=policy.platform, persistence=authority.persistence,
         fallback_model=refresh_fallback() if callable(refresh_fallback) else None,

@@ -22,6 +22,7 @@ from gateway.session_api_turn import api_runtime_locked
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
+from hermes_constants import provider_routing_extra
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner
@@ -176,6 +177,7 @@ class GatewaySessionAgentMixin:
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
             provider_data_collection=pr.get("data_collection"),
+            provider_extra=provider_routing_extra(pr),
             session_id=ctx.session_id, platform=platform_key,
             user_id=src.user_id, user_id_alt=src.user_id_alt, user_name=src.user_name,
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,

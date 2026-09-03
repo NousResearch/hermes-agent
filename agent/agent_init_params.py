@@ -7,7 +7,7 @@ _PASSTHROUGH_PARAMS = (
     "load_soul_identity", "pass_session_id", "log_prefix_chars",
     # OpenRouter provider preferences
     "providers_allowed", "providers_ignored", "providers_order", "provider_sort",
-    "provider_require_parameters", "provider_data_collection", "openrouter_min_coding_score",
+    "provider_require_parameters", "provider_data_collection", "provider_extra", "openrouter_min_coding_score",
     # Toolset filtering
     "enabled_toolsets", "disabled_toolsets",
     # Model response configuration (None = provider/model default)

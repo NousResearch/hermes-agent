@@ -355,7 +355,7 @@ class CLIInitMixin:
         # Per-model override > global reasoning_effort.
         # Reasoning config (OpenRouter reasoning effort level) Per-model override > global reasoning_effort
         # — resolved through the shared chokepoint in hermes_constants (Closes #21256).
-        from hermes_constants import resolve_reasoning_config
+        from hermes_constants import resolve_reasoning_config, provider_routing_extra
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
         self._explicit_reasoning = None
@@ -377,6 +377,9 @@ class CLIInitMixin:
         self._providers_order = pr.get("order")
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
+        # OpenRouter passthrough: unrecognized provider_routing keys are forwarded verbatim into
+        # the provider object; the typed keys above always win on conflict.
+        self._provider_extra = provider_routing_extra(pr)
 
         # OpenRouter Pareto Code router coding-score floor; out-of-range = unset.
         _raw_score = (CLI_CONFIG.get("openrouter", {}) or {}).get("min_coding_score")

@@ -247,6 +247,7 @@ class AIAgent(
         log_prefix_chars: int = 100, log_prefix: str = "",
         providers_allowed: list[str] | None = None, providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
         provider_sort: str | None = None, provider_require_parameters: bool = False, provider_data_collection: str | None = None,
+        provider_extra: dict[str, Any] | None = None,
         openrouter_min_coding_score: Optional[float] = None,
         session_id: str | None = None,
         tool_progress_callback: Callable[..., Any] | None = None, tool_start_callback: Callable[..., Any] | None = None,

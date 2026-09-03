@@ -2049,7 +2049,8 @@ def init_agent(
     log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: list[str] | None = None,
     providers_ignored: list[str] | None = None, providers_order: list[str] | None = None,
     provider_sort: str | None = None, provider_require_parameters: bool = False,
-    provider_data_collection: str | None = None, openrouter_min_coding_score: Optional[float] = None,
+    provider_data_collection: str | None = None, provider_extra: dict[str, Any] | None = None,
+    openrouter_min_coding_score: Optional[float] = None,
     session_id: str | None = None, tool_progress_callback: Callable[..., Any] | None = None,
     tool_start_callback: Callable[..., Any] | None = None, tool_complete_callback: Callable[..., Any] | None = None,
     thinking_callback: Callable[..., Any] | None = None, reasoning_callback: Callable[..., Any] | None = None,
@@ -2091,6 +2092,8 @@ def init_agent(
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])
+    # Defensive copy: request paths read provider_extra per call; callers keep their own dict.
+    agent.provider_extra = dict(agent.provider_extra or {})
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None

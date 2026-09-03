@@ -11,6 +11,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import logging
+from hermes_constants import provider_routing_extra
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ def cold_review_parent(runner, source, session_key, session_id):
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
             provider_sort=pr.get("sort"), provider_require_parameters=pr.get("require_parameters", False),
             provider_data_collection=pr.get("data_collection"),
+            provider_extra=provider_routing_extra(pr),
             session_id=session_id, platform=platform_key, gateway_session_key=session_key,
             persistence=getattr(runner, "persistence", None),
             # The session's backup providers, as its next turn would carry them: the reviewer inherits the chain.

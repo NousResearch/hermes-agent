@@ -387,6 +387,144 @@ class TestAdapterInit:
 
 
 # ---------------------------------------------------------------------------
+# 10. Multiplex secondary-profile scope
+# ---------------------------------------------------------------------------
+#
+# __init__'s allow_all/allowed_users/allowed_groups/allowed_rooms/
+# webhook_host/webhook_port/public_base_url, and _env_enablement's
+# port/host/public_url/home_channel, all previously read raw os.getenv
+# unconditionally. Under multiplex, os.environ holds the DEFAULT profile's
+# YAML-to-env bridge output — a secondary profile with its own (different or
+# absent) LINE config would silently inherit the default profile's
+# allow-all flag, allowlists, or (for _env_enablement) get auto-seeded with
+# the default's home_channel — a cron-delivery target, so a real
+# message-misdelivery risk, not just cosmetic. Mirrors the Buzz/SimpleX fix
+# for #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("LINE_ALLOW_ALL_USERS", "true")
+    monkeypatch.setenv("LINE_ALLOWED_USERS", "Udefault")
+    monkeypatch.setenv("LINE_HOST", "default.example.com")
+    monkeypatch.setenv("LINE_PORT", "9111")
+    monkeypatch.setenv("LINE_PUBLIC_URL", "https://default.example.com")
+    monkeypatch.setenv("LINE_HOME_CHANNEL", "Udefault-home")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "default-token")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "default-secret")
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_extra_wins_over_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config is authoritative, not the
+        default profile's bridged allow-all flag/allowlist/host/port."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "allow_all_users": False,
+                "allowed_users": ["Uprofile"],
+                "host": "profile.example.com",
+                "port": 8000,
+                "public_url": "https://profile.example.com",
+            },
+        )
+        adapter = LineAdapter(cfg)
+        assert adapter.allow_all is False
+        assert adapter.allowed_users == {"Uprofile"}
+        assert adapter.webhook_host == "profile.example.com"
+        assert adapter.webhook_port == 8000
+        assert adapter.public_base_url == "https://profile.example.com"
+
+    def test_secondary_missing_keys_fail_closed(
+        self, multiplex_scope, default_profile_env
+    ):
+        """Keys absent from the profile's config must NOT borrow the default
+        profile's bridged env values — that would silently open the bot to
+        every LINE user via the leaked allow-all flag."""
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter.allow_all is False
+        assert adapter.allowed_users == set()
+        assert adapter.webhook_host is None  # DEFAULT_HOST — dual-stack bind, not the leaked default.example.com
+        assert adapter.public_base_url == ""
+
+    def test_default_profile_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_env
+    ):
+        """Multiplex ON but no scope (the DEFAULT profile constructs
+        unscoped): env is its own bridge output and still wins."""
+        from agent.secret_scope import set_multiplex_active
+        from gateway.config import PlatformConfig
+
+        set_multiplex_active(True)
+        try:
+            adapter = LineAdapter(PlatformConfig(enabled=True, extra={}))
+        finally:
+            set_multiplex_active(False)
+        assert adapter.allow_all is True
+        assert adapter.allowed_users == {"Udefault"}
+        assert adapter.webhook_host == "default.example.com"
+        assert adapter.webhook_port == 9111
+
+    def test_env_enablement_scoped_reads_own_home_channel_not_defaults(
+        self, multiplex_scope
+    ):
+        """A secondary profile's own .env (via the scope) seeds its own
+        home_channel; the default profile's bridged value must not leak in
+        when the scope lacks it (cron misdelivery risk)."""
+        multiplex_scope(
+            {
+                "LINE_CHANNEL_ACCESS_TOKEN": "profile-token",
+                "LINE_CHANNEL_SECRET": "profile-secret",
+                "LINE_HOME_CHANNEL": "Uprofile-home",
+            }
+        )
+        seeded = _env_enablement()
+        assert seeded["home_channel"] == "Uprofile-home"
+
+    def test_env_enablement_scoped_without_own_home_channel_does_not_borrow_default(
+        self, multiplex_scope, default_profile_env
+    ):
+        multiplex_scope(
+            {
+                "LINE_CHANNEL_ACCESS_TOKEN": "profile-token",
+                "LINE_CHANNEL_SECRET": "profile-secret",
+            }
+        )
+        seeded = _env_enablement()
+        assert "home_channel" not in (seeded or {})
+
+
+# ---------------------------------------------------------------------------
 # 9. Inbound message-type classification
 # ---------------------------------------------------------------------------
 

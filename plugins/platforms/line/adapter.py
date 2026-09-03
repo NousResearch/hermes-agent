@@ -679,7 +679,14 @@ def _csv_set(value: str) -> Set[str]:
 
 
 def _truthy_env(name: str, default: bool = False) -> bool:
-    v = os.getenv(name)
+    """Scope-aware boolean env read (see ``_get_scoped_secret``'s docstring).
+
+    Used for ``LINE_ALLOW_ALL_USERS`` — a raw ``os.getenv`` here would let a
+    secondary multiplex profile borrow (or be overridden by) the default
+    profile's bridged value for what is an authorization gate, not just a
+    display setting.
+    """
+    v = _get_scoped_secret(name)
     if v is None:
         return default
     return v.strip().lower() in {"1", "true", "yes", "on"}
@@ -714,12 +721,15 @@ class LineAdapter(BasePlatformAdapter):
         # Webhook server. Host default is ``None`` → dual-stack bind (both
         # IPv4 and IPv6); see DEFAULT_HOST above. ``LINE_HOST``/extra.host pin
         # a specific address when needed; empty string collapses to None.
+        # Scope-aware (see _get_scoped_secret's docstring): a secondary
+        # multiplex profile must not borrow the default profile's bridged
+        # LINE_HOST/LINE_PORT/LINE_PUBLIC_URL/allowlist env values.
         self.webhook_host = (
-            os.getenv("LINE_HOST") or extra.get("host", DEFAULT_HOST) or DEFAULT_HOST
+            _get_scoped_secret("LINE_HOST") or extra.get("host", DEFAULT_HOST) or DEFAULT_HOST
         )
         try:
             self.webhook_port = int(
-                os.getenv("LINE_PORT") or extra.get("port", DEFAULT_WEBHOOK_PORT)
+                _get_scoped_secret("LINE_PORT") or extra.get("port", DEFAULT_WEBHOOK_PORT)
             )
         except (TypeError, ValueError):
             self.webhook_port = DEFAULT_WEBHOOK_PORT
@@ -728,7 +738,7 @@ class LineAdapter(BasePlatformAdapter):
         # Public base URL — required for media sending when bind isn't
         # publicly reachable.
         self.public_base_url = (
-            os.getenv("LINE_PUBLIC_URL")
+            _get_scoped_secret("LINE_PUBLIC_URL")
             or extra.get("public_url", "")
             or ""
         ).rstrip("/")
@@ -738,13 +748,13 @@ class LineAdapter(BasePlatformAdapter):
             "LINE_ALLOW_ALL_USERS", bool(extra.get("allow_all_users", False))
         )
         self.allowed_users = _csv_set(
-            os.getenv("LINE_ALLOWED_USERS", "")
+            _get_scoped_secret("LINE_ALLOWED_USERS", "")
         ) | set(extra.get("allowed_users", []))
         self.allowed_groups = _csv_set(
-            os.getenv("LINE_ALLOWED_GROUPS", "")
+            _get_scoped_secret("LINE_ALLOWED_GROUPS", "")
         ) | set(extra.get("allowed_groups", []))
         self.allowed_rooms = _csv_set(
-            os.getenv("LINE_ALLOWED_ROOMS", "")
+            _get_scoped_secret("LINE_ALLOWED_ROOMS", "")
         ) | set(extra.get("allowed_rooms", []))
 
         # Slow-LLM postback button threshold
@@ -1626,18 +1636,27 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     """
     if not (_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") and _get_scoped_secret("LINE_CHANNEL_SECRET")):
         return None
+    # Scope-aware (see _get_scoped_secret's docstring): this seeds
+    # PlatformConfig.extra directly, so a raw os.getenv here would auto-seed
+    # a secondary multiplex profile with the default profile's bridged
+    # port/host/public_url/home_channel — home_channel is a cron-delivery
+    # target, so this was a real message-misdelivery risk, not just cosmetic.
     seeded: Dict[str, Any] = {}
-    if os.getenv("LINE_PORT"):
+    _port = _get_scoped_secret("LINE_PORT")
+    if _port:
         try:
-            seeded["port"] = int(os.environ["LINE_PORT"])
+            seeded["port"] = int(_port)
         except ValueError:
             pass
-    if os.getenv("LINE_HOST"):
-        seeded["host"] = os.environ["LINE_HOST"]
-    if os.getenv("LINE_PUBLIC_URL"):
-        seeded["public_url"] = os.environ["LINE_PUBLIC_URL"]
-    if os.getenv("LINE_HOME_CHANNEL"):
-        seeded["home_channel"] = os.environ["LINE_HOME_CHANNEL"]
+    _host = _get_scoped_secret("LINE_HOST")
+    if _host:
+        seeded["host"] = _host
+    _public_url = _get_scoped_secret("LINE_PUBLIC_URL")
+    if _public_url:
+        seeded["public_url"] = _public_url
+    _home_channel = _get_scoped_secret("LINE_HOME_CHANNEL")
+    if _home_channel:
+        seeded["home_channel"] = _home_channel
     return seeded or {}
 
 

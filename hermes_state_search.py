@@ -1132,7 +1132,9 @@ class SessionSearchMixin:
         session_id: str,
         limit: int = 20,
         include_inactive: bool = False,
-    ) -> List[Dict[str, Any]]:
+        *,
+        with_revision: bool = False,
+    ):
         """Return the *limit* most-recent user messages, newest first.
 
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
@@ -1161,15 +1163,33 @@ class SessionSearchMixin:
         # excludes handoffs with a DB pick that includes them, soft-deleting
         # the wrong turn.
         fetch_limit = int(limit) * 2 + 5
+        revision = None
         with self._read_ctx() as conn:
-            cursor = conn.execute(
-                "SELECT id, timestamp, content FROM messages "
-                "WHERE session_id = ? AND role = 'user'"
-                f"{active_clause}{display_clause} "
-                "ORDER BY id DESC LIMIT ?",
-                (session_id, fetch_limit),
-            )
-            rows = cursor.fetchall()
+            # ``with_revision`` pairs the picked rows with the revision of the
+            # same durable snapshot: hold one explicit read transaction across
+            # both statements so a concurrent writer cannot slip between them.
+            started_transaction = with_revision and not conn.in_transaction
+            if started_transaction:
+                conn.execute("BEGIN")
+            try:
+                cursor = conn.execute(
+                    "SELECT id, timestamp, content FROM messages "
+                    "WHERE session_id = ? AND role = 'user'"
+                    f"{active_clause}{display_clause} "
+                    "ORDER BY id DESC LIMIT ?",
+                    (session_id, fetch_limit),
+                )
+                rows = cursor.fetchall()
+                if with_revision:
+                    revision = self._active_message_revision_in_current_transaction(
+                        session_id, conn
+                    )
+                if started_transaction:
+                    conn.commit()
+            except BaseException:
+                if started_transaction and conn.in_transaction:
+                    conn.rollback()
+                raise
 
         from agent.context_compressor import ContextCompressor
 
@@ -1206,6 +1226,8 @@ class SessionSearchMixin:
                     "preview": preview,
                 }
             )
+        if with_revision:
+            return result, revision
         return result
 
     @staticmethod

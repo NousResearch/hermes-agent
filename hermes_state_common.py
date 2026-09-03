@@ -502,6 +502,7 @@ CREATE TABLE IF NOT EXISTS messages (
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
+    content_revision INTEGER,
     display_kind TEXT,
     display_metadata TEXT
 );

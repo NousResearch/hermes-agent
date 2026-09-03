@@ -1320,8 +1320,146 @@ class TestSessionMetadata:
         assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 
+def test_load_transcript_with_revision_degrades_without_store(tmp_path):
+    """A missing store must not crash every inbound gateway turn.
+
+    ``([], None)`` hands the fail-closed decision to the agent chokepoint,
+    which re-anchors or returns ``compression_projection_unverifiable``.
+    A store that exists but cannot be read keeps the #100788 contract and
+    raises :class:`TranscriptReadError` in the revision-aware shape too.
+    """
+    from gateway.session import TranscriptReadError
+
+    store = object.__new__(SessionStore)
+    store._db = None
+    assert store.load_transcript("s1", with_revision=True) == ([], None)
+
+    class _BoomDb:
+        def get_compression_tip(self, _session_id):
+            return None
+
+        def get_messages_as_conversation(self, *args, **kwargs):
+            assert kwargs.get("with_revision") is True
+            raise RuntimeError("database disk image is malformed")
+
+    store._db = _BoomDb()
+    with pytest.raises(TranscriptReadError) as exc_info:
+        store.load_transcript("s1", with_revision=True)
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+def test_rewind_session_supports_legacy_db_adapters(tmp_path):
+    """Adapters predating the revision kwargs must still rewind."""
+    import threading
+
+    class LegacyDb:
+        def __init__(self):
+            self.rewound = []
+
+        def list_recent_user_messages(self, session_id, limit=10):
+            return [{"id": 7, "content": "old"}]
+
+        def rewind_to_message(self, session_id, target_id):
+            self.rewound.append((session_id, target_id))
+            return {
+                "target_message": {"id": target_id, "content": "old"},
+                "rewound_count": 2,
+            }
+
+    store = object.__new__(SessionStore)
+    store._db = LegacyDb()
+    store._transcript_retry_lock = threading.Lock()
+    store._dirty_transcripts = {}
+    store._transcript_append_failures = {}
+    store._fts_rebuild_attempted = True
+
+    result = store.rewind_session("s1", 1)
+
+    assert result is not None
+    assert store._db.rewound == [("s1", 7)]
+
+
+def test_rewind_session_rejects_append_after_atomic_target_load(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    store._db.close()
+    db = SessionDB(db_path=tmp_path / "rewind-state.db")
+    store._db = db
+    db.create_session("rewind-race", source="telegram")
+    db.append_message("rewind-race", "user", "target")
+    db.append_message("rewind-race", "assistant", "answer")
+    real_rewind = db.rewind_to_message
+
+    def append_then_rewind(*args, **kwargs):
+        db.append_message("rewind-race", "user", "late")
+        return real_rewind(*args, **kwargs)
+
+    monkeypatch.setattr(db, "rewind_to_message", append_then_rewind)
+
+    assert store.rewind_session("rewind-race", 1) is None
+
+    assert [m["content"] for m in db.get_messages_as_conversation("rewind-race")] == [
+        "target",
+        "answer",
+        "late",
+    ]
+
+
+def test_recent_user_targets_and_revision_do_not_cross_transaction_boundary(
+    tmp_path, monkeypatch
+):
+    db = SessionDB(db_path=tmp_path / "rewind-snapshot.db")
+    session_id = "rewind-snapshot"
+    db.create_session(session_id, source="telegram")
+    db.append_message(session_id, "user", "target")
+    db.append_message(session_id, "assistant", "answer")
+
+    def forbidden_second_boundary(_session_id):
+        raise AssertionError("revision must share the target-list transaction")
+
+    monkeypatch.setattr(db, "get_active_message_revision", forbidden_second_boundary)
+
+    targets, revision = db.list_recent_user_messages(
+        session_id, limit=1, with_revision=True
+    )
+
+    assert [target["preview"] for target in targets] == ["target"]
+    assert revision.active_message_count == 2
+
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
+
+    def test_rewrite_rejects_late_append_after_atomic_load(self, tmp_path):
+        from hermes_state import CompressionTranscriptRevisionError, SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "stale-gateway-rewrite"
+        db.create_session(session_id=session_id, source="telegram")
+        db.append_message(session_id, "user", "snapshot")
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        transcript, revision = store.load_transcript(
+            session_id, with_revision=True
+        )
+        db.append_message(session_id, "assistant", "late append")
+
+        with pytest.raises(CompressionTranscriptRevisionError):
+            store.rewrite_transcript(
+                session_id,
+                transcript,
+                expected_revision=revision,
+            )
+
+        assert [
+            message["content"]
+            for message in db.get_messages_as_conversation(session_id)
+        ] == ["snapshot", "late append"]
 
     def test_reasoning_survives_rewrite(self, tmp_path):
         from hermes_state import SessionDB
@@ -1403,8 +1541,7 @@ class TestGatewaySessionDbRecovery:
 
     def test_transcript_reroute_follows_multi_hop_compression_chain(self, tmp_path):
         """A stale writer behind >=2 compression hops (root -> mid -> tip) must
-        reroute to the live tip via the transitive ``get_compression_tip`` walk
-        — the depth-1 live-child lookup found nothing here (#82001)."""
+        reroute only when the conservative resolver proves a unique live leaf."""
         import threading
         from types import SimpleNamespace
 
@@ -1477,12 +1614,9 @@ class TestGatewaySessionDbRecovery:
         from hermes_state import CompressionSessionClosedError
 
         class FakeDb:
-            def get_compression_tip(self, session_id):
+            def find_live_compression_child(self, session_id):
                 assert session_id == "parent"
-                return "child"
-
-            def get_session(self, session_id):
-                return {"id": session_id, "ended_at": None}
+                return {"id": "child"}
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()
@@ -1540,6 +1674,114 @@ class TestGatewaySessionDbRecovery:
         assert "parent" not in store._dirty_transcripts
         assert "child" not in store._dirty_transcripts
 
+    def test_fts_retry_success_empty_queue_does_not_duplicate(self):
+        import threading
+
+        store = object.__new__(SessionStore)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        attempts = []
+        first_attempt = True
+
+        def _append(session_id, message):
+            nonlocal first_attempt
+            attempts.append((session_id, message["content"]))
+            if first_attempt:
+                first_attempt = False
+                raise RuntimeError("no such table: messages_fts")
+
+        store._append_transcript_message = _append
+        store._rebuild_fts_once = lambda: True
+
+        store._append_to_transcript_serialized(
+            "session", {"role": "user", "content": "only"}
+        )
+
+        assert attempts == [("session", "only"), ("session", "only")]
+        assert store._dirty_transcripts == {}
+
+    def test_fts_retry_success_advances_to_remaining_message(self):
+        import threading
+
+        store = object.__new__(SessionStore)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "session": [{"role": "user", "content": "older"}]
+        }
+        store._transcript_append_failures = {}
+        attempts = []
+        first_attempt = True
+
+        def _append(session_id, message):
+            nonlocal first_attempt
+            attempts.append((session_id, message["content"]))
+            if first_attempt:
+                first_attempt = False
+                raise RuntimeError("no such table: messages_fts")
+
+        store._append_transcript_message = _append
+        store._rebuild_fts_once = lambda: True
+
+        store._append_to_transcript_serialized(
+            "session", {"role": "assistant", "content": "newer"}
+        )
+
+        assert attempts == [
+            ("session", "older"),
+            ("session", "older"),
+            ("session", "newer"),
+        ]
+        assert store._dirty_transcripts == {}
+
+    def test_fts_retry_during_reroute_targets_child(self):
+        import threading
+        from types import SimpleNamespace
+
+        from hermes_state import CompressionSessionClosedError
+
+        class FakeDb:
+            def find_live_compression_child(self, session_id):
+                assert session_id == "parent"
+                return {"id": "child"}
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store.__dict__["_lock"] = threading.RLock()
+        store.__dict__["_entries"] = {
+            "route": SimpleNamespace(session_id="parent")
+        }
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        attempts = []
+        child_first_attempt = True
+
+        def _append(session_id, message):
+            nonlocal child_first_attempt
+            attempts.append((session_id, message["content"]))
+            if session_id == "parent":
+                raise CompressionSessionClosedError("parent")
+            if child_first_attempt:
+                child_first_attempt = False
+                raise RuntimeError("no such table: messages_fts")
+
+        store._append_transcript_message = _append
+        store._rebuild_fts_once = lambda: True
+
+        store.append_to_transcript(
+            "parent", {"role": "assistant", "content": "rerouted"}
+        )
+
+        assert attempts == [
+            ("parent", "rerouted"),
+            ("child", "rerouted"),
+            ("child", "rerouted"),
+        ]
+        assert store._entries["route"].session_id == "child"
+        assert store._dirty_transcripts == {}
 
     def test_fts_corruption_error_requires_fts_provenance(self):
         """_is_fts_corruption_error must not treat a generic malformed-image

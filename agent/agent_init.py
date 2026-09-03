@@ -1769,6 +1769,19 @@ def init_agent(
     # _get_session_db_for_recall, where nothing else holds a reference.
     agent._owns_session_db = False
     agent._parent_session_id = parent_session_id
+    # Agents that own the durable session track their own active-row revision.
+    # Explicit caller snapshots (for example WebUI) replace this at turn start.
+    agent._durable_transcript_revision = None
+    if session_db is not None:
+        try:
+            agent._durable_transcript_revision = (
+                session_db.get_active_message_revision(agent.session_id)
+            )
+        except Exception:
+            logger.debug(
+                "Durable transcript revision unavailable during agent init",
+                exc_info=True,
+            )
     # A close flush and the worker's turn-start flush can overlap. The durable
     # marker is attached to each in-memory message dict, so its test-and-append
     # sequence must be serialized per agent rather than relying on SQLite alone.

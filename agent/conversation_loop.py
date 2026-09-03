@@ -33,6 +33,9 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    CompressionCommitFailedError,
+    CompressionProjectionUnverifiableError,
+    CompressionSnapshotStaleError,
     compression_blocked_transiently,
     compression_skipped_due_to_lock,
     context_compression_timed_out,
@@ -1740,6 +1743,113 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     return False
 
 
+def _compression_snapshot_stale_result(
+    agent,
+    messages: List[Dict],
+    api_call_count: int,
+    *,
+    conversation_history: Optional[List[Dict]] = None,
+    persist_produced_messages: bool = False,
+) -> Dict[str, Any]:
+    """Stop a turn whose durable snapshot changed during compression."""
+    logger.info(
+        "turn stopped: durable transcript changed during compression "
+        "(session=%s)",
+        agent.session_id or "none",
+    )
+    if persist_produced_messages:
+        try:
+            agent._persist_session(messages, conversation_history)
+        except Exception:
+            logger.warning(
+                "Could not persist messages produced before compression stale "
+                "stop (session=%s)",
+                agent.session_id or "none",
+                exc_info=True,
+            )
+    try:
+        agent._flush_status_buffer()
+    except Exception:
+        pass
+    effects_preserved = bool(
+        persist_produced_messages
+        and any(
+            isinstance(message, dict)
+            and (
+                message.get("role") == "tool"
+                or bool(message.get("tool_calls"))
+            )
+            for message in messages
+        )
+    )
+    if effects_preserved:
+        final_response = (
+            "This conversation changed after tool work was produced. The partial "
+            "work and recorded effects were preserved. Reload the session and "
+            "continue from the updated state; do not repeat the original command."
+        )
+    else:
+        final_response = (
+            "This conversation changed while context compression was starting. "
+            "Reload the session, then continue from the updated state."
+        )
+    return {
+        "final_response": final_response,
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "error": "compression_snapshot_stale",
+        "partial": True,
+        "failed": False,
+        "compression_snapshot_stale": True,
+        "compression_effects_preserved": effects_preserved,
+        "session_id": agent.session_id,
+    }
+
+
+def _compression_projection_unverifiable_result(
+    agent,
+    messages: List[Dict],
+) -> Dict[str, Any]:
+    """Fail closed when external history cannot be tied to durable state."""
+    return {
+        "final_response": (
+            "This session's supplied history could not be verified against durable "
+            "state. Reload the session before continuing."
+        ),
+        "messages": messages,
+        "completed": False,
+        "api_calls": 0,
+        "error": "compression_projection_unverifiable",
+        "partial": True,
+        "failed": False,
+        "compression_projection_unverifiable": True,
+        "session_id": agent.session_id,
+    }
+
+
+def _compression_commit_failed_result(
+    agent,
+    messages: List[Dict],
+    api_call_count: int,
+) -> Dict[str, Any]:
+    """Stop after a compacted projection failed to commit durably."""
+    return {
+        "final_response": (
+            "Context compression could not be committed, so the original context "
+            "was restored. Reload the session before continuing."
+        ),
+        "messages": messages,
+        "completed": False,
+        "api_calls": api_call_count,
+        "error": "compression_commit_failed",
+        "partial": True,
+        "failed": False,
+        "compression_commit_failed": True,
+        "session_id": agent.session_id,
+    }
+
+
 def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     """Refresh the in-flight system message after a provider failover.
 
@@ -2036,6 +2146,7 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    conversation_history_revision: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -2129,6 +2240,7 @@ def run_conversation(
             # MoA turns append per-call aggregated context to the API copy of the
             # user message, so no byte-stable api_content sidecar can be stamped.
             moa_active=bool(moa_config),
+            conversation_history_revision=conversation_history_revision,
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         # Turn-start fail-closed boundary (#98424): preflight compression hit
@@ -2173,6 +2285,18 @@ def run_conversation(
             "compression_exhausted": True,
             "turn_exit_reason": "context_compression_timeout",
         }
+    except CompressionProjectionUnverifiableError:
+        unverifiable_messages = list(conversation_history or [])
+        unverifiable_messages.append({"role": "user", "content": user_message})
+        return _compression_projection_unverifiable_result(agent, unverifiable_messages)
+    except CompressionCommitFailedError:
+        commit_failed_messages = list(conversation_history or [])
+        commit_failed_messages.append({"role": "user", "content": user_message})
+        return _compression_commit_failed_result(agent, commit_failed_messages, 0)
+    except CompressionSnapshotStaleError:
+        stale_messages = list(conversation_history or [])
+        stale_messages.append({"role": "user", "content": user_message})
+        return _compression_snapshot_stale_result(agent, stale_messages, 0)
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
@@ -2228,6 +2352,18 @@ def run_conversation(
     # agent_init); default 3 preserves the prior hardcoded behavior for
     # objects without the attribute (older pickles / minimal stubs).
     max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
+
+    def _automatic_compression_stale_result():
+        nonlocal compression_attempts
+        compression_attempts = max(0, compression_attempts - 1)
+        return _compression_snapshot_stale_result(
+            agent,
+            messages,
+            api_call_count,
+            conversation_history=conversation_history,
+            persist_produced_messages=True,
+        )
+
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
     # A provider overflow is stronger evidence than the rough-estimate
@@ -3113,12 +3249,19 @@ def run_conversation(
                 agent._emit_status(_pre_api_status)
             _last_preflight_pressure = request_pressure_tokens
             _pre_api_input = messages
-            messages, active_system_prompt = agent._compress_context(
-                messages,
-                system_message,
-                approx_tokens=request_pressure_tokens,
-                task_id=effective_task_id,
-            )
+            try:
+                messages, active_system_prompt = agent._compress_context(
+                    messages,
+                    system_message,
+                    approx_tokens=request_pressure_tokens,
+                    task_id=effective_task_id,
+                )
+            except CompressionCommitFailedError:
+                return _compression_commit_failed_result(
+                    agent, messages, api_call_count
+                )
+            except CompressionSnapshotStaleError:
+                return _automatic_compression_stale_result()
             if context_compression_timed_out(agent):
                 # Host progress-aware timeout (#98722, salvaged from #98741):
                 # this preflight iteration never reached the provider. Refund
@@ -5963,13 +6106,20 @@ def run_conversation(
                     compression_attempts += 1
                     if compression_attempts <= max_compression_attempts:
                         original_len = len(messages)
-                        # Option A (LCM issue 441): overhead-aware request size so recovery arms on
-                        # the true request (msgs + tools + system), not the tool-blind message count.
-                        messages, active_system_prompt = agent._compress_context(
-                            messages, system_message,
-                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                            task_id=effective_task_id,
-                        )
+                        try:
+                            # Option A (LCM issue 441): overhead-aware request size so recovery arms on
+                            # the true request (msgs + tools + system), not the tool-blind message count.
+                            messages, active_system_prompt = agent._compress_context(
+                                messages, system_message,
+                                approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                                task_id=effective_task_id,
+                            )
+                        except CompressionCommitFailedError:
+                            return _compression_commit_failed_result(
+                                agent, messages, api_call_count
+                            )
+                        except CompressionSnapshotStaleError:
+                            return _automatic_compression_stale_result()
                         conversation_history = conversation_history_after_compression(
                             agent, messages, conversation_history
                         )
@@ -6265,18 +6415,25 @@ def run_conversation(
                     # the session permanently. (#88960 / #47339)
                     original_bytes = serialized_messages_bytes(messages)
                     _overflow_input = messages
-                    # Option A (LCM issue 441): overhead-aware request size so recovery arms on the
-                    # true request (msgs + tools + system), not the tool-blind message count.
-                    messages, active_system_prompt = agent._compress_context(
-                        messages, system_message,
-                        approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                        task_id=effective_task_id,
-                        # #100661: the provider proved the request does not fit.
-                        # Ignore the summary-failure cooldown for this ONE
-                        # attempt (bounded by max_compression_attempts) instead
-                        # of deferring every turn until the ladder lapses.
-                        bypass_cooldown=True,
-                    )
+                    try:
+                        # Option A (LCM issue 441): overhead-aware request size so recovery arms on the
+                        # true request (msgs + tools + system), not the tool-blind message count.
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message,
+                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                            task_id=effective_task_id,
+                            # #100661: the provider proved the request does not fit.
+                            # Ignore the summary-failure cooldown for this ONE
+                            # attempt (bounded by max_compression_attempts) instead
+                            # of deferring every turn until the ladder lapses.
+                            bypass_cooldown=True,
+                        )
+                    except CompressionCommitFailedError:
+                        return _compression_commit_failed_result(
+                            agent, messages, api_call_count
+                        )
+                    except CompressionSnapshotStaleError:
+                        return _automatic_compression_stale_result()
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                         # #69870 lock-skip: the provider proved the request
                         # does not fit, but this compression pass no-oped only
@@ -6608,20 +6765,27 @@ def run_conversation(
                     original_len = len(messages)
                     original_tokens = estimate_messages_tokens_rough(messages)
                     _overflow_input = messages
-                    # Option A (LCM issue 441): pass the OVERHEAD-AWARE request size (msgs + tool
-                    # schemas + system), not the tool-blind message count, so LCM forced-overflow
-                    # recovery arms on the TRUE request that overflowed. See hermes-lcm engine
-                    # _should_force_overflow_recovery. (approx_tokens stays for the status display.)
-                    messages, active_system_prompt = agent._compress_context(
-                        messages, system_message,
-                        approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
-                        task_id=effective_task_id,
-                        # #100661: the provider proved the request does not fit.
-                        # Ignore the summary-failure cooldown for this ONE
-                        # attempt (bounded by max_compression_attempts) instead
-                        # of deferring every turn until the ladder lapses.
-                        bypass_cooldown=True,
-                    )
+                    try:
+                        # Option A (LCM issue 441): pass the OVERHEAD-AWARE request size (msgs + tool
+                        # schemas + system), not the tool-blind message count, so LCM forced-overflow
+                        # recovery arms on the TRUE request that overflowed. See hermes-lcm engine
+                        # _should_force_overflow_recovery. (approx_tokens stays for the status display.)
+                        messages, active_system_prompt = agent._compress_context(
+                            messages, system_message,
+                            approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
+                            task_id=effective_task_id,
+                            # #100661: the provider proved the request does not fit.
+                            # Ignore the summary-failure cooldown for this ONE
+                            # attempt (bounded by max_compression_attempts) instead
+                            # of deferring every turn until the ladder lapses.
+                            bypass_cooldown=True,
+                        )
+                    except CompressionCommitFailedError:
+                        return _compression_commit_failed_result(
+                            agent, messages, api_call_count
+                        )
+                    except CompressionSnapshotStaleError:
+                        return _automatic_compression_stale_result()
                     if messages is _overflow_input and compression_skipped_due_to_lock(agent):
                         # #69870 lock-skip: the provider proved the request
                         # does not fit, but this compression pass no-oped only
@@ -9144,6 +9308,10 @@ def run_conversation(
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
             
+        except CompressionCommitFailedError:
+            return _compression_commit_failed_result(agent, messages, api_call_count)
+        except CompressionSnapshotStaleError:
+            return _automatic_compression_stale_result()
         except Exception as e:
             # Count every escaped exception against the per-turn bound before
             # classification — permanent failures must terminate even when the

@@ -17,6 +17,7 @@ publish.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -51,6 +52,37 @@ def test_append_is_never_blocked_by_a_foreign_compression_lock(db: SessionDB) ->
     assert elapsed < 0.5, "append must not wait on a compression lease"
     rows = db.get_messages("sess1")
     assert any(r["content"] == "steered mid-compression" for r in rows)
+
+
+def test_replace_messages_waits_out_a_live_compression_lock(db: SessionDB) -> None:
+    """All ordinary transcript rewrites share the bounded lease wait."""
+    db.append_message("sess1", role="user", content="before rewrite")
+    assert db.try_acquire_compression_lock("sess1", "compressor") is True
+
+    released = threading.Event()
+
+    def _release_soon():
+        time.sleep(0.3)
+        db.release_compression_lock("sess1", "compressor")
+        released.set()
+
+    t = threading.Thread(target=_release_soon, daemon=True)
+    t.start()
+    try:
+        started = time.monotonic()
+        db.replace_messages(
+            "sess1",
+            [{"role": "user", "content": "after rewrite"}],
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        t.join(timeout=5)
+
+    assert released.is_set(), "test bug: lock was never released"
+    assert elapsed >= 0.25, "rewrite returned before the lock could clear"
+    assert [row["content"] for row in db.get_messages("sess1")] == [
+        "after rewrite"
+    ]
 
 
 def test_append_is_never_blocked_by_a_stale_dead_pid_lock(db: SessionDB) -> None:

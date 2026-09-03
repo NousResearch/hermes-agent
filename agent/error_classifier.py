@@ -1037,7 +1037,8 @@ def classify_api_error(
     # is /new (or a successful compression that preserves a user turn).
     if status_code == 400:
         _llama_cpp_grammar_hit = (
-            "error parsing grammar" in error_msg
+            "failed to parse grammar" in error_msg
+            or "error parsing grammar" in error_msg
             or "json-schema-to-grammar" in error_msg
             or (
                 "unable to generate parser" in error_msg

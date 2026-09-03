@@ -892,6 +892,76 @@ class TestMaxIterationsSummaryReplay:
         assert messages[0]["content"] == "q1"
         assert messages[0]["api_content"] == "q1\n\nPLUGIN-CTX"
 
+    def test_empty_non_final_turn_is_filled_not_re_healed_every_call(self):
+        """A mid-transcript empty non-final assistant turn (dead-stream stub,
+        #88955/#96870) must be filled with the interrupted placeholder on the
+        summary path's own wire copy, the same way the main loop's
+        fill_empty_non_final_wire_payload() does — not left for
+        _sanitize_api_messages()'s repair_empty_non_final_messages() to heal
+        (and re-log via _log_empty_non_final_heal) on every single call."""
+        from agent import agent_runtime_helpers as arh
+        from run_agent import AIAgent
+        from agent.chat_completion_helpers import handle_max_iterations
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent._cached_system_prompt = "SYS"
+
+        captured = {}
+
+        class _Completions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return "RAW-RESPONSE"
+
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=_Completions())
+        )
+        transport = types.SimpleNamespace(
+            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
+        )
+
+        messages = [
+            {"role": "user", "content": "q1"},
+            # Dead-stream stub: no content, no tool_calls — mid-transcript,
+            # so it is a candidate for the empty-turn repair pass.
+            {"role": "assistant", "content": ""},
+            {"role": "user", "content": "q2"},
+        ]
+
+        arh._empty_heal_log_state.clear()
+        arh._empty_heal_user_notified.clear()
+        arh._empty_heal_pending_notice.clear()
+        try:
+            with patch.object(
+                agent, "_ensure_primary_openai_client", return_value=client
+            ), patch.object(agent, "_get_transport", return_value=transport):
+                out = handle_max_iterations(agent, messages, 5)
+
+            assert out == "SUMMARY"
+            sent = captured["messages"]
+            assistant_turns = [m for m in sent if m.get("role") == "assistant"]
+            assert len(assistant_turns) == 1
+            assert assistant_turns[0]["content"] == arh._INTERRUPTED_PLACEHOLDER
+
+            # The original stored message is untouched — only the wire copy
+            # sent to the provider was filled.
+            assert messages[1]["content"] == ""
+
+            # repair_empty_non_final_messages (inside _sanitize_api_messages)
+            # found nothing left to heal, so it never logged a heal for this
+            # call — the summary path's own fill already handled it.
+            assert arh._empty_heal_log_state == {}
+        finally:
+            arh._empty_heal_log_state.clear()
+            arh._empty_heal_user_notified.clear()
+            arh._empty_heal_pending_notice.clear()
+
 
 class TestSessionRowExistsBeforePreflightCompaction:
     """Moving the crash persist after prefetch/pre_llm_call (one write with

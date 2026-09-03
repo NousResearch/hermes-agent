@@ -3246,9 +3246,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     try:
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
+        from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
+
         _needs_sanitize = agent._should_sanitize_tool_calls()
         api_messages = []
-        for msg in messages:
+        _last_msg_idx = len(messages) - 1
+        for idx, msg in enumerate(messages):
             api_msg = msg.copy()
             agent._copy_reasoning_content_for_api(msg, api_msg)
             for internal_field in ("reasoning", "finish_reason"):
@@ -3274,6 +3277,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
+            # Empty non-final user/assistant turns (#88955 hidden placeholders
+            # and #96870 stream-death / host-fed empties): without this, the
+            # unconditional repair pass inside _sanitize_api_messages() below
+            # re-heals (and re-logs via _log_empty_non_final_heal) the same
+            # poisoned row on every single max-iterations summary call for
+            # this session. The main loop already fills the wire copy here
+            # for the identical reason (agent/conversation_loop.py) so the
+            # sanitizer has nothing left to do; this path hand-builds its own
+            # api_messages instead of going through the main loop and was
+            # missing the same guard. Durable history is not mutated. After
+            # substitute_api_content so a message carrying real sidecar bytes
+            # is never mistaken for empty.
+            fill_empty_non_final_wire_payload(api_msg, is_final=(idx == _last_msg_idx))
             if _needs_sanitize:
                 # In MoA mode, agent.model is the virtual preset name,
                 # not the actual aggregator model.  Resolve the real

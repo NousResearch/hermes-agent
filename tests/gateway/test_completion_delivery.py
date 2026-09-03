@@ -339,22 +339,24 @@ def test_raw_cli_completion_stays_pending_even_with_api_server_route(
     assert record["delivery_attempts"] == 0
 
 
-def test_api_origin_completion_self_posts_when_api_server_route_exists(
+def test_api_origin_completion_persists_when_api_server_route_exists(
     monkeypatch, isolated_registry,
 ):
-    """An explicit api_server origin stamp authorizes raw-session self-post."""
+    """An explicit API origin authorizes durable stateless-session delivery."""
     import gateway.wake as wake_module
 
     event = _raw_async_event("deleg_api_routable")
     event["origin_session_id"] = event["session_key"]
     _persist_pending_completion(event)
 
-    wakes = []
+    persisted = []
 
-    async def _record_wake(_adapter, *, text, session_id="", source=None):
-        wakes.append(session_id)
+    async def _record_persist(_adapter, *, text, session_id="", evt=None):
+        persisted.append({"text": text, "session_id": session_id, "evt": evt})
 
-    monkeypatch.setattr(wake_module, "deliver_wake", _record_wake)
+    monkeypatch.setattr(
+        wake_module, "persist_delegation_delivery", _record_persist
+    )
     api_adapter = SimpleNamespace(
         supports_async_delivery=False,
         handle_message=AsyncMock(),
@@ -366,7 +368,12 @@ def test_api_origin_completion_self_posts_when_api_server_route_exists(
     )
 
     assert result is True
-    assert wakes == ["20260711_143022_9f3c1a"]
+    assert persisted == [{
+        "text": "completion",
+        "session_id": "20260711_143022_9f3c1a",
+        "evt": event,
+    }]
+    api_adapter.handle_message.assert_not_awaited()
     record = _durable(event["delegation_id"])
     assert record["delivery_state"] == "delivered"
     assert record["delivery_attempts"] == 1

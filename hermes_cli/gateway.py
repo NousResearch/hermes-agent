@@ -8546,6 +8546,83 @@ def _block_until_terminated() -> None:
         threading.Event().wait()
 
 
+def _loopback_probe_host(host: str) -> str | None:
+    """Return a safe local address for an API-port probe, or ``None``."""
+    import ipaddress
+
+    normalized = host.strip().lower()
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    if normalized in {"localhost", "0.0.0.0"}:
+        return "127.0.0.1"
+    if normalized in {"::", "::1"}:
+        return "::1"
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return None
+    return normalized if address.is_loopback else None
+
+
+def _warn_if_gateway_api_server_port_is_occupied(
+    retry_command: str = "start",
+) -> None:
+    """Warn on an occupied API port using only a short loopback probe."""
+    try:
+        config = load_gateway_config()
+        api_config = next(
+            (
+                platform_config
+                for platform, platform_config in config.platforms.items()
+                if getattr(platform, "value", platform) == "api_server"
+            ),
+            None,
+        )
+        if api_config is None or not api_config.enabled:
+            return
+
+        from gateway.platforms.api_server import DEFAULT_HOST, DEFAULT_PORT
+
+        extra = api_config.extra or {}
+        host = str(extra.get("host") or DEFAULT_HOST)
+        port = int(extra.get("port", DEFAULT_PORT))
+        probe_host = _loopback_probe_host(host)
+        if probe_host is None:
+            return
+
+        import socket
+
+        try:
+            connection = socket.create_connection((probe_host, port), timeout=0.2)
+        except OSError:
+            return
+        try:
+            connection.close()
+        except OSError:
+            pass
+
+        try:
+            from hermes_cli.profiles import (
+                get_active_profile_name,
+                normalize_profile_name,
+                validate_profile_name,
+            )
+
+            profile = normalize_profile_name(get_active_profile_name() or "default")
+            validate_profile_name(profile)
+        except Exception:
+            profile = "default"
+        profile_prefix = f"--profile {profile} "
+        print_warning(
+            f"API server port is already in use for profile={profile}: "
+            f"host={host}, port={port}. Another process is listening on this endpoint. "
+            f"Stop or reconfigure the process using that port, then retry "
+            f"`hermes {profile_prefix}gateway {retry_command}`."
+        )
+    except Exception:
+        logger.debug("Could not check gateway API server port occupancy", exc_info=True)
+
+
 def _gateway_command_inner(args):
     subcmd = getattr(args, "gateway_command", None)
 
@@ -8757,6 +8834,7 @@ def _gateway_command_inner(args):
             )
             print("Run manually: hermes gateway")
             sys.exit(1)
+        _warn_if_gateway_api_server_port_is_occupied()
         if supports_systemd_services():
             systemd_start(system=system)
         elif is_macos():
@@ -8965,6 +9043,7 @@ def _gateway_command_inner(args):
             if total:
                 print(f"✓ Stopped {total} gateway process(es) across all profiles")
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _warn_if_gateway_api_server_port_is_occupied(retry_command="restart")
 
             # Start the current profile's service fresh
             print("Starting gateway...")
@@ -9059,6 +9138,7 @@ def _gateway_command_inner(args):
                 print("✓ Stopped gateway for this profile")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
+            _warn_if_gateway_api_server_port_is_occupied(retry_command="restart")
 
             # Start fresh
             print("Starting gateway...")

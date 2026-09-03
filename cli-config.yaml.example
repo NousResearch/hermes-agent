@@ -1363,6 +1363,7 @@ platform_toolsets:
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #
 # discord:
+#   voice_channels_enabled: true      # Set false to disable VC join, channel, and leave actions
 #   require_mention: true            # Require @mention in server channels (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
 #   free_response_channels: ""       # Channel IDs where no mention is needed

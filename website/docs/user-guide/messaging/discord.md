@@ -332,6 +332,7 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 ```yaml
 # Discord-specific settings
 discord:
+  voice_channels_enabled: true     # Set false to disable voice channel participation
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
@@ -359,6 +360,12 @@ discord:
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
 ```
+
+#### `discord.voice_channels_enabled`
+
+**Type:** boolean — **Default:** `true`
+
+Set this to `false` to disable Discord voice channel participation. The `/voice join`, `/voice channel`, and `/voice leave` actions are removed from native command choices and rejected when typed. Voice messages remain available for transcription, and `/voice on`, `/voice tts`, `/voice off`, and `/voice status` continue to control spoken replies.
 
 #### `discord.require_mention`
 

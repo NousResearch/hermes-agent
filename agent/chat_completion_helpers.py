@@ -2025,6 +2025,33 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # fast override here, per request, only while the window is open.
     _request_overrides = effective_request_overrides(agent)
 
+    # Forward Hermes identity only after an explicit privacy opt-in and only
+    # for a user-selected custom OpenAI-compatible route (for example LiteLLM).
+    # Built-in providers must never receive platform identifiers implicitly.
+    # Keep this separate from inbound gateway headers and do not mutate the
+    # request_overrides mapping because it is reused across turns.
+    _provider_norm = str(getattr(agent, "provider", "") or "").strip().lower()
+    _share_session_identity = bool(
+        getattr(agent, "_share_session_identity", False)
+        and (_provider_norm == "custom" or _provider_norm.startswith("custom:"))
+    )
+    if _share_session_identity:
+        upstream_user = getattr(agent, "_user_id", None) or getattr(
+            agent, "_gateway_session_key", None
+        )
+        if upstream_user and "user" not in _request_overrides:
+            _request_overrides["user"] = str(upstream_user)
+
+        upstream_metadata = dict(_request_overrides.get("metadata") or {})
+        if getattr(agent, "session_id", None):
+            # LiteLLM uses metadata.session_id for Session-ID affinity.
+            upstream_metadata.setdefault("session_id", str(agent.session_id))
+        if getattr(agent, "_gateway_session_key", None):
+            upstream_metadata.setdefault(
+                "hermes_session_key", str(agent._gateway_session_key)
+            )
+        if upstream_metadata:
+            _request_overrides["metadata"] = upstream_metadata
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

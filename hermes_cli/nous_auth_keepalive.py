@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.auth import (
@@ -237,6 +238,100 @@ def refresh_nous_auth_keepalive_once(
         return False
 
 
+def _active_profile_name() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
+def _keepalive_profile_homes() -> list[tuple[str, Optional[Path]]]:
+    """Every profile this process should proactively tick Nous auth for.
+
+    A raw ``threading.Thread`` (which is what runs ``_keepalive_loop``) does
+    not inherit the spawning thread's contextvars, so without this the loop
+    only ever resolves ``get_hermes_home()`` as whatever it was at process
+    start -- the default profile. Under ``gateway.multiplex_profiles``, a
+    secondary profile can hold its own independent Nous OAuth login that
+    equally needs proactive ticking, or its credential silently expires into
+    reactive 401s exactly like the bug this module exists to fix (just
+    scoped to one profile instead of none).
+
+    Returns ``(name, None)`` for the single-profile/non-multiplex case so the
+    tick runs unscoped exactly as before -- behavior-preserving, and avoids
+    pulling in ``gateway.run`` for the common case. Under multiplex, returns
+    ``(name, home)`` for the default profile plus every named profile under
+    ``profiles/`` (mirrors ``gateway.run._multiplex_profile_homes``).
+
+    Config is read fresh on every pass rather than threaded from the caller:
+    ``start_nous_auth_keepalive`` is called from two places (gateway boot,
+    dashboard/web-server boot) with different config objects in scope, and
+    this loop already re-reads ``nous.keepalive_interval_seconds`` live each
+    pass for the same reason. The read is a YAML parse gated by the tick
+    interval (floored at 60s), not a hot path.
+    """
+    try:
+        from gateway.config import load_gateway_config
+        from gateway.run import _multiplex_profile_homes
+
+        config = load_gateway_config()
+        if not getattr(config, "multiplex_profiles", False):
+            return [(_active_profile_name(), None)]
+        homes = _multiplex_profile_homes(config)
+        if not homes:
+            return [(_active_profile_name(), None)]
+        return list(homes)
+    except Exception:
+        logger.debug(
+            "Nous auth keepalive: could not resolve multiplex profile set; "
+            "falling back to the active profile",
+            exc_info=True,
+        )
+        return [(_active_profile_name(), None)]
+
+
+def _keepalive_tick_one_profile(
+    profile_name: str,
+    profile_home: Optional[Path],
+    *,
+    interval_seconds: int,
+    min_key_ttl_seconds: int,
+    timeout_seconds: Optional[float],
+) -> int:
+    """Refresh one profile's Nous auth and return its next tick spacing.
+
+    ``profile_home is None`` runs unscoped (the legacy single-profile path).
+    Otherwise enters that profile's ``_profile_runtime_scope`` for the
+    observe-then-refresh so ``get_provider_auth_state`` / the credential pool
+    / ``resolve_nous_runtime_credentials`` all resolve THAT profile's home
+    and ``.env`` instead of whatever profile happened to be active when the
+    keepalive thread was spawned.
+    """
+
+    def _observe_and_refresh() -> int:
+        # Re-read each pass: the lifetime can change when the account, plan,
+        # or server-side policy does, and a keepalive that caches it would go
+        # stale in exactly the case it exists to cover.
+        tick = _tick_seconds(interval_seconds, _observed_lifetime_seconds())
+        horizon = _refresh_horizon_seconds(tick, min_key_ttl_seconds)
+        refresh_nous_auth_keepalive_once(
+            min_key_ttl_seconds=horizon,
+            min_access_ttl_seconds=horizon,
+            timeout_seconds=timeout_seconds,
+        )
+        return tick
+
+    if profile_home is None:
+        return _observe_and_refresh()
+
+    from gateway.run import _profile_runtime_scope
+
+    with _profile_runtime_scope(Path(profile_home)):
+        return _observe_and_refresh()
+
+
 def _keepalive_loop(
     stop_event: threading.Event,
     *,
@@ -249,17 +344,28 @@ def _keepalive_loop(
         return
 
     while not stop_event.is_set():
-        # Re-read each pass: the lifetime can change when the account, plan, or
-        # server-side policy does, and a keepalive that caches it would go stale
-        # in exactly the case it exists to cover.
-        tick = _tick_seconds(interval_seconds, _observed_lifetime_seconds())
-        horizon = _refresh_horizon_seconds(tick, min_key_ttl_seconds)
-        refresh_nous_auth_keepalive_once(
-            min_key_ttl_seconds=horizon,
-            min_access_ttl_seconds=horizon,
-            timeout_seconds=timeout_seconds,
-        )
-        stop_event.wait(tick)
+        next_tick = interval_seconds
+        for profile_name, profile_home in _keepalive_profile_homes():
+            try:
+                tick = _keepalive_tick_one_profile(
+                    profile_name,
+                    profile_home,
+                    interval_seconds=interval_seconds,
+                    min_key_ttl_seconds=min_key_ttl_seconds,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Nous auth keepalive tick failed for profile '%s': %s",
+                    profile_name, exc,
+                )
+                continue
+            # The overall loop cadence must be safe for whichever profile
+            # needs the tightest tick; a slower cadence derived from another
+            # profile's longer-lived credential would step over this one's
+            # refresh window entirely (see the module docstring).
+            next_tick = min(next_tick, tick)
+        stop_event.wait(next_tick)
 
 
 def start_nous_auth_keepalive(

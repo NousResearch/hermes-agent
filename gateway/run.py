@@ -2710,6 +2710,34 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
         return cfg
 
 
+async def _refresh_model_catalogs_for_all_profiles(config: object) -> None:
+    """Refresh the on-disk model-catalog cache for every profile this gateway serves.
+
+    ``refresh_catalogs`` resolves its cache path (and the provider-credential
+    lookups it makes along the way) via ``get_hermes_home()``, so an unscoped
+    call only ever refreshes the launch/default profile's cache. Under
+    multiplex, run it once per served profile inside that profile's
+    ``_profile_runtime_scope`` -- mirrors ``_discover_gateway_mcp_tools``.
+    Single-profile gateways keep the one unscoped call.
+    """
+    from hermes_cli.model_catalog import refresh_catalogs
+
+    if not getattr(config, "multiplex_profiles", False):
+        try:
+            await asyncio.to_thread(refresh_catalogs)
+        except Exception as exc:
+            logger.debug("Model catalog refresh failed: %s", exc)
+        return
+    for profile_name, profile_home in _multiplex_profile_homes(config):
+        try:
+            async with _async_profile_runtime_scope(Path(profile_home)):
+                await asyncio.to_thread(refresh_catalogs)
+        except Exception as exc:
+            logger.debug(
+                "Model catalog refresh failed for profile '%s': %s", profile_name, exc,
+            )
+
+
 async def _discover_gateway_mcp_tools(config: object) -> None:
     """Run startup MCP discovery for every profile this gateway serves.
 
@@ -15892,16 +15920,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cached. This loop calls ``model_catalog.refresh_catalogs()`` (manifest
         + OpenRouter live filter + Nous Portal recommendations) off-thread on
         the configured cadence (``model_catalog.ttl_minutes``, default 20) so
-        the on-disk caches every surface reads are never older than one window.
+        the on-disk caches every surface reads are never older than one
+        window -- for every profile a multiplex gateway serves, not just the
+        default one (``_refresh_model_catalogs_for_all_profiles``).
         """
-        from hermes_cli.model_catalog import refresh_catalogs, refresh_interval_seconds
+        from hermes_cli.model_catalog import refresh_interval_seconds
 
         await asyncio.sleep(30)  # let startup settle
         while self._running:
-            try:
-                await asyncio.to_thread(refresh_catalogs)
-            except Exception as exc:
-                logger.debug("Model catalog refresh failed: %s", exc)
+            await _refresh_model_catalogs_for_all_profiles(self.config)
             try:
                 interval = refresh_interval_seconds()
             except Exception:

@@ -4,6 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -145,6 +146,216 @@ class TestHandleResumeCommand:
         assert "requires a configured admin" not in result
         db.close()
 
+
+    @pytest.mark.asyncio
+    async def test_resume_in_telegram_topic_updates_durable_topic_binding(self, tmp_path):
+        """A resumed topic must not be snapped back to its previously bound session.
+
+        Telegram topic lanes have a second durable topic->session binding.  If
+        /resume only updates the generic routing entry, the next normal message
+        reloads the stale topic binding and silently undoes the resume.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.enable_telegram_topic_mode(chat_id="67890", user_id="12345")
+        db.create_session(
+            "old_session_abc", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+
+        event = _make_event(text="/resume My Project")
+        event.source = replace(event.source, thread_id="9496")
+        session_key = build_session_key(event.source)
+        db.bind_telegram_topic(
+            chat_id="67890",
+            thread_id="9496",
+            user_id="12345",
+            session_key=session_key,
+            session_id="current_session_001",
+        )
+        runner = _make_runner(
+            session_db=db, current_session_id="current_session_001", event=event,
+        )
+        resumed_entry = SimpleNamespace(
+            session_id="old_session_abc",
+            session_key=session_key,
+        )
+        runner.session_store.switch_session = MagicMock(return_value=resumed_entry)
+        runner._is_telegram_topic_lane = MagicMock(return_value=True)
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        binding = db.get_telegram_topic_binding(chat_id="67890", thread_id="9496")
+        assert binding is not None
+        assert binding["session_id"] == "old_session_abc"
+        assert binding["session_key"] == session_key
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_in_telegram_topic_fails_closed_when_binding_write_fails(self, tmp_path):
+        """Never report a successful resume when the topic binding did not move."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "old_session_abc", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+
+        event = _make_event(text="/resume My Project")
+        event.source = replace(event.source, thread_id="9496")
+        runner = _make_runner(
+            session_db=db, current_session_id="current_session_001", event=event,
+        )
+        session_key = build_session_key(event.source)
+        resumed_entry = SimpleNamespace(
+            session_id="old_session_abc", session_key=session_key,
+        )
+        runner.session_store.switch_session = MagicMock(return_value=resumed_entry)
+        runner._is_telegram_topic_lane = MagicMock(return_value=True)
+        runner._record_telegram_topic_binding = MagicMock(
+            side_effect=ValueError("session is already linked to another Telegram topic")
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Failed to switch session" in result
+        assert "Resumed" not in result
+        runner.session_store.switch_session.assert_not_called()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_in_telegram_topic_restores_binding_when_route_switch_fails(self, tmp_path):
+        """Restore the prior topic binding if the generic route cannot switch."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.enable_telegram_topic_mode(chat_id="67890", user_id="12345")
+        db.create_session(
+            "old_session_abc", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+
+        event = _make_event(text="/resume My Project")
+        event.source = replace(event.source, thread_id="9496")
+        session_key = build_session_key(event.source)
+        db.bind_telegram_topic(
+            chat_id="67890", thread_id="9496", user_id="12345",
+            session_key=session_key, session_id="current_session_001",
+        )
+        runner = _make_runner(
+            session_db=db, current_session_id="current_session_001", event=event,
+        )
+        runner.session_store.switch_session = MagicMock(return_value=None)
+        runner._is_telegram_topic_lane = MagicMock(return_value=True)
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Failed to switch session" in result
+        assert "Resumed" not in result
+        binding = db.get_telegram_topic_binding(chat_id="67890", thread_id="9496")
+        assert binding is not None
+        assert binding["session_id"] == "current_session_001"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_in_telegram_topic_restores_binding_when_route_switch_raises(self, tmp_path):
+        """A raised route-switch error must restore the prior topic binding."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.enable_telegram_topic_mode(chat_id="67890", user_id="12345")
+        db.create_session(
+            "old_session_abc", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        event = _make_event(text="/resume My Project")
+        event.source = replace(event.source, thread_id="9496")
+        session_key = build_session_key(event.source)
+        db.bind_telegram_topic(
+            chat_id="67890", thread_id="9496", user_id="12345",
+            session_key=session_key, session_id="current_session_001",
+        )
+        runner = _make_runner(
+            session_db=db, current_session_id="current_session_001", event=event,
+        )
+        runner.session_store.switch_session = MagicMock(
+            side_effect=RuntimeError("routing persistence failed")
+        )
+        runner._is_telegram_topic_lane = MagicMock(return_value=True)
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Failed to switch session" in result
+        assert "Resumed" not in result
+        binding = db.get_telegram_topic_binding(chat_id="67890", thread_id="9496")
+        assert binding is not None
+        assert binding["session_id"] == "current_session_001"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_route_failure_does_not_claim_success_if_binding_restore_fails(self, tmp_path):
+        """Even failed compensation must never produce a false success response."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            "old_session_abc", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session(
+            "current_session_001", "telegram", user_id="12345", chat_id="67890",
+            thread_id="9496",
+        )
+        event = _make_event(text="/resume My Project")
+        event.source = replace(event.source, thread_id="9496")
+        runner = _make_runner(
+            session_db=db, current_session_id="current_session_001", event=event,
+        )
+        session_key = build_session_key(event.source)
+        target_entry = SimpleNamespace(
+            session_id="old_session_abc", session_key=session_key,
+        )
+        calls = []
+
+        def record_binding(_source, entry):
+            calls.append(entry.session_id)
+            if entry.session_id == "current_session_001":
+                raise OSError("restore failed")
+
+        runner.session_store.switch_session = MagicMock(return_value=None)
+        runner._is_telegram_topic_lane = MagicMock(return_value=True)
+        runner._record_telegram_topic_binding = MagicMock(side_effect=record_binding)
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Failed to switch session" in result
+        assert "Resumed" not in result
+        assert calls == [target_entry.session_id, "current_session_001"]
+        db.close()
 
     @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):

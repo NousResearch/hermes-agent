@@ -219,24 +219,20 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
 
 
 def load_env() -> Dict[str, str]:
-    """Load profile-scoped environment variables from HERMES_HOME/.env."""
-    env_path = get_hermes_home() / ".env"
-    env_vars: Dict[str, str] = {}
-    if not env_path.exists():
-        return env_vars
+    """Load profile-scoped environment variables from HERMES_HOME/.env.
 
-    # utf-8-sig: users hand-edit .env in Notepad, which prepends a BOM that
-    # would otherwise glue U+FEFF onto the first key name (same dialect as
-    # the canonical readers in hermes_cli/config.py).
-    with env_path.open(encoding="utf-8-sig", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                if line.startswith("export "):
-                    line = line[7:]
-                key, _, value = line.partition("=")
-                env_vars[key.strip()] = value.strip().strip("\"'")
-    return env_vars
+    Delegates to the canonical parser in :mod:`hermes_cli.config` so every
+    reader sees the same values for the same file. This module previously
+    carried its own hand-rolled parser whose quote handling diverged from
+    the canonical one (``value.strip().strip('"\\'')`` strips unpaired
+    quotes and never reverses the ``\\"``/``\\\\`` escapes the canonical
+    writer produces) — so a credential containing ``"`` or ``\\`` worked
+    everywhere except skill-requirement checks and sandbox env passthrough.
+    Same bug class as qwibitai/nanoclaw#3659 (two .env parsers, two answers).
+    """
+    from hermes_cli.config import load_env as _canonical_load_env
+
+    return _canonical_load_env()
 
 
 class SkillReadinessStatus(str, Enum):

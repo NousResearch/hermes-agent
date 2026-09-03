@@ -86,10 +86,11 @@ def _adapter() -> DiscordAdapter:
     return a
 
 
-def _channel(chan_id=555, thread=False):
+def _channel(chan_id=555, thread=False, parent_id=None):
     if thread:
         chan = _DiscordThread()
         chan.id = chan_id
+        chan.parent_id = parent_id
         return chan
     return SimpleNamespace(id=chan_id)
 
@@ -386,3 +387,91 @@ class TestRunnerBoundaryIntegration:
         assert args == ("gateway_platform_event",)
         assert kwargs["platform"] == "discord"
         assert kwargs["event_type"] == "message_edited"
+
+
+class TestProfileRouting:
+    """A channel-scoped profile_routes entry (no explicit guild_id) must
+    resolve for thread-keyed gateway_platform_event fire-sites exactly as it
+    does for messages and slash commands: the route's chat_id matches the
+    THREAD's parent channel id via parent_chat_id, not the thread id itself
+    (#69178, #91633 follow-up — the fire-sites built their source with no
+    parent_chat_id at all)."""
+
+    @staticmethod
+    def _routed_adapter(parent_channel_id="200"):
+        from gateway import run as gateway_run
+        from gateway.config import GatewayConfig
+        from gateway.profile_routing import ProfileRoute
+
+        a = _adapter()
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=[
+                ProfileRoute(
+                    name="work", profile="work", platform="discord",
+                    chat_id=parent_channel_id,
+                )
+            ],
+        )
+        import pytest as _pytest
+        monkeypatch = _pytest.MonkeyPatch()
+        monkeypatch.setattr(gateway_run, "_multiplex_profile_homes", lambda _cfg: [("work", None)])
+        a.gateway_runner = runner
+        return a, monkeypatch
+
+    def test_message_edit_in_thread_routes_by_parent_channel(self):
+        a, monkeypatch = self._routed_adapter(parent_channel_id="200")
+        try:
+            seen = _capture(a)
+            after = _message(chan=_channel(chan_id=888, thread=True, parent_id=200))
+
+            asyncio.run(a._on_platform_message_edit(None, after))
+
+            _event, source = seen[0]
+            assert source.parent_chat_id == "200"
+            assert source.profile == "work"
+        finally:
+            monkeypatch.undo()
+
+    def test_message_delete_in_thread_routes_by_parent_channel(self):
+        a, monkeypatch = self._routed_adapter(parent_channel_id="200")
+        try:
+            seen = _capture(a)
+            msg = _message(chan=_channel(chan_id=888, thread=True, parent_id=200))
+
+            asyncio.run(a._on_platform_message_delete(msg))
+
+            _event, source = seen[0]
+            assert source.parent_chat_id == "200"
+            assert source.profile == "work"
+        finally:
+            monkeypatch.undo()
+
+    def test_thread_create_routes_by_parent_channel(self):
+        a, monkeypatch = self._routed_adapter(parent_channel_id="555")
+        try:
+            seen = _capture(a)
+
+            asyncio.run(a._on_platform_thread_create(_thread_obj(parent_id=555)))
+
+            _event, source = seen[0]
+            assert source.parent_chat_id == "555"
+            assert source.profile == "work"
+        finally:
+            monkeypatch.undo()
+
+    def test_thread_renamed_routes_by_parent_channel(self):
+        a, monkeypatch = self._routed_adapter(parent_channel_id="555")
+        try:
+            seen = _capture(a)
+            before = _thread_obj(name="old name", parent_id=555)
+            after = _thread_obj(name="new name", parent_id=555)
+
+            asyncio.run(a._on_platform_thread_update(before, after))
+
+            _event, source = seen[0]
+            assert source.parent_chat_id == "555"
+            assert source.profile == "work"
+        finally:
+            monkeypatch.undo()

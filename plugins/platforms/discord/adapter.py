@@ -1714,6 +1714,7 @@ class DiscordAdapter(BasePlatformAdapter):
         user_name: Optional[str],
         thread_id: Optional[str],
         guild_id: Optional[str],
+        parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
     ):
         """Build the internal SessionSource the gateway authorizes against.
@@ -1721,6 +1722,10 @@ class DiscordAdapter(BasePlatformAdapter):
         Raises ``ValueError`` when the actor or chat identity is missing so the
         post-auth boundary fails closed instead of authorizing an incomplete
         source (mirrors the Telegram reaction extractor).
+
+        ``parent_chat_id`` feeds profile_routes matching in build_source,
+        exactly as the message and slash-command paths pass it — without it a
+        channel-scoped route never matches a thread-keyed event (#69178).
         """
         if not user_id or not chat_id:
             raise ValueError(
@@ -1733,6 +1738,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_id,
             guild_id=guild_id,
+            parent_chat_id=parent_chat_id,
             message_id=message_id,
         )
 
@@ -1795,12 +1801,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     ),
                 },
             }
+            parent_chat_id = self._get_parent_channel_id(
+                getattr(message, "channel", None)
+            )
             source = self._source_for_platform_event(
                 chat_id=str(chat_id),
                 user_id=str(getattr(author, "id", "") or "") or None,
                 user_name=getattr(author, "display_name", None),
                 thread_id=thread_id,
                 guild_id=str(getattr(guild, "id", "")) if guild else None,
+                parent_chat_id=parent_chat_id,
                 message_id=str(message_id),
             )
         except Exception:
@@ -1840,12 +1850,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     "author_id": str(getattr(author, "id", "") or "")[:128] or None,
                 },
             }
+            parent_chat_id = self._get_parent_channel_id(
+                getattr(message, "channel", None)
+            )
             source = self._source_for_platform_event(
                 chat_id=str(chat_id),
                 user_id=str(getattr(author, "id", "") or "") or None,
                 user_name=getattr(author, "display_name", None),
                 thread_id=thread_id,
                 guild_id=str(getattr(guild, "id", "")) if guild else None,
+                parent_chat_id=parent_chat_id,
                 message_id=str(message_id),
             )
         except Exception:
@@ -1883,6 +1897,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 user_name=None,
                 thread_id=str(thread_id),
                 guild_id=str(getattr(guild, "id", "")) if guild else None,
+                parent_chat_id=str(parent_id) if parent_id is not None else None,
             )
         except Exception:
             logger.debug(
@@ -1929,6 +1944,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 user_name=None,
                 thread_id=str(thread_id),
                 guild_id=str(getattr(guild, "id", "")) if guild else None,
+                parent_chat_id=str(parent_id) if parent_id is not None else None,
             )
         except Exception:
             logger.debug(

@@ -1128,6 +1128,62 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
 
+    def test_background_review_read_survives_tool_executor_thread_hop_without_parent_reset(
+        self, tmp_path, monkeypatch
+    ):
+        """Curator never pre-installs the mark store; each tool is a worker snapshot.
+
+        ``agent/tool_executor.py`` submits ``propagate_context_to_thread(...)``,
+        which runs the call inside ``copy_context()``. A ContextVar.set inside
+        that copy is discarded when the worker returns, so a mark recorded
+        only by ``skill_view`` is invisible to the next ``skill_manage``.
+        Binding the review write origin on the parent thread (as
+        ``build_turn_context`` does) must install a shared store first.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from tools.skill_manager_tool import _background_review_read_paths
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+        from tools.skills_tool import skill_view
+        from tools.thread_context import propagate_context_to_thread
+
+        # Curator-shaped: origin bound, mark store NOT pre-installed.
+        _background_review_read_paths.set(None)
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+                _create_curator_skill("reviewed", _skill_content("reviewed"))
+
+                def _view():
+                    return skill_view("reviewed")
+
+                def _patch():
+                    return skill_manage(
+                        action="patch",
+                        name="reviewed",
+                        old_string="Step 1: Do the thing.",
+                        new_string="Step 1: Do the thing safely.",
+                    )
+
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    viewed = ex.submit(
+                        propagate_context_to_thread(_view)
+                    ).result(timeout=10)
+                    patched = ex.submit(
+                        propagate_context_to_thread(_patch)
+                    ).result(timeout=10)
+
+                assert json.loads(viewed)["success"] is True
+                result = json.loads(patched)
+                assert result["success"] is True, result
+        finally:
+            reset_current_write_origin(token)
+            _background_review_read_paths.set(None)
+
     def test_background_review_read_marks_stay_isolated_between_reviews(
         self, tmp_path, monkeypatch
     ):
@@ -1191,3 +1247,41 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+    def test_foreground_manage_not_gated_by_stale_review_read_marks(
+        self, tmp_path
+    ):
+        """Read-before-write gating is keyed on ORIGIN, not store presence.
+
+        When a review finishes, the parent context can keep a binding to
+        that review's mark store (the store is only replaced per-review by
+        ``_reset_background_review_read_marks``). If any path consulted the
+        store unconditionally, stale marks would gate — or leak into — later
+        FOREGROUND manages in the same context. Origin is foreground here
+        and the store is empty (target never viewed by any review), so the
+        patch must go through un-gated. A regression that drops the
+        ``is_background_review()`` gate from the read-before-write guard
+        fails this test with ``_read_before_write_required``.
+        """
+        from tools.skill_manager_tool import (
+            _background_review_read_paths,
+            _BackgroundReviewReadMarks,
+        )
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            # A stale review store left bound in this context; the target
+            # skill is not in it.
+            old = _background_review_read_paths.set(_BackgroundReviewReadMarks())
+            try:
+                result = json.loads(skill_manage(
+                    action="patch",
+                    name="my-skill",
+                    old_string="Step 1: Do the thing.",
+                    new_string="Step 1: Do the new thing.",
+                ))
+            finally:
+                _background_review_read_paths.reset(old)
+
+        assert result["success"] is True, result
+        assert result.get("_read_before_write_required") is not True

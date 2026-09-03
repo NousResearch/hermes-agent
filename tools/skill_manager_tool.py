@@ -110,6 +110,21 @@ def _background_review_has_read(path: Path) -> bool:
     return marks is not None and marks.contains(resolved)
 
 
+def ensure_background_review_read_marks() -> None:
+    """Install a shared mark store in this context if one is not bound.
+
+    Tool workers receive a *copy* of the parent context
+    (``propagate_context_to_thread``). A store created here is therefore
+    visible to every subsequent tool call in the same review fork. A store
+    created inside a worker copy via ``ContextVar.set`` is not — that is
+    why ``skill_view`` then ``skill_manage`` used to be refused even in
+    the same review turn when the parent never pre-installed a store
+    (curator path).
+    """
+    if _background_review_read_paths.get() is None:
+        _background_review_read_paths.set(_BackgroundReviewReadMarks())
+
+
 def _reset_background_review_read_marks() -> None:
     """Start a fresh, isolated read set for the current review context."""
     _background_review_read_paths.set(_BackgroundReviewReadMarks())

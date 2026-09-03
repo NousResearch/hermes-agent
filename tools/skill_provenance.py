@@ -32,6 +32,9 @@ Usage:
 """
 
 import contextvars
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 _write_origin: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -50,8 +53,35 @@ def set_current_write_origin(origin: str) -> contextvars.Token[str]:
 
     Returns a Token the caller must pass to reset_current_write_origin
     in a finally block.
+
+    Binding ``background_review`` also installs the shared read-before-write
+    mark store on *this* context so later tool-worker snapshots can see
+    ``skill_view`` marks. Creating that store inside a worker copy does
+    not propagate back to the parent (or to the next tool call).
     """
-    return _write_origin.set(origin or "foreground")
+    bound = origin or "foreground"
+    token = _write_origin.set(bound)
+    if bound == BACKGROUND_REVIEW:
+        try:
+            from tools.skill_manager_tool import ensure_background_review_read_marks
+
+            ensure_background_review_read_marks()
+        except Exception:
+            # Do NOT swallow this silently: if installing the shared mark
+            # store fails, the review fork regresses to exactly the bug this
+            # PR fixes (skill_view marks stuck in worker copies, every later
+            # skill_manage refused) with zero signal. The origin binding
+            # itself still succeeds, so the caller has no other way to notice.
+            # Log loudly enough that development runs surface it; the guard
+            # remains fail-closed (writes without a readable store are
+            # refused), which is the correct degradation.
+            logger.warning(
+                "Failed to install the background-review read-before-write "
+                "mark store; skill_view marks may not survive tool-worker "
+                "snapshots in this review fork.",
+                exc_info=True,
+            )
+    return token
 
 
 def reset_current_write_origin(token: contextvars.Token[str]) -> None:

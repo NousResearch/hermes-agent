@@ -564,6 +564,9 @@ def load_cli_config() -> Dict[str, Any]:
     # overwrite env vars that were already set by .env -- only a user's config
     # file should be authoritative.
     _file_has_terminal_config = False
+    # Whether config.yaml explicitly pins a backend. Only an explicit pin
+    # outranks an exported TERMINAL_ENV when selecting effective_backend below.
+    _file_pins_backend = False
 
     # Load from file if exists
     if config_path.exists():
@@ -574,6 +577,10 @@ def load_cli_config() -> Dict[str, Any]:
                 file_config = _normalize_root_model_keys(fast_safe_load(f) or {})
             
             _file_has_terminal_config = "terminal" in file_config
+            _file_terminal_section = file_config.get("terminal")
+            _file_pins_backend = isinstance(_file_terminal_section, dict) and bool(
+                {"backend", "env_type"} & set(_file_terminal_section)
+            )
 
             # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:
@@ -653,6 +660,16 @@ def load_cli_config() -> Dict[str, Any]:
     # Non-local with placeholder: pop so terminal_tool uses its per-backend default.
     # Non-local with explicit path: keep as-is.
     _CWD_PLACEHOLDERS = (".", "auto", "cwd")
+    # An exported TERMINAL_ENV selects the backend unless config.yaml explicitly
+    # pins one. Without this, an install with no `terminal:` section always
+    # computed "local" here — even under `TERMINAL_ENV=ssh` — and so took the
+    # branch below that force-exports TERMINAL_CWD=os.getcwd(). That is an
+    # AGENT-HOST path, which does not exist on an ssh/container target, so every
+    # command died in the wrapper's `cd` with exit 126 before running. Mirrors
+    # hermes_cli/config.py: only explicit config keys outrank the environment.
+    _env_backend = os.environ.get("TERMINAL_ENV", "").strip()
+    if _env_backend and not _file_pins_backend:
+        terminal_config["env_type"] = _env_backend
     effective_backend = terminal_config.get("env_type", "local")
 
     if effective_backend == "local":

@@ -4531,6 +4531,83 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     _log_only_write(result.stdout or "")
     return result
 
+def _git_fetch_timeout_s() -> int:
+    """Bounded per-attempt git fetch timeout, env-overridable (#95777)."""
+    try:
+        return max(1, int(os.environ.get("HERMES_GIT_FETCH_TIMEOUT") or 300))
+    except ValueError:
+        return 300
+
+
+def _is_anonymous_auth_rejection(stderr: str) -> bool:
+    """git's fast signature for an anonymous fetch GitHub answered with 401.
+
+    With terminal prompts disabled the 401 never blocks on a ``Username:``
+    prompt — git exits immediately with ``could not read Username`` /
+    ``terminal prompts disabled``. GitHub does this during outages, and
+    persistently from IPs it throttles (datacenter VPSes): the anonymous
+    protocol-v2 ``POST /git-upload-pack`` is answered with a fast 401 over
+    HTTP/2 while the anonymous ``GET /info/refs`` still succeeds and HTTP/1.1
+    still works (#101584).
+    """
+    stderr = stderr or ""
+    return "could not read Username" in stderr or "terminal prompts disabled" in stderr
+
+
+def _bounded_fetch(git_cmd, fetch_args):
+    """One bounded git fetch with a one-shot HTTP/1.1 retry (#95777, #101584).
+
+    Two failure signatures are HTTP/2-specific degradations of GitHub's
+    anonymous protocol-v2 channel and get exactly one retry over HTTP/1.1:
+
+    * a dead-stall — the fetch receives zero bytes until the per-attempt
+      bound expires (``TimeoutExpired``);
+    * a fast 401 — GitHub answered the anonymous upload-pack POST with
+      ``Repository not found`` and git exited immediately with the
+      no-prompt signature (``_is_anonymous_auth_rejection``).
+
+    Every other failure is returned as-is so ``_classify_fetch_failure``
+    keeps diagnosing it untouched.
+    """
+    timeout_s = _git_fetch_timeout_s()
+
+    def _run(extra_config):
+        return subprocess.run(
+            git_cmd + extra_config + ["fetch"] + list(fetch_args),
+            cwd=_m().PROJECT_ROOT,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=timeout_s,
+            **_no_prompt_git_kwargs(),
+        )
+
+    stalled = False
+    try:
+        result = _run([])
+    except subprocess.TimeoutExpired:
+        stalled = True
+    else:
+        if result.returncode == 0 or not _is_anonymous_auth_rejection(result.stderr):
+            return result
+
+    if stalled:
+        print("  ⚠ fetch stalled; retrying over HTTP/1.1")
+    else:
+        print("  ⚠ GitHub rejected the anonymous fetch; retrying over HTTP/1.1")
+    try:
+        return _run(["-c", "http.version=HTTP/1.1"])
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=124,
+            stderr=(
+                "git fetch timed out twice — once over HTTP/2 and once over "
+                "HTTP/1.1 — after a bounded wait each. Check proxy/VPN "
+                "settings, or set HERMES_GIT_FETCH_TIMEOUT to adjust the "
+                "per-attempt bound."
+            ),
+        )
+
 def _classify_fetch_failure(stderr: str) -> str:
     """Map git-fetch stderr to a one-line, user-facing diagnosis.
 
@@ -4564,12 +4641,19 @@ def _classify_fetch_failure(stderr: str) -> str:
     if "could not read Username" in stderr or "terminal prompts disabled" in stderr:
         # Anonymous fetch of a public repo got HTTP 401. GitHub does this
         # during outages (and for renamed/private repos) — it is not a
-        # credentials problem on the user's side.
+        # credentials problem on the user's side. It also persists on IPs
+        # GitHub throttles (datacenter VPSes): the anonymous protocol-v2
+        # POST gets a fast 401 over HTTP/2 even though the anonymous
+        # info/refs GET succeeded. By the time this prints, _bounded_fetch
+        # has already retried once over HTTP/1.1 (#101584), so both
+        # transports were rejected.
         return (
             "✗ GitHub rejected the anonymous fetch (asked for a login) — this"
-            " usually means a GitHub outage; try again in a few minutes"
-            " (https://www.githubstatus.com). If it persists, check"
-            " `git remote -v` points at a public repo."
+            " happens during GitHub outages (https://www.githubstatus.com)"
+            " and, persistently, from IPs GitHub throttles such as datacenter"
+            " VPSes. Workaround: `git config --global"
+            " http.https://github.com.version HTTP/1.1` or an authenticated"
+            " remote. Also check `git remote -v` points at a public repo."
         )
     if "Authentication failed" in stderr:
         return "✗ Authentication failed — check your git credentials or SSH key."
@@ -4673,38 +4757,20 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         fetch_result = None
         if has_upstream_remote:
             print("→ Fetching from upstream...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["upstream", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                **_no_prompt_git_kwargs(),
-            )
+            fetch_result = _bounded_fetch(git_cmd, depth_args + ["upstream", branch])
         if fetch_result is not None and fetch_result.returncode == 0:
             upstream_exists = True
             compare_branch = f"upstream/{branch}"
         else:
             # No upstream remote, or the upstream fetch failed — use origin.
             print("→ Fetching from origin...")
-            fetch_result = subprocess.run(
-                git_cmd + ["fetch"] + depth_args + ["origin", branch],
-                cwd=_m().PROJECT_ROOT,
-                capture_output=True,
-                text=True, encoding="utf-8", errors="replace",
-                **_no_prompt_git_kwargs(),
-            )
+            fetch_result = _bounded_fetch(git_cmd, depth_args + ["origin", branch])
             upstream_exists = False
             compare_branch = f"origin/{branch}"
     else:
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch"] + depth_args + ["origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            **_no_prompt_git_kwargs(),
-        )
+        fetch_result = _bounded_fetch(git_cmd, depth_args + ["origin", branch])
         upstream_exists = False
         compare_branch = f"origin/{branch}"
 
@@ -8621,13 +8687,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=_m().PROJECT_ROOT,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            **_no_prompt_git_kwargs(),
-        )
+        fetch_result = _bounded_fetch(git_cmd, ["origin", branch])
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             sys.exit(1)

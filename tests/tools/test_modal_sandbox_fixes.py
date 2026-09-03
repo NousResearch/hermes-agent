@@ -36,13 +36,22 @@ class TestToolResolution:
 
     def test_terminal_and_file_toolsets_resolve_all_tools(self):
         """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
+        from unittest.mock import patch as _patch
+
         from model_tools import get_tool_definitions
-        tools = get_tool_definitions(
-            enabled_toolsets=["terminal", "file"],
-            quiet_mode=True,
-        )
+        from tools.tool_search import ToolSearchConfig
+
+        # Pin the RESOLUTION contract independent of deferral policy —
+        # #97979 defers process_manage by default (legacy defer: [] override).
+        _legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
+        with _patch("tools.tool_search.load_config", return_value=_legacy), \
+             _patch("tools.tool_search.load_config_readonly", return_value=_legacy):
+            tools = get_tool_definitions(
+                enabled_toolsets=["terminal", "file"],
+                quiet_mode=True,
+            )
         names = {t["function"]["name"] for t in tools}
-        expected = {"terminal", "process", "read_file", "write_file", "search_files", "patch"}
+        expected = {"terminal", "process_manage", "read_file", "write_file", "search_files", "patch"}
         assert expected == names, f"Expected {expected}, got {names}"
 
     def test_terminal_tool_present(self):
@@ -391,10 +400,19 @@ class TestDockerHostBindApproval:
         config permanently allowlists e.g. "delete in root path" the guard
         under test silently approves and the assertions flip. CI never has
         such an allowlist, making this a local-only flake.
+
+        Same import-time freeze applies to ``_YOLO_MODE_FROZEN``: it reads
+        HERMES_YOLO_MODE off the environment when the module is imported at
+        collection time, before conftest's per-test env blanking runs. A test
+        run launched from a --yolo Hermes session (or any shell exporting
+        HERMES_YOLO_MODE=1) freezes True and every guard auto-approves.
+        Reset it explicitly so the tests exercise the guard, not the bypass.
         """
         import tools.approval as A
         monkeypatch.setattr(A, "_permanent_approved", set())
         monkeypatch.setattr(A, "_session_approved", {})
+        monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
 
     def test_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker dangerous command escalates instead of bypassing."""

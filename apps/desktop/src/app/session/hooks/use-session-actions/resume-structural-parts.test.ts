@@ -73,4 +73,70 @@ describe('reconcileResumeMessages — structural parts on a mid-turn switch', ()
 
     expect(assistant.parts.filter(p => p.type === 'tool-call')).toHaveLength(1)
   })
+
+  it('keeps live-tail structure when the flat dump is not a strict text extension', () => {
+    // Mid-turn sandwich path: cache holds reasoning/tools; resume returns a
+    // longer non-extending dump. Structure source must be live-tail.
+    const cached: ChatMessage[] = [
+      {
+        id: 'assistant-stream-1',
+        pending: true,
+        parts: [
+          { type: 'reasoning', text: 'thinking about tools' },
+          { type: 'tool-call', toolCallId: 'c1', toolName: 'terminal', args: {} },
+          { type: 'text', text: 'partial' }
+        ],
+        role: 'assistant'
+      }
+    ]
+
+    const authoritative: ChatMessage[] = [
+      {
+        id: 'assistant-stream-1',
+        pending: true,
+        parts: [{ type: 'text', text: 'thinking about tools\nRan terminal\npartial and more dump' }],
+        role: 'assistant'
+      }
+    ]
+
+    const [assistant] = reconcileResumeMessages(authoritative, cached)
+
+    expect(assistant.parts.some(part => part.type === 'reasoning')).toBe(true)
+    expect(assistant.parts.some(part => part.type === 'tool-call')).toBe(true)
+    expect(assistant.parts.filter(part => part.type === 'text').map(part => ('text' in part ? part.text : ''))).toEqual(
+      ['partial']
+    )
+  })
+
+  it('does not graft historical structure onto a live text-only row after compression rewrote ordinals', () => {
+    // Previous cache still has a completed structured assistant at ordinal 0.
+    // Resume after compression returns a new live text-only assistant at the
+    // same role ordinal for an unrelated turn — must not inherit foreign parts.
+    const cached: ChatMessage[] = [
+      {
+        id: 'old-assistant',
+        parts: [
+          { type: 'reasoning', text: 'old thinking' },
+          { type: 'tool-call', toolCallId: 'old-call', toolName: 'terminal', args: {} },
+          { type: 'text', text: 'old answer' }
+        ],
+        role: 'assistant'
+      }
+    ]
+
+    const authoritative: ChatMessage[] = [
+      {
+        id: 'assistant-stream-runtime-1',
+        pending: true,
+        parts: [{ type: 'text', text: 'brand new partial' }],
+        role: 'assistant'
+      }
+    ]
+
+    const [assistant] = reconcileResumeMessages(authoritative, cached)
+
+    expect(assistant.parts.some(part => part.type === 'reasoning')).toBe(false)
+    expect(assistant.parts.some(part => part.type === 'tool-call')).toBe(false)
+    expect(assistant.parts).toEqual([{ type: 'text', text: 'brand new partial' }])
+  })
 })

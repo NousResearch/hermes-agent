@@ -58,13 +58,14 @@ except ImportError:  # pragma: no cover - dependency gate
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, greedy_pack_blocks
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
-    cache_audio_from_bytes,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -141,7 +142,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     some system CA stores (notably Homebrew's OpenSSL on macOS Apple Silicon).
     When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
     verification. Otherwise fall back to aiohttp's default (which honors
-    ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+    ``SSL_CERT_FILE`` env var when ``gateway.trust_env`` is on).
 
     Uses a tight ``keepalive_timeout=2`` (default aiohttp: 30s) so idle
     connections drain promptly behind proxies like Cloudflare Warp that
@@ -301,6 +302,10 @@ class ContextTokenStore:
     def __init__(self, hermes_home: str):
         self._root = _account_dir(hermes_home)
         self._cache: Dict[str, str] = {}
+        # Serializes the offloaded flushes so two concurrent set() calls
+        # cannot land their writes out of order (last-writer-wins would drop
+        # the newer token from disk).
+        self._persist_lock = asyncio.Lock()
 
     def _path(self, account_id: str) -> Path:
         return self._root / f"{account_id}.context-tokens.json"
@@ -328,17 +333,27 @@ class ContextTokenStore:
     def get(self, account_id: str, user_id: str) -> Optional[str]:
         return self._cache.get(self._key(account_id, user_id))
 
-    def set(self, account_id: str, user_id: str, token: str) -> None:
+    async def set(self, account_id: str, user_id: str, token: str) -> None:
         self._cache[self._key(account_id, user_id)] = token
-        self._persist(account_id)
+        # atomic_json_write() calls os.fsync(), which blocks until the write
+        # reaches stable storage. _process_message runs on the event loop for
+        # every inbound message, so offload the flush the same way #83906 did
+        # for the other gateway persist paths. The payload is snapshotted here,
+        # on the loop, so the worker never iterates ``_cache`` while another
+        # message task mutates it; the lock keeps flushes in mutation order.
+        async with self._persist_lock:
+            payload = self._payload(account_id)
+            await asyncio.to_thread(self._persist, account_id, payload)
 
-    def _persist(self, account_id: str) -> None:
+    def _payload(self, account_id: str) -> Dict[str, str]:
         prefix = f"{account_id}:"
-        payload = {
+        return {
             key[len(prefix) :]: value
             for key, value in self._cache.items()
             if key.startswith(prefix)
         }
+
+    def _persist(self, account_id: str, payload: Dict[str, str]) -> None:
         try:
             atomic_json_write(self._path(account_id), payload)
         except Exception as exc:
@@ -1048,7 +1063,7 @@ async def qr_login(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
 
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector()) as session:
         try:
             qr_resp = await _api_get(
                 session,
@@ -1227,14 +1242,14 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         self._rate_limit_circuit_until = 0.0
         self._rate_limit_events: List[float] = []
-        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "pairing")).strip().lower()
-        self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy") or _wx_secret("WEIXIN_DM_POLICY", "pairing")).strip().lower()
+        self._group_policy = str(extra.get("group_policy") or _wx_secret("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
         if allow_from is None:
-            allow_from = os.getenv("WEIXIN_ALLOWED_USERS", "")
+            allow_from = _wx_secret("WEIXIN_ALLOWED_USERS", "")
         group_allow_from = extra.get("group_allow_from")
         if group_allow_from is None:
-            group_allow_from = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "")
+            group_allow_from = _wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "")
         self._allow_from = self._coerce_list(allow_from)
         self._group_allow_from = self._coerce_list(group_allow_from)
         self._split_multiline_messages = _coerce_bool(
@@ -1318,13 +1333,13 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
-        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._poll_session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector())
         # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
         # "Timeout context manager should be used inside a task" errors when
         # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
         # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
         _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
-        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
+        self._send_session = aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1341,6 +1356,8 @@ class WeixinAdapter(BasePlatformAdapter):
                 self.name,
                 self._group_policy,
             )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -1427,6 +1444,36 @@ class WeixinAdapter(BasePlatformAdapter):
                 await asyncio.sleep(BACKOFF_DELAY_SECONDS if consecutive_failures >= MAX_CONSECUTIVE_FAILURES else RETRY_DELAY_SECONDS)
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     consecutive_failures = 0
+                    # Recycle the poll session after a full failure streak.
+                    # Failed connection attempts through a local HTTP proxy
+                    # (e.g. Clash on 127.0.0.1:7890) can strand sockets that
+                    # never return to the connector's keepalive pool, so the
+                    # tight keepalive_timeout never reaps them. On macOS the
+                    # default 256-fd soft limit turns that drip into
+                    # `[Errno 24] Too many open files` and a gateway crash
+                    # (#79889). Closing the session tears down its connector
+                    # and every socket it holds; a fresh session starts the
+                    # next attempt from zero fds.
+                    await self._recycle_poll_session()
+
+    async def _recycle_poll_session(self) -> None:
+        """Replace ``_poll_session`` with a fresh one, closing the old.
+
+        Swap-then-close so concurrent ``_process_message`` tasks that grab
+        ``self._poll_session`` never observe a closed session; in-flight
+        requests on the old session finish or fail independently.
+        """
+        if not self._running or aiohttp is None:
+            return
+        old = self._poll_session
+        self._poll_session = aiohttp.ClientSession(
+            trust_env=gateway_trust_env(), connector=_make_ssl_connector()
+        )
+        if old is not None and not old.closed:
+            try:
+                await old.close()
+            except Exception as exc:
+                logger.debug("[%s] old poll session close failed: %s", self.name, exc)
 
     async def _process_message_safe(self, message: Dict[str, Any]) -> None:
         try:
@@ -1468,7 +1515,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
-            self._token_store.set(self._account_id, sender_id, context_token)
+            await self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
         media_paths: List[str] = []
@@ -1507,9 +1554,11 @@ class WeixinAdapter(BasePlatformAdapter):
             await self.handle_message(event)
 
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        # Scoped reads (#93522): the default profile's allow-all flag must
+        # not leak into a multiplexed secondary profile's admission gate.
+        if (_wx_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("WEIXIN_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return (_wx_secret("WEIXIN_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
@@ -1638,7 +1687,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=30.0,
             )
-            return cache_image_from_bytes(data, ".jpg")
+            return await cache_image_from_bytes_async(data, ".jpg")
         except Exception as exc:
             logger.warning("[%s] image download failed: %s", self.name, exc)
             return None
@@ -1654,7 +1703,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=120.0,
             )
-            return cache_document_from_bytes(data, "video.mp4")
+            return await cache_document_from_bytes_async(data, "video.mp4")
         except Exception as exc:
             logger.warning("[%s] video download failed: %s", self.name, exc)
             return None
@@ -1673,7 +1722,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=60.0,
             )
-            return cache_document_from_bytes(data, filename), mime
+            return await cache_document_from_bytes_async(data, filename), mime
         except Exception as exc:
             logger.warning("[%s] file download failed: %s", self.name, exc)
             return None, mime
@@ -1697,7 +1746,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 full_url=media.get("full_url"),
                 timeout_seconds=60.0,
             )
-            return cache_audio_from_bytes(data, ".silk")
+            return await cache_audio_from_bytes_async(data, ".silk")
         except Exception as exc:
             logger.warning("[%s] voice download failed: %s", self.name, exc)
             return None
@@ -2373,7 +2422,7 @@ async def send_weixin_direct(
             "context_token_used": bool(context_token),
         }
 
-    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
+    async with aiohttp.ClientSession(trust_env=gateway_trust_env(), connector=_make_ssl_connector()) as session:
         adapter = WeixinAdapter(
             PlatformConfig(
                 enabled=True,

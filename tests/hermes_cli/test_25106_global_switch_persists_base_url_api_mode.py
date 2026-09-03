@@ -56,6 +56,15 @@ class _StubCLI:
     def _confirm_expensive_model_switch(self, result) -> bool:
         return True
 
+    def _confirm_and_apply_cli_model_switch(
+        self, result, persist_global, one_turn, custom_provs=None
+    ):
+        import cli as cli_mod
+
+        return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
+            self, result, persist_global, one_turn, custom_provs
+        )
+
     def _open_model_picker(self, *a, **k):
         raise AssertionError("picker should not open when a model name is given")
 

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from hermes_state_common import (
     SCHEMA_SQL,
+    _PREVIEW_ELIGIBLE_SQL,
     _PREVIEW_RAW_SELECT,
     _shape_preview,
     _sql_session_last_active,
@@ -32,7 +33,7 @@ class SessionPortabilityMixin:
     @classmethod
     def _compact_session_cols(cls) -> str:
         """SELECT list for compact_rows: every ``sessions`` column declared in
-        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        SCHEMA_SQL except prompt storage internals, aliased with the ``s``
         prefix used by list_sessions_rich/_get_session_rich_row queries."""
         if cls._session_compact_cols_sql is None:
             declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
@@ -53,8 +54,8 @@ class SessionPortabilityMixin:
         where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
         if not include_archived:
             where += " AND archived = 0"
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 "SELECT cwd AS cwd, COUNT(*) AS sessions, "
                 "MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
                 f"FROM sessions WHERE {where} GROUP BY cwd"
@@ -102,26 +103,29 @@ class SessionPortabilityMixin:
 
         query = f"""
             SELECT s.*,
+                COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved,
                 COALESCE(
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                       AND {_PREVIEW_ELIGIBLE_SQL}
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
+            LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
             WHERE s.source = 'cron' AND s.id >= ? AND s.id < ?
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
-        with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, (prefix, prefix_hi, limit, offset))
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []
         for row in rows:
-            s = dict(row)
+            s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
             runs.append(s)
         return runs
@@ -133,31 +137,80 @@ class SessionPortabilityMixin:
 
         Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
         ``list_sessions_rich`` for details).
+
+        Thin wrapper over ``_get_session_rich_rows_batch`` so the enriched
+        SELECT lives in exactly one place.
         """
+        return self._get_session_rich_rows_batch(
+            [session_id], compact_rows=compact_rows
+        ).get(session_id)
+
+    def _get_session_rich_rows_batch(
+        self, session_ids, compact_rows: bool = False
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch multiple sessions with the same enriched columns as
+        ``_get_session_rich_row``, in a single query.
+
+        Used by ``list_sessions_rich``'s compression-tip projection to resolve
+        every tip row for a page in one round trip instead of one query per
+        compression-root row. Returns a dict keyed by session id; ids that
+        don't exist are simply absent from the result (same as
+        ``_get_session_rich_row`` returning ``None`` for them).
+        """
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return {}
+        # Old SQLite builds cap bound variables at 999
+        # (SQLITE_MAX_VARIABLE_NUMBER); large pages (limit=10000 callers
+        # exist) could exceed it. Chunk the IN list so the helper is safe at
+        # any page size — this is the single choke point for the enriched
+        # multi-row fetch, so the bound lives here, not at call sites.
+        _CHUNK = 900
+        if len(ids) > _CHUNK:
+            result: Dict[str, Dict[str, Any]] = {}
+            for start in range(0, len(ids), _CHUNK):
+                result.update(
+                    self._get_session_rich_rows_batch(
+                        ids[start:start + _CHUNK], compact_rows=compact_rows
+                    )
+                )
+            return result
         # Same read-your-writes guarantee as list_sessions_rich.
         self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"
+        placeholders = ",".join("?" for _ in ids)
+        prompt_select = (
+            "" if compact_rows
+            else ", COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
+        )
+        prompt_join = (
+            "" if compact_rows
+            else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
+        )
         query = f"""
-            SELECT {_sel},
+            SELECT {_sel}{prompt_select},
                 COALESCE(
                     (SELECT {_PREVIEW_RAW_SELECT}
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                       AND {_PREVIEW_ELIGIBLE_SQL}
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 {_sql_session_last_active("s")} AS last_active
             FROM sessions s
-            WHERE s.id = ?
+            {prompt_join}
+            WHERE s.id IN ({placeholders})
         """
-        with self._lock:
-            cursor = self._conn.execute(query, (session_id,))
-            row = cursor.fetchone()
-        if not row:
-            return None
-        s = dict(row)
-        s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
-        return s
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, ids)
+            rows = cursor.fetchall()
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            s = self._session_row_dict(row)
+            s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
+            result[s["id"]] = s
+        return result
 
     def get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Public wrapper for :meth:`_get_session_rich_row`.
@@ -176,8 +229,8 @@ class SessionPortabilityMixin:
         Returns ``id``, ``title``, and the full first-turn ``content`` so a
         caller can re-derive what the user typed. Newest first.
         """
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 """
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -201,8 +254,8 @@ class SessionPortabilityMixin:
         Pairs with :meth:`list_skill_scaffolded_sessions` so a re-title can feed
         the titler the same (request, reply) shape the live path uses.
         """
-        with self._lock:
-            row = self._conn.execute(
+        with self._read_ctx() as conn:
+            row = conn.execute(
                 "SELECT content FROM messages "
                 "WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL "
                 "ORDER BY timestamp, id LIMIT 1",
@@ -252,6 +305,134 @@ class SessionPortabilityMixin:
             messages = self.get_messages(session["id"])
             results.append({**session, "messages": messages})
         return results
+
+    def adopt_session_lineage_from(
+        self,
+        donor_db: Any,  # a full SessionDB (mixin cannot import it — cycle)
+        session_id: str,
+        *,
+        retire_donor: bool = True,
+    ) -> Dict[str, Any]:
+        """Adopt *session_id*'s full compression lineage from *donor_db* into
+        this store.
+
+        The stranded-bot-session heal (#93091 follow-up to #93296): before the
+        desktop routed session RPCs by their target session, a profile bot's
+        turns executed on whichever backend held window focus — usually the
+        default one — so the bot's canonical session rows and messages
+        accumulated in the DEFAULT profile's state.db. Once routing was fixed,
+        the profile backend correctly received the RPCs but had no such
+        session, so the same chat 4001'd for the opposite reason. This method
+        moves the conversation to where routing now looks for it.
+
+        Composition of existing primitives (no new import/export machinery):
+        ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``.
+        Import semantics apply unchanged: gateway routing, handoff, and live
+        activity fields are reset; already-present ids are skipped
+        (idempotent re-adoption after a partial run).
+
+        When ``retire_donor`` is True and at least one segment was imported
+        (or every segment already exists here), the donor rows are ARCHIVED —
+        never deleted — with ``end_reason='adopted_by_profile'`` so the
+        default profile's list stops advertising a conversation that now
+        lives elsewhere, while the bytes stay recoverable. The archive is
+        deliberately NOT in the recoverable set (agent_close/ws_orphan_reap):
+        canonical-lookup resurrection must not undo an adoption.
+
+        Returns the ``import_sessions`` result dict, plus ``adopted`` (bool)
+        and ``donor_retired`` (bool — True only when EVERY segment's
+        retirement actually applied).
+        """
+        payload = donor_db.export_session_lineage(session_id)
+        if not payload:
+            return {
+                "ok": False,
+                "adopted": False,
+                "donor_retired": False,
+                "error": f"session {session_id!r} not found in donor store",
+            }
+
+        segments = payload.get("segments") or [payload]
+
+        # Divergence guard: a segment we are about to SKIP (already present
+        # here) may have kept accumulating messages in the donor store after
+        # a partial earlier adoption. Retiring it would strand those newer
+        # messages behind a non-recoverable archive. Compare counts up front
+        # and refuse to retire (still adopt/import) when the donor is ahead.
+        donor_ahead = False
+        for seg in segments:
+            seg_id = seg.get("id")
+            if not seg_id or self.get_session(seg_id) is None:
+                continue
+            donor_count = len(seg.get("messages") or [])
+            local_count = len(self.get_messages(seg_id))
+            if donor_count > local_count:
+                donor_ahead = True
+                logger.warning(
+                    "adoption divergence: donor segment %s has %d messages, "
+                    "local copy has %d — donor will NOT be retired",
+                    seg_id, donor_count, local_count,
+                )
+
+        result = self.import_sessions([dict(seg) for seg in segments])
+        imported = int(result.get("imported") or 0)
+        skipped = int(result.get("skipped") or 0)
+        adopted = result.get("ok", False) and (imported + skipped) == len(segments)
+        if not adopted:
+            logger.warning(
+                "adoption of %s did not complete: imported=%s skipped=%s "
+                "of %s segment(s); errors=%s",
+                session_id, imported, skipped, len(segments),
+                result.get("errors"),
+            )
+
+        donor_retired = False
+        if adopted and retire_donor and not donor_ahead:
+            retire_ok = True
+            for seg in segments:
+                seg_id = seg.get("id")
+                if not seg_id:
+                    continue
+                try:
+                    # TOCTOU close-out: the guard above compared EXPORT-TIME
+                    # counts, but another backend can append donor messages
+                    # between export and this loop. Re-read both stores right
+                    # before stamping; a donor-ahead signal here skips the
+                    # stamp so growth never lands behind a non-recoverable
+                    # archive. (Count comparison cannot see equal-count
+                    # CONTENT divergence — e.g. a donor rewind+rewrite; that
+                    # residual case is accepted: bytes stay in the donor
+                    # store either way, only reachability differs.)
+                    donor_now = len(donor_db.get_messages(seg_id))
+                    local_now = len(self.get_messages(seg_id))
+                    if donor_now > local_now:
+                        retire_ok = False
+                        logger.warning(
+                            "adoption divergence at retire time: donor "
+                            "segment %s grew to %d messages (local %d) — "
+                            "leaving donor unretired",
+                            seg_id, donor_now, local_now,
+                        )
+                        continue
+                    # First end_reason wins in end_session(); reopen first so
+                    # the adoption boundary is stamped even on ended segments
+                    # (e.g. 'compression' parents).
+                    donor_db.reopen_session(seg_id)
+                    donor_db.end_session(seg_id, "adopted_by_profile")
+                    donor_db.set_session_archived(seg_id, True)
+                except Exception:
+                    # Best-effort by design: a retirement failure must not
+                    # fail the adoption (the profile copy is already whole;
+                    # a later resume retries retirement idempotently). But
+                    # never claim success we didn't have.
+                    retire_ok = False
+                    logger.warning(
+                        "failed to retire donor segment %s after adoption",
+                        seg_id, exc_info=True,
+                    )
+            donor_retired = retire_ok
+
+        return {**result, "adopted": adopted, "donor_retired": donor_retired}
 
     @staticmethod
     def _import_text_or_none(value: Any, field: str) -> Optional[str]:
@@ -518,10 +699,14 @@ class SessionPortabilityMixin:
                 if started_at is None:
                     started_at = time.time()
                 archived = 1 if raw.get("archived") else 0
+                system_prompt_hash = self._store_system_prompt(
+                    conn, raw.get("system_prompt")
+                )
 
                 conn.execute(
                     """INSERT INTO sessions (
                            id, source, user_id, model, model_config, system_prompt,
+                           system_prompt_hash,
                            parent_session_id, started_at, ended_at, end_reason,
                            message_count, tool_call_count, input_tokens, output_tokens,
                            cache_read_tokens, cache_write_tokens, reasoning_tokens,
@@ -532,7 +717,7 @@ class SessionPortabilityMixin:
                        )
                        VALUES (
                            :id, :source, :user_id, :model, :model_config,
-                           :system_prompt, NULL, :started_at, :ended_at,
+                           NULL, :system_prompt_hash, NULL, :started_at, :ended_at,
                            :end_reason, 0, 0, :input_tokens, :output_tokens,
                            :cache_read_tokens, :cache_write_tokens,
                            :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
@@ -547,7 +732,7 @@ class SessionPortabilityMixin:
                         "user_id": raw.get("user_id"),
                         "model": raw.get("model"),
                         "model_config": raw.get("model_config"),
-                        "system_prompt": raw.get("system_prompt"),
+                        "system_prompt_hash": system_prompt_hash,
                         "started_at": started_at,
                         "ended_at": self._float_or_none(raw.get("ended_at")),
                         "end_reason": raw.get("end_reason"),

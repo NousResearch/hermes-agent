@@ -39,8 +39,24 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
+        """``-900k`` large-context picker variants are Hermes-side aliases —
+        the Codex backend only knows the base slug, so build_kwargs must
+        strip the suffix from the wire model id."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol-900k", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
-
+    def test_base_slug_model_id_unchanged_on_wire(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
 
 
@@ -74,6 +90,21 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
+    def test_cache_key_differs_across_unrelated_sessions(self, transport):
+        """#78941: two unrelated sessions (different users/conversations)
+        sharing the same static prefix must NOT collapse onto the same
+        prompt_cache_key — session_id scopes the hash unless it is a cron
+        per-fire id, which is normalized to its stable job prefix instead."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw1 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="session_alice_1",
+        )
+        kw2 = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            session_id="session_bob_1",
+        )
+        assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
 
     def test_github_responses_drops_message_item_id_end_to_end(self, transport):
         # #32716: Copilot binds codex_message_items ids to a backend
@@ -235,6 +266,335 @@ class TestCodexBuildKwargs:
         assert eb.get("prompt_cache_key") == "caller-override"
         assert eb.get("other_field") == 42
 
+    # ── Azure Foundry post-tool reasoning suppression ──────────────────
+    #
+    # Foundry's Responses surface accepts the initial function-call request
+    # and ordinary multi-turn continuity, but rejects the post-tool follow-up
+    # payload when a replayed encrypted ``reasoning`` item sits alongside
+    # ``function_call`` / ``function_call_output`` (HTTP 400 invalid_payload).
+    # Suppression is scoped to that follow-up turn only.
+
+    @staticmethod
+    def _reasoning_item():
+        return {"type": "reasoning", "encrypted_content": "sealed", "summary": []}
+
+    @classmethod
+    def _post_tool_messages(cls):
+        """user → assistant(tool_calls + reasoning) → tool result."""
+        return [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [cls._reasoning_item()],
+                "tool_calls": [
+                    {
+                        "id": "call_marker",
+                        "type": "function",
+                        "function": {"name": "write_marker", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_marker",
+                "content": "marker written",
+            },
+        ]
+
+    AZURE_FOUNDRY_BASE_URL = (
+        "https://placeholder.services.ai.azure.com/"
+        "api/projects/placeholder/openai/v1"
+    )
+
+    def test_post_tool_replay_preserves_reasoning_for_default_responses(self, transport):
+        """Non-Azure Responses endpoints keep post-tool reasoning replay."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
+        """The rejected payload shape drops reasoning, keeps tool continuity."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == []
+
+    def test_azure_foundry_detected_by_host_without_provider(self, transport):
+        """Foundry detection works on the endpoint host alone."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://proxy.example.com/.services.ai.azure.com/openai/v1",
+            "https://openrouter.ai/api/v1?upstream=.services.ai.azure.com",
+            "https://services.ai.azure.com.evil.example/v1",
+        ],
+    )
+    def test_non_foundry_host_lookalikes_keep_reasoning(self, transport, base_url):
+        """A Foundry domain in a path/query/suffix is not a Foundry endpoint.
+
+        Guards against the substring-match false positive: these URLs all
+        contain the Foundry domain but are served by someone else, and
+        suppressing their reasoning replay would silently degrade
+        cross-turn coherence on an unrelated provider.
+        """
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            base_url=base_url,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_non_tool_follow_up_preserves_reasoning_items(self, transport):
+        """Ordinary (non-tool) Azure Foundry continuity is unchanged.
+
+        A plain assistant reasoning turn followed by another user message has
+        no tool continuity, so the encrypted reasoning item must still be
+        replayed — Foundry only rejects the post-tool payload.
+        """
+        messages = [
+            {"role": "user", "content": "Explain recursion"},
+            {
+                "role": "assistant",
+                "content": "Recursion is when a function calls itself.",
+                "codex_reasoning_items": [self._reasoning_item()],
+            },
+            {"role": "user", "content": "Give an example"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" not in item_types
+        assert "function_call_output" not in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_user_turn_after_completed_tool_call_keeps_reasoning(
+        self, transport
+    ):
+        """Suppression must not stick for the rest of the conversation.
+
+        The tool call completed and the assistant already answered; this turn
+        is a plain user follow-up whose payload ends on a user message, which
+        Foundry accepts. A predicate that scanned the whole history for any
+        tool call plus any tool result would suppress reasoning here — and on
+        every later turn — which is the all-turns behavior this scoping
+        exists to avoid.
+        """
+        messages = self._post_tool_messages() + [
+            {
+                "role": "assistant",
+                "content": "Marker created.",
+                "codex_reasoning_items": [self._reasoning_item()],
+            },
+            {"role": "user", "content": "Now explain recursion"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_azure_foundry_parallel_tool_results_suppress_reasoning(self, transport):
+        """A trailing run of parallel tool results is still the rejected shape."""
+        messages = [
+            {"role": "user", "content": "Read both files"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [self._reasoning_item()],
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_a", "content": "a"},
+            {"role": "tool", "tool_call_id": "call_b", "content": "b"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert item_types.count("function_call_output") == 2
+
+    def test_azure_foundry_respects_caller_replay_disabled(self, transport):
+        """An explicit replay_encrypted_reasoning=False is not re-enabled."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=self._post_tool_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=False,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" not in item_types
+        assert kw.get("include") == []
+
+    @pytest.mark.parametrize(
+        "tool_call,tool_call_id",
+        [
+            # Responses histories carry the function call id in call_id while
+            # ``id`` holds the response item id. Resumed legacy sessions and
+            # host-fed histories still use this shape.
+            ({"id": "fc_item_a", "call_id": "call_a"}, "call_a"),
+            # Plain chat-completions shape: id IS the call id.
+            ({"id": "call_a"}, "call_a"),
+            # Bare fc_ id with no call_id — the converter derives call_<rest>.
+            ({"id": "fc_a"}, "call_a"),
+            # Composite stored id, on either side of the pairing.
+            ({"id": "call_a|fc_a"}, "call_a"),
+            ({"id": "call_a"}, "call_a|fc_a"),
+            # call_id present, no id at all.
+            ({"call_id": "call_a"}, "call_a"),
+        ],
+    )
+    def test_azure_foundry_suppresses_across_tool_call_id_shapes(
+        self, transport, tool_call, tool_call_id
+    ):
+        """Every id shape the converter can pair must be detected.
+
+        The converter resolves a function call's identity as
+        ``call_id`` -> embedded ``id`` -> derived from an ``fc_`` item id, and
+        splits composite ``"call_x|fc_y"`` ids. A predicate that matched only
+        ``tool_calls[*].id`` would miss the id=fc_ / call_id=call_ shape: the
+        converter still emits paired function_call / function_call_output, so
+        the exact payload Foundry rejects would ship with the reasoning item
+        intact.
+        """
+        messages = [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [self._reasoning_item()],
+                "tool_calls": [
+                    {**tool_call, "type": "function",
+                     "function": {"name": "write_marker", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": tool_call_id, "content": "marker written"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        # The converter paired them, so this is the rejected shape.
+        assert "function_call" in item_types
+        assert "function_call_output" in item_types
+        assert "reasoning" not in item_types
+        assert kw.get("include") == []
+
+    def test_azure_foundry_unpaired_tool_result_keeps_reasoning(self, transport):
+        """A tool result that pairs with nothing is not the rejected shape."""
+        messages = [
+            {"role": "user", "content": "Create a marker"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [self._reasoning_item()],
+                "tool_calls": [
+                    {
+                        "id": "fc_item_x",
+                        "call_id": "call_x",
+                        "type": "function",
+                        "function": {"name": "write_marker", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_unrelated", "content": "?"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            provider="azure-foundry",
+            base_url=self.AZURE_FOUNDRY_BASE_URL,
+            replay_encrypted_reasoning=True,
+        )
+        item_types = [item.get("type") for item in kw["input"] if isinstance(item, dict)]
+        assert "reasoning" in item_types
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    def test_xai_top_level_override_also_governs_extra_body(self, transport):
+        """A caller's top-level request_overrides={"prompt_cache_key": ...}
+        must win in extra_body.prompt_cache_key too -- the field xAI actually
+        reads -- instead of being silently outrun by the auto-derived
+        content-hash cache_key (#78941)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="grok-4.3", messages=messages, tools=[],
+            session_id="conv-xai-1",
+            is_xai_responses=True,
+            request_overrides={"prompt_cache_key": "caller-top-level"},
+        )
+        assert kw["prompt_cache_key"] == "caller-top-level"
+        assert kw["extra_body"]["prompt_cache_key"] == "caller-top-level"
+
 
 
 
@@ -242,23 +602,55 @@ class TestCodexBuildKwargs:
     @pytest.mark.parametrize("length", [64, 65])
     def test_codex_cache_scope_boundary(self, transport, length):
         session_id = "s" * length
-        scope = transport.build_kwargs(
+        kw = transport.build_kwargs(
             model="gpt-5.4",
             messages=[{"role": "user", "content": "Hi"}],
             tools=[],
             session_id=session_id,
             is_codex_backend=True,
             request_overrides={"extra_headers": {"x-test": "1"}},
+        )
+        headers = kw["extra_headers"]
+
+        assert headers["x-test"] == "1"
+        # session_id header carries the raw physical id untouched regardless
+        # of length (#57012); x-client-request-id mirrors the body's
+        # effective (already-bounded) prompt_cache_key.
+        assert headers["session_id"] == session_id
+        assert headers["x-client-request-id"] == kw["prompt_cache_key"]
+        assert len(headers["x-client-request-id"]) <= 64
+
+    def test_codex_cache_scope_headers_normalize_cron_session_id(self, transport):
+        """x-client-request-id shares a cache scope across cron re-fires of the
+        same job (cron per-fire timestamp stripped, same as prompt_cache_key),
+        while session_id stays the raw per-fire physical id (#57012)."""
+        first_run = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="cron_job42_20260801_090000",
+            is_codex_backend=True,
+        )["extra_headers"]
+        second_run = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="cron_job42_20260802_090000",
+            is_codex_backend=True,
+        )["extra_headers"]
+        other_job = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            session_id="cron_job99_20260801_090000",
+            is_codex_backend=True,
         )["extra_headers"]
 
-        assert scope["x-test"] == "1"
-        assert len(scope["session_id"]) <= 64
-        assert scope["x-client-request-id"] == scope["session_id"]
-        if length == 64:
-            assert scope["session_id"] == session_id
-        else:
-            assert scope["session_id"].startswith("pck_")
-            assert scope["session_id"] != session_id
+        assert first_run["session_id"] == "cron_job42_20260801_090000"
+        assert second_run["session_id"] == "cron_job42_20260802_090000"
+        assert first_run["x-client-request-id"].startswith("pck_")
+        assert first_run["x-client-request-id"] == second_run["x-client-request-id"]
+        assert first_run["x-client-request-id"] != other_job["x-client-request-id"]
 
 
 
@@ -269,15 +661,15 @@ class TestCodexBuildKwargs:
 
 
 
-
-
-    def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
-        """xAI path swaps a client-side ``web_search`` function for xAI's
-        native server-side ``web_search`` built-in so grok server-side search
-        runs to completion (otherwise the turn stalls as
-        reasoning-with-no-answer -> false 'incomplete' -> 3 retries -> fail).
+    def test_xai_injects_native_web_search_when_client_web_search_present(self, transport, monkeypatch):
+        """When the active/configured search backend is xAI, swap client
+        ``web_search`` for Grok's native built-in so server-side search
+        completes (otherwise the turn stalls as incomplete → 3 retries).
         Non-conflicting client tools are preserved.
         """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
         messages = [{"role": "user", "content": "Find current prices."}]
         kw = transport.build_kwargs(
             model="grok-composer-2.5-fast", messages=messages,
@@ -298,6 +690,71 @@ class TestCodexBuildKwargs:
         # Non-conflicting client-side tools are preserved.
         names = [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
         assert "read_file" in names
+        assert "web_search" not in names
+        assert "hermes_web_search" not in names
+
+    def test_xai_renames_client_web_search_when_firecrawl_configured(self, transport, monkeypatch):
+        """Configured Firecrawl (or any non-xai backend) must keep Hermes
+        dispatch — rename the wire tool so Grok cannot hijack ``web_search``.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: False)
+        messages = [{"role": "user", "content": "Find current prices."}]
+        kw = transport.build_kwargs(
+            model="grok-4.5", messages=messages,
+            tools=[
+                {"type": "function", "function": {
+                    "name": "read_file", "description": "Read a file.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_search", "description": "Search the web.",
+                    "parameters": {"type": "object",
+                                   "properties": {"query": {"type": "string"}}}}},
+            ],
+            is_xai_responses=True,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "read_file" in names
+        assert "hermes_web_search" in names
+        assert "web_search" not in names
+
+    def test_xai_normalize_maps_client_web_search_alias_back(self, transport, monkeypatch):
+        """Alias used on the wire must become ``web_search`` for Hermes dispatch."""
+        import agent.transports.codex as codex_mod
+
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    call_id="call_1",
+                    response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name=codex_mod._XAI_CLIENT_WEB_SEARCH_ALIAS,
+                        arguments='{"query":"hermes"}',
+                    ),
+                )
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+
+        assert normalized.tool_calls is not None
+        assert len(normalized.tool_calls) == 1
+        assert normalized.tool_calls[0].name == "web_search"
 
     def test_xai_does_not_inject_native_web_search_without_client_web_search(self, transport):
         """The native ``web_search`` built-in is a 1:1 swap for an
@@ -341,8 +798,6 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
-
-
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.
@@ -350,10 +805,6 @@ class TestCodexBuildKwargs:
     # must omit the `reasoning` key for them.  As of May 2026 we DO request
     # ``reasoning.encrypted_content`` back from xAI on every model —
     # see test_xai_reasoning_effort_passed for the rationale.
-
-
-
-
 
     def test_xai_grok_4_20_0309_variants_omit_reasoning_effort(self, transport):
         """grok-4.20-0309-(non-)reasoning reject the effort dial.
@@ -370,7 +821,369 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
+class TestOpencodeReservedToolAliases:
+    """OpenCode /v1/responses reserves web_search / search_files as function
+    names (HTTP 400 "custom function name 'X' is reserved", #85589). The
+    transport aliases them on the wire and maps them back on dispatch."""
 
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "search_files", "description": "Search files.",
+            "parameters": {"type": "object",
+                           "properties": {"pattern": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "web_search", "description": "Search the web.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_builtin_opencode_go_aliases_reserved_names(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "read_file" in names  # non-reserved untouched
+
+    def test_custom_opencode_family_provider_aliases_reserved_names(self, transport):
+        """Custom opencode-go-* providers get the same aliasing (#85589)."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go-bridge",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "search_files" not in names
+
+    def test_opencode_host_match_without_family_provider(self, transport):
+        """An arbitrary custom provider pointing at opencode.ai still aliases."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="my-oc-proxy",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+
+    def test_non_opencode_backend_keeps_original_names(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "search_files" in names
+        assert "web_search" in names
+        assert "hermes_search_files" not in names
+
+    def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_search_files",
+                        arguments='{"pattern":"README"}',
+                    ),
+                ),
+                SimpleNamespace(
+                    id="call_2", call_id="call_2", response_item_id="fc_2",
+                    function=SimpleNamespace(
+                        name="hermes_web_search",
+                        arguments='{"query":"hermes"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+        names = [tc.name for tc in normalized.tool_calls]
+        assert names == ["search_files", "web_search"]
+
+
+class TestXaiReservedToolSearchAlias:
+    """xAI reserves ``tool_search`` for Grok's native Tool Search and rejects
+    the client declaration with HTTP 400 (#95003). The transport aliases the
+    progressive-disclosure bridge on the wire and maps it back on dispatch."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "tool_search", "description": "Search deferred tools.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "tool_describe", "description": "Describe a deferred tool.",
+            "parameters": {"type": "object",
+                           "properties": {"name": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_xai_aliases_reserved_tool_search(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert "hermes_tool_search" in names
+        assert "tool_search" not in names
+        # Only ``tool_search`` is reserved — the sibling bridge tools and
+        # ordinary tools go out untouched.
+        assert "tool_describe" in names
+        assert "read_file" in names
+
+    def test_non_xai_backend_keeps_tool_search_name(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_codex_backend=True,
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "tool_search" in names
+        assert "hermes_tool_search" not in names
+
+    def test_alias_composes_with_native_web_search_swap(self, transport, monkeypatch):
+        """The bridge alias must survive the xAI web_search branch (#48108)."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
+        tools = list(self._TOOLS) + [
+            {"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        assert any(t.get("type") == "web_search" for t in kw.get("tools", []))
+        names = self._names(kw)
+        assert "hermes_tool_search" in names
+        assert "tool_search" not in names
+
+    def test_normalize_maps_tool_search_alias_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_tool_search",
+                        arguments='{"query":"create github issue"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        # Pair the response with a real request so provenance is recorded.
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
+        normalized = transport.normalize_response(response)
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+
+    def _normalize_named_call(self, transport, monkeypatch, wire_name):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(name=wire_name, arguments="{}"),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        return transport.normalize_response(response)
+
+    def test_no_alias_emitted_means_no_reverse_rewrite(self, transport, monkeypatch):
+        """Provenance contract (#95003 review): a request that emitted no
+        aliases must not have a real ``hermes_tool_search`` tool rewritten."""
+        real_tool = {"type": "function", "function": {
+            "name": "hermes_tool_search", "description": "A real MCP tool.",
+            "parameters": {"type": "object", "properties": {}}}}
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[real_tool],
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {}
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["hermes_tool_search"]
+
+    def test_alias_collision_takes_suffix_no_duplicates(self, transport, monkeypatch):
+        """A real tool already named ``hermes_tool_search`` keeps its wire
+        name; the bridge is suffixed and both round-trip independently."""
+        tools = [
+            {"type": "function", "function": {
+                "name": "hermes_tool_search", "description": "Real tool.",
+                "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {
+                "name": "tool_search", "description": "Bridge.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert names == ["hermes_tool_search", "hermes_tool_search_2"]
+        assert len(names) == len(set(names))
+        assert transport._last_wire_aliases == {"hermes_tool_search_2": "tool_search"}
+        # Bridge alias maps back; the real tool's name is untouched.
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search_2"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+        normalized2 = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized2.tool_calls] == ["hermes_tool_search"]
+
+    def test_legacy_fallback_without_provenance(self, transport, monkeypatch):
+        """Normalize-only call sites (no build_kwargs on this instance) keep
+        the historical unconditional reverse mapping."""
+        assert transport._last_wire_aliases is None
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+
+
+class TestXaiWebSearchBackendPreference:
+    """``_xai_prefers_native_web_search`` must honor web backend config."""
+
+    def test_explicit_firecrawl_prefers_client(self, monkeypatch):
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="firecrawl"),
+        )
+        assert codex_mod._xai_prefers_native_web_search() is False
+
+    def test_explicit_search_backend_xai_prefers_native(self, monkeypatch):
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="xai"),
+        )
+        assert codex_mod._xai_prefers_native_web_search() is True
+
+    def test_resolved_non_xai_provider_prefers_client(self, monkeypatch):
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: SimpleNamespace(name="firecrawl"),
+        )
+        assert codex_mod._xai_prefers_native_web_search() is False
+
+    def test_no_provider_legacy_fallback_xai(self, monkeypatch):
+        """When no provider is registered, fall back to _get_search_backend."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend",
+            lambda: "xai",
+        )
+        assert codex_mod._xai_prefers_native_web_search() is True
+
+    def test_no_provider_legacy_fallback_non_xai(self, monkeypatch):
+        """When no provider is registered and backend isn't xai, keep client."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "tools.web_tools._get_search_backend",
+            lambda: "firecrawl",
+        )
+        assert codex_mod._xai_prefers_native_web_search() is False
 
 
 class TestCodexValidateResponse:
@@ -512,6 +1325,62 @@ class TestCodexTransportTimeout:
 
 
 
+class TestCodexTransportXaiReasoningEffort:
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    def test_grok_46_preserves_xhigh(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_grok_46_clamps_hermes_aliases_to_model_ceiling(self, transport, effort):
+        """Hermes ladder aliases mean "this model's ceiling" — on grok-4.6
+        that is xhigh, not one rung below it (#87279)."""
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_older_grok_clamps_aliases_to_high(self, transport, effort):
+        """Older Grok tops out at high; above-ceiling aliases land there."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == "high"
+
+    def test_older_grok_clamps_xhigh_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+        )
+
+        assert kw["reasoning"]["effort"] == "high"
+
+
 class TestCodexTransportXaiServiceTierStrip:
     """xAI Responses API rejects ``service_tier`` (#28490).
 
@@ -543,6 +1412,28 @@ class TestCodexTransportXaiServiceTierStrip:
             f"service_tier must be stripped on xAI requests, "
             f"got {kw.get('service_tier')!r}"
         )
+
+    def test_grok_46_preserves_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+
+    def test_grok_46_strips_non_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "unsupported"},
+        )
+
+        assert "service_tier" not in kw
 
     def test_non_xai_codex_preserves_service_tier(self, transport):
         """The strip is xAI-only — native Codex DOES accept

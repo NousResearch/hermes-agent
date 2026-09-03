@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
 
   background:
-    usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
+    usage:                 "Gebruik: /bg <prompt>\nVoorbeeld: /bg Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
     started:               "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."
+
+  btw:
+    usage:                 "Gebruik: /btw <vraag>\nVoorbeeld: /btw in watter lêer was daardie fout?\n\nBeantwoord 'n vinnige newevraag oor hierdie gesprek sonder om dit te onderbreek. Vir 'n onafhanklike agtergrondtaak, gebruik /bg <prompt>."
+    no_history:            "Nog geen gesprek nie — stuur jou vraag eerder as 'n gewone boodskap."
+    no_provider:           "❌ Kan nie newevraag beantwoord nie: geen verskaffer-geloofsbriewe opgestel nie."
+    started:               "💬 Newevraag: \"{preview}\"\nBeantwoord vanaf 'n momentopname van hierdie gesprek — die huidige werk gaan voort."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw het misluk: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Sessie-databasis is nie beskikbaar nie."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Opsomming kon nie gegenereer word nie ({error}). {count} historiese boodskap(pe) is verwyder en met 'n plekhouer vervang; vroeëre konteks kan nie meer herstel word nie. Oorweeg om jou auxiliary.compression-modelopstelling na te gaan."
     aborted:               "⚠️ Kompressie gestaak ({error}). Geen boodskappe is laat val nie — die gesprek is onveranderd. Voer /compress uit om weer te probeer, /reset vir 'n skoon sessie, of kyk na jou auxiliary.compression-modelkonfigurasie."
     aux_failed:            "ℹ️ Opgestelde saamperseringsmodel `{model}` het misluk ({error}). Herstel met jou hoofmodel — konteks is intakt — maar jy mag dalk `auxiliary.compression.model` in config.yaml wil nagaan."
+    turnhold_deferred:     "ℹ️ Kontekskompressie uitgestel — opsomming stroom nog. Gaan hierdie beurt sonder kompressie voort."
     failed:                "Saampersing het misluk: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nHuidige modus: `{mode}`\\n\\nKies \\'n opsie:"
     choice_fast:           "fast — Priority Processing aan"
     choice_normal:         "normal — standaardverwerking"
+    choice_auto:           "auto — vinnig vir die eerste sekondes van elke beurt"
+    choice_cold:           "cold — vinnig slegs vir die eerste beurt van 'n sessie"
 
   footer:
     status:                "📎 Looptyd-voetstuk: **{state}**\nVelde: `{fields}`\nPlatform: `{platform}`"
@@ -142,7 +153,7 @@ gateway:
     no_goal_set:           "Geen doelwit gestel nie."
     paused:                "⏸ Doelwit gepouse: {goal}"
     no_resume:             "Geen doelwit om voort te sit nie."
-    resumed:               "▶ Doelwit hervat: {goal}\nStuur enige boodskap om voort te gaan, of wag — ek sal die volgende stap met die volgende beurt neem."
+    resumed:               "▶ Doelwit hervat: {goal}\nGaan nou voort — ek neem dadelik die volgende stap."
     invalid:               "Ongeldige doelwit: {error}"
     set:                   "⊙ Doelwit gestel ({budget}-beurt-begroting): {goal}\nEk sal aanhou werk totdat die doelwit klaar is, jy dit pouseer/verwyder, of die begroting opgebruik is.\nBeheer: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -166,9 +177,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Geen persoonlikhede opgestel in `{path}/config.yaml` nie"
@@ -254,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Geen benoemde sessies gevind nie.\nGebruik `/title My Sessie` om jou huidige sessie 'n naam te gee, en dan `/resume My Sessie` om later daarheen terug te keer."
+    all_requires_admin: "_Let wel: `--all` (kruis-geselslys) vereis 'n opgestelde administrateur; slegs hierdie geselsie se sessies word gewys._"
     list_header:           "📋 **Benoemde Sessies**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -277,6 +295,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Geen kontrolepunte vir {cwd} gevind nie"
     invalid_number:        "Ongeldige kontrolepunt-nommer. Gebruik 1-{max}."
     restored:              "✅ Herstel na kontrolepunt {hash}: {reason}\n'n Voor-terugrol-momentopname is outomaties gestoor."
+    kept_user_edits:       "↷ Jou handwysigings is behou: {files}\nGebruik /rollback <N> --all om dié ook te herstel."
+    kept_oversize:         "↷ Behou (te groot vir kontrolepunte, geen gestoorde kopie om na terug te keer nie): {files}"
+    failed_deletes:        "⚠️ Kon nie verwyder nie (in plek gelaat): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

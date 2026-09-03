@@ -212,6 +212,47 @@ describe('extractClipboardImageBlobs', () => {
 
     expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
   })
+
+  // A rich-text copy (Discord thread, web page, doc) carries prose plus whatever
+  // inline images the page decorated it with. That is a TEXT paste: attaching the
+  // page's placeholder graphics as composer images while the text vanished is the
+  // "blank attachments, no message" bug.
+  it('ignores inline HTML images when the copy carries its own text', () => {
+    const clipboard = {
+      files: { length: 0, item: () => null },
+      getData: (type: string) =>
+        type === 'text/html'
+          ? `<p>hello from the thread</p><img src="data:image/png;base64,${'A'.repeat(20_000)}">`
+          : 'hello from the thread',
+      items: []
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([])
+  })
+
+  it('keeps inline HTML images when the copy is image-only', () => {
+    const clipboard = {
+      files: { length: 0, item: () => null },
+      getData: (type: string) =>
+        type === 'text/html' ? `<img src="data:image/png;base64,${'A'.repeat(20_000)}">` : '',
+      items: []
+    } as unknown as DataTransfer
+
+    const blobs = extractClipboardImageBlobs(clipboard)
+
+    expect(blobs).toHaveLength(1)
+    expect(blobs[0]?.type).toBe('image/png')
+  })
+
+  it('drops sub-thumbnail inline images — spacers, trackers, blurhash placeholders', () => {
+    const clipboard = {
+      files: { length: 0, item: () => null },
+      getData: (type: string) => (type === 'text/html' ? `<img src="data:image/png;base64,${'A'.repeat(64)}">` : ''),
+      items: []
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([])
+  })
 })
 
 describe('blobDedupeKey', () => {

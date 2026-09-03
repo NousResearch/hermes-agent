@@ -128,6 +128,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -345,6 +346,72 @@ def _normalize_matrix_bang_command(text: str) -> str:
     return f"/{resolved}{match.group(2) or ''}"
 
 
+# Matrix reply fallback prefix looks like:
+#   > <@alice:example.org> quoted text
+#   > continuation of quoted text
+#   <empty line>
+#   actual reply text
+# Capture the original quoted text and the quoted author's MXID so the
+# gateway prompt layer can render "[Replying to: \"...\"]" with the author
+# attached. Returns (text, author_id) — text is the joined quoted body,
+# author_id is the MXID parsed from the leading "<@user:server>" pill or
+# ``None`` if the fallback uses an unsupported shape.
+_MATRIX_REPLY_FALLBACK_PILL_RE = re.compile(r"^>\s*<(@[^>]+)>\s*(.*)$")
+
+
+def _extract_reply_fallback(body: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (reply_to_text, reply_to_author_id) parsed from a Matrix reply body.
+
+    Matrix stores reply text inline as ``> <@user:server> <line>\\n> <line>...``
+    followed by a blank line and the actual reply. The first line carries an
+    optional ``<@user:server>`` mention pill naming the original author.
+    """
+    if not body or not body.startswith("> "):
+        return None, None
+
+    quoted_lines: list[str] = []
+    author_id: Optional[str] = None
+    for line in body.split("\n"):
+        if not line.startswith("> "):
+            # Blank line or the start of the actual reply — stop accumulating.
+            break
+        content = line[2:]
+        if author_id is None:
+            pill_match = _MATRIX_REPLY_FALLBACK_PILL_RE.match(line)
+            if pill_match:
+                author_id = pill_match.group(1)
+                # Drop the pill from the visible quoted text so "[Replying
+                # to: ...]" in the LLM prompt reads naturally.
+                content = pill_match.group(2)
+        quoted_lines.append(content)
+
+    quoted_text = "\n".join(quoted_lines).strip() or None
+    return quoted_text, author_id
+
+
+def _strip_reply_fallback(body: str) -> str:
+    """Strip Matrix's inline ``> <text>\\n\\n<actual reply>`` fallback prefix.
+
+    Returns the body without the quoted lines. If the body doesn't start
+    with a reply fallback, returns it unchanged.
+    """
+    if not body or not body.startswith("> "):
+        return body
+    lines = body.split("\n")
+    stripped = []
+    past_fallback = False
+    for line in lines:
+        if not past_fallback:
+            if line.startswith("> ") or line == ">":
+                continue
+            if line == "":
+                past_fallback = True
+                continue
+            past_fallback = True
+        stripped.append(line)
+    return "\n".join(stripped) if stripped else body
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -527,12 +594,13 @@ def _resolve_max_message_length(config) -> int:
 # Back-compat alias for callers/tests that import the module constant.
 MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
 
-# Store directory for E2EE keys and sync state.
-# Uses get_hermes_home() so each profile gets its own Matrix store.
+# Store directory for E2EE keys and sync state. Resolved per adapter in
+# ``connect()`` (see ``_resolve_store_dir``), NOT at module scope: the
+# multiplex gateway imports this module once, so a module-level constant
+# would pin the root HERMES_HOME for every profile and all bots' Olm
+# identities would collide in one crypto.db (#89168). Mirrors the
+# pairing-store fix (a6397c379).
 from hermes_constants import get_hermes_dir as _get_hermes_dir
-
-_STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
-_CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
@@ -557,6 +625,13 @@ _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
     ".heic",
     ".heif",
     ".avif",
+})
+
+# Extensions for audio/video/file msgtypes whose ``content.body`` is
+# the uploaded filename when the sender adds no caption.
+_MATRIX_MEDIA_FILENAME_EXTS = frozenset({
+    ".ogg", ".oga", ".opus", ".m4a", ".mp3", ".wav", ".flac", ".aac", ".amr",
+    ".mp4", ".webm", ".mov", ".mkv",
 })
 
 _MATRIX_MODEL_PICKER_REACTIONS = (
@@ -627,6 +702,36 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
 
 
+def _looks_like_matrix_media_filename(text: str) -> bool:
+    """Return True when Matrix audio/video/file body text is a transport filename.
+
+    Matrix ``m.audio``/``m.file``/``m.video`` events populate ``content.body``
+    with the uploaded filename when the sender adds no caption.  Same
+    conservative heuristic as :func:`_looks_like_matrix_image_filename` but
+    for non-image media types.
+    """
+    candidate = str(text or "").strip()
+    if not candidate or "\n" in candidate or candidate.endswith("/"):
+        return False
+    # A genuine caption essentially always contains whitespace; a bare
+    # transport filename does not.
+    if any(ch.isspace() for ch in candidate):
+        return False
+
+    name = Path(candidate).name
+    if not name or name != candidate:
+        return False
+
+    suffix = Path(name).suffix.lower()
+    if not suffix:
+        return False
+
+    guessed_type, _ = mimetypes.guess_type(name)
+    if guessed_type and guessed_type.startswith(("audio/", "video/")):
+        return True
+    return suffix in _MATRIX_MEDIA_FILENAME_EXTS
+
+
 def _matrix_event_timestamp_seconds(event: Any) -> float:
     """Return a Matrix event timestamp in seconds, accepting ms or sec values."""
     raw_ts = (
@@ -660,7 +765,7 @@ def _create_matrix_session(proxy_url: str | None):
     import aiohttp
 
     if not proxy_url:
-        return aiohttp.ClientSession(trust_env=True)
+        return aiohttp.ClientSession(trust_env=gateway_trust_env())
 
     if proxy_url.split("://")[0].lower().startswith("socks"):
         try:
@@ -675,7 +780,7 @@ def _create_matrix_session(proxy_url: str | None):
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
-            return aiohttp.ClientSession(trust_env=True)
+            return aiohttp.ClientSession(trust_env=gateway_trust_env())
 
     return aiohttp.ClientSession(proxy=proxy_url)
 
@@ -888,8 +993,47 @@ def _startup_env_secret(name: str) -> str:
         return os.getenv(name, "").strip()
 
 
+def matrix_deps_present() -> bool:
+    """PASSIVE probe: are the ``platform.matrix`` packages installed?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    try:
+        from tools.lazy_deps import is_available
+        return is_available("platform.matrix")
+    except Exception:  # pragma: no cover — defensive
+        return False
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
+
+    Combined credentials + deps answer for setup/status callers.  The
+    registry's ``ensure_deps_fn`` is the deps-only
+    :func:`ensure_matrix_deps` below — credentials must NOT gate the
+    installer (they're handled by ``is_connected``, which also accepts
+    ``PlatformConfig.extra``-configured setups that these env checks
+    would wrongly veto).
+    """
+    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
+    password = _startup_env_secret("MATRIX_PASSWORD")
+    homeserver = _startup_env_secret("MATRIX_HOMESERVER")
+
+    if not token and not password:
+        logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
+        return False
+    if not homeserver:
+        logger.warning("Matrix: MATRIX_HOMESERVER not set")
+        return False
+
+    return ensure_matrix_deps()
+
+
+def ensure_matrix_deps() -> bool:
+    """ACTIVE deps-only installer (registry ``ensure_deps_fn``).
 
     Lazy-installs the full ``platform.matrix`` feature group via
     ``tools.lazy_deps.ensure_and_bind`` whenever any of the declared
@@ -899,17 +1043,6 @@ def check_matrix_requirements() -> bool:
     forever and broke E2EE connect with ``No module named 'asyncpg'``
     (#31116).  Rebinds module-level type globals on success.
     """
-    token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
-    password = _startup_env_secret("MATRIX_PASSWORD")
-    homeserver = os.getenv("MATRIX_HOMESERVER", "")
-
-    if not token and not password:
-        logger.debug("Matrix: neither MATRIX_ACCESS_TOKEN nor MATRIX_PASSWORD set")
-        return False
-    if not homeserver:
-        logger.warning("Matrix: MATRIX_HOMESERVER not set")
-        return False
-
     # Check whether any package in the platform.matrix feature group is
     # missing.  ``feature_missing`` is cheap (per-spec importlib.metadata
     # lookups) and correctly handles ``mautrix[encryption]`` by stripping
@@ -978,20 +1111,61 @@ class _CryptoStateStore:
     ``get_encryption_info``, and ``find_shared_rooms``.  The basic
     ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
     so we provide simple implementations that consult the client's room
-    state.
+    state, falling back to a direct homeserver state event query when
+    the in-memory store has no encryption info for a room.
     """
 
-    def __init__(self, client_state_store: Any, joined_rooms: set):
+    def __init__(self, client_state_store: Any, joined_rooms: set, client=None):
         self._ss = client_state_store
         self._joined_rooms = joined_rooms
+        self._client = client
+        # Cache encryption info queried from the homeserver so we don't
+        # make a network round-trip on every is_encrypted() call.
+        # MemoryStateStore doesn't implement set_encryption_info, so the
+        # cache-back in get_encryption_info is a no-op without this.
+        self._enc_info_cache: dict = {}
 
     async def is_encrypted(self, room_id: str) -> bool:
         return (await self.get_encryption_info(room_id)) is not None
 
     async def get_encryption_info(self, room_id: str):
+        info = None
         if hasattr(self._ss, "get_encryption_info"):
-            return await self._ss.get_encryption_info(room_id)
-        return None
+            info = await self._ss.get_encryption_info(room_id)
+        if info is not None:
+            return info
+        # Check local cache before hitting the homeserver.
+        if room_id in self._enc_info_cache:
+            return self._enc_info_cache[room_id]
+        client = self._client
+        if client is None:
+            return None
+        try:
+            from mautrix.types import (
+                EventType as _ET,
+                RoomEncryptionStateEventContent as _Enc,
+                RoomID as _RID,
+            )
+            raw = await client.get_state_event(_RID(room_id), _ET.ROOM_ENCRYPTION)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: homeserver encryption-info query failed for %s: %s",
+                room_id,
+                exc,
+            )
+            return None
+        if not raw:
+            return None
+        content = raw if isinstance(raw, _Enc) else _Enc.deserialize(
+            raw.serialize() if hasattr(raw, "serialize") else raw
+        )
+        if hasattr(self._ss, "set_encryption_info"):
+            try:
+                await self._ss.set_encryption_info(_RID(room_id), content)
+            except Exception:
+                pass
+        self._enc_info_cache[room_id] = content
+        return content
 
     async def find_shared_rooms(self, user_id: str) -> list:
         # Return all joined rooms — simple but correct for a single-user bot.
@@ -1014,6 +1188,23 @@ class MatrixAdapter(BasePlatformAdapter):
     # overrides both from _resolve_max_message_length().
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _split_threshold = DEFAULT_MAX_MESSAGE_LENGTH - 100
+
+    def _resolve_store_dir(self) -> Path:
+        """Pin this adapter's crypto-store directory to the active profile.
+
+        Called from ``connect()``, which the multiplex gateway runs inside
+        ``_profile_runtime_scope`` -- ``get_hermes_dir`` honors that
+        context-local HERMES_HOME, so each profile's adapter gets its own
+        store. Cached on the instance so later reads (diagnostics, error
+        logs) outside the scope still report the store actually in use.
+        """
+        self._store_dir = _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return self._store_dir
+
+    @property
+    def _crypto_db_path(self) -> Path:
+        store_dir = self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")
+        return store_dir / "crypto.db"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
@@ -1045,6 +1236,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
+        self._store_dir: Optional[Path] = None  # pinned per profile in connect()
         self._sync_task: Optional[asyncio.Task] = None
         self._invite_join_tasks: Dict[str, asyncio.Task] = {}
         self._closing = False
@@ -1303,6 +1495,158 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
         return True
 
+    async def _reset_crypto_store_if_device_changed(
+        self, crypto_store: Any, device_id: str
+    ) -> bool:
+        """Reset the local Olm account when the access token's device changed.
+
+        The crypto store is keyed by user ID, so a new access token (= new
+        device ID) would otherwise inherit the previous device's Olm account.
+        Its identity keys can never be published under the new device ID
+        (and the pickle key embeds the old device ID anyway), which leads to
+        stale-key mismatches and cross-signing signatures that the
+        homeserver refuses to replace. Returns True if the store was reset.
+        """
+        if not device_id:
+            return False
+        try:
+            stored_device_id = await crypto_store.get_device_id()
+        except Exception as exc:
+            logger.warning("Matrix: could not read stored device ID: %s", exc)
+            return False
+        if not stored_device_id or stored_device_id == device_id:
+            return False
+        logger.warning(
+            "Matrix: access token belongs to a new device (%s -> %s) — "
+            "resetting local Olm account so fresh identity keys are "
+            "generated for this device",
+            stored_device_id,
+            device_id,
+        )
+        await crypto_store.delete()
+        return True
+
+    async def _migrate_legacy_crypto_pickle(
+        self, crypto_store: Any, crypto_db: Any, acct_id: str, pickle_key: str
+    ) -> bool:
+        """Re-pickle the Olm account when the pickle key changed.
+
+        The pickle key embeds the *configured* device ID. If the account was
+        created before MATRIX_DEVICE_ID was set (e.g. first password login,
+        where the device ID is only known after connecting), the store was
+        pickled under ``<acct>:default``; setting MATRIX_DEVICE_ID afterwards
+        changes the key and unpickling fails with BAD_ACCOUNT_KEY — which in
+        optional-E2EE mode silently disables encryption. Try known legacy
+        keys and re-pickle under the current one. Returns False only when an
+        account exists but no key can unpickle it.
+        """
+        try:
+            await crypto_store.get_account()
+            return True
+        except Exception:
+            pass
+
+        from mautrix.crypto.store.asyncpg import PgCryptoStore
+
+        for legacy_key in (f"{acct_id}:default", acct_id):
+            if legacy_key == pickle_key:
+                continue
+            legacy_store = PgCryptoStore(
+                account_id=acct_id, pickle_key=legacy_key, db=crypto_db
+            )
+            try:
+                account = await legacy_store.get_account()
+            except Exception:
+                continue
+            if account is None:
+                continue
+            # Sessions first, account last. The account is the migration's
+            # commit marker: once it reads under the current key, the fast
+            # path above short-circuits every later startup. Writing it
+            # before the sweep means an interrupted sweep is never retried
+            # and the remaining legacy-key sessions are stranded for good.
+            try:
+                await self._repickle_crypto_sessions(
+                    crypto_db, acct_id, legacy_key, pickle_key
+                )
+            except Exception as exc:
+                logger.error(
+                    "Matrix: pickle key migration failed while re-pickling "
+                    "sessions (%s) — leaving the account under the legacy "
+                    "key so the migration is retried on the next start.",
+                    exc,
+                )
+                return False
+            await crypto_store.put_account(account)
+            logger.info(
+                "Matrix: re-pickled crypto store account and sessions under "
+                "the current pickle key (device ID was configured after the "
+                "account was created)"
+            )
+            return True
+
+        logger.error(
+            "Matrix: crypto store account exists but cannot be unpickled "
+            "with the current or any legacy pickle key. If MATRIX_DEVICE_ID "
+            "was changed manually, restore its previous value."
+        )
+        return False
+
+    async def _repickle_crypto_sessions(
+        self, crypto_db: Any, acct_id: str, legacy_key: str, pickle_key: str
+    ) -> None:
+        """Re-pickle olm/megolm session blobs alongside the account.
+
+        The account and every stored session share the pickle key; migrating
+        only the account leaves sessions unreadable (BAD_ACCOUNT_KEY on the
+        next olm decrypt), which breaks key sharing with peers.
+        """
+        import olm as olm_lib
+
+        tables = {
+            "crypto_olm_session": olm_lib.Session,
+            "crypto_megolm_inbound_session": olm_lib.InboundGroupSession,
+            "crypto_megolm_outbound_session": olm_lib.OutboundGroupSession,
+        }
+        for table, session_cls in tables.items():
+            rows = await crypto_db.fetch(
+                f"SELECT session_id, session FROM {table} WHERE account_id=$1",
+                acct_id,
+            )
+            for row in rows:
+                blob = row["session"]
+                if blob is None:
+                    continue
+                pickled = bytes(blob)
+                try:
+                    session_cls.from_pickle(pickled, pickle_key)
+                    continue  # already readable with the current key
+                except Exception:
+                    pass
+                try:
+                    session = session_cls.from_pickle(pickled, legacy_key)
+                except Exception as exc:
+                    # Readable under neither key. The row is left untouched
+                    # rather than deleted — it is already unusable, and
+                    # removing crypto material is not worth doing on a
+                    # guess. It stays inert.
+                    logger.warning(
+                        "Matrix: %s row %s cannot be unpickled with the "
+                        "current or legacy key; leaving it in place, its "
+                        "sessions are unrecoverable: %s",
+                        table,
+                        row["session_id"],
+                        exc,
+                    )
+                    continue
+                await crypto_db.execute(
+                    f"UPDATE {table} SET session=$1 "
+                    "WHERE account_id=$2 AND session_id=$3",
+                    session.pickle(pickle_key),
+                    acct_id,
+                    row["session_id"],
+                )
+
     async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
         """Verify our device keys are on the homeserver after loading crypto state.
 
@@ -1348,7 +1692,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: server has different identity keys for device %s — "
                     "local crypto state is stale. Delete %s and restart.",
                     client.device_id,
-                    _CRYPTO_DB_PATH,
+                    str(self._crypto_db_path),
                 )
                 return False
 
@@ -1404,8 +1748,9 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: homeserver URL not configured")
             return False
 
-        # Ensure store dir exists for E2EE key persistence.
-        _STORE_DIR.mkdir(parents=True, exist_ok=True)
+        # Ensure store dir exists for E2EE key persistence (resolved here,
+        # inside the profile scope, so multiplexed profiles never share it).
+        self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
 
         # Create the HTTP API layer.
         client_session = _create_matrix_session(self._proxy_url)
@@ -1436,13 +1781,38 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 resp = await client.whoami()
                 resolved_user_id = getattr(resp, "user_id", "") or self._user_id
-                resolved_device_id = getattr(resp, "device_id", "")
+                resolved_device_id = str(getattr(resp, "device_id", "") or "")
                 if resolved_user_id:
                     self._user_id = str(resolved_user_id)
                     client.mxid = UserID(self._user_id)
 
-                # Prefer user-configured device_id for stable E2EE identity.
-                effective_device_id = self._device_id or resolved_device_id
+                # Normally the user-configured device_id wins, giving a stable
+                # E2EE identity when whoami() reports no device.
+                #
+                # But an access token is bound to exactly one device, and the
+                # homeserver only accepts key uploads for that device. If
+                # MATRIX_DEVICE_ID names a different one, honouring it means
+                # claiming an identity this token cannot publish — which is
+                # the stale-key failure mode this reset exists to clear. The
+                # live whoami() device therefore wins on conflict, loudly.
+                if (
+                    resolved_device_id
+                    and self._device_id
+                    and resolved_device_id != self._device_id
+                ):
+                    logger.error(
+                        "Matrix: MATRIX_DEVICE_ID=%s does not match the device "
+                        "this access token belongs to (%s). A token can only "
+                        "upload keys for its own device, so the configured "
+                        "value is being ignored. Unset MATRIX_DEVICE_ID, or "
+                        "use a token issued for %s.",
+                        self._device_id,
+                        resolved_device_id,
+                        self._device_id,
+                    )
+                    effective_device_id = resolved_device_id
+                else:
+                    effective_device_id = self._device_id or resolved_device_id
                 if effective_device_id:
                     client.device_id = effective_device_id
 
@@ -1537,7 +1907,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     from mautrix.crypto.store.asyncpg import PgCryptoStore
                     from mautrix.util.async_db import Database
 
-                    _STORE_DIR.mkdir(parents=True, exist_ok=True)
+                    self._store_dir.mkdir(parents=True, exist_ok=True)
                 except Exception as exc:
                     if self._e2ee_mode == "optional":
                         logger.warning(
@@ -1558,7 +1928,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if self._encryption:
                 try:
                     # Remove legacy pickle file from pre-SQLite era.
-                    legacy_pickle = _STORE_DIR / "crypto_store.pickle"
+                    legacy_pickle = self._store_dir / "crypto_store.pickle"
                     if legacy_pickle.exists():
                         logger.info(
                             "Matrix: removing legacy crypto_store.pickle (migrated to SQLite)"
@@ -1566,14 +1936,20 @@ class MatrixAdapter(BasePlatformAdapter):
                         legacy_pickle.unlink()
 
                     crypto_db = Database.create(
-                        f"sqlite:///{_CRYPTO_DB_PATH}",
+                        f"sqlite:///{self._crypto_db_path}",
                         upgrade_table=PgCryptoStore.upgrade_table,
                     )
                     await crypto_db.start()
                     self._crypto_db = crypto_db
 
                     _acct_id = self._user_id or "hermes"
-                    _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
+                    # Use the resolved client.device_id (from whoami or password
+                    # login), not self._device_id (the configured value), because
+                    # #71543 makes the token's real device win over a stale
+                    # MATRIX_DEVICE_ID.  The pickle key must match the device the
+                    # token actually belongs to, or the Olm account is stored
+                    # under a key that can never be looked up again.
+                    _pickle_key = f"{_acct_id}:{client.device_id or self._device_id or 'default'}"
                     crypto_store = PgCryptoStore(
                         account_id=_acct_id,
                         pickle_key=_pickle_key,
@@ -1582,9 +1958,25 @@ class MatrixAdapter(BasePlatformAdapter):
                     await crypto_store.open()
 
                     if client.device_id:
+                        _store_was_reset = await self._reset_crypto_store_if_device_changed(
+                            crypto_store, client.device_id
+                        )
                         await crypto_store.put_device_id(client.device_id)
+                    else:
+                        _store_was_reset = False
 
-                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
+                    # Skip the pickle-key migration when the store was just
+                    # deleted — there is no account to migrate.
+                    if not _store_was_reset:
+                        if not await self._migrate_legacy_crypto_pickle(
+                            crypto_store, crypto_db, _acct_id, _pickle_key
+                        ):
+                            logger.warning(
+                                "Matrix: crypto pickle migration failed — "
+                                "E2EE may not work correctly"
+                            )
+
+                    crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
                     olm = OlmMachine(client, crypto_store, crypto_state)
                     olm.share_keys_min_trust = TrustState.UNVERIFIED
                     olm.send_keys_min_trust = TrustState.UNVERIFIED
@@ -1672,7 +2064,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     client.crypto = olm
                     logger.info(
                         "Matrix: E2EE enabled (store: %s%s)",
-                        str(_CRYPTO_DB_PATH),
+                        str(self._crypto_db_path),
                         f", device_id={client.device_id}" if client.device_id else "",
                     )
                 except Exception as exc:
@@ -1771,6 +2163,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # Start the sync loop.
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
+        # Plugin-registered native handlers (Matrix client — event callbacks).
+        self._wire_plugin_handlers(self._client)
         return True
 
     async def disconnect(self) -> None:
@@ -1914,7 +2308,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "mode": self._e2ee_mode,
                 "enabled": bool(self._encryption),
                 "deps_available": _check_e2ee_deps(),
-                "crypto_store_path": str(_CRYPTO_DB_PATH),
+                "crypto_store_path": str(self._crypto_db_path),
                 "recovery_key_configured": bool(
                     _scoped_recovery_key().strip()
                 ),
@@ -3126,21 +3520,24 @@ class MatrixAdapter(BasePlatformAdapter):
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Strip reply fallback from body.
+        # Capture the reply fallback BEFORE stripping it from body, so the
+        # gateway prompt layer can render "[Replying to: \"<original>\"]".
+        # Other adapters (Signal, Slack, Telegram) populate reply_to_text
+        # from their quote payload; Matrix stores it inline as `> <@user:srv>
+        # <text>\n\n<actual reply>` and discards it after stripping.
+        reply_to_text: Optional[str] = None
+        reply_to_author_id: Optional[str] = None
+        reply_to_author_name: Optional[str] = None
         if reply_to and body.startswith("> "):
-            lines = body.split("\n")
-            stripped = []
-            past_fallback = False
-            for line in lines:
-                if not past_fallback:
-                    if line.startswith("> ") or line == ">":
-                        continue
-                    if line == "":
-                        past_fallback = True
-                        continue
-                    past_fallback = True
-                stripped.append(line)
-            body = "\n".join(stripped) if stripped else body
+            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
+            body = _strip_reply_fallback(body)
+
+            # Resolve the replied-to author's display name when we have the
+            # state_store available — falls back to the localpart otherwise.
+            if reply_to_author_id:
+                reply_to_author_name = await self._get_display_name(
+                    room_id, reply_to_author_id
+                )
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -3158,6 +3555,15 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            # Sender metadata at MessageEvent level — `source.user_name`
+            # already carries this, but downstream code (e.g. the prompt
+            # layer, ghost-context rendering) historically reads the
+            # top-level fields. Mirror them so matrix matches signal/slack.
+            user_id=sender,
+            user_name=display_name,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -3296,9 +3702,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
                     if file_bytes is not None:
                         from gateway.platforms.base import (
-                            cache_audio_from_bytes,
-                            cache_document_from_bytes,
-                            cache_image_from_bytes,
+                            cache_audio_from_bytes_async,
+                            cache_document_from_bytes_async,
+                            cache_image_from_bytes_async,
                         )
 
                         if msg_type == MessageType.PHOTO:
@@ -3309,7 +3715,7 @@ class MatrixAdapter(BasePlatformAdapter):
                                 "image/webp": ".webp",
                             }
                             ext = ext_map.get(media_type, ".jpg")
-                            cached_path = cache_image_from_bytes(file_bytes, ext=ext)
+                            cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
                             logger.info("[Matrix] Cached user image at %s", cached_path)
                         elif msg_type in {MessageType.AUDIO, MessageType.VOICE}:
                             ext = (
@@ -3321,14 +3727,14 @@ class MatrixAdapter(BasePlatformAdapter):
                                 ).suffix
                                 or ".ogg"
                             )
-                            cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
+                            cached_path = await cache_audio_from_bytes_async(file_bytes, ext=ext)
                         else:
                             filename = body or (
                                 "video.mp4"
                                 if msg_type == MessageType.VIDEO
                                 else "document"
                             )
-                            cached_path = cache_document_from_bytes(
+                            cached_path = await cache_document_from_bytes_async(
                                 file_bytes, filename
                             )
             except Exception as e:
@@ -3346,7 +3752,27 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
+        # Reply-to detection (mirrors _handle_text_message).
+        reply_to = None
+        in_reply_to = relates_to.get("m.in_reply_to", {})
+        if in_reply_to:
+            reply_to = in_reply_to.get("event_id")
+
+        reply_to_text: Optional[str] = None
+        reply_to_author_id: Optional[str] = None
+        reply_to_author_name: Optional[str] = None
+        if reply_to and body.startswith("> "):
+            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
+            body = _strip_reply_fallback(body)
+
+            if reply_to_author_id:
+                reply_to_author_name = await self._get_display_name(
+                    room_id, reply_to_author_id
+                )
+
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
+            body = ""
+        elif msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body):
             body = ""
 
         allow_http_fallback = bool(http_url) and not is_encrypted_media
@@ -3365,6 +3791,12 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
+            reply_to_message_id=reply_to,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
+            user_id=sender,
+            user_name=display_name,
         )
 
         await self.handle_message(msg_event)
@@ -3867,7 +4299,7 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get(
                 "thread_sessions_per_user", False
             ),
-            profile=event.source.profile,
+            profile=self._session_key_profile(event.source),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -4839,13 +5271,21 @@ async def _standalone_send(
         except ImportError:
             pass
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.put(url, headers=headers, json=payload) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return {"error": f"Matrix API error ({resp.status}): {body}"}
-                data = await resp.json()
-        return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
+        # Use asyncio.wait_for() instead of aiohttp.ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors when
+        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+        async with aiohttp.ClientSession() as session:
+            async def _do_send():
+                async with session.put(url, headers=headers, json=payload) as resp:
+                    if resp.status not in {200, 201}:
+                        body = await resp.text()
+                        return {"error": f"Matrix API error ({resp.status}): {body}"}
+                    data = await resp.json()
+                    return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
+            try:
+                return await asyncio.wait_for(_do_send(), timeout=30)
+            except asyncio.TimeoutError:
+                return {"error": "Matrix API timeout (30s)"}
     except Exception as e:
         return {"error": f"Matrix send failed: {e}"}
 
@@ -5028,7 +5468,8 @@ def register(ctx) -> None:
         name="matrix",
         label="Matrix",
         adapter_factory=_build_adapter,
-        check_fn=check_matrix_requirements,
+        check_fn=matrix_deps_present,
+        ensure_deps_fn=ensure_matrix_deps,
         is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
         install_hint="pip install 'mautrix[encryption]'",

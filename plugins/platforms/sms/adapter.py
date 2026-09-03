@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
@@ -156,7 +157,7 @@ class SmsAdapter(BasePlatformAdapter):
         await site.start()
         self._http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=gateway_trust_env(),
         )
         self._running = True
 
@@ -166,6 +167,8 @@ class SmsAdapter(BasePlatformAdapter):
             self._webhook_port,
             redact_phone(self._from_number),
         )
+        # Plugin-registered native handlers (ctx.register_platform_handler).
+        self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -198,7 +201,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         session = self._http_session or aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30),
-            trust_env=True,
+            trust_env=gateway_trust_env(),
         )
         try:
             for chunk in chunks:

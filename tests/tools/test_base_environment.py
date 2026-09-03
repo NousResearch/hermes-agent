@@ -115,25 +115,27 @@ class TestAtomicSnapshotWrite:
         assert f"> '{snap}'" not in wrapped
         assert f"> {snap}\n" not in wrapped
 
-    def test_temp_path_uses_bashpid_not_dollardollar(self):
-        """The temp name MUST use ``$BASHPID`` (the real subshell PID), not
-        ``$$``.  In ``&``-launched concurrent subshells ``$$`` stays the parent
-        shell's PID, so two writers would pick the same temp name, clobber each
-        other mid-write, and mv would publish a torn file — the corruption is
-        only narrowed, not closed.  This is the bug shared by every prior PR in
-        the #38249 cluster."""
+    def test_temp_path_uses_mktemp_not_pid_variables(self):
+        """The temp name MUST be allocated by ``mktemp`` — never ``$$`` (in
+        ``&``-launched concurrent subshells it stays the parent shell's PID, so
+        two writers would pick the same temp name and publish a torn file) and
+        never ``$BASHPID`` (macOS ships bash 3.2, which lacks it — the name
+        expands empty, collapsing every writer onto one temp path and
+        reopening the #38249 race).  Regression for PR #54314."""
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "$BASHPID" in wrapped
+        assert "mktemp " in wrapped
+        assert ".tmp.XXXXXXXXXX" in wrapped
+        assert "$BASHPID" not in wrapped
         # The bare $$ temp form must be gone.
         assert ".tmp.$$" not in wrapped
 
 
-    def test_init_session_bootstrap_also_atomic_and_bashpid(self):
+    def test_init_session_bootstrap_also_atomic_and_mktemp(self):
         """The init_session bootstrap (first snapshot write) is the same shared
         file a concurrent command could source — it must be atomic and use
-        ``$BASHPID`` too."""
+        ``mktemp`` too (no ``$BASHPID``: absent on macOS bash 3.2)."""
         env = _TestableEnv()
         captured = {}
 
@@ -148,7 +150,8 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert ".tmp." in boot and "mv -f " in boot, boot
-        assert "$BASHPID" in boot
+        assert "mktemp " in boot
+        assert "$BASHPID" not in boot
         assert ".tmp.$$" not in boot
 
 
@@ -178,8 +181,9 @@ class TestAtomicSnapshotConcurrencyBehavioral:
     the emitted script's guarantee holds under real concurrency: N concurrent
     writers + readers, and the snapshot is ALWAYS a complete, parseable env
     dump — never truncated mid-line with a ``declare -x`` / ``export`` fragment
-    that would corrupt PATH.  Crucially it uses ``$BASHPID`` (per-subshell
-    unique), which is what closes the race; ``$$`` would still tear here.
+    that would corrupt PATH.  Crucially it allocates the temp with ``mktemp``
+    (per-writer unique, works on macOS bash 3.2 which lacks ``$BASHPID``),
+    which is what closes the race; ``$$`` would still tear here.
     """
 
     def _run(self, script):
@@ -194,13 +198,14 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         import shlex
         snap = str(tmp_path / "hermes-snap-x.sh")
         _q = shlex.quote
-        _snap_tmp = _q(snap + ".tmp.") + "$BASHPID"
+        _tmpl = _q(snap + ".tmp.XXXXXXXXXX")
         # One writer iteration = the exact atomic sequence _wrap_command emits.
         writer = (
             "for i in $(seq 1 80); do "
             "export BIG_$i=$(head -c 600 /dev/zero | tr '\\0' x); "
-            f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_q(snap)}; }} "
-            f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true; "
+            f"__hermes_snap_tmp=$(mktemp {_tmpl}) && "
+            f"{{ export -p > \"$__hermes_snap_tmp\" && mv -f \"$__hermes_snap_tmp\" {_q(snap)}; }} "
+            f"2>/dev/null || rm -f \"$__hermes_snap_tmp\" 2>/dev/null || true; "
             "done"
         )
         # Reader: repeatedly source the snapshot and check PATH never absorbs
@@ -235,10 +240,11 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         self._run(f"echo 'export GOOD=1' > {_q(snap)}")  # seed good snapshot
         # Redirect export into an unwritable dir so the export side fails; mv
         # must then NOT run (&&) and not clobber snap.
-        bad_tmp = _q("/nonexistent-dir/snap.tmp.") + "$BASHPID"
+        bad_tmp = _q("/nonexistent-dir/snap.tmp.XXXXXXXXXX")
         script = (
-            f"{{ export -p > {bad_tmp} && mv -f {bad_tmp} {_q(snap)}; }} "
-            f"2>/dev/null || rm -f {bad_tmp} 2>/dev/null || true"
+            f"__hermes_snap_tmp=$(mktemp {bad_tmp}) && "
+            f"{{ export -p > \"$__hermes_snap_tmp\" && mv -f \"$__hermes_snap_tmp\" {_q(snap)}; }} "
+            f"2>/dev/null || rm -f \"$__hermes_snap_tmp\" 2>/dev/null || true"
         )
         self._run(script)
         out = self._run(f"cat {_q(snap)}")
@@ -399,3 +405,68 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+
+class TestSanitizeTaskIdForPath:
+    """sanitize_task_id_for_path must yield mountable, collision-free segments.
+
+    A raw task id like ``session:agent:main:telegram:dm:12345`` used as a
+    sandbox directory name made docker -v split the bind-mount on the embedded
+    colons and the daemon rejected it with "invalid mode" / exit 125 (#92414).
+    The helper is shared by every backend that builds host paths from task_id
+    (docker persistent sandboxes, singularity overlays), fixing the class once.
+    """
+
+    def test_docker_unsafe_characters_are_replaced(self):
+        from tools.environments.base import sanitize_task_id_for_path
+
+        out = sanitize_task_id_for_path("session:agent:main:telegram:dm:12345")
+        assert ":" not in out
+        assert "/" not in out and "\\" not in out
+
+    def test_safe_ids_pass_through_verbatim(self):
+        """Existing sandboxes keep resolving to their current directory."""
+        from tools.environments.base import sanitize_task_id_for_path
+
+        for value in ("default", "task-01.abc_def", "astropy__astropy-12907"):
+            assert sanitize_task_id_for_path(value) == value
+
+    def test_deterministic_and_collision_free_for_distinct_inputs(self):
+        from tools.environments.base import sanitize_task_id_for_path
+
+        assert sanitize_task_id_for_path("a:b") == sanitize_task_id_for_path("a:b")
+        # substitution alone is not injective — the digest must disambiguate
+        assert sanitize_task_id_for_path("a:b") != sanitize_task_id_for_path("a_b")
+        assert sanitize_task_id_for_path("!!!") != sanitize_task_id_for_path("@@@")
+
+    def test_empty_and_traversal_inputs_are_neutralized(self):
+        from tools.environments.base import sanitize_task_id_for_path
+
+        assert sanitize_task_id_for_path("") == "default"
+        for value in (".", "..", "../../etc", "..\\..\\escape"):
+            out = sanitize_task_id_for_path(value)
+            assert out not in {".", ".."}
+            assert "/" not in out and "\\" not in out
+
+    def test_oversized_input_truncates_with_unique_digest(self):
+        from tools.environments.base import (
+            _SANDBOX_DIR_MAX_LEN,
+            sanitize_task_id_for_path,
+        )
+
+        long_a = "a" * 300 + ":1"
+        long_b = "a" * 300 + ":2"
+        out_a = sanitize_task_id_for_path(long_a)
+        out_b = sanitize_task_id_for_path(long_b)
+        assert len(out_a) <= _SANDBOX_DIR_MAX_LEN
+        assert ":" not in out_a
+        assert out_a != out_b
+
+    def test_sanitized_dir_is_creatable(self, tmp_path):
+        from tools.environments.base import sanitize_task_id_for_path
+
+        target = tmp_path / "docker" / sanitize_task_id_for_path(
+            "session:agent:main:telegram:dm:12345"
+        )
+        target.mkdir(parents=True)
+        assert target.is_dir()

@@ -15,6 +15,9 @@ Three concerns, all tied to ``AIAgent`` boot-time / runtime IO setup:
 3. **HTTP proxy resolution** — ``_get_proxy_from_env`` reads
    ``HTTPS_PROXY`` / ``HTTP_PROXY`` / ``ALL_PROXY``;
    ``_get_proxy_for_base_url`` respects ``NO_PROXY`` for the given base URL.
+4. **Codex dual-stack resilience** — the synchronous ChatGPT/Codex transport
+   races resolved IPv6/IPv4 addresses so a blackholed family cannot exhaust
+   the request watchdog before a working address is attempted.
 
 ``run_agent`` re-exports every name so existing
 ``from run_agent import _get_proxy_from_env`` imports keep working
@@ -23,8 +26,12 @@ unchanged.
 
 from __future__ import annotations
 
+import errno
 import os
+import selectors
+import socket
 import sys
+import time
 import urllib.request
 from typing import Any, Optional
 
@@ -34,6 +41,275 @@ from utils import base_url_hostname, normalize_proxy_url
 # Cached at module level so we only pay the OpenAI SDK import cost once
 # per process (after the first lazy load).
 _OPENAI_CLS_CACHE = None
+_HAPPY_EYEBALLS_DELAY_SECONDS = 0.25
+
+
+def _interleave_addrinfos(addrinfos: list[tuple]) -> list[tuple]:
+    """Interleave resolved address families while preserving resolver order."""
+    queues: dict[int, list[tuple]] = {}
+    family_order: list[int] = []
+    seen: set[tuple] = set()
+    for addrinfo in addrinfos:
+        family, socktype, proto, _canonname, sockaddr = addrinfo
+        marker = (family, socktype, proto, sockaddr)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if family not in queues:
+            queues[family] = []
+            family_order.append(family)
+        queues[family].append(addrinfo)
+
+    interleaved: list[tuple] = []
+    while any(queues.values()):
+        for family in family_order:
+            if queues[family]:
+                interleaved.append(queues[family].pop(0))
+    return interleaved
+
+
+def _happy_eyeballs_create_connection(
+    address: tuple[str, int],
+    timeout: Optional[float],
+    source_address: Optional[tuple[str, int]] = None,
+    socket_options=(),
+):
+    """Connect using staggered non-blocking attempts across resolved families.
+
+    ``socket.create_connection`` tries every address serially. A host with
+    broken-but-advertised IPv6 can therefore consume the full connect timeout
+    for each AAAA record before trying a working IPv4 address. This follows the
+    Happy Eyeballs shape from RFC 8305: retain resolver preference, interleave
+    families, and start the next candidate after a short delay.
+    """
+    host, port = address
+    addrinfos = _interleave_addrinfos(
+        socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    )
+    if not addrinfos:
+        raise OSError(f"getaddrinfo returned no addresses for {host}")
+
+    selector = selectors.DefaultSelector()
+    active: set[socket.socket] = set()
+    winner = None
+    last_error: Optional[OSError] = None
+    deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
+    next_launch = time.monotonic()
+    pending = list(addrinfos)
+    in_progress = {
+        0,
+        errno.EINPROGRESS,
+        errno.EWOULDBLOCK,
+        errno.EALREADY,
+        errno.EINTR,
+        getattr(errno, "WSAEWOULDBLOCK", 10035),
+    }
+
+    def start_attempt(addrinfo):
+        family, socktype, proto, _canonname, sockaddr = addrinfo
+        candidate = socket.socket(family, socktype, proto)
+        try:
+            if source_address is not None:
+                local_infos = socket.getaddrinfo(
+                    source_address[0],
+                    source_address[1],
+                    family=family,
+                    type=socktype,
+                )
+                if not local_infos:
+                    raise OSError(
+                        f"getaddrinfo returned no local {family} address for "
+                        f"{source_address[0]}"
+                    )
+                candidate.bind(local_infos[0][4])
+            candidate.setblocking(False)
+            result = candidate.connect_ex(sockaddr)
+            if result == 0 or result == errno.EISCONN:
+                return candidate
+            if result not in in_progress:
+                raise OSError(result, os.strerror(result))
+            selector.register(candidate, selectors.EVENT_WRITE)
+            active.add(candidate)
+            return None
+        except Exception:
+            candidate.close()
+            raise
+
+    try:
+        while pending or active:
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                raise socket.timeout("timed out")
+
+            if pending and now >= next_launch:
+                addrinfo = pending.pop(0)
+                try:
+                    winner = start_attempt(addrinfo)
+                except OSError as exc:
+                    last_error = exc
+                    if not active:
+                        next_launch = now
+                    continue
+                if winner is not None:
+                    break
+                next_launch = now + _HAPPY_EYEBALLS_DELAY_SECONDS
+
+            wait_timeout = None if deadline is None else max(0.0, deadline - now)
+            if pending:
+                until_launch = max(0.0, next_launch - now)
+                wait_timeout = (
+                    until_launch
+                    if wait_timeout is None
+                    else min(wait_timeout, until_launch)
+                )
+
+            events = selector.select(wait_timeout)
+            for key, _mask in events:
+                candidate = key.fileobj
+                error_code = candidate.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                selector.unregister(candidate)
+                active.discard(candidate)
+                if error_code == 0:
+                    winner = candidate
+                    break
+                candidate.close()
+                last_error = OSError(error_code, os.strerror(error_code))
+            if winner is not None:
+                break
+            if not active and pending:
+                next_launch = time.monotonic()
+
+        if winner is None:
+            if last_error is not None:
+                raise last_error
+            raise OSError(f"Could not connect to {host}:{port}")
+
+        try:
+            selector.unregister(winner)
+        except Exception:
+            pass
+        active.discard(winner)
+        winner.settimeout(timeout)
+        for option in socket_options or ():
+            winner.setsockopt(*option)
+        winner.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        return winner
+    finally:
+        for candidate in active:
+            try:
+                selector.unregister(candidate)
+            except Exception:
+                pass
+            candidate.close()
+        selector.close()
+
+
+class _HappyEyeballsSyncBackend:
+    """httpcore sync backend with concurrent IPv6/IPv4 connection fallback."""
+
+    def __init__(self):
+        self._fallback = None
+
+    def _default_backend(self):
+        if self._fallback is None:
+            from httpcore import SyncBackend
+
+            self._fallback = SyncBackend()
+        return self._fallback
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: Optional[float] = None,
+        local_address: Optional[str] = None,
+        socket_options=None,
+    ):
+        from httpcore import ConnectError, ConnectTimeout
+        from httpcore._backends.sync import SyncStream
+
+        source_address = None if local_address is None else (local_address, 0)
+        try:
+            sock = _happy_eyeballs_create_connection(
+                (host, port),
+                timeout,
+                source_address=source_address,
+                socket_options=socket_options or (),
+            )
+        except socket.timeout as exc:
+            raise ConnectTimeout(str(exc)) from exc
+        except OSError as exc:
+            raise ConnectError(str(exc)) from exc
+        return SyncStream(sock)
+
+    def connect_unix_socket(self, *args, **kwargs):
+        return self._default_backend().connect_unix_socket(*args, **kwargs)
+
+    def sleep(self, seconds: float) -> None:
+        self._default_backend().sleep(seconds)
+
+
+def _uses_codex_cloud_transport(base_url: str) -> bool:
+    return (
+        base_url_hostname(base_url).lower() == "chatgpt.com"
+        and "/backend-api/codex" in str(base_url).lower()
+    )
+
+
+def _enable_happy_eyeballs(transport) -> None:
+    """Install the sync racing backend on one httpx transport, if compatible.
+
+    Reaches into httpx/httpcore private attributes (``transport._pool`` /
+    ``pool._network_backend``); safe because httpcore is pinned (1.0.x) and
+    both lookups are hasattr-guarded — on an incompatible httpcore this
+    degrades to the default serial backend instead of crashing.
+    """
+    pool = getattr(transport, "_pool", None)
+    if pool is not None and hasattr(pool, "_network_backend"):
+        pool._network_backend = _HappyEyeballsSyncBackend()
+
+
+def enable_happy_eyeballs_on_client(client) -> None:
+    """Install the sync racing backend on every direct transport of a client.
+
+    Covers a ready-built ``httpx.Client`` (its default transport plus any
+    mounts), for callers that construct clients inline instead of going
+    through :func:`build_keepalive_http_client` — e.g. the Codex OAuth token
+    refresh / device-login / usage-probe clients in ``hermes_cli.auth``.
+
+    Proxy-backed transports (``httpcore.HTTPProxy`` / SOCKS pools) are left
+    untouched: with a proxy in play the TCP connect goes to the proxy host,
+    which is out of scope for the direct-transport racing added in #94388.
+    Async clients are also left untouched — httpcore's async backend already
+    performs RFC 8305 racing natively via
+    ``anyio.connect_tcp(happy_eyeballs_delay=0.25)``.
+
+    Best-effort and hasattr-guarded like ``_enable_happy_eyeballs``; on an
+    incompatible httpx/httpcore this silently keeps the default backend.
+    """
+    try:
+        import httpcore
+
+        proxy_pool_types = tuple(
+            t
+            for t in (
+                getattr(httpcore, "HTTPProxy", None),
+                getattr(httpcore, "SOCKSProxy", None),
+            )
+            if t is not None
+        )
+    except Exception:
+        return
+
+    transports = [getattr(client, "_transport", None)]
+    transports.extend((getattr(client, "_mounts", None) or {}).values())
+    for transport in transports:
+        pool = getattr(transport, "_pool", None)
+        if pool is None or not hasattr(pool, "_network_backend"):
+            continue
+        if proxy_pool_types and isinstance(pool, proxy_pool_types):
+            continue
+        pool._network_backend = _HappyEyeballsSyncBackend()
 
 
 def _load_openai_cls() -> type:
@@ -186,10 +462,16 @@ def build_keepalive_http_client(
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = {}
         if proxy is None:
-            mounts = {
-                "http://": transport_cls(verify=verify),
-                "https://": transport_cls(verify=verify),
-            }
+            http_transport = transport_cls(verify=verify)
+            https_transport = transport_cls(verify=verify)
+            # Async transports need no explicit racing: httpcore's anyio
+            # backend already implements RFC 8305 natively
+            # (``anyio.connect_tcp(happy_eyeballs_delay=0.25)``), covered by
+            # tests/agent/test_codex_happy_eyeballs.py.
+            if not async_mode and _uses_codex_cloud_transport(base_url):
+                _enable_happy_eyeballs(http_transport)
+                _enable_happy_eyeballs(https_transport)
+            mounts = {"http://": http_transport, "https://": https_transport}
         return client_cls(
             limits=limits,
             timeout=timeout,
@@ -224,4 +506,5 @@ __all__ = [
     "_get_proxy_from_env",
     "_get_proxy_for_base_url",
     "build_keepalive_http_client",
+    "enable_happy_eyeballs_on_client",
 ]

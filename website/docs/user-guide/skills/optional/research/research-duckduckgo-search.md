@@ -15,7 +15,7 @@ Free keyless web, news, and image search via ddgs.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/duckduckgo-search` |
-| Path | `optional-skills/research/duckduckgo-search` |
+| Path | `optional-skills/research\duckduckgo-search` |
 | Version | `1.3.0` |
 | Author | gamedevCloudy |
 | License | MIT |

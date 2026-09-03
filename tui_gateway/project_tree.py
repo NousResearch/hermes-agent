@@ -63,6 +63,21 @@ NO_PROJECT_LABEL = "Home"
 _MAX_SIBLING_PROBES = 4
 
 
+def stamp_profile(projects: list[dict], profile: str) -> None:
+    """Make every session row self-describing for cross-profile routing.
+
+    A scoped project tree is built from one profile's state.db, so the request
+    scope is authoritative even for legacy rows whose ``profile_name`` is NULL.
+    """
+    for project in projects:
+        for session in project.get("previewSessions") or []:
+            session["profile"] = profile
+        for repo in project.get("repos") or []:
+            for group in repo.get("groups") or []:
+                for session in group.get("sessions") or []:
+                    session["profile"] = profile
+
+
 def _branch_lane_id(repo_root: str, branch: str = "") -> str:
     """The one definition of a main-checkout lane id (must match the desktop)."""
     return f"{repo_root}::branch::{(branch or '').strip()}"
@@ -221,7 +236,7 @@ def _place_by_heuristic(path: str) -> Optional[dict]:
         repo_path = _with_base_name(path, m.group(1))
         return _placement(repo_path, path, m.group(2), path, False, False)
 
-    return _placement(path, path, base, path, True, False)
+    return _placement(path, _branch_lane_id(path, DEFAULT_BRANCH_LABEL), base, path, True, False)
 
 
 def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: str) -> Optional[dict]:
@@ -230,7 +245,7 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
     if info and info.get("repo_root") and info.get("worktree_root"):
         repo_root = info["repo_root"]
         worktree_root = info["worktree_root"]
-        is_main = worktree_root == repo_root or bool(info.get("is_main"))
+        is_main = _path_key(worktree_root) == _path_key(repo_root) or bool(info.get("is_main"))
 
         if is_main:
             # Unrecorded branch folds into the one trunk lane, so a repo never
@@ -376,8 +391,6 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
         group = entry["group"]
         group["sessions"].sort(key=_session_time, reverse=True)
         count = len(group["sessions"])
-        if not hydrate:
-            group["sessions"] = []
 
         repo_identity = _path_key(entry["repo_key"])
         repo = repos.get(repo_identity)
@@ -397,6 +410,15 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
     for repo in repo_list:
         repo["groups"] = _sort_lanes(repo["groups"])
         _disambiguate_labels(repo["groups"])
+        # Drop per-lane session rows only AFTER sorting: _lane_sort_key ranks
+        # non-trunk lanes by most-recent activity, which it derives from the
+        # session rows. Clearing them earlier makes every lane look inactive on
+        # the overview (hydrate=False) path and collapses the sort to
+        # alphabetical. Counts were already captured above, so the payload stays
+        # slim without losing the recency order.
+        if not hydrate:
+            for group in repo["groups"]:
+                group["sessions"] = []
     _disambiguate_labels(repo_list)
     return repo_list
 
@@ -505,6 +527,15 @@ def _project_for_session(session: dict, index: _FolderIndex, resolve: Optional[R
 # ---------------------------------------------------------------------------
 
 
+def _session_cost(session: dict) -> float:
+    """A session's spend, billed if the provider reported it, else estimated."""
+    for key in ("actual_cost_usd", "estimated_cost_usd"):
+        value = session.get(key)
+        if value:
+            return float(value)
+    return 0.0
+
+
 def _project_node(
     *,
     pid: str,
@@ -514,6 +545,7 @@ def _project_node(
     session_count: int,
     last_active: float,
     preview_sessions: list[dict],
+    sessions: Optional[list[dict]] = None,
     color: Any = None,
     icon: Any = None,
     is_auto: bool = False,
@@ -529,6 +561,11 @@ def _project_node(
         "isNoProject": is_no_project,
         "sessionCount": session_count,
         "lastActive": last_active,
+        # Totals over the same sessions `sessionCount` counts, so a project's
+        # header can add up what its rows show. The window the caller loaded is
+        # the whole truth either way — count and totals can't disagree.
+        "totalTokens": sum((s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in sessions or []),
+        "totalCostUsd": sum(_session_cost(s) for s in sessions or []),
         "repos": repos,
         "previewSessions": preview_sessions,
     }
@@ -612,6 +649,7 @@ def build_tree(
                 session_count=len(psessions),
                 last_active=_last_active(psessions),
                 preview_sessions=_previews(psessions),
+                sessions=psessions,
             )
         )
 
@@ -693,6 +731,7 @@ def build_tree(
                 session_count=repo_node["sessionCount"],
                 last_active=_last_active(auto_sessions),
                 preview_sessions=_previews(auto_sessions),
+                sessions=auto_sessions,
                 is_auto=True,
             )
         )
@@ -761,6 +800,7 @@ def build_tree(
                 session_count=len(homeless),
                 last_active=_last_active(homeless),
                 preview_sessions=_previews(homeless),
+                sessions=homeless,
                 is_no_project=True,
             ),
         )

@@ -8,6 +8,7 @@ block the send.
 """
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,8 +62,34 @@ def _event(text="hello agent"):
 def _rows():
     with dl._connect() as conn:
         return conn.execute(
-            "SELECT obligation_id, state, content FROM delivery_obligations"
+            """SELECT obligation_id, state, content, adapter_profile
+               FROM delivery_obligations"""
         ).fetchall()
+
+
+def _blocking_probe():
+    """Return a blocking ledger call and an event-loop progress witness."""
+    ledger_started = threading.Event()
+    event_loop_progressed = threading.Event()
+    blocked_event_loop = []
+
+    def _slow_ledger_call(*args, **kwargs):
+        ledger_started.set()
+        # Generous timeout: a genuinely blocked loop can never set the event
+        # (the witness coroutine cannot run), so a longer wait only guards
+        # against loaded-CI scheduling flake, not against missing the bug.
+        if not event_loop_progressed.wait(timeout=5.0):
+            blocked_event_loop.append(True)
+
+    async def _event_loop_witness():
+        deadline = asyncio.get_running_loop().time() + 10
+        while not ledger_started.is_set():
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("ledger call never started")
+            await asyncio.sleep(0)
+        event_loop_progressed.set()
+
+    return _slow_ledger_call, _event_loop_witness, blocked_event_loop
 
 
 async def _run(adapter, event, response="final answer"):
@@ -96,6 +123,63 @@ class TestProducerHook:
         assert len(rows) == 1
         assert rows[0][1] == "failed"
 
+    @pytest.mark.asyncio
+    async def test_late_transient_failure_signals_reconnected_runner(self):
+        """A replacement installed mid-send must trigger another ledger sweep."""
+        adapter = _Adapter()
+        adapter._owner_profile = "reviewer"
+        replacement = _Adapter()
+        replacement._owner_profile = "reviewer"
+        runner = MagicMock()
+        runner._adapter_for_source.side_effect = [adapter, replacement]
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
+        adapter.gateway_runner = runner
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=False,
+                error="send_path_degraded",
+                retryable=True,
+            )
+        )
+
+        await _run(adapter, _event())
+
+        assert _rows()[0][1] == "failed"
+        assert _rows()[0][3] == "reviewer"
+        runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
+            Platform.SLACK, profile="reviewer"
+        )
+
+
+    @pytest.mark.asyncio
+    async def test_slow_ledger_record_does_not_block_event_loop(self):
+        adapter = _Adapter()
+        slow_record, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch(
+            "gateway.delivery_ledger.record_obligation",
+            side_effect=slow_record,
+        ), patch("gateway.delivery_ledger.mark_attempting"):
+            await asyncio.gather(_run(adapter, _event()), event_loop_witness())
+
+        assert blocked_event_loop == []
+        assert adapter.sent == ["final answer"]
+
+    @pytest.mark.asyncio
+    async def test_slow_ledger_update_does_not_block_event_loop(self):
+        adapter = _Adapter()
+        slow_delivered, event_loop_witness, blocked_event_loop = _blocking_probe()
+
+        with patch("gateway.delivery_ledger.record_obligation"), patch(
+            "gateway.delivery_ledger.mark_attempting"
+        ), patch(
+            "gateway.delivery_ledger.mark_delivered",
+            side_effect=slow_delivered,
+        ):
+            await asyncio.gather(_run(adapter, _event()), event_loop_witness())
+
+        assert blocked_event_loop == []
+        assert adapter.sent == ["final answer"]
 
     @pytest.mark.asyncio
     async def test_crash_between_attempting_and_ack_is_recoverable(self):

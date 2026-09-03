@@ -176,3 +176,56 @@ async def test_client_upload_rejects_oversize_and_missing(tmp_path: Path):
     empty = tmp_path / "empty.bin"
     empty.write_bytes(b"")
     assert await c.upload(str(empty)) is None
+
+@pytest.mark.asyncio
+async def test_download_sends_a_user_agent_on_every_request():
+    """Discord's CDN 403s the default ``Python-urllib/x.y`` User-Agent.
+
+    Live-verified on staging 2026-08-26: every Discord CDN pass-through
+    download failed with ``HTTP Error 403: Forbidden``, the localizer then kept
+    the raw URL, and the transcriber tried to open a URL as a file path
+    ("Audio file not found") — so voice notes, images and documents were ALL
+    silently dead on the Discord relay lane. Reproduced from a clean shell:
+    urllib with no UA → 403; the same URL with any descriptive UA → 200.
+
+    Assert the header on BOTH url classes (public pass-through and
+    bearer-authenticated re-host), because they take different header paths.
+    """
+    seen: list[dict] = []
+
+    class _Resp:
+        headers = {"Content-Type": "audio/ogg", "Content-Length": "4"}
+
+        def read(self, *_a):
+            return b"OggS"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ARG001
+        seen.append(dict(req.headers))
+        return _Resp()
+
+    import urllib.request as _ur
+
+    orig = _ur.urlopen
+    _ur.urlopen = _fake_urlopen  # type: ignore[assignment]
+    try:
+        c = RelayMediaClient("https://conn.example", "gw1", "sec")
+        assert await c.download("https://cdn.discordapp.com/attachments/1/2/v.ogg")
+        assert await c.download("https://conn.example/relay/media/deadbeef")
+    finally:
+        _ur.urlopen = orig  # type: ignore[assignment]
+
+    assert len(seen) == 2
+    for headers in seen:
+        # urllib title-cases header keys on Request.
+        ua = headers.get("User-agent") or headers.get("User-Agent")
+        assert ua, f"no User-Agent sent; urllib would default to Python-urllib (403s on Discord CDN): {headers}"
+        assert "python-urllib" not in ua.lower()
+    # The re-host request must still carry its bearer (no regression).
+    rehost_headers = seen[1]
+    assert (rehost_headers.get("Authorization") or "").startswith("Bearer ")

@@ -13,13 +13,15 @@ the conversation without modifying the system prompt (preserving prompt caching)
 Inspired by Block/goose's SubdirectoryHintTracker.
 """
 
+import hashlib
 import logging
 import os
 import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
+from agent.prompt_builder import _read_text_with_timeout, _scan_context_content
+from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Same filenames as prompt_builder.py but we load ALL found (not first-wins)
 # since different subdirectories may use different conventions.
 _HINT_FILENAMES = [
+    "AGENTS.override.md",
     "AGENTS.md", "agents.md",
     "CLAUDE.md", "claude.md",
     ".cursorrules",
@@ -45,6 +48,10 @@ _COMMAND_TOOLS = {"terminal"}
 # Prevents scanning all the way to / for deeply nested paths.
 _MAX_ANCESTOR_WALK = 5
 
+# Shared with broad recursive search probes so context discovery and search do
+# not drift into different dependency/cache/build trees.
+_EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES
+
 
 def _is_ancestor_or_same(a: Path, b: Path) -> bool:
     """Check if *a* is the same as or an ancestor of *b* (parent directory check)."""
@@ -53,6 +60,7 @@ def _is_ancestor_or_same(a: Path, b: Path) -> bool:
         return True
     except ValueError:
         return False
+
 
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
@@ -70,8 +78,34 @@ class SubdirectoryHintTracker:
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         self._loaded_dirs: Set[Path] = set()
+        # Content digests already injected — prevents re-sending the same file
+        # reachable through symlinks, hardlinks, or duplicated copies.
+        self._loaded_digests: Set[str] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
+        self._seed_working_dir_digest()
+
+    def _seed_working_dir_digest(self) -> None:
+        """Record the CWD context file's digest so it is never re-injected.
+
+        ``prompt_builder`` already loads the working directory's context file at
+        startup.  Seeding its digest here means the same content reached through
+        a different path (a symlink farm, a shared workspace) is recognised as a
+        duplicate instead of being sent a second time.
+        """
+        for filename in _HINT_FILENAMES:
+            candidate = self.working_dir / filename
+            try:
+                if not candidate.is_file():
+                    continue
+                content = (_read_text_with_timeout(candidate) or "").strip()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if content:
+                self._loaded_digests.add(
+                    hashlib.sha256(content.encode("utf-8")).hexdigest()
+                )
+            break  # first match wins, mirroring startup loading
 
     def check_tool_call(
         self,
@@ -193,7 +227,24 @@ class SubdirectoryHintTracker:
             # check as a best-effort safeguard.
             if not _is_ancestor_or_same(self.working_dir, path):
                 return False
+        if self._is_excluded(path):
+            return False
         return True
+
+    def _is_excluded(self, path: Path) -> bool:
+        """True when the path sits inside a directory that holds copies, not context.
+
+        Directories the user is deliberately working inside are never excluded —
+        if ``working_dir`` is itself under ``vendor/``, that segment is legitimate
+        and only segments *below* the working dir are screened.
+        """
+        try:
+            rel_parts = path.relative_to(self.working_dir).parts
+        except ValueError:
+            # Paths outside the working dir are already rejected by
+            # _is_valid_subdir before this runs; treat as excluded defensively.
+            return True
+        return any(part in _EXCLUDED_DIR_NAMES for part in rel_parts)
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load hint files from a directory. Returns formatted text or None.
@@ -227,9 +278,22 @@ class SubdirectoryHintTracker:
             except OSError:
                 continue
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
+                content = (_read_text_with_timeout(hint_path) or "").strip()
                 if not content:
                     continue
+                # Skip content we've already injected. The same AGENTS.md is
+                # routinely reachable through several paths (symlinked shared
+                # workspaces, hardlinks, copied backups); re-sending it burns
+                # context for zero new information.
+                digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if digest in self._loaded_digests:
+                    logger.debug(
+                        "Skipping duplicate hint content at %s (digest %s)",
+                        hint_path,
+                        digest[:12],
+                    )
+                    break
+                self._loaded_digests.add(digest)
                 # Same security scan as startup context loading
                 content = _scan_context_content(content, filename)
                 if len(content) > _MAX_HINT_CHARS:
@@ -243,8 +307,9 @@ class SubdirectoryHintTracker:
                     rel_path = str(hint_path.relative_to(self.working_dir))
                 except (ValueError, RuntimeError):
                     try:
-                        rel_path = str(hint_path.relative_to(Path.home()))
-                        rel_path = "~/" + rel_path
+                        # as_posix: "~/" shorthand implies POSIX rendering
+                        # (avoids ~/AppData\Local\... chimeras on Windows).
+                        rel_path = "~/" + hint_path.relative_to(Path.home()).as_posix()
                     except (ValueError, RuntimeError):
                         pass  # keep absolute
                 found_hints.append((rel_path, content))

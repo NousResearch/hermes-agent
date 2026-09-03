@@ -94,3 +94,25 @@ class TestUnifiedDispatch:
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "operation" not in props
         assert "video_url" not in props
+
+
+    def test_upscale_in_schema_and_forwarded(self):
+        """`upscale` is advertised per-capability by the dynamic builder
+        (#95681 diet — static schema no longer carries it) and forwarded
+        to providers when set, omitted (not None) when unset."""
+        from tools.video_generation_tool import (
+            VIDEO_GENERATE_SCHEMA,
+            _build_dynamic_video_schema,
+        )
+        # Static placeholder: capability args live in the dynamic override.
+        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "upscale" not in props
+
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a dog", "upscale": True}, configured="fake")
+        assert result["success"] is True
+        assert provider.last_kwargs["upscale"] is True
+
+        self._run({"prompt": "a dog"}, configured="fake")
+        assert "upscale" not in provider.last_kwargs

@@ -136,6 +136,25 @@ def _run_tool_loop(agent, n_tool_iterations: int):
 
 
 class TestProactivePruneLoopWiring:
+    def test_full_compression_preempts_proactive_prune(self, agent):
+        agent.context_compressor.should_compress.return_value = True
+
+        def _compress(messages, system_message, **_kwargs):
+            return [dict(m) for m in messages], system_message
+
+        with (
+            patch.object(agent, "_compress_context", side_effect=_compress) as compress,
+            patch(
+                "agent.conversation_loop.conversation_history_after_compression",
+                return_value=[],
+            ),
+        ):
+            result = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        compress.assert_called_once()
+        agent.context_compressor.prune_tool_results_only.assert_not_called()
+
     def test_prune_consulted_when_compression_stands_down(self, agent):
         calls = []
 
@@ -169,6 +188,32 @@ class TestProactivePruneLoopWiring:
         tool_rows = [m for m in result["messages"] if m.get("role") == "tool"]
         assert tool_rows, "expected tool rows in the final transcript"
         assert all(m["content"] == marker for m in tool_rows)
+
+    def test_should_compress_true_but_skipped_is_warned(self, agent):
+        """``should_compress_info`` says RUN (``(True, None)``) yet this branch
+        was taken — the per-turn compression budget is spent. Over threshold
+        with no reclamation running must not be swallowed silently (#101889).
+
+        Faithful to the real engine: ``should_compress()`` is
+        ``should_compress_info()[0]``, so the only way into this branch with
+        ``(True, None)`` is an exhausted per-turn budget."""
+        agent.max_compression_attempts = 0  # budget already spent this turn
+        agent.context_compressor.should_compress.return_value = True
+        agent.context_compressor.should_compress_info.return_value = (True, None)
+        agent.context_compressor.prune_tool_results_only = (
+            lambda messages, current_tokens=None: (messages, 0)
+        )
+        warned = []
+        with patch.object(
+            agent,
+            "_warn_context_overflow_blocked",
+            side_effect=lambda reason, tokens, threshold: warned.append(reason),
+        ):
+            result = _run_tool_loop(agent, n_tool_iterations=1)
+
+        assert result["completed"] is True
+        assert warned, "over-threshold turn with no compaction ran silently"
+        assert all(r.startswith("attempts_exhausted") for r in warned)
 
     def test_noop_input_object_commits_nothing(self, agent):
         """Engine returns the INPUT object with a (bogus) non-zero count —

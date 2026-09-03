@@ -60,6 +60,7 @@ export class LocalBackendSpawnCoordinator {
     }
 
     let waiter!: Waiter
+
     const acquired = new Promise<ReleaseLocalBackendSlot>((resolve, reject) => {
       waiter = { key, resolve, reject, timer: null }
       this.#queue.push(waiter)
@@ -96,6 +97,7 @@ export class LocalBackendSpawnCoordinator {
     this.#queue.splice(index, 1)
     this.#clearTimer(waiter)
     waiter.reject(error)
+
     return true
   }
 

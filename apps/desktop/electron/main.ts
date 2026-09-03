@@ -281,8 +281,8 @@ import {
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
 import {
-  type LocalBackendSpawnRequest,
   LocalBackendSpawnCoordinator,
+  type LocalBackendSpawnRequest,
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
 import { createPoolStopper } from './pool-stop'
@@ -1416,6 +1416,10 @@ const profileDeletionGate = new ProfileDeletionGate()
 const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
 const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
 const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(POOL_MAX_BACKENDS)
+// How long a spawn may wait for a free local slot. Must stay under the
+// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
+// the queued ticket fails before the renderer does and the user sees why.
+const POOL_SLOT_WAIT_MS = 30_000
 
 // A backend touched within this window has a live renderer socket (the keepalive
 // pings every 60s for every open profile). LRU eviction must spare these — a
@@ -12219,6 +12223,7 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
   }
 
   const child = entry.process
+
   const teardown = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     async () => {
@@ -12238,6 +12243,7 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
   // Keep the settled promise in the WeakMap for the lifetime of this entry.
   // Error + exit + outer catch may all request cleanup; none may run it twice.
   failedLocalBackendTeardowns.set(entry, teardown)
+
   return teardown
 }
 
@@ -12278,9 +12284,21 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     }
   }
 
-  const spawnRequest = localBackendSpawnCoordinator.request(poolKey, { timeoutMs: POOL_IDLE_MS })
+  // Bound the slot wait BELOW the renderer's backend-boot budget (45s): once
+  // the renderer has given up on this spawn, a ticket still queued for the
+  // pool-idle window (10 min) would hold the pool key hostage and every
+  // later click on the profile would join that stale wait. Failing here
+  // surfaces the "all N slots busy" reason instead of a generic boot timeout.
+  const spawnRequest = localBackendSpawnCoordinator.request(poolKey, { timeoutMs: POOL_SLOT_WAIT_MS })
   entry.localBackendSlotKey = poolKey
   entry.localBackendSpawnRequest = spawnRequest
+
+  if (localBackendSpawnCoordinator.activeCount >= POOL_MAX_BACKENDS) {
+    rememberLog(
+      `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${POOL_MAX_BACKENDS} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
+    )
+  }
+
   entry.releaseLocalBackendSlot = await spawnRequest.acquired
 
   if (entry.localBackendSpawnRequest === spawnRequest) {

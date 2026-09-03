@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
@@ -10,9 +13,11 @@ import {
 
 const deferred = () => {
   let resolve!: () => void
+
   const promise = new Promise<void>(done => {
     resolve = done
   })
+
   return { promise, resolve }
 }
 
@@ -45,6 +50,7 @@ test('100 concurrent local requests never hold more than the configured slots', 
     for (const gate of gates.slice(start, start + limit)) {
       gate.resolve()
     }
+
     await flush()
   }
 
@@ -118,6 +124,7 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
         const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 40)'], {
           stdio: 'ignore'
         })
+
         assert.ok(child.pid)
         livePids.add(child.pid)
         seenPids.add(child.pid)
@@ -153,8 +160,10 @@ test('failed start keeps its slot until the child has actually exited', async ()
   const childExit = deferred()
   const releaseFailed = await coordinator.acquire('failed')
   let successorEntered = false
+
   const successor = coordinator.acquire('successor').then(release => {
     successorEntered = true
+
     return release
   })
 
@@ -181,8 +190,10 @@ test('a rejected wait keeps the slot occupied', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(1)
   const releaseFailed = await coordinator.acquire('failed')
   let successorEntered = false
+
   const successor = coordinator.acquire('successor').then(release => {
     successorEntered = true
+
     return release
   })
 
@@ -233,8 +244,10 @@ test('a failed or repeated cleanup releases exactly one slot', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(1)
   const releaseFirst = await coordinator.acquire('first')
   let secondEntered = false
+
   const second = coordinator.acquire('second').then(release => {
     secondEntered = true
+
     return release
   })
 
@@ -254,3 +267,33 @@ test('a failed or repeated cleanup releases exactly one slot', async () => {
   releaseSecond()
   assert.equal(coordinator.activeCount, 0)
 })
+
+
+// ── main.ts wiring ──────────────────────────────────────────────────────────
+// The coordinator is only as good as the timeout main.ts hands it. A queued
+// ticket that outlives the renderer's backend-boot budget holds the pool key
+// hostage: the renderer has already reported "backend didn't come up", and
+// every later click on that profile joins the stale wait instead of failing
+// fast with a reason.
+{
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+
+  const withTimeoutSource = fs
+    .readFileSync(path.join(here, '..', 'src', 'lib', 'with-timeout.ts'), 'utf8')
+    .replace(/\r\n/g, '\n')
+
+  test('main.ts bounds the slot wait below the renderer backend-boot budget', () => {
+    const slotWait = Number(/const POOL_SLOT_WAIT_MS = ([\d_]+)/.exec(mainSource)?.[1]?.replace(/_/g, ''))
+
+    const bootBudget = Number(
+      /export const BACKEND_BOOT_WAIT_TIMEOUT_MS = ([\d_]+)/.exec(withTimeoutSource)?.[1]?.replace(/_/g, '')
+    )
+
+    assert.ok(Number.isFinite(slotWait) && slotWait > 0, 'POOL_SLOT_WAIT_MS must be a literal in main.ts')
+    assert.ok(Number.isFinite(bootBudget), 'BACKEND_BOOT_WAIT_TIMEOUT_MS must be a literal')
+    assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
+    assert.match(mainSource, /localBackendSpawnCoordinator\.request\(poolKey, \{ timeoutMs: POOL_SLOT_WAIT_MS \}\)/)
+    assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
+  })
+}

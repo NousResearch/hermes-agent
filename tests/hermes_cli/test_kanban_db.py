@@ -244,6 +244,59 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
+def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
+    """``archive_task`` on a *running* task must actually signal its
+    host-local worker process, not just null ``worker_pid`` in the DB
+    (#76196: previously a worker kept running past its own archive and
+    could still push/complete work against a task nothing tracks anymore,
+    with no record of the termination attempt for operators to audit)."""
+    import json
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 54321)
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        signalled = []
+        assert kb.archive_task(
+            conn, t,
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+        ) is True
+
+        assert signalled and signalled[0][0] == 54321
+
+        row = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'archived'",
+            (t,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        assert payload["prev_pid"] == 54321
+        assert payload["host_local"] is True
+        assert payload["termination_attempted"] is True
+        assert payload["terminated"] is True
+
+        task = kb.get_task(conn, t)
+        assert task.status == "archived"
+
+
+def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
+    """A ``ready``/``blocked``/``done`` task has no live worker to signal -
+    ``archive_task`` must not call ``signal_fn`` at all for those, only for
+    tasks that were actually ``running``."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        signalled = []
+        assert kb.archive_task(
+            conn, t,
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+        ) is True
+        assert signalled == []
+
+
 
 
 

@@ -7521,7 +7521,27 @@ def decompose_triage_task(
     return child_ids
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> bool:
+    # Upstream bug NousResearch/hermes-agent#76196: archiving a running task
+    # used to just null worker_pid in the DB without ever signalling the
+    # actual OS process, so a live worker kept running past its own archive
+    # and could still push/complete work against a task nothing tracks
+    # anymore. Mirror reclaim_task's termination pattern: read the prior
+    # claim/pid *before* the update, and — only if the task was actually
+    # running — best-effort SIGTERM/SIGKILL it via the same host-local-only
+    # helper reclaim_task already uses, before clearing the claim fields.
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return False
+    was_running = row["status"] == "running"
+    termination = None
+    if was_running:
+        termination = _terminate_reclaimed_worker(
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+        )
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -7538,8 +7558,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id,
             outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
+            metadata=termination,
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        _append_event(conn, task_id, "archived", termination, run_id=run_id)
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.

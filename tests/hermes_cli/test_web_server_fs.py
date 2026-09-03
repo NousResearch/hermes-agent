@@ -1,4 +1,5 @@
 import base64
+import os
 from pathlib import Path
 
 import pytest
@@ -89,3 +90,96 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_enforce_scope_allows_path_when_env_unset(client, tmp_path):
+    """When HERMES_DASH_FS_ALLOW is unset, behavior is unrestricted (backward compat)."""
+    target = tmp_path / "allowed.txt"
+    target.write_text("data")
+
+    response = client.get("/api/fs/read-text", params={"path": str(target)})
+    assert response.status_code == 200
+    assert response.json()["text"] == "data"
+
+
+def test_fs_enforce_scope_rejects_outside_root(client, tmp_path, monkeypatch):
+    """When HERMES_DASH_FS_ALLOW is set, paths outside roots are rejected."""
+    monkeypatch.setenv("HERMES_DASH_FS_ALLOW", str(tmp_path))
+
+    outside = Path("/tmp/outside_file")
+    outside.write_text("leaked")
+
+    response = client.get("/api/fs/read-text", params={"path": str(outside)})
+    assert response.status_code == 403
+    assert "outside allowed" in response.json()["detail"].lower()
+
+
+def test_fs_enforce_scope_allows_inside_root(client, tmp_path, monkeypatch):
+    """When HERMES_DASH_FS_ALLOW is set, paths inside roots are allowed."""
+    monkeypatch.setenv("HERMES_DASH_FS_ALLOW", str(tmp_path))
+
+    inside = tmp_path / "allowed.txt"
+    inside.write_text("data")
+
+    response = client.get("/api/fs/read-text", params={"path": str(inside)})
+    assert response.status_code == 200
+    assert response.json()["text"] == "data"
+
+
+def test_fs_enforce_scope_blocks_denied_basenames(client, tmp_path, monkeypatch):
+    """Denied basenames (.env, shadow, etc.) are blocked even inside allowed roots."""
+    monkeypatch.setenv("HERMES_DASH_FS_ALLOW", str(tmp_path))
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("SECRET=1")
+
+    response = client.get("/api/fs/read-text", params={"path": str(env_file)})
+    assert response.status_code == 403
+    assert "not readable" in response.json()["detail"].lower()
+
+
+def test_fs_enforce_scope_blocks_symlink_escape(client, tmp_path, monkeypatch):
+    """Symlink escapes are blocked because realpath is used."""
+    monkeypatch.setenv("HERMES_DASH_FS_ALLOW", str(tmp_path))
+
+    # Create the "outside" target in a sibling directory so the symlink
+    # actually escapes the allowed root.
+    import tempfile as _tempfile
+    with _tempfile.TemporaryDirectory() as _td:
+        outside = Path(_td) / "secret"
+        outside.write_text("leaked")
+
+        link = tmp_path / "link"
+        link.symlink_to(outside)
+
+        response = client.get("/api/fs/read-text", params={"path": str(link)})
+        assert response.status_code == 403
+
+
+def test_fs_enforce_scope_multiple_roots(client, tmp_path, monkeypatch, tmpdir):
+    """Multiple roots separated by os.pathsep are supported."""
+    monkeypatch.setenv("HERMES_DASH_FS_ALLOW", f"{str(tmp_path)}{os.pathsep}{str(tmpdir)}")
+
+    inside1 = tmp_path / "a.txt"
+    inside1.write_text("data1")
+    inside2 = Path(tmpdir) / "b.txt"
+    inside2.write_text("data2")
+
+    r1 = client.get("/api/fs/read-text", params={"path": str(inside1)})
+    r2 = client.get("/api/fs/read-text", params={"path": str(inside2)})
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["text"] == "data1"
+    assert r2.json()["text"] == "data2"
+
+
+def test_fs_enforce_scope_empty_env_is_unrestricted(client, tmp_path, monkeypatch):
+    """Empty HERMES_DASH_FS_ALLOW means unrestricted (backward compat)."""
+    monkeypatch.setenv("HERMES_DASH_FS_ALLOW", "")
+
+    target = tmp_path / "file.txt"
+    target.write_text("data")
+
+    response = client.get("/api/fs/read-text", params={"path": str(target)})
+    assert response.status_code == 200

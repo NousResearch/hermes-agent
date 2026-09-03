@@ -2428,6 +2428,43 @@ _FS_MIME_TYPES = {
 }
 
 
+_FS_DENY_BASENAMES = frozenset({
+    ".env", ".env.local", "auth.json", "credentials.json", "credentials",
+    "id_ed25519", "id_rsa", "id_ecdsa", ".restic-password", "shadow",
+})
+
+
+def _fs_allowed_roots() -> tuple[str, ...]:
+    """Parse HERMES_DASH_FS_ALLOW (os.pathsep-separated roots). Empty = unrestricted."""
+    raw = os.environ.get("HERMES_DASH_FS_ALLOW", "")
+    roots = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if part:
+            roots.append(os.path.realpath(os.path.expanduser(part)))
+    return tuple(roots)
+
+
+def _fs_enforce_scope(candidate: Path) -> Path:
+    """Constrain dashboard file APIs to configured roots (HERMES_DASH_FS_ALLOW).
+
+    Only enforced when the env var is set, so existing local installs keep
+    current behaviour unless the operator opts in. Roots are realpath'd and the
+    candidate is resolved, so symlink escapes are blocked. Secret files are
+    denied unconditionally inside allowed roots.
+    """
+    roots = _fs_allowed_roots()
+    if not roots:
+        return candidate
+    resolved = candidate.resolve(strict=False)
+    rp = str(resolved)
+    if not any(rp == root or rp.startswith(root + os.sep) for root in roots):
+        raise HTTPException(status_code=403, detail="Path outside allowed dashboard roots")
+    if resolved.name in _FS_DENY_BASENAMES:
+        raise HTTPException(status_code=403, detail="File is not readable")
+    return resolved
+
+
 def _fs_path(raw_path: str) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -2443,7 +2480,7 @@ def _fs_path(raw_path: str) -> Path:
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
-        return candidate.resolve(strict=False)
+        return _fs_enforce_scope(candidate)
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
 

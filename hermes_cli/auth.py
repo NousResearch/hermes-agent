@@ -571,57 +571,74 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
 }
 
-# Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
-# providers/ that is not already declared above.  New providers only need a
-# plugins/model-providers/<name>/ plugin — no edits to this file required.
-try:
-    from providers import list_providers as _list_providers_for_registry
-    for _pp in _list_providers_for_registry():
-        if _pp.name in PROVIDER_REGISTRY:
-            continue
-        if _pp.auth_type == "external_process":
-            # An external-process provider (an ACP CLI driven over stdio) has no
-            # API-key env vars to resolve — its credentials come from
-            # resolve_external_process_provider_credentials(), keyed on this
-            # auth_type. Registering it here is what lets a provider shipped
-            # outside this tree pass resolve_provider()'s known-provider gate;
-            # without it, `hermes -m <that provider>` dies with
-            # "Unknown provider" before any client is ever built.
+def sync_plugin_providers_to_registry() -> None:
+    """Idempotently extend PROVIDER_REGISTRY with providers registered in the
+    ``providers/`` plugin registry.
+
+    New api-key providers only need a plugins/model-providers/<name>/ plugin —
+    no edits to this file required.
+
+    This exists as a callable (not merely module-top-level code) because
+    ``hermes_cli.auth`` can be imported while ``providers._discover_providers()``
+    is still mid-scan: a plugin's transitive import pulls this module in, the
+    module-level snapshot then only sees the profiles registered up to that
+    moment, and module code never runs again — leaving the registry
+    permanently incomplete (#102123). Discovery calls back into this function
+    once its full scan finishes (see ``providers/__init__.py``), so a
+    mid-discovery import still ends with a complete registry. Safe to call any
+    number of times; already-registered names are left untouched.
+    """
+    try:
+        from providers import list_providers as _list_providers_for_registry
+        for _pp in _list_providers_for_registry():
+            if _pp.name in PROVIDER_REGISTRY:
+                continue
+            if _pp.auth_type == "external_process":
+                # An external-process provider (an ACP CLI driven over stdio) has no
+                # API-key env vars to resolve — its credentials come from
+                # resolve_external_process_provider_credentials(), keyed on this
+                # auth_type. Registering it here is what lets a provider shipped
+                # outside this tree pass resolve_provider()'s known-provider gate;
+                # without it, `hermes -m <that provider>` dies with
+                # "Unknown provider" before any client is ever built.
+                PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                    id=_pp.name,
+                    name=_pp.display_name or _pp.name,
+                    auth_type="external_process",
+                    inference_base_url=_pp.base_url,
+                )
+                for _alias in _pp.aliases:
+                    if _alias not in PROVIDER_REGISTRY:
+                        PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
+                continue
+            if _pp.auth_type != "api_key" or not _pp.env_vars:
+                continue
+            # Skip providers that need custom token resolution or are special-cased
+            # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
+            # openrouter/custom are aggregator/user-supplied and handled outside
+            # the registry — adding them here breaks runtime_provider resolution
+            # that relies on `openrouter not in PROVIDER_REGISTRY`).
+            if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+                continue
+            _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
+            _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
             PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
                 id=_pp.name,
                 name=_pp.display_name or _pp.name,
-                auth_type="external_process",
+                auth_type="api_key",
                 inference_base_url=_pp.base_url,
+                api_key_env_vars=_api_key_vars or _pp.env_vars,
+                base_url_env_var=_base_url_var or "",
             )
+            # Also register aliases so resolve_provider() resolves them
             for _alias in _pp.aliases:
                 if _alias not in PROVIDER_REGISTRY:
                     PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
-            continue
-        if _pp.auth_type != "api_key" or not _pp.env_vars:
-            continue
-        # Skip providers that need custom token resolution or are special-cased
-        # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
-        # openrouter/custom are aggregator/user-supplied and handled outside
-        # the registry — adding them here breaks runtime_provider resolution
-        # that relies on `openrouter not in PROVIDER_REGISTRY`).
-        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
-            continue
-        _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
-        _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
-        PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
-            id=_pp.name,
-            name=_pp.display_name or _pp.name,
-            auth_type="api_key",
-            inference_base_url=_pp.base_url,
-            api_key_env_vars=_api_key_vars or _pp.env_vars,
-            base_url_env_var=_base_url_var or "",
-        )
-        # Also register aliases so resolve_provider() resolves them
-        for _alias in _pp.aliases:
-            if _alias not in PROVIDER_REGISTRY:
-                PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
-except Exception:
-    pass
+    except Exception:
+        pass
+
+
+sync_plugin_providers_to_registry()
 
 
 # =============================================================================

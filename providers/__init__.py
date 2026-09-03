@@ -412,3 +412,27 @@ def _discover_providers() -> None:
     # (Pip entry-point providers are discovered in step 0, before the
     # filesystem plugins, so first-party profiles always win on name
     # collision — see _discover_entry_point_providers.)
+
+    _sync_auth_provider_registry()
+
+
+def _sync_auth_provider_registry() -> None:
+    """Re-sync ``hermes_cli.auth.PROVIDER_REGISTRY`` after a completed scan.
+
+    ``hermes_cli.auth`` can be imported *while* this scan is still running —
+    a plugin's transitive import chain reaches it — and its module-level
+    registry snapshot then only sees the profiles registered up to that
+    moment, leaving the auth registry permanently incomplete (#102123).
+    Once the full scan finishes, refresh that snapshot if the module was
+    imported at all. Only an already-imported module is refreshed: importing
+    ``hermes_cli.auth`` from here would run its top-level code mid-scan and
+    risks a circular import. If it was never imported, its eventual import
+    snapshot will already see the complete registry.
+    """
+    try:
+        auth_mod = sys.modules.get("hermes_cli.auth")
+        sync = getattr(auth_mod, "sync_plugin_providers_to_registry", None)
+        if callable(sync):
+            sync()
+    except Exception:
+        pass

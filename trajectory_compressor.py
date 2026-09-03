@@ -1419,6 +1419,28 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             print(f"   Tokens saved:       min={min(tokens_saved_list):,}, max={max(tokens_saved_list):,}, median={sorted(tokens_saved_list)[len(tokens_saved_list)//2]:,}")
 
 
+def _reject_in_place_output(input_path: Path, output_path: Path) -> bool:
+    """Return True (and print an error) if *output* aliases *input*.
+
+    ``os.path.samefile`` catches both symlink aliases and hardlinks — two names
+    for the same inode — and is the reliable check even when the paths resolve
+    to different syntactic strings. ``resolve()`` alone would miss hardlinks,
+    so compressing to a hardlink of the source could still truncate it.
+    """
+    try:
+        same = input_path.exists() and output_path.exists() and os.path.samefile(input_path, output_path)
+    except OSError:
+        # Fall back to lexical comparison if resolution fails (e.g. parent
+        # dir missing); a missing output parent can't be the input file.
+        same = output_path == input_path
+    if same:
+        print(
+            f"❌ Output path resolves to the input path ({input_path}); "
+            "refusing to overwrite the source dataset. Choose a different output."
+        )
+    return same
+
+
 def main(
     input: str,
     output: str = None,
@@ -1504,7 +1526,9 @@ def main(
             output_path = Path(output)
         else:
             output_path = input_path.parent / (input_path.stem + compression_config.output_suffix + ".jsonl")
-        
+        if _reject_in_place_output(input_path, output_path):
+            raise SystemExit(1)
+
         # Load entries from the single file
         entries = []
         with open(input_path, 'r', encoding='utf-8') as f:
@@ -1574,7 +1598,9 @@ def main(
             output_path = Path(output)
         else:
             output_path = input_path.parent / (input_path.name + compression_config.output_suffix)
-        
+        if _reject_in_place_output(input_path, output_path):
+            raise SystemExit(1)
+
         # If sampling is requested for directory mode, we need to handle it differently
         if sample_percent is not None:
             print(f"\n⚠️  Sampling from directory: will sample {sample_percent}% from each file")

@@ -200,6 +200,55 @@ class TestPlatformReconnectWatcher:
         assert Platform.TELEGRAM in runner.adapters
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("degraded", [False, True])
+    async def test_reconnect_stamp_honours_adapter_send_path_degraded(self, degraded):
+        """connect() returning True is not proof the receive path is live:
+        Telegram's degraded reconnect returns True while its own ladder
+        retries. The watcher's status stamp must publish what the adapter
+        reports, not an unconditional "connected" (#101391)."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        class _DegradableAdapter(StubAdapter):
+            @property
+            def send_path_degraded(self) -> bool:
+                return degraded
+
+        adapter = _DegradableAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        stamps = [
+            c.kwargs for c in runner._update_platform_runtime_status.call_args_list
+            if c.args and c.args[0] == Platform.TELEGRAM.value
+        ]
+        assert stamps, "watcher never stamped telegram"
+        final = stamps[-1]
+        assert final["platform_state"] == ("retrying" if degraded else "connected")
+        assert final["error_message"] == (adapter.DEGRADED_STATUS_MESSAGE if degraded else None)
+        assert final["retrying_since"] is None
+
+    @pytest.mark.asyncio
     async def test_cold_connect_defaults_to_is_reconnect_false(self):
         """The cold-start connect path (_connect_adapter_with_timeout with no
         is_reconnect arg) must default to False so a first boot still drops any
@@ -227,6 +276,7 @@ class TestPlatformReconnectWatcher:
         """
         runner = _make_runner()
         runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
         runner._schedule_resume_pending_sessions = MagicMock(return_value=1)
 
         platform_config = PlatformConfig(enabled=True, token="test")
@@ -258,6 +308,9 @@ class TestPlatformReconnectWatcher:
                 await run_one_iteration()
 
         assert Platform.TELEGRAM in runner.adapters
+        runner._redeliver_failed_obligations_for_platform.assert_awaited_once_with(
+            Platform.TELEGRAM
+        )
         runner._schedule_resume_pending_sessions.assert_called_once_with(
             platform=Platform.TELEGRAM
         )

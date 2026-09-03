@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
@@ -305,6 +306,11 @@ def _record_codex_app_server_compaction(
             compressor.last_prompt_tokens = -1
             compressor.last_completion_tokens = 0
             compressor.awaiting_real_usage_after_compression = True
+
+    # Native compaction rewrote the provider-side context; the usage anchor's
+    # transcript snapshot no longer matches what will be sent. Invalidate it.
+    agent._usage_anchor = None
+    agent._turn_base_usage_anchor = None
 
     agent._last_compaction_in_place = False
     try:
@@ -690,6 +696,20 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    # Defense in depth for compression.checkpoint_required: agent init
+    # already refuses this combination, but api_mode is a plain attribute a
+    # future code path could mutate on a live agent. Fail closed before the
+    # codex agent can compact its thread — once run_turn() executes, a
+    # codex-owned compaction may already have happened with no pre-compress
+    # checkpoint. Explicit-True check matches the compress_context() gate.
+    if getattr(agent, "compression_checkpoint_required", False) is True:
+        from agent.conversation_compression import _checkpoint_blocked
+
+        raise _checkpoint_blocked(
+            "codex_app_server owns the authoritative thread and compacts it "
+            "without a truthful pre-compaction transcript boundary"
+        )
+
     from agent.transports.codex_app_server_session import (
         CodexAppServerSession,
         _ServerRequestRouting,
@@ -1081,7 +1101,9 @@ def _consume_codex_event_stream(
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
-    * ``interrupt_check()`` — returns True to break the loop early.
+    * ``interrupt_check()`` — returns True to break the loop early, or raises
+      ``TimeoutError`` / ``InterruptedError`` for request-retirement control
+      flow that must not be converted into a partial final response.
     """
     collected_output_items: List[Any] = []
     # output_index of each collected_output_items entry, appended in lockstep
@@ -1496,6 +1518,78 @@ def _sanitize_consumer_codex_request(
     return sanitized
 
 
+# Bulk request fields that carry the conversation payload. Everything else in
+# the request is scalar configuration the SDK transform handles in microseconds.
+_SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
+
+
+def _is_plain_json_data(value: Any) -> bool:
+    """True when ``value`` is composed purely of JSON wire types.
+
+    The SDK's request transform exists to convert typed params (TypedDict
+    key aliases, pydantic models, ``PropertyInfo`` formats) into wire
+    format.  Hermes assembles Codex payloads from JSON round-trips, so they
+    are already wire format — but that is only provable when every node is
+    a plain JSON type.  Anything else must keep the typed SDK path.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str) and _is_plain_json_data(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return all(_is_plain_json_data(item) for item in value)
+    return False
+
+
+def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
+    """Route bulk payload fields around the SDK's ``maybe_transform`` (#93650).
+
+    ``responses.create`` re-walks the entire request body against the
+    ``ResponseCreateParams`` union graph before any byte leaves the process.
+    That walk runs with the GIL held, and #93650 documents it wedging for
+    12+ hours on a ~1.4 MB conversation — starving every other thread,
+    including the TTFB/stale watchdogs whose job is to rescue this exact
+    call.  Because the hang is client-side and pre-network, no socket kill
+    can unblock it.
+
+    The SDK merges ``extra_body`` into the JSON body *after* the transform
+    (``_base_client._build_request``), so moving the already-wire-format
+    bulk fields there skips the walk entirely and produces a byte-identical
+    request.  Fields containing anything that is not plain JSON data (e.g.
+    pydantic models, generators) stay on the typed path, which still needs
+    the transform.  Set HERMES_CODEX_SDK_TRANSFORM=1 to restore the pre-fix
+    behavior.
+    """
+    if os.environ.get("HERMES_CODEX_SDK_TRANSFORM", "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }:
+        return stream_kwargs
+
+    moved = {
+        field: stream_kwargs[field]
+        for field in _SDK_TRANSFORM_BYPASS_FIELDS
+        if isinstance(stream_kwargs.get(field), (dict, list))
+        and _is_plain_json_data(stream_kwargs[field])
+    }
+    if not moved:
+        return stream_kwargs
+
+    bypassed = {
+        key: value for key, value in stream_kwargs.items() if key not in moved
+    }
+    extra_body = bypassed.get("extra_body")
+    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    for field, value in moved.items():
+        # An explicit caller-provided extra_body entry keeps precedence,
+        # matching what the SDK's post-transform merge would have done.
+        merged.setdefault(field, value)
+    bypassed["extra_body"] = merged
+    return bypassed
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -1514,18 +1608,39 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
+    # Retirement token for THIS request, installed by
+    # ``interruptible_api_call`` before it hands off to the worker thread. When
+    # a watchdog (TTFB / stream-idle / stale-call) kills the connection it
+    # clears the agent-level token, so a worker that is still draining frames
+    # can tell it has been retired. ``None`` means no watchdog owns this call
+    # (auxiliary callers drive this function directly) — then every check
+    # passes and behavior is unchanged.
+    request_token = getattr(agent, "_active_codex_stream_request_token", None)
+
+    def _request_is_current() -> bool:
+        if request_token is None:
+            return True
+        return getattr(agent, "_active_codex_stream_request_token", None) is request_token
 
     def _on_text_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
     def _on_reasoning_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_reasoning_delta(text)
 
     def _on_commentary_message(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_streamed_codex_commentary(text)
 
     def _on_event(event: Any) -> None:
+        if not _request_is_current():
+            return
         # TTFB watchdog and activity touch — runs once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
@@ -1543,6 +1658,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 next_api_kwargs,
             )
             stream_kwargs["stream"] = True
+            stream_kwargs = _bypass_sdk_request_transform(stream_kwargs)
             return active_client.responses.create(**stream_kwargs)
 
         def _codex_stream_created(_raw_stream: Any) -> None:
@@ -1628,6 +1744,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise
 
         def _interrupt_or_superseded() -> bool:
+            # A retired request must NOT break out of the consume loop: breaking
+            # returns the partial `final` (status defaults to "completed"), which
+            # the caller persists as a finished assistant turn. Raise so the
+            # watchdog's own TimeoutError is what the retry path sees.
+            if not _request_is_current():
+                raise TimeoutError(
+                    "Codex Responses stream request retired before terminal response"
+                )
             return bool(agent._interrupt_requested)
 
         try:

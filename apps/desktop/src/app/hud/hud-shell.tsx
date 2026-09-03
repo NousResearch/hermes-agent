@@ -13,9 +13,9 @@ import { useHudClickThrough } from './click-through'
 import { useHudGameOverlay } from './game-overlay'
 import { useHudGlass } from './glass'
 import { useHudGoto, useReportHudSession } from './handoff'
-import { hudTranscriptHeight } from './layout'
-import { useHudResizeHandle } from './resize-handle'
+import { hudResizeDirections, useHudResizeHandle } from './resize-handle'
 import { useHudThreadFocus } from './thread-focus'
+import { useHudTranscriptBand } from './transcript-band'
 
 /** How long the transcript lingers at its glanceable opacity — after a turn
  *  lands, or after you let go of the composer — before it goes. This is the ONLY
@@ -38,11 +38,6 @@ const HUD_DIM_MS = Math.round(HUD_FADE_MS * 1.5)
  *  while the last of the text is still going — it reads as the transcript being
  *  drawn down into the bar rather than the two dissolving in lockstep. */
 const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
-
-/** Breathing room the sheet keeps above the first row, so the fade has
- *  somewhere to land. Folded into the measured height rather than added in CSS,
- *  so an empty transcript measures a true zero instead of a 12px strip. */
-const HUD_SHEET_OVERHANG_PX = 12
 
 /** Composer on top, transcript always hanging below it — Spotlight's shape,
  *  rather than flipping to follow the screen edge the HUD is parked against. */
@@ -275,6 +270,8 @@ export function HudShell() {
     }
   }, [])
 
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
   // Whether bar + band actually cover the window. Gates the frost, which is
   // native vibrancy and therefore the WINDOW's content view — it fills the whole
   // rectangle and nothing in the page can clip it to the sheet. Whenever the
@@ -282,101 +279,22 @@ export function HudShell() {
   // a grey slab hanging under the bar with nothing in it. Now that the band is
   // capped it almost never covers the window, so this is almost always false —
   // which is correct, and asking anything looser paints the slab back.
-  const [filled, setFilled] = useState(false)
-  const rootRef = useRef<HTMLDivElement | null>(null)
+  const filled = useHudTranscriptBand(rootRef)
 
-  useEffect(() => {
-    const root = rootRef.current
-
-    if (!root) {
-      return
-    }
-
-    let viewport: HTMLElement | null = null
-    const ro = new ResizeObserver(() => measure())
-
-    const measure = () => {
-      const el = viewport ?? root.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')
-
-      if (el !== viewport) {
-        viewport = el
-
-        if (el) {
-          ro.observe(el)
-
-          if (el.firstElementChild) {
-            ro.observe(el.firstElementChild)
-          }
-        }
-      }
-
-      // How tall the band actually needs to be — the tight bbox of the message
-      // rows only. Measuring to the viewport edge counted the full-window scroll
-      // container (min-height: 100%) as transcript and painted a empty slab almost
-      // the size of the HUD.
-      const rows = el?.querySelectorAll<HTMLElement>('[data-slot="aui_thread-content"] > *:not([data-slot])')
-
-      // Zero-height rows are not a transcript. A fresh thread still renders
-      // scaffolding inside the content box (clearance, empty state), so
-      // counting rows alone paid the overhang for nothing and left a sliver of
-      // sheet hanging under the bar with no text in it.
-      const text = !rows?.length
-        ? 0
-        : Math.max(0, rows[rows.length - 1].getBoundingClientRect().bottom - rows[0].getBoundingClientRect().top)
-
-      const contentSpan = text < 1 ? 0 : text + HUD_SHEET_OVERHANG_PX
-
-      // Once the HUD has a transcript, a resize must buy readable scrollback.
-      // The old glance-band ceiling froze this at 152px and turned every extra
-      // pixel of native window height into empty transparent chrome.
-      const visible = hudTranscriptHeight({
-        barHeight: root.querySelector<HTMLElement>('[data-slot="composer-dock"]')?.getBoundingClientRect().height ?? 0,
-        contentHeight: contentSpan,
-        viewportHeight: window.innerHeight
-      })
-
-      root.style.setProperty('--hud-band-height', `${visible}px`)
-
-      // …and the bar's real height, which is what the thread has to clear.
-      // --composer-measured-height would be the obvious source, but it is a
-      // surface var that never lands here, so the clearance silently fell back
-      // to the root estimate and reserved ~20px more than the bar occupies —
-      // a visible hole under the last message.
-      const bar = root.querySelector<HTMLElement>('[data-slot="composer-dock"]')
-      const barHeight = bar?.getBoundingClientRect().height ?? 0
-
-      if (bar) {
-        ro.observe(bar)
-        root.style.setProperty('--hud-bar-height', `${Math.round(barHeight)}px`)
-      }
-
-      setFilled(barHeight + visible >= window.innerHeight - 1)
-    }
-
-    // The viewport mounts async (lazy chat surface); poll briefly until it
-    // exists, then let the ResizeObserver own it. Window resize is separate:
-    // the transcript's rows may not change size, but the available scrollback
-    // must, so observing the rows alone cannot update the band.
-    measure()
-    const probe = setInterval(measure, 500)
-    window.addEventListener('resize', measure)
-
-    return () => {
-      clearInterval(probe)
-      window.removeEventListener('resize', measure)
-      ro.disconnect()
-    }
-  }, [])
-
-  useHudGlass(rootRef, recent || held, filled)
+  useHudGlass(rootRef, filled)
   useHudClickThrough(rootRef)
   useHudThreadFocus(rootRef)
 
-  // Corner resize handle. The window is created non-resizable so dragging can
+  // Edge/corner resize frame. The window is created non-resizable so dragging can
   // never be misread as a resize gesture (the Windows transparent-frameless
   // growth bug); the handle is the one sanctioned way to change size, driving
   // the same flip-resizable-for-the-call pattern the pet overlay uses.
   const { resizing: hudResizing, onPointerDown: onHudResizePointerDown } = useHudResizeHandle()
+  const hudWindowing = window.hermesDesktop?.hud?.windowing
+  const resizeDirections = hudResizeDirections(hudWindowing?.clientPlacement !== false)
+  // Linux X11 cannot ignore-mouse; a visible band that also ignores the
+  // pointer just eats the click. The stylesheet keys off this.
+  const hudInput = hudWindowing?.solid ? 'solid' : 'click-through'
 
   // Force the HOST layers transparent. index.html's pre-paint script writes an
   // opaque themed background onto <html> as an INLINE style (the anti-white-
@@ -398,6 +316,8 @@ export function HudShell() {
       className="relative flex h-screen w-screen flex-col overflow-hidden"
       data-hud-edge={edge}
       data-hud-game={gameUnder ? '' : undefined}
+      data-hud-held={held ? '' : undefined}
+      data-hud-input={hudInput}
       data-hud-recent={recent || held ? '' : undefined}
       data-hud-shell
       // Letting go of the composer re-arms the hold, so the transcript steps
@@ -421,19 +341,20 @@ export function HudShell() {
 
       <WiredPane part="chatRoutes" />
 
-      {/* The resize handle: bottom-right corner, the one sanctioned way to
-          change the HUD's size. Invisible chrome — a hot corner, not a
-          button — so it never reads as part of the surface. `data-hud-grabbing`
-          is the same flag the composer drag raises: a gesture in progress owns
-          the window, so click-through can't hand the mouse away mid-resize
-          when the growing edge outruns the cursor. */}
-      <div
-        aria-hidden
-        className="absolute bottom-0 right-0 z-20"
-        data-hud-grabbing={hudResizing ? '' : undefined}
-        data-hud-resize=""
-        onPointerDown={onHudResizePointerDown}
-      />
+      {/* CanvasTTY-style resize frame. Windows/macOS/X11 get every edge and
+          corner; native Wayland gets the right/bottom handles it can honour
+          without forbidden global positioning. The handles are invisible
+          chrome with native cursors. `data-hud-grabbing` keeps click-through
+          from handing the pointer away while the window changes under it. */}
+      {resizeDirections.map(direction => (
+        <div
+          aria-hidden
+          data-hud-grabbing={hudResizing ? '' : undefined}
+          data-hud-resize={direction}
+          key={direction}
+          onPointerDown={event => onHudResizePointerDown(event, direction)}
+        />
+      ))}
     </div>
   )
 }

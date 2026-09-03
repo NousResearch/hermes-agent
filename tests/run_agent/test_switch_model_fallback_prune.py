@@ -78,6 +78,20 @@ def test_switch_with_empty_chain_stays_empty():
     assert agent._fallback_model is None
 
 
+def test_manual_switch_clears_provider_fallback_provenance():
+    agent = _make_agent([
+        {"provider": "openrouter", "model": "x-ai/grok-4"},
+        {"provider": "nous", "model": "hermes-4"},
+    ])
+    agent._provider_fallback_active = True
+    agent._provider_fallback_route = ("fallback-model", "fallback-provider")
+
+    _switch_to_anthropic(agent)
+
+    assert agent._provider_fallback_active is False
+    assert agent._provider_fallback_route is None
+
+
 
 
 def test_switch_within_same_provider_preserves_chain():

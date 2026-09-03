@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -21,6 +22,105 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
+
+# --- Terminal temp-cache pruning -------------------------------------------
+#
+# get_temp_dir() now defaults to HERMES_HOME/cache/terminal (real storage)
+# instead of tmpfs /tmp, so stale session artifacts no longer disappear on
+# reboot for free. Prune them ourselves: the gateway housekeeping loop calls
+# cleanup_terminal_temp_cache() hourly (same contract as the other
+# cleanup_*_cache helpers), and a once-per-process best-effort sweep covers
+# CLI-only installs that never run the gateway.
+#
+# Background-process artifacts come in triplets (hermes_bg_<id>.log/.pid/
+# .exit). A long-running server's .pid file never changes mtime while its
+# .log keeps updating — so age is judged per GROUP (newest mtime among files
+# sharing a stem) to avoid yanking the pid/exit files out from under a
+# still-live background session.
+TERMINAL_TEMP_MAX_AGE_HOURS = 72
+
+_terminal_temp_prune_lock = threading.Lock()
+_terminal_temp_pruned_once = False
+
+_BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
+
+
+def _default_terminal_temp_dir() -> "Path | None":
+    """Return HERMES_HOME/cache/terminal, or None if unresolvable."""
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "cache" / "terminal"
+    except Exception:
+        return None
+
+
+def cleanup_terminal_temp_cache(
+    max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS,
+) -> int:
+    """Delete session temp artifacts older than *max_age_hours*.
+
+    Same contract as the ``cleanup_*_cache`` helpers in
+    ``gateway.platforms.base`` — returns the number of entries removed — so
+    the gateway housekeeping loop can prune this dir on its hourly cadence.
+
+    Only prunes the managed default dir (``HERMES_HOME/cache/terminal``).
+    User-pointed ``terminal.temp_dir`` locations are the user's to manage —
+    we never bulk-delete inside a directory we don't own.
+    """
+    root = _default_terminal_temp_dir()
+    if root is None:
+        return 0
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+
+    # Newest mtime per hermes_bg_<id> group, so a live server's fresh .log
+    # protects its stale-looking .pid/.exit siblings.
+    group_newest: dict[str, float] = {}
+    for f in entries:
+        m = _BG_GROUP_RE.match(f.name)
+        if m:
+            try:
+                mt = f.stat().st_mtime
+            except OSError:
+                continue
+            key = m.group(1)
+            group_newest[key] = max(group_newest.get(key, 0.0), mt)
+
+    for f in entries:
+        try:
+            mt = f.stat().st_mtime
+        except OSError:
+            continue
+        m = _BG_GROUP_RE.match(f.name)
+        effective = group_newest.get(m.group(1), mt) if m else mt
+        if effective >= cutoff:
+            continue
+        try:
+            if f.is_dir():
+                shutil.rmtree(f, ignore_errors=True)
+            else:
+                f.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _prune_terminal_temp_once() -> None:
+    """Best-effort prune, at most once per process (CLI-only installs)."""
+    global _terminal_temp_pruned_once
+    with _terminal_temp_prune_lock:
+        if _terminal_temp_pruned_once:
+            return
+        _terminal_temp_pruned_once = True
+    try:
+        cleanup_terminal_temp_cache()
+    except Exception as exc:
+        logger.debug("Terminal temp prune failed: %s", exc)
 
 
 def _msys_to_windows_path(cwd: str) -> str:
@@ -332,10 +432,114 @@ def _build_provider_env_blocklist() -> frozenset:
     # It arrives via the registry loop above (anthropic api_key_env_vars),
     # so remove it explicitly.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
+    # BUZZ_* is deliberately NOT discarded here, even for Buzz-managed agents
+    # (BUZZ_MANAGED_AGENT set by the buzz-acp harness).  This blocklist is
+    # shared by every scrub surface — the terminal paths, execute_code, and
+    # the :func:`hermes_subprocess_env` Tier-2 strip (browser / TUI host /
+    # copilot-executor spawns) — so an import-time discard would leak
+    # BUZZ_PRIVATE_KEY into non-terminal children too.  The Buzz carve-out is
+    # instead a TERMINAL-ONLY, context-gated scrub-path exemption: see
+    # ``_TERMINAL_FIRST_PARTY_ENV_PREFIXES`` / ``_is_terminal_first_party_env``
+    # below (issue #78026 / #76243, PRs #78065 + #78511).
     return frozenset(blocked)
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+# First-party platform credentials the agent's own platform adapters need in
+# terminal children (e.g. the ``BUZZ_*`` vars for the Buzz messaging
+# platform, which drive the platform-mandated ``buzz`` CLI: BUZZ_PRIVATE_KEY,
+# BUZZ_AUTH_TAG, BUZZ_RELAY_URL, and the other BUZZ_* names). These are the
+# agent's OWN credentials — a Buzz community agent is expected to operate the
+# ``buzz`` CLI — so they are carved out of the terminal scrub.
+#
+# CONTEXT-GATED: the carve-out applies ONLY when this process/session is
+# actually operating as a Buzz agent — either the process is a Buzz-ACP
+# managed agent (``BUZZ_MANAGED_AGENT`` is set, only by Buzz Desktop's
+# buzz-acp harness; see #76243 / #78511) or the current session's platform is
+# ``buzz`` (the gateway's ``HERMES_SESSION_PLATFORM`` ContextVar; concurrency
+# safe under a multi-session host). A Telegram/CLI/cron session on a host
+# that also runs a Buzz gateway does NOT get BUZZ_PRIVATE_KEY in its terminal
+# children — blanket passthrough of a signing key to every terminal child on
+# the host would be wrong (maintainer triage note on #76243: don't expose the
+# key to unrelated shell commands).
+#
+# Scope is TERMINAL ONLY: the foreground ``_make_run_env`` and background/PTY
+# ``_sanitize_subprocess_env`` paths pass them through. ``_sanitize_subprocess_env``
+# is also consumed by search workers (e.g. the ddgs web-search subprocess),
+# the computer-use driver binary, and user-script runners (bang ``!``
+# commands, quick commands, cron scripts, webhook-filter scripts), so those
+# children receive the vars too — matching the approved background/PTY scope.
+# Every other surface stays sealed — execute_code scrubbing,
+# :func:`hermes_subprocess_env` (browser / TUI host / copilot-executor
+# spawns), docker children, and ``env_passthrough`` registration (skills/config
+# still cannot register these names). The GHSA-rhgp-j443-p4rf seal is
+# preserved because no registration path is opened; this is a scrub-path
+# exemption, not an allowlist addition.
+#
+# First-party matches use the merged env value directly — they are the
+# process's own env values and are never scope-resolved (a profile secret
+# scope under multiplex would otherwise raise UnscopedSecretError at
+# passthrough-resolution call sites); only skill/config passthrough names
+# resolve through the profile secret scope. The snapshot mechanism treats
+# these names like profile-scoped passthrough names (see
+# ``LocalEnvironment._additional_profile_scoped_passthrough_names``) so they
+# never persist in the shared terminal snapshot across profiles.
+#
+# Prefix-based on purpose: future ``BUZZ_*`` names added by the platform's
+# plugin.yaml (or a user's own credentials file) are covered without another
+# code change. Contrast with CLAUDE_CODE_OAUTH_TOKEN above, which is discarded
+# from the blocklist entirely because it is NOT a Hermes credential; these ARE
+# Hermes-managed first-party platform credentials, so they stay IN the
+# blocklist for every non-terminal surface.
+#
+# See issue #78026 (Buzz agents could not use ``buzz`` from the terminal tool)
+# and #76243 (Buzz Desktop managed agent wakes but cannot reply).
+_TERMINAL_FIRST_PARTY_ENV_PREFIXES = ("BUZZ_",)
+
+
+def _matches_terminal_first_party_prefix(name: str) -> bool:
+    """Pure name check: ``name`` is one of the first-party platform
+    credential names (``BUZZ_*``), regardless of session context.  Used for
+    the snapshot exclusion, which must stay conservative even when the
+    carve-out itself is inactive."""
+    return name.startswith(_TERMINAL_FIRST_PARTY_ENV_PREFIXES)
+
+
+def _buzz_terminal_context_active() -> bool:
+    """True when this process/session is operating as a Buzz agent.
+
+    Two independent signals, either suffices:
+
+    * ``BUZZ_MANAGED_AGENT`` in the process env — set exclusively by Buzz
+      Desktop's buzz-acp harness when it spawns ``hermes acp`` (#76243).
+      Gateway / CLI / cron / kanban processes never carry it.
+    * The live session's platform is ``buzz`` — the gateway's
+      ``HERMES_SESSION_PLATFORM`` ContextVar via
+      :func:`gateway.session_context.get_session_env`, which is
+      ContextVar-authoritative under a concurrent multi-session host, so a
+      sibling Telegram/Discord session on the same gateway process resolves
+      its OWN platform, not buzz.
+    """
+    if os.environ.get("BUZZ_MANAGED_AGENT"):
+        return True
+    try:
+        from gateway.session_context import get_session_env
+
+        return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "buzz"
+    except Exception:
+        return False
+
+
+def _is_terminal_first_party_env(name: str) -> bool:
+    """Return True if ``name`` is a first-party platform credential that must
+    reach terminal children (the ``BUZZ_*`` set) AND the current
+    process/session context entitles it (Buzz-managed agent or a buzz-platform
+    session — see :func:`_buzz_terminal_context_active`)."""
+    if not _matches_terminal_first_party_prefix(name):
+        return False
+    return _buzz_terminal_context_active()
+
 
 # Active-virtualenv markers that must NOT leak into terminal subprocesses.
 # The gateway runs inside its own venv, so its process environment carries
@@ -406,6 +610,22 @@ def _is_hermes_internal_secret(key: str) -> bool:
     ):
         return True
     return False
+
+
+def _plugin_terminal_env_strip_keys() -> frozenset:
+    """Credential env keys owned by plugin-registered terminal backends.
+
+    Computed at call time (not import time) because plugins register after
+    this module is imported. Treated as Tier-1: stripped from every spawned
+    subprocess unconditionally, exactly like MODAL_*/DAYTONA_API_KEY in
+    ``_ALWAYS_STRIP_KEYS``. Fail-soft to an empty set.
+    """
+    try:
+        from agent.terminal_env_registry import plugin_strip_env_keys
+
+        return plugin_strip_env_keys()
+    except Exception:
+        return frozenset()
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -479,16 +699,26 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         _resolve_passthrough_value = lambda _name, fallback: fallback  # noqa: E731
 
     sanitized: dict[str, str] = {}
+    _plugin_strip = _plugin_terminal_env_strip_keys()
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
         if _is_hermes_internal_secret(key):
             continue
-        passthrough = _is_passthrough(key)
-        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+        if key in _plugin_strip:
             continue
-        resolved = _resolve_passthrough_value(key, value) if passthrough else value
+        first_party = _is_terminal_first_party_env(key)
+        passthrough = _is_passthrough(key)
+        if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
+            continue
+        # First-party platform vars are the process's own env values: use them
+        # directly, never scope-resolve (multiplex with no scope would raise
+        # UnscopedSecretError — a regression where the script previously ran
+        # without the var). Only skill/config passthrough names resolve.
+        resolved = value
+        if passthrough and not first_party:
+            resolved = _resolve_passthrough_value(key, value)
         if resolved is not None:
             sanitized[key] = resolved
 
@@ -500,11 +730,16 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
             sanitized[real_key] = value
         elif _is_hermes_internal_secret(key):
             continue
+        elif key in _plugin_strip:
+            continue
         else:
+            first_party = _is_terminal_first_party_env(key)
             passthrough = _is_passthrough(key)
-            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if key in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
                 continue
-            resolved = _resolve_passthrough_value(key, value) if passthrough else value
+            resolved = value
+            if passthrough and not first_party:
+                resolved = _resolve_passthrough_value(key, value)
             if resolved is not None:
                 sanitized[key] = resolved
 
@@ -632,6 +867,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
 
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
+        env.pop(key, None)
+    for key in _plugin_terminal_env_strip_keys():
         env.pop(key, None)
     # Internal routing hints and Hermes-internal dynamic secrets
     # (``AUXILIARY_<TASK>_API_KEY`` / ``_BASE_URL`` side-LLM credentials,
@@ -1310,10 +1547,15 @@ def _make_run_env(env: dict) -> dict:
         elif _is_hermes_internal_secret(k):
             continue
         else:
+            first_party = _is_terminal_first_party_env(k)
             passthrough = _is_passthrough(k)
-            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not passthrough:
+            if k in _HERMES_PROVIDER_ENV_BLOCKLIST and not (passthrough or first_party):
                 continue
-            value = _resolve_passthrough_value(k, v) if passthrough else v
+            # First-party vars use the merged env value directly (see
+            # _sanitize_subprocess_env); only passthrough names resolve.
+            value = v
+            if passthrough and not first_party:
+                value = _resolve_passthrough_value(k, v)
             if value is not None:
                 run_env[k] = value
     path_key = _path_env_key(run_env)
@@ -1723,6 +1965,44 @@ class LocalEnvironment(BaseEnvironment):
 
     _profile_scoped_passthrough = True
 
+    # Commands run on the Hermes host itself — controller-side platform
+    # behavior (macOS TCC pruning, etc.) legitimately applies here.
+    is_local = True
+
+    def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
+        """Return first-party terminal env names (``BUZZ_*``) present in the
+        current env, so they are excluded from the shared session snapshot.
+
+        The login-shell snapshot (``init_session`` ``export -p`` dump and the
+        per-command re-dump) captures the child env, which now includes the
+        ``BUZZ_*`` vars the terminal carve-out passes through. The exclusion
+        set is derived from ``get_all_passthrough()`` plus backend-specific
+        additions — and ``BUZZ_*`` can NEVER be in it, because env_passthrough
+        refuses blocklisted names (GHSA-rhgp-j443-p4rf). Under a multiplexed
+        gateway, profile A's BUZZ_PRIVATE_KEY would land in
+        ``hermes-snap-<id>.sh`` and a later command from profile B sharing
+        this collapsed LocalEnvironment would ``source`` it: a cross-profile
+        nsec leak that defeats profile isolation.
+
+        Treating these names like profile-scoped passthrough names keeps them
+        out of the dump and save/restores the current profile's value (or
+        unsets the name) per command in ``_wrap_command``. The set is monotonic
+        for the environment lifetime: once a name is seen it stays excluded,
+        so a later profile that lacks the var still gets the unset-guard.
+        """
+        merged = dict(os.environ | self.env)
+        return tuple(
+            sorted(
+                name
+                for name in merged
+                # Prefix-only on purpose: the snapshot exclusion stays
+                # conservative even when the context-gated carve-out is
+                # inactive (the var then never reaches the child env anyway,
+                # but a monotonic exclusion is a cheap extra guard).
+                if isinstance(name, str) and _matches_terminal_first_party_prefix(name)
+            )
+        )
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
@@ -1737,8 +2017,19 @@ class LocalEnvironment(BaseEnvironment):
         resolves to a POSIX path.
 
         Check the environment configured for this backend first so callers can
-        override the temp root explicitly (for example via terminal.env or a
-        custom TMPDIR), then fall back to the host process environment.
+        override the temp root explicitly (for example via terminal.temp_dir,
+        terminal.env, or a custom TMPDIR), then fall back to the host process
+        environment.
+
+        **Default (no override set):** a dedicated cache dir under
+        ``HERMES_HOME`` (``~/.hermes/cache/terminal``) rather than ``/tmp``.
+        On several distros (Arch and friends) ``/tmp`` is a small RAM-backed
+        tmpfs, and Hermes session artifacts — background-process logs,
+        code-execution sandboxes, spilled tool results — can fill it under
+        load. Real storage is the safer default; stale artifacts are pruned
+        by ``cleanup_terminal_temp_cache`` (gateway housekeeping + a
+        once-per-process best-effort sweep) since we no longer get tmpfs
+        reboot wipes for free.
 
         **Windows:** hardcoded ``/tmp`` is wrong in two ways — native Python
         can't open the path, and the Windows default temp (``%TEMP%``) often
@@ -1759,13 +2050,35 @@ class LocalEnvironment(BaseEnvironment):
             except Exception:
                 cache_dir = Path(tempfile.gettempdir()) / "hermes_terminal"
             cache_dir.mkdir(parents=True, exist_ok=True)
+            _prune_terminal_temp_once()
             # Force forward slashes so the same string serves both contexts.
             return str(cache_dir).replace("\\", "/")
+
+        # Explicit temp-dir override from terminal.temp_dir (TERMINAL_TEMP_DIR).
+        # Honored ahead of the generic TMPDIR so users can redirect Hermes' temp
+        # root to real storage when /tmp is a small tmpfs.
+        configured = self.env.get("TERMINAL_TEMP_DIR") or os.environ.get("TERMINAL_TEMP_DIR")
+        if configured and configured.startswith("/") and os.path.isdir(configured):
+            return configured.rstrip("/") or "/"
 
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
                 return candidate.rstrip("/") or "/"
+
+        # Default: HERMES_HOME/cache/terminal — real storage, mirroring the
+        # Windows branch above. /tmp is only a last-resort fallback now
+        # because RAM-backed tmpfs /tmp fills up under Hermes load.
+        try:
+            from hermes_constants import get_hermes_home
+            cache_dir = get_hermes_home() / "cache" / "terminal"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            resolved = str(cache_dir)
+            if resolved.startswith("/") and os.access(resolved, os.W_OK | os.X_OK):
+                _prune_terminal_temp_once()
+                return resolved.rstrip("/") or "/"
+        except Exception:
+            pass
 
         if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
             return "/tmp"
@@ -1890,9 +2203,13 @@ class LocalEnvironment(BaseEnvironment):
         try:
             if _IS_WINDOWS:
                 try:
-                    from gateway.status import terminate_pid
+                    from gateway.status import get_process_start_time, terminate_pid
 
-                    terminate_pid(proc.pid, force=True)
+                    terminate_pid(
+                        proc.pid,
+                        force=True,
+                        expected_start_time=get_process_start_time(proc.pid),
+                    )
                 except Exception:
                     proc.kill()
                 try:
@@ -1907,27 +2224,72 @@ class LocalEnvironment(BaseEnvironment):
                     if pgid is None:
                         raise
 
+                # Snapshot the descendant set BEFORE the first signal: once
+                # the wrapper dies its children reparent to init and a parent
+                # walk finds nothing (same rationale as agent/deadline.py
+                # kill_process_tree).  A descendant that called ``setsid``
+                # escapes the process group entirely and would survive the
+                # group-kill below — the #71148 class, terminal flavor
+                # (issue #84967's local sibling).  The snapshot must never
+                # break the kill path, so any failure just yields an empty
+                # sweep set.
+                descendants: list = []
+                try:
+                    import psutil
+
+                    descendants = psutil.Process(proc.pid).children(recursive=True)
+                except Exception:
+                    descendants = []
+
+                def _sweep_escaped_descendants() -> None:
+                    """SIGKILL snapshotted survivors outside the (dead) group.
+
+                    Runs after the TERM→KILL group escalation so in-group
+                    members keep their SIGTERM grace window; only escapees
+                    (own setsid sessions) are force-killed.  psutil's
+                    identity-aware Process means recycled PIDs are skipped.
+
+                    POSIX-only: reached solely from the non-_IS_WINDOWS
+                    branch above (the win32 path returns earlier).
+                    """
+                    for child in descendants:
+                        try:
+                            if not child.is_running():
+                                continue
+                            try:
+                                if os.getpgid(child.pid) == pgid:
+                                    continue  # group-kill already covers it
+                            except (ProcessLookupError, PermissionError, OSError):
+                                pass
+                            child.kill()
+                        except Exception:
+                            continue
+
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
 
                 # Wait on the process group, not just the shell wrapper. Under
                 # load the wrapper can exit before grandchildren do; returning
                 # at that point leaves orphaned process-group members behind.
                 if _wait_for_group_exit(pgid, 1.0):
+                    _sweep_escaped_descendants()
                     return
 
                 try:
                     # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX process-group SIGKILL
                 except ProcessLookupError:
+                    _sweep_escaped_descendants()
                     return
                 _wait_for_group_exit(pgid, 2.0)
                 try:
                     proc.wait(timeout=0.2)
                 except (subprocess.TimeoutExpired, OSError):
                     pass
+                _sweep_escaped_descendants()
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()
@@ -1964,6 +2326,7 @@ class LocalEnvironment(BaseEnvironment):
             normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
             if normalized and os.path.isdir(normalized):
                 self.cwd = normalized
+                result["cwd"] = normalized
             else:
                 # Stale / non-existent path — keep previous cwd; _run_bash
                 # will resolve a safe fallback on the next call if needed.
@@ -1971,6 +2334,7 @@ class LocalEnvironment(BaseEnvironment):
                 # so it is not attributable to this command's session either.
                 self.cwd = prev_cwd
                 result.pop("cwd_observed", None)
+                result.pop("cwd", None)
 
     def cleanup(self):
         """Clean up temp files."""

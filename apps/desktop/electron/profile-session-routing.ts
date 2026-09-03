@@ -20,6 +20,52 @@ function rowsOf(data: unknown): unknown[] {
   return Array.isArray(data.sessions) ? data.sessions : []
 }
 
+function tagRowsWithConnection(rows: unknown[], connectionId: string): void {
+  for (const row of rows) {
+    if (row && typeof row === 'object') {
+      const session = row as Record<string, unknown>
+      session.connection_id = connectionId
+    }
+  }
+}
+
+/** Preserve the registry source that served a session REST response.
+ *
+ * A registry-pinned request is dispatched directly to that remote host, so its
+ * own session rows naturally omit Desktop's synthetic `connection_id`. Without
+ * restoring that provenance, a `profile: "default"` row later resumes through
+ * the legacy local primary instead of the active registry gateway. */
+export function tagRegistrySessionResponse(path: string, data: unknown, connectionId: string): unknown {
+  if (!data || typeof data !== 'object') {
+    return data
+  }
+
+  const pathname = path.split('?', 1)[0].replace(/\/+$/, '')
+
+  if (pathname === '/api/sessions' || pathname === '/api/profiles/sessions') {
+    tagRowsWithConnection(rowsOf(data), connectionId)
+
+    return data
+  }
+
+  if (pathname === '/api/profiles/sessions/sidebar') {
+    const response = data as Record<string, unknown>
+
+    for (const key of ['recents', 'cron', 'messaging']) {
+      tagRowsWithConnection(rowsOf(response[key]), connectionId)
+    }
+
+    return data
+  }
+
+  if (/^\/api\/sessions\/[^/]+$/.test(pathname)) {
+    const session = data as Record<string, unknown>
+    session.connection_id = connectionId
+  }
+
+  return data
+}
+
 function sessionId(row: unknown): string | null {
   if (!row || typeof row !== 'object' || !('id' in row)) {
     return null

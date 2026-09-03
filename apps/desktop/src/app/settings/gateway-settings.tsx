@@ -28,7 +28,8 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
-import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
+import { ManagedUpdatesSection } from './managed-updates-section'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
@@ -37,7 +38,7 @@ type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
 // Hermes Cloud discovery lifecycle for the cloud-mode panel.
 type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
 
-interface GatewaySettingsState {
+export interface GatewaySettingsState {
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
@@ -79,6 +80,18 @@ const EMPTY_STATE: GatewaySettingsState = {
   sshKeyPath: '',
   sshRemoteHermesPath: '',
   sshRemoteProfile: ''
+}
+
+export function normalizeGatewaySettingsState(
+  config: Partial<GatewaySettingsState> | null | undefined
+): GatewaySettingsState {
+  if (!config || typeof config !== 'object') {
+    return { ...EMPTY_STATE }
+  }
+
+  const defined = Object.fromEntries(Object.entries(config).filter(([, value]) => value != null))
+
+  return { ...EMPTY_STATE, ...defined }
 }
 
 export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
@@ -158,9 +171,51 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const contextSeq = useRef(0)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
 
+  // Opt-in OS-keychain encryption for stored gateway secrets. Read lazily via
+  // IPC (never touches the keychain); flipping it re-encodes stored secrets
+  // in the main process and can legitimately prompt for keychain access.
+  const [keychainEncryption, setKeychainEncryptionState] = useState(false)
+  const [keychainEncryptionBusy, setKeychainEncryptionBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getSecretStorageEncryption?.()
+      .then(res => {
+        if (!cancelled && res) {
+          setKeychainEncryptionState(res.on === true)
+        }
+      })
+      .catch(() => {})
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const setKeychainEncryption = async (on: boolean) => {
+    setKeychainEncryptionBusy(true)
+    // Optimistic paint; the IPC result (or a failure rollback) gets the last word.
+    setKeychainEncryptionState(on)
+
+    try {
+      const res = await window.hermesDesktop.setSecretStorageEncryption(on)
+
+      setKeychainEncryptionState(res?.on === true)
+    } catch (err) {
+      setKeychainEncryptionState(!on)
+      notifyError(err, g.keychainEncryptionFailed)
+    } finally {
+      setKeychainEncryptionBusy(false)
+    }
+  }
+
   const acceptSavedConfig = (config: GatewaySettingsState) => {
-    setState(config)
-    setConnectedCloudUrl(savedCloudConnectionUrl(config))
+    const normalized = normalizeGatewaySettingsState(config)
+
+    setState(normalized)
+    setConnectedCloudUrl(savedCloudConnectionUrl(normalized))
   }
 
   // When set, the plain-text opt-in dialog is open; `apply` remembers whether
@@ -582,11 +637,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const signOut = async () => {
+    if (!trimmedUrl) {
+      return
+    }
+
     const seq = ++signingSeq.current
     setSigningIn(true)
 
     try {
-      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl || undefined)
+      await window.hermesDesktop.oauthLogoutConnectionConfig(trimmedUrl)
       const refreshed = await window.hermesDesktop.getConnectionConfig(null)
 
       if (seq !== signingSeq.current) {
@@ -1483,6 +1542,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
       {embedded ? null : (
         <div className="mt-6 grid gap-1">
+          <ToggleRow
+            checked={keychainEncryption}
+            description={g.keychainEncryptionDesc}
+            disabled={keychainEncryptionBusy}
+            label={g.keychainEncryptionTitle}
+            onChange={on => void setKeychainEncryption(on)}
+          />
           <ListRow
             action={
               <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
@@ -1499,7 +1565,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       {/* Unified Gateways page: the full connections registry (add/edit/delete
           named agent sources) lives on this page now, below the window
           connection controls. Hidden in the embedded (boot-recovery) form. */}
-      {embedded ? null : <ConnectionsRegistrySection />}
+      {embedded ? null : (
+        <>
+          <ConnectionsRegistrySection />
+          {/* Per-connection driver for the transactional managed SSH update
+              engine (#95942). Renders only when SSH sources are registered and
+              the Electron main exposes connections.updateManaged. */}
+          <ManagedUpdatesSection />
+        </>
+      )}
 
       {/* Plain-text token opt-in: gated when secure storage is unavailable and a
           new token would be persisted. Confirm resumes the remembered save/apply. */}

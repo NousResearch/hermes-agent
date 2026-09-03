@@ -70,6 +70,7 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
 
     def _fake_run(argv, **kwargs):
         calls["argv"] = argv
+        calls["kwargs"] = kwargs
         return _Proc()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
@@ -77,13 +78,21 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
         srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})
     )
     assert out["reply"] == "pong from ops"
+    # Decoding is pinned (#93590 sibling defect): without encoding= the
+    # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on
+    # Windows — mangling non-ASCII replies; errors="replace" keeps a bad
+    # byte from raising instead of delivering.
+    assert calls["kwargs"]["encoding"] == "utf-8"
+    assert calls["kwargs"]["errors"] == "replace"
     argv = calls["argv"]
-    assert argv[:3] == ["hermes", "-p", "ops"]
+    # argv[0] may be a resolved venv path (#93590) — match by basename.
+    assert argv[1:3] == ["-p", "ops"]
+    assert argv[0].rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe")
     assert "Bot Chat" in argv and "--query-file" in argv
 
     # 'hermes' alias resolves to default
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
-    assert calls["argv"][:3] == ["hermes", "-p", "default"]
+    assert calls["argv"][1:3] == ["-p", "default"]
 
     # unknown profile refuses without spawning
     calls.clear()
@@ -95,6 +104,52 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
 def test_deliver_requires_params(home):
     err = srv._methods["bot_relay.deliver"](1, {"profile": "", "message": ""})
     assert "error" in err
+
+
+def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):
+    """#100523: a Desktop-owned Bot Chat receives the DM as a normal user turn.
+
+    With the target's Bot Chat live in this gateway, the subprocess transport
+    would be fenced out by the single-owner lease and drop the payload. The
+    handler must route through prompt.submit (the composer's choke point) and
+    never spawn the CLI.
+    """
+    spawned = []
+    submitted = []
+
+    class _Proc:
+        returncode, stdout, stderr = 0, "pong", ""
+
+    def _fake_run(argv, *a, **k):
+        # The server module's import-time update prefetch runs `git ...` on a
+        # daemon thread; only the relay's `hermes` CLI spawn is under test.
+        if argv and argv[0] != "git":
+            spawned.append(argv)
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setitem(
+        srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
+    )
+    monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
+    monkeypatch.setitem(
+        srv._sessions,
+        "live-ops",
+        {"profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []},
+    )
+    out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
+    # queued=True is the invariant: a DM never interrupts a turn in flight.
+    assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True}]
+    assert not spawned
+    assert "reply" in out
+
+    # A live session titled anything else for the same profile does not qualify:
+    # the subprocess path runs exactly as before.
+    srv._sessions["live-ops"]["pending_title"] = "Scratch"
+    submitted.clear()
+
+    out = _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
+    assert out["reply"] == "pong" and spawned and not submitted
 
 
 def test_reply_roundtrip_and_id_validation(home):

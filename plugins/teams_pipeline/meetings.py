@@ -334,7 +334,12 @@ async def download_transcript_text(
     with tempfile.NamedTemporaryFile(prefix="teams-transcript-", suffix=suffix, delete=False) as handle:
         destination = Path(handle.name)
     try:
-        await client.download_to_file(_transcript_download_path(meeting_ref, transcript), destination)
+        # Graph's transcript /content endpoint rejects JSON content negotiation.
+        await client.download_to_file(
+            _transcript_download_path(meeting_ref, transcript),
+            destination,
+            headers={"Accept": "text/vtt"},
+        )
         text = destination.read_text(encoding=encoding).strip()
     except MicrosoftGraphAPIError as exc:
         raise _wrap_graph_error(

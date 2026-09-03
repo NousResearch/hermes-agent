@@ -109,6 +109,41 @@ def _(rid, params: dict) -> dict:
         if resolved not in known:
             return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
+        # #100523: when THIS gateway already hosts the target's Bot Chat live
+        # (the Desktop has it open), the subprocess transport is fenced out by
+        # the single-owner lease ("already has a live owner") and the payload
+        # is dropped. Land the DM in the live session as a normal user turn
+        # via prompt.submit instead — same choke point the composer uses, so
+        # role alternation, persistence and streaming all behave as a typed
+        # message would. (Nested per method_ctx rebinding.)
+        def _live_bot_chat_sid(profile_name: str) -> str:
+            from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+            live_home = _profile_home(profile_name)
+            want_home = str(live_home) if live_home is not None else None
+            for live_sid, record in list(_sessions.items()):
+                if not isinstance(record, dict):
+                    continue
+                if (record.get("profile_home") or None) != want_home:
+                    continue
+                key = _session_lookup_key(record, fallback=live_sid)
+                if _session_live_title(record, key) == BOT_CHAT_TITLE:
+                    return live_sid
+            return ""
+
+        live_sid = _live_bot_chat_sid(resolved)
+        if live_sid:
+            # queued=True: a teammate's DM runs as the NEXT turn. It must never
+            # interrupt or steer a turn already in flight (the default busy
+            # mode does); hundreds of arrivals simply queue in arrival order.
+            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message, "queued": True})
+            if "error" in submitted:
+                return submitted
+            return _ok(
+                rid,
+                {"reply": f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."},
+            )
+
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -125,6 +160,8 @@ def _(rid, params: dict) -> dict:
                     local_delivery_command(resolved, tmp),
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=600,
                 )
                 if proc.returncode != 0:
@@ -147,6 +184,8 @@ def _(rid, params: dict) -> dict:
                             local_delivery_command(resolved, tmp),
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=600,
                         )
         finally:
@@ -208,3 +247,16 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     _registry.install(server)
+    from . import methods_groups
+
+    server._LONG_HANDLERS = server._LONG_HANDLERS | methods_groups.LONG_HANDLERS
+    server.get_hosted_room_service = methods_groups.get_hosted_room_service
+    server._WORKER_UNAVAILABLE = methods_groups._WORKER_UNAVAILABLE
+    server._profile_name = methods_groups._profile_name
+    server._requested_profile = methods_groups._requested_profile
+    server._api_server_key = methods_groups._api_server_key
+    server._room_link_run_storage_durable = (
+        methods_groups._room_link_run_storage_durable
+    )
+    methods_groups.bind_server(server)
+    methods_groups.register(server)

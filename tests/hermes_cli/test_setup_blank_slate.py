@@ -39,13 +39,28 @@ class TestBlankSlateMinimalToolsets:
 
 
 
-    def test_tool_schema_survives_disabled_toolsets_from_config(self):
+    def test_tool_schema_survives_disabled_toolsets_from_config(self, monkeypatch):
         """Regression: disabled_toolsets must not erase the minimal Blank Slate
         surface when passed to model_tools.  Before the fix, posture toolsets
         like ``coding`` in disabled_toolsets caused model_tools to subtract
         terminal, read_file, write_file, etc. (#57315).
+
+        vision_analyze is additionally check_fn-gated on a resolvable vision
+        backend; mock the requirement check so the toolset logic is exercised
+        independent of the test host's provider credentials.
         """
         import model_tools
+        from tools.registry import registry as _tool_registry
+        _entry = _tool_registry.get_entry("vision_analyze")
+        monkeypatch.setattr(_entry, "check_fn", lambda: True)
+        # This test pins disabled_toolsets SUBTRACTION, not deferral policy —
+        # assemble with the legacy everything-eager override so the expected
+        # list stays deferral-independent (#97979 defers process_manage by
+        # default, which would swap it for the three bridge tools here).
+        from tools.tool_search import ToolSearchConfig
+        _legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: _legacy)
+        monkeypatch.setattr("tools.tool_search.load_config_readonly", lambda: _legacy)
         from hermes_cli.tools_config import _get_platform_tools
         cfg = {}
         _blank_slate_minimal_toolsets(cfg)
@@ -60,8 +75,9 @@ class TestBlankSlateMinimalToolsets:
         names = sorted(
             {(d.get("function") or {}).get("name") or d.get("name") for d in defs}
         )
-        assert names == ["patch", "process", "read_file", "search_files",
-                         "terminal", "write_file"]
+        assert names == ["patch", "process_manage", "read_file", "search_files",
+                         "skill_manage", "skill_view", "skills_list",
+                         "terminal", "vision_analyze", "write_file"]
 
 
 class TestBlankSlateMinimizeConfig:
@@ -107,7 +123,7 @@ class TestBlankSlateFork:
         s._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
 
         # Minimal baseline was applied, walkthrough was NOT run.
-        assert cfg["platform_toolsets"]["cli"] == ["file", "terminal"]
+        assert cfg["platform_toolsets"]["cli"] == ["file", "skills", "terminal", "vision"]
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True

@@ -17,7 +17,6 @@ import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
 import { $layoutEditMode } from '../../edit-mode'
-import { $workspaceMode, $workspaceOwnerKey, contributesToWorkspace } from '../../workspace-scope'
 import type { LayoutNode, SplitNode } from '../model'
 import { allPaneIds } from '../model'
 import {
@@ -39,6 +38,7 @@ import {
   edgeFixedZone,
   fixedTrackSize,
   MIN_PANE_PX,
+  MINIMIZED_TRACK,
   paneChrome,
   type PaneSizing,
   resolveCssPx,
@@ -91,8 +91,6 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
-  const workspaceMode = useStore($workspaceMode)
-  const workspaceOwnerKey = useStore($workspaceOwnerKey)
   // Scoped to THIS subtree's panes: a sash drag writes size overrides on every
   // pointermove, but only the splits whose subtree actually resized should
   // re-render — not every split in the tree.
@@ -127,10 +125,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   // closed) visible so they're rearrangeable — only truly-absent (unregistered)
   // or narrow-collapsed panes stay gone. Restores itself on exit (render-only).
   const paneGone = (id: string) =>
-    !paneFor(id) ||
-    !contributesToWorkspace(paneFor(id), workspaceMode, workspaceOwnerKey) ||
-    (!editMode && hiddenPanes.has(id)) ||
-    (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
+    !paneFor(id) || (!editMode && hiddenPanes.has(id)) || (narrow && Boolean(paneChrome(paneFor(id)).collapsible))
 
   const trackCtx: TrackContext = { paneFor, paneGone, overrides }
 
@@ -595,7 +590,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: '0 0 auto' }
+                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields

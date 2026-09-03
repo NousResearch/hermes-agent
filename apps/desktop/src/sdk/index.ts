@@ -36,12 +36,13 @@ import {
   $workspaceMode,
   $workspaceOwnerKey,
   setWorkspaceScope as publishWorkspaceScope,
+  setWorkspaceOwnerLabel,
   type WorkspaceNewSessionTarget
 } from '@/components/pane-shell/workspace-scope'
 import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
-import { deleteProfile, getLogs, getStatus, type HermesGateway } from '@/hermes'
+import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -49,12 +50,15 @@ import {
   openGatewayForProfile,
   requestGatewayForAgent,
   requestGatewayForProfile,
+  retainGatewayForAgent,
+  retainGatewayForRelay,
   retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
+  $hydrationSyncProfile,
   $profiles,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -87,10 +91,13 @@ import {
   $focusedSessionState,
   $focusedStoredSessionId,
   $sessionStates,
-  $sessionTiles
+  $sessionTiles,
+  dropTilesForProfile,
+  focusWorkspaceOwnerSessionTile,
+  sessionTileDelegate
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
-import type { UsageStats } from '@/types/hermes'
+import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
 
@@ -225,20 +232,26 @@ const $viewport = atom<ViewportRect>(readViewport())
 async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
   method: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  timeoutMs?: number
 ): Promise<T> {
   if (typeof route !== 'string') {
     if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
+    // Omit the bound entirely when unset so callers stay on the pool default.
+    return timeoutMs === undefined
+      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
+      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
   }
 
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
-    return requestGatewayForProfile<T>(route, method, params)
+    return timeoutMs === undefined
+      ? requestGatewayForProfile<T>(route, method, params)
+      : requestGatewayForProfile<T>(route, method, params, timeoutMs)
   }
 
   const roster = await getAgentRoster()
@@ -250,7 +263,9 @@ async function requestPluginProfile<T>(
   // its live enumeration transiently failed. Any additional source requires a
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
-    return requestGatewayForProfile<T>(profile, method, params)
+    return timeoutMs === undefined
+      ? requestGatewayForProfile<T>(profile, method, params)
+      : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
   }
 
   throw new Error(
@@ -308,12 +323,26 @@ const $activeConnectionId = computed($connection, connection => {
   return connection.mode === 'local' ? 'local' : null
 })
 
-const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+/** Ordinary session opens fail fast when their gateway or socket is dead. */
+export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
+/** Cold Bot profiles get a larger per-attempt budget to start their backend
+ *  and paint durable history. Bot Mode opts into one retry, so its effective
+ *  ceiling is two bounded attempts rather than an unbounded wait. */
+export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
   expectHistory?: boolean
+  /** Always request a sequenced session.resume after the open, even when the
+   *  surface already looks healthy. The healthy check trusts any non-empty
+   *  cached transcript, so an explicit bot-switch re-open can paint a STALE
+   *  snapshot kept by the session-states cache and skip the refresh entirely
+   *  (#93604 — Bot Chat shows old messages until app restart). Resume is
+   *  cheap and idempotent (the route-resume effect consumes redundant
+   *  requests as no-ops), so callers who know the user explicitly navigated
+   *  here set this to guarantee freshness. Only honored with awaitHydration. */
+  forceResume?: boolean
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
   keepAllProfilesScope?: boolean
@@ -333,6 +362,24 @@ export interface PluginOpenSessionOptions {
 export interface PluginNewChatOptions {
   workspaceMode?: WorkspaceMode
   workspaceOwnerKey?: string
+}
+
+// Raise the "Syncing…" affordance for a paint-first wake (#89843) and tear it
+// down as soon as the active-profile gate catches up. The listener clears ONLY
+// its own profile's badge: a newer wake may have replaced the badge with a
+// different profile, and the stale listener must not wipe the winner's.
+function beginHydrationBackgroundSync(profile: string): void {
+  $hydrationSyncProfile.set(profile)
+
+  const unlisten = $activeGatewayProfile.listen(next => {
+    if (normalizeProfileKey(next) === profile) {
+      if ($hydrationSyncProfile.get() === profile) {
+        $hydrationSyncProfile.set(null)
+      }
+
+      unlisten()
+    }
+  })
 }
 
 function waitForFocusedSessionHydration({
@@ -421,8 +468,33 @@ function waitForFocusedSessionHydration({
       // surface is real rather than a stuck loader.
       const hydrated = expectHistory ? historyPainted : runtimeReady
 
-      if (profileMatches && (mainMatches || tileMatches) && hydrated) {
-        finish()
+      if ((mainMatches || tileMatches) && hydrated) {
+        if (profileMatches) {
+          finish()
+
+          return
+        }
+
+        // Paint-first completion on an unsatisfiable profile gate (#89843).
+        // On a shared-remote connection every profile is legitimately served
+        // through the primary socket, so $activeGatewayProfile can NEVER
+        // equal the bot's profile — the old gate held a fully painted
+        // transcript hostage for the whole 20s budget and then stranded the
+        // pane. When the stored history is already painted on exactly this
+        // session, that content IS the proof the surface is real: resolve
+        // now, raise the subtle "Syncing…" affordance, and let the profile
+        // gate catch up in the background.
+        //
+        // Fail closed everywhere the content is NOT its own proof: a
+        // superseded generation already rejected above (conflicting
+        // concurrent hydration never resolves paint-first), and an
+        // expected-EMPTY chat keeps waiting for the full gate — with no
+        // transcript to paint, a bound runtime on an unmatched profile is
+        // not evidence of a real surface.
+        if (expectHistory && historyPainted) {
+          beginHydrationBackgroundSync(profile)
+          finish()
+        }
       }
     }
 
@@ -615,6 +687,16 @@ export const host = {
     }
 
     const targetProfile = route?.targetProfile || name
+    // A name-only call is ambient, not local: Bot Mode's active SSH roster
+    // rows deliberately use the ambient gateway door and therefore carry no
+    // explicit owner route. Preserve the active registry connection so the
+    // profile teardown and DELETE both land on the VPS instead of retiring the
+    // unrelated local pool and leaving the warmed remote backend to recreate
+    // the deleted profile.
+    const ambientConnectionId = route ? null : String(activeGatewayConnectionId() || '').trim()
+
+    const ambientRemoteConnectionId =
+      ambientConnectionId && ambientConnectionId !== 'local' ? ambientConnectionId : null
 
     if (!name) {
       throw new Error('deleteProfile: profile name required')
@@ -635,11 +717,27 @@ export const host = {
     // A hover-warmed Bot Mode row owns a retained renderer socket. Retire it
     // before Electron stops the profile backend so the socket closure cannot
     // schedule a reconnect that resurrects the deleted profile.
-    if (!route || route.mode === 'local') {
+    if (route?.mode === 'local' || (!route && !ambientRemoteConnectionId)) {
       retireLocalProfileGateways(targetProfile)
     }
 
-    await deleteProfile(targetProfile, route ? { connectionId: route.connectionId, profile: route.profile } : undefined)
+    await deleteProfile(
+      targetProfile,
+      route
+        ? { connectionId: route.connectionId, profile: route.profile }
+        : ambientRemoteConnectionId
+          ? { connectionId: ambientRemoteConnectionId, profile: name }
+          : undefined
+    )
+
+    // The profile is gone. Drop its persisted tiles now — a leftover tile
+    // restores on relaunch and re-creates the deleted profile (hermes-agent#94235).
+    dropTilesForProfile(
+      route ? route.profile : name,
+      route
+        ? { connectionId: route.connectionId, profile: route.profile, targetProfile: route.targetProfile }
+        : undefined
+    )
 
     // The profile rail paints from the shared $profiles cache; without a
     // refresh the deleted profile's badge survives and clicking it starts a
@@ -694,9 +792,11 @@ export const host = {
   },
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
-   *  analogue of warmProfile. Fire-and-forget, same semantics. */
-  warmAgent: (connectionId: null | string, profile: string): void => {
-    void openGatewayForAgent(connectionId, (profile ?? '').trim() || 'default').catch(() => undefined)
+   *  analogue of warmProfile. Fire-and-forget, same semantics.
+   *  `undefined` is accepted alongside `null` because a roster row's
+   *  `connectionId` is optional; both mean "no explicit source". */
+  warmAgent: (connectionId: null | string | undefined, profile: string): void => {
+    void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
@@ -705,8 +805,8 @@ export const host = {
    *  and rapid switches can't land out of order. The local source falls
    *  through to the profile path — single-source plugins keep working
    *  against older behavior unchanged. */
-  ensureAgent: async (connectionId: null | string, profile: string): Promise<void> =>
-    ensureGatewayAgent(connectionId, (profile ?? '').trim() || 'default'),
+  ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
+    ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
 
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
@@ -717,6 +817,10 @@ export const host = {
    *  also scope chrome onto that profile and collapse the sidebar. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
+
+    // A new wake owns the syncing affordance — a lingering badge from an
+    // earlier paint-first wake must not survive into this one.
+    $hydrationSyncProfile.set(null)
     const explicitRoute = options.route ? { ...options.route } : null
     const profile = (explicitRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
@@ -891,8 +995,30 @@ export const host = {
             Boolean($activeSessionId.get()) &&
             (!expectHistory || $messages.get().length > 0)
 
-          if (options.awaitHydration && !surfaceHealthy) {
-            requestSessionResume(storedSessionId, ownerRoute || undefined)
+          // surfaceHealthy trusts ANY non-empty cached transcript, so it
+          // cannot distinguish a fresh transcript from a stale snapshot the
+          // session-states cache kept across a bot switch (#93604). Callers
+          // that represent an explicit user navigation pass forceResume to
+          // skip the heuristic entirely; the resume is idempotent either way.
+          //
+          // Bot Chat opens as a tab/tile. requestSessionResume is consumed
+          // only when the MAIN route is that session, so a roster reopen of
+          // an already-mounted tile would paint the idle snapshot and never
+          // pull messages that arrived while the panel WS was down (#96183).
+          // Refresh the tile transcript in place instead.
+          if (options.awaitHydration && (options.forceResume || !surfaceHealthy)) {
+            const existingTile = $sessionTiles.get().some(tile => tile.storedSessionId === storedSessionId)
+            const tileDelegate = existingTile ? sessionTileDelegate() : null
+
+            if (tileDelegate) {
+              try {
+                await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
+              } catch {
+                requestSessionResume(storedSessionId, ownerRoute || undefined)
+              }
+            } else {
+              requestSessionResume(storedSessionId, ownerRoute || undefined)
+            }
           }
 
           if (options.awaitHydration) {
@@ -993,8 +1119,6 @@ export const host = {
       render: () => ReactNode
       title?: string
       uncloseable?: boolean
-      workspaceMode?: WorkspaceMode
-      workspaceOwnerKey?: string
     }
   ): (() => void) => {
     const key = (id ?? '').trim()
@@ -1018,9 +1142,7 @@ export const host = {
       },
       id: paneId,
       render: options.render,
-      title: options.title ?? key,
-      workspaceMode: options.workspaceMode,
-      workspaceOwnerKey: options.workspaceOwnerKey
+      title: options.title ?? key
     })
 
     const close = () => {
@@ -1038,6 +1160,11 @@ export const host = {
 
     return close
   },
+
+  /** Name a workspace owner on its tabs (a bot's display name). A canonical
+   *  chat's STORED title is an identity the backend resolves by name; this is
+   *  the caption shown for it. Feature-detect on older desktops. */
+  setWorkspaceOwnerLabel,
 
   /** Switch the visible main-pane workspace without unregistering retained panes. */
   setWorkspaceScope: (
@@ -1080,6 +1207,25 @@ export const host = {
 
     window.location.hash = '#/'
   },
+
+  /** Front the tab a Bot Mode owner already has open — the tile that owner's
+   *  zone last had active, else its most recent — and return that stored id;
+   *  `null` when the owner has nothing open. A roster click asks this before
+   *  resolving the canonical chat, so the tabs the user left (and the ones
+   *  they closed) are respected. Presentation only: no gateway activation,
+   *  no session create. Feature-detect on older desktops.
+   *
+   *  `isStaleTile` (hermes-agent#90102): the caller's reconciliation probe
+   *  against backend truth. The tile bucket is a Local Storage cache — a
+   *  persisted bot tile can name a session the backend has since superseded,
+   *  and fronting it pinned the roster click to a stale finished session
+   *  forever. Tiles the probe rejects are discarded (never fronted), so the
+   *  caller falls through to its authoritative open path. */
+  focusOpenWorkspaceSession: (
+    workspaceOwnerKey: string,
+    isStaleTile?: (tile: { storedSessionId: string; workspaceTabTitle?: string }) => boolean,
+    onlyStoredIds?: readonly string[]
+  ): null | string => focusWorkspaceOwnerSessionTile(workspaceOwnerKey, isStaleTile, onlyStoredIds),
 
   /** Reactive on-screen visibility of a contributed pane: true while it is in
    *  the layout tree, not dismissed/hidden, its zone un-minimized, AND holding
@@ -1125,12 +1271,110 @@ export const host = {
   /** Gateway JSON-RPC through a credential-free route descriptor without
    *  foregrounding it. Passing a bare profile is the v1/local compatibility
    *  overload; registry callers must pass the descriptor so duplicate names
-   *  remain unambiguous. */
+   *  remain unambiguous.
+   *
+   *  `timeoutMs` opts one call out of the pool's generic deadline (#93911: a
+   *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
+   *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
+   *  to keep the default. */
   requestProfile: async <T>(
     route: PluginProfileRoute | string,
     method: string,
-    params: Record<string, unknown> = {}
-  ): Promise<T> => requestPluginProfile<T>(route, method, params),
+    params: Record<string, unknown> = {},
+    timeoutMs?: number
+  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+
+  /** Pin a route's pooled gateway socket open across repeated `requestProfile`
+   *  calls (#93594: the bot-relay drain loop was dialing and tearing down a
+   *  fresh WebSocket per registered connection per tick). Returns a once-only
+   *  release. Local routes are exempt (no-op release) so the idle reaper can
+   *  still reclaim spawned local backends. Feature-detect on older desktops
+   *  (`typeof host.retainProfileSocket === 'function'`). */
+  retainProfileSocket: (route: PluginProfileRoute | string): (() => void) => {
+    if (typeof route === 'string' || !route) {
+      // Bare-profile compatibility overload: local/legacy routing — exempt.
+      return () => undefined
+    }
+
+    return retainGatewayForRelay(route.connectionId, route.profile)
+  },
+
+  /** Hold a route's pooled socket open across a multi-RPC, session-scoped
+   *  sequence (#93602). Each requestProfile call is its own request lease, so
+   *  a non-retained secondary socket closes at refcount 0 between calls — and
+   *  the gateway reaps any runtime session that socket minted, failing the
+   *  next RPC with 4001. Acquire before the first session-scoped RPC, release
+   *  (idempotent) in a `finally`. Feature-detect: older hosts lack this. */
+  retainProfile: async (route: PluginProfileRoute | string): Promise<() => void> => {
+    if (typeof route !== 'string') {
+      if (!route.connectionId.trim() || !route.profile.trim()) {
+        throw new Error('Profile route must include connectionId and profile')
+      }
+
+      return retainGatewayForAgent(route.connectionId, route.profile)
+    }
+
+    return retainGatewayForAgent(null, route.trim() || 'default')
+  },
+
+  /** Read persisted sessions from a profile's owning source without dialing
+   *  that profile's gateway. The source primary opens state.db directly. */
+  listPersistedSessions: async (
+    route: PluginProfileRoute | null,
+    options: { profile: string; limit?: number }
+  ): Promise<PaginatedSessions> => {
+    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    const profile = options.profile.trim()
+
+    if (!profile) {
+      throw new Error('Persisted session reads require a profile')
+    }
+
+    const limit = Math.min(500, Math.max(0, options.limit ?? 200))
+
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: '0',
+      min_messages: '0',
+      archived: 'exclude',
+      order: 'created',
+      profile
+    })
+
+    return hermesApi<PaginatedSessions>({
+      ...(route ? { connectionId: route.connectionId } : {}),
+      path: `/api/profiles/sessions?${query.toString()}`,
+      timeoutMs: 60_000
+    })
+  },
+
+  /** Mutate the durable hidden flag through the source primary. Keeping the
+   *  owner profile in the body (not request.profile) prevents Electron from
+   *  starting a profile backend merely to reconcile persisted visibility. */
+  setPersistedSessionHidden: async (
+    route: PluginProfileRoute | null,
+    options: { sessionId: string; profile: string; hidden: boolean }
+  ): Promise<{ ok: boolean; hidden: boolean }> => {
+    if (route && (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim())) {
+      throw new Error('Profile route must include connectionId, profile, and targetProfile')
+    }
+
+    const profile = options.profile.trim()
+
+    if (!profile || !options.sessionId.trim()) {
+      throw new Error('Persisted session updates require a profile and session id')
+    }
+
+    return hermesApi<{ ok: boolean; hidden: boolean }>({
+      ...(route ? { connectionId: route.connectionId } : {}),
+      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
+      method: 'PATCH',
+      body: { hidden: options.hidden, profile }
+    })
+  },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */
@@ -1167,8 +1411,53 @@ export {
 
 // -- ui: the design language --------------------------------------------------
 
+/** THE session status dot — the one primitive the sidebar row, the pane tabs
+ *  and the session switcher render, so a session's status can never disagree
+ *  between surfaces. Pass the STORED session id and it resolves the rest
+ *  itself: the live state (needs-input / working / stalled / background /
+ *  unread / draft / idle) and the project color. Never hand-roll a status
+ *  circle beside it — a plugin's own dot inverts core's color vocabulary the
+ *  moment either side moves. */
+export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
+/** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
+ *  Reserve it and your label starts on the same left edge as every session row
+ *  above you; spell the classes yourself and the row drifts. The session row is
+ *  canonical; `row-geometry.ts` explains what each measurement belongs to. */
+export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
+/** One glyph per gateway kind — device, cloud, terminal, network. The statusbar
+ *  switcher, the fleet profile rail and any plugin rail listing gateways share
+ *  it, so a connection looks the same wherever it is named. */
+export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
+export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
+ *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
+ *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
+ *  `PanelEmpty` is the icon+action empty state (plain `EmptyState` is title +
+ *  description only, and silently drops an `icon`). A row takes a custom `lead`
+ *  (avatar/swatch), trailing `meta`, and `menuItems` for kebab + right-click
+ *  parity, so a roster needs no hand-rolled row. The overlay-bound `Panel` root
+ *  is deliberately NOT exported — these compose inside a pane just as well. */
+export {
+  PanelAction,
+  PanelAddButton,
+  PanelBlock,
+  PanelBody,
+  PanelDetail,
+  PanelEmpty,
+  PanelHeader,
+  PanelList,
+  PanelListRow,
+  type PanelMenuItem,
+  PanelMeta,
+  type PanelMetaRow,
+  PanelPill,
+  type PanelPillTone,
+  PanelRowMenu,
+  PanelSectionLabel
+} from '@/app/overlays/panel'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
@@ -1188,7 +1477,6 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
  *  installs). For plugin dialogs pass `embedded` (tab state stays local —
@@ -1204,6 +1492,9 @@ export { SkillsView } from '@/app/skills'
  *  renders anywhere (a plugin dialog); pass a live `gateway` (see
  *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
 export { McpTab } from '@/app/skills/mcp-tab'
+/** The oversized Collapse lettering an empty chat is titled with — core writes
+ *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
+export { Wordmark } from '@/components/chat/wordmark'
 /** Pane placement roles. `'floating'` is the one NON-tiling value: the pane is
  *  excluded from the layout tree and rendered as a fixed, draggable card above
  *  it — it takes no width from any zone, has no tab, and can't be docked.
@@ -1215,12 +1506,22 @@ export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
 export { Checkbox } from '@/components/ui/checkbox'
 export { Codicon } from '@/components/ui/codicon'
+/** THE color picker — swatch grid plus a clear row that means "back to the
+ *  deterministic color". Feed it `PROFILE_SWATCHES` so a hand-picked color
+ *  shares the generated palette's saturation and lightness; a bespoke grid of
+ *  literal hex drifts off-theme the moment the palette moves. */
+export { ColorSwatches } from '@/components/ui/color-swatches'
 export { ConfirmDialog } from '@/components/ui/confirm-dialog'
 export {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  // Submenus: Bot Mode files a bot into a user section from its row menu, and
+  // a flat list of every folder would swamp the items already there.
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 export { CopyButton } from '@/components/ui/copy-button'
@@ -1234,6 +1535,10 @@ export {
   DialogTitle,
   DialogTrigger
 } from '@/components/ui/dialog'
+/** The caret every collapsible section in core uses — points right when closed
+ *  and rotates down when open, so the motion matches the rest of the app. Swap
+ *  a hand-written `chevron-down`/`chevron-right` ternary for this. */
+export { DisclosureCaret } from '@/components/ui/disclosure-caret'
 export {
   DropdownMenu,
   DropdownMenuContent,
@@ -1252,6 +1557,10 @@ export { Kbd, KbdGroup } from '@/components/ui/kbd'
 export { Loader, type LoaderType } from '@/components/ui/loader'
 export { LogView } from '@/components/ui/log-view'
 export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+/** Full-row / region click target. Imposes NO styling — the caller keeps its own
+ *  layout classes — it just bakes in `type="button"` and a stable `data-slot`.
+ *  Use it for rows and regions; `Button` is for ordinary compact actions. */
+export { RowButton } from '@/components/ui/row-button'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'
@@ -1291,7 +1600,11 @@ export type { HermesGateway } from '@/hermes'
 export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
- *  `ctx.storage` and resolved against the app's active locale — no core edit. */
+ *  `ctx.storage` and resolved against the app's active locale — no core edit.
+ *  `translateNow` is the one-shot form for the places a hook can't reach —
+ *  notably a `ctx.register` pane `title`, which is read at registration time
+ *  and is why plugin pane titles otherwise strand as hardcoded English. It
+ *  samples the locale at call time, so React should still use the hooks. */
 export {
   type Locale,
   type PluginI18n,
@@ -1299,6 +1612,7 @@ export {
   type PluginMessages,
   type PluginMessageValue,
   type PluginTranslate,
+  translateNow,
   useI18n,
   usePluginI18n
 } from '@/i18n'
@@ -1307,23 +1621,45 @@ export {
  *  Plugins must route animation clocks through this instead of raw rAF loops
  *  so a disabled plugin or an empty roster costs zero frames. */
 export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from '@/lib/budgeted-loop'
+/** The blank transcript as a contribution area: claim the sessions you own and
+ *  render what stands in the gap. Core's own splash keeps a fresh draft. */
+export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@/lib/format'
+/** THE confirm flow for guarded model switches — when a gateway model-switch
+ *  RPC answers `confirm_required` (data-policy / expensive-model guard),
+ *  route it through this shared applier instead of forking a per-surface
+ *  dialog: it shows the warning and resends with
+ *  `confirm_expensive_model: true` on Confirm (#95293). */
+export {
+  type GuardedModelSwitchResult,
+  surfaceModelSwitchConfirm,
+  type SurfaceModelSwitchConfirmOptions
+} from '@/lib/guarded-model-switch'
 export { triggerHaptic as haptic } from '@/lib/haptics'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
 export { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
+/** A `Map` with a ceiling, for the module-level caches a plugin keeps across
+ *  a renderer that stays open for days. Only for values that can be
+ *  regenerated — eviction costs a recompute or a refetch, never correctness. */
+export { LruCache } from '@/lib/lru-cache'
 /** The app's deterministic identity color for a name (profiles, assignees,
- *  authors) + its translucent tag fill — so plugin-rendered identities read
- *  the same hue as everywhere else. */
-export { profileColor, profileColorSoft } from '@/lib/profile-color'
+ *  authors), its translucent tag fill, and the curated picker swatches — so
+ *  plugin-rendered identities read the same hue as everywhere else. The
+ *  swatches share the deterministic palette's saturation/lightness, so a
+ *  hand-picked color still sits with the generated ones; reach for them
+ *  instead of literal hex, which can't follow the theme. */
+export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-color'
 /** The shared client itself, for invalidation OUTSIDE React (e.g. a
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+
+export const PANES_AREA = 'panes'
 /** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
  *  thinking depth uses the same scale and spelling as the rest of the app. */
 export {
@@ -1333,16 +1669,20 @@ export {
   type ReasoningEffort,
   reasoningEffortLabel
 } from '@/lib/reasoning-effort'
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
-export const PANES_AREA = 'panes'
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
-
-export { coarseElapsed, fmtDateTime, fmtDayTime, relativeTime } from '@/lib/time'
+/** Canonical time formatting — every surface pulls from here so timestamps read
+ *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
+ *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the
+ *  session rows beside you do; `formatAgo` is the same buckets with an " ago"
+ *  suffix. `relativeTime` is the bidirectional Intl form ("in 14 hr") — use it
+ *  for a scheduled next-run, not for an age. */
+export { type AgoLabels, coarseElapsed, fmtDateTime, fmtDayTime, formatAgo, relativeTime } from '@/lib/time'
 /** The transcript as a contribution area: register a named `::directive{...}`
  *  and the model can render your component inline in assistant messages. */
 export {
@@ -1351,6 +1691,19 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+/** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
+ *  learns out-of-band that a session produced something the user hasn't seen
+ *  (a roster poll's activity watermark, say) writes HERE rather than keeping
+ *  its own unread map — core's dot only paints what this store claims, and a
+ *  parallel map means a second badge that drifts. Works for sessions core
+ *  cannot see: a hidden session is never in the session list, so the backend
+ *  watermark can never claim it, but the transient marker resolves to the id
+ *  you pass. Key every call by the SAME stored id you hand the dot.
+ *  `markSessionUnreadFinished` lights it, `ackStoredSessionId` clears it when
+ *  the user opens the session, `forgetSessionUnread` drops it when the session
+ *  is gone. Pass the owning profile — a hidden session has no row to read it
+ *  from, and the persisted half is bucketed per profile. */
+export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
  *  authored palette. Deliberately not persisted: it is an authoring knob, not

@@ -162,7 +162,9 @@ export const ja = defineLocale({
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
       openaiRejectedApiKey: 'OpenAI が API キーを拒否しました。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI が API キーを拒否しました (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。'
+      openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。',
+      codeSkewRestartRequired:
+        'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。'
     },
     voice: {
       configureSpeechToText: '音声モードを使用するには音声認識を設定してください。',
@@ -249,7 +251,8 @@ export const ja = defineLocale({
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
     openSettings: '設定を開く',
-    openStarmap: 'メモリグラフを開く'
+    openStarmap: 'メモリグラフを開く',
+    resetHudLayout: 'HUD のサイズと位置をリセット'
   },
 
   language: {
@@ -275,6 +278,7 @@ export const ja = defineLocale({
       providerAccounts: 'アカウント',
       providerApiKeys: 'API キー',
       providerCustomEndpoints: 'カスタムエンドポイント',
+      providerLocalModels: 'ローカルモデル',
       gateway: 'ゲートウェイ',
       apiKeys: 'ツールとキー',
       keybinds: 'キーボードショートカット',
@@ -410,8 +414,17 @@ export const ja = defineLocale({
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',
+      tipsTitle: 'アプリ内ヒント',
+      tipsDesc:
+        'アプリの一部を指す小さな吹き出し。待機中にときどき、また役に立つときは Hermes からも表示します。閉じたヒントは二度と表示されません。',
+      tipsReset: (count: number) => `閉じた${count}件のヒントを元に戻す`,
+      toursTitle: 'ガイドツアー',
+      toursDesc: '画面を暗くして各ステップを強調しながら、Hermes がアプリを案内します。',
       composerPopoutTitle: 'フローティング入力欄',
       composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      vibeHeartsTitle: 'バイブハート',
+      vibeHeartsDesc:
+        'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
@@ -419,6 +432,9 @@ export const ja = defineLocale({
       embedsAlways: '常に',
       embedsOff: 'オフ',
       embedsReset: (count: number) => `許可した${count}件のサービスをリセット`,
+      resumeLastSessionTitle: '起動時に前回のチャットを再開',
+      resumeLastSessionDesc:
+        'オンの場合、コールドスタート時に直近のチャットを再び開きます。オフにすると常に新しいチャットから始まります。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -709,6 +725,10 @@ export const ja = defineLocale({
       bundleOutOfSyncDesc:
         'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
       bundleOutOfSyncAction: 'インストーラーを入手',
+      bundleSwapPending: '再起動して更新を完了',
+      bundleSwapPendingDesc:
+        '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
+      bundleSwapPendingAction: 'Hermes を再起動',
       updates: '更新',
       checkNow: '今すぐ確認',
       checking: '確認中…',
@@ -831,6 +851,10 @@ export const ja = defineLocale({
       plainTextStoredTitle: 'トークンは平文で保存されています',
       plainTextStoredDesc:
         'セキュアストレージが利用できないため、保存済みのトークンはこのマシンのアプリの接続設定ファイルに暗号化されずに保存されています。暗号化するには GNOME Keyring または KWallet をインストールまたは有効化してください。',
+      keychainEncryptionTitle: 'OS キーチェーンで保存済みのシークレットを暗号化',
+      keychainEncryptionDesc:
+        'デフォルトはオフです。オンにすると、ゲートウェイのトークンとサインイン資格情報がシステムのキーチェーン（Keychain Access、GNOME Keyring、Windows DPAPI）で暗号化されます。システムから許可やパスワードを求められる場合があります。オフの場合は、現在のユーザーのみが読める通常ファイルとして保存されます。',
+      keychainEncryptionFailed: 'シークレット暗号化の設定を変更できませんでした',
       testRemote: 'リモートをテスト',
       saveForRestart: '次回起動時のために保存',
       saveAndReconnect: '保存して再接続',
@@ -982,6 +1006,12 @@ export const ja = defineLocale({
       provider: 'プロバイダー',
       model: 'モデル',
       applying: '適用中...',
+      loadFailed: 'モデルを読み込めませんでした',
+      restartRequired:
+        'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。',
+      restartBackend: 'バックエンドを再起動',
+      restartingBackend: 'バックエンドを再起動中...',
+      restartFailed: 'バックエンドを再起動できませんでした',
       auxiliaryTitle: '補助モデル',
       resetAllToMain: 'すべてメインにリセット',
       auxiliaryDesc:
@@ -992,7 +1022,6 @@ export const ja = defineLocale({
       providerDefault: '(プロバイダーのデフォルト)',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
-        web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },
         compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
         skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
         approval: { label: '承認', hint: 'スマート自動承認' },
@@ -1001,6 +1030,111 @@ export const ja = defineLocale({
         review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
+    },
+    localModels: {
+      title: 'ローカルモデル',
+      runtimeTitle: 'ローカルランタイム',
+      runtimeReady: backend => `準備完了 · ${backend}`,
+      serverRunning: '実行中',
+      runtimeInstalled: 'llama.cpp ランタイムをインストール済み',
+      runtimeInstalledDetail: (tag, backend) =>
+        `ビルド ${tag}、${backend} バックエンド。サーバーは Hermes が起動・管理します。`,
+      installTitle: 'ローカルランタイムをインストール',
+      installDetail:
+        'llama.cpp 推論エンジン（数百 MB）をダウンロードします。ダウンロードしたモデルはすべてこのマシン上で動作します——アカウント不要、データが外部に送られることはありません。',
+      installAction: 'ランタイムをインストール',
+      installing: 'ランタイムをインストール中…',
+      installFailed: 'ランタイムのインストールに失敗しました',
+      hardwareTitle: 'このマシン',
+      hardwareLoading: 'ハードウェアを確認中…',
+      vram: label => `GPU メモリ ${label}`,
+      ram: label => `RAM ${label}`,
+      unifiedMemory: 'ユニファイドメモリ',
+      modelsTitle: 'モデル',
+      recommended: 'おすすめ',
+      recommendedReason: {
+        'best-quality-resident':
+          'GPU に完全に載り、フルスピードで動くモデルの中で最高品質です。おすすめは品質とこのハードウェアでの予測速度を両立させて選ばれます。',
+        'speed-gated-quality':
+          'より高品質なモデルもこのマシンに載りますが、メモリ帯域の制約で応答が遅くなります — これは速度を保てる最良のモデルです。',
+        'fastest-resident':
+          'このハードウェアでフルスピードに達するモデルはありません。GPU メモリ内で動くものの中で最速です。',
+        'least-painful-spilled':
+          'GPU メモリに完全に収まるモデルはありません — システム RAM からの実行で最も快適なモデルです。'
+      } as Record<string, string>,
+      downloaded: 'ダウンロード済み',
+      downloadAction: size => `ダウンロード · ${size}`,
+      downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
+      downloadDoneToast: model => `${model} の準備ができました。`,
+      installDoneToast: 'ローカルランタイムのインストールが完了しました。',
+      useAction: '使用する',
+      activePill: 'デフォルト',
+      updateTitle: 'エンジンの更新があります',
+      updateDetail: (next, current) =>
+        `新しい llama.cpp ビルド（${next}）をインストールできます——現在は ${current} です。ダウンロード中もモデルは引き続き使えます。`,
+      updateAction: 'エンジンを更新',
+      updating: 'エンジンを更新中…',
+      upToDateTitle: 'エンジンは最新です',
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
+      updateToast: next =>
+        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
+      activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
+      activeNotLoaded: '最初のメッセージで読み込みます',
+      loadedPill: '読み込み済み',
+      placementResident: 'すべて GPU 上',
+      placementSpilled: '一部 RAM 上',
+      placementResidentTip: 'このコンテキストウィンドウで GPU メモリ内で完全に動作しています — フルスピード。',
+      placementSpilledTip:
+        'モデルの一部がシステム RAM から動作しています — 動作しますが遅くなります。よりコンパクトなビルドか小さいコンテキストなら完全に収まります。',
+      loadingPill: '読み込み中…',
+      ejectTip: 'GPU メモリを解放（必要時に再読み込み）',
+      ejected: 'モデルをアンロードしました——GPU メモリを解放しました。',
+      ejectFailed: 'モデルをアンロードできませんでした',
+      stopServer: 'オフにする',
+      startServer: 'オンにする',
+      runtimeRunningDetail:
+        'ローカルサーバーが実行中です。オフにすると GPU メモリを全て解放し、再度オンにするまで新しいチャットはローカルモデルを使用しません。',
+      serverStopped: 'ローカルサーバーを停止しました——GPU メモリを解放しました。',
+      serverStarted: 'ローカルサーバー実行中。',
+      serverStopFailed: 'ローカルサーバーを停止できませんでした',
+      serverStartFailed: 'ローカルサーバーを起動できませんでした',
+      activating: '起動中…',
+      activateFailed: model => `${model} への切り替えに失敗しました`,
+      activateDoneToast: model => `新しいチャットは ${model} を使用します。`,
+      downloadFailed: model => `${model} のダウンロードに失敗しました`,
+      pillFitsGpu: 'GPU に完全に収まります',
+      pillUsesRam: 'システム RAM を使用',
+      pillTooBig: 'このマシンには大きすぎます',
+      browseTitle: 'さらにモデルを探す',
+      browseHint:
+        'Hugging Face 全体を検索できます。ここでダウンロードしたモデルは自動でマシンに合わせて動作しますが、当方でのテストは行われていません。',
+      browsePlaceholder: 'モデル名または作者で検索…',
+      browseSearching: 'Hugging Face を検索中',
+      browseListing: 'モデルファイルを読み込み中',
+      browseShowFiles: 'ファイルを表示',
+      browseRefresh: '更新',
+      browseDownloads: 'ダウンロード',
+      browseLikes: 'いいね',
+      browseGated: 'Hugging Face へのサインインが必要',
+      browseNoGguf: '互換性のあるモデルファイルが見つかりません。',
+      browseFitUnknown: '適合状況は不明',
+      browseAlreadyDownloaded: 'ダウンロード済みです。',
+      addedByYou: 'あなたが追加',
+      browseDownloadStarted: '{name} をダウンロード中',
+      browseDownloadAria: '{name} をダウンロード',
+      sideloadButton: 'モデルファイルを追加',
+      sideloadTitle: 'GGUF モデルファイルを選択',
+      sideloadDone: '{name} を追加しました。',
+      sideloadAlreadyPresent: '既にライブラリにあります。',
+      pillFullContext: max => `フル ${max} コンテキスト`,
+      pillFullContextTip: '最初からモデルの完全なコンテキストウィンドウで動作します',
+      pillUpTo: max => `最大 ${max} コンテキスト`,
+      pillGrowsTip: '会話が必要とするにつれて自動的に拡張します',
+      pillVision: '画像対応',
+      deleteAction: 'モデルを削除',
+      deleteConfirm: model => `${model} をディスクから削除しますか？`,
+      deleted: model => `${model} を削除しました。`,
+      deleteFailed: '削除に失敗しました'
     },
     providers: {
       connectAccount: 'アカウントを接続',
@@ -1127,6 +1261,26 @@ export const ja = defineLocale({
         selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
         failedSelect: backend => `${backend} の選択に失敗しました`,
         needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+      },
+      browserRealProfile: {
+        label: '実際のブラウザプロファイルを使用',
+        description:
+          '既定ブラウザのログイン情報と Cookie を管理されたスナップショットにコピーし、エージェントはそれを使ってブラウジングします。実際のプロファイルが直接開かれることはありません。新しいセッションに適用されます。',
+        enabledTitle: '実プロファイルブラウジング：オン',
+        enabledMessage: '新しいセッションは既定ブラウザプロファイルのスナップショットでブラウジングします。',
+        disabledTitle: '実プロファイルブラウジング：オフ',
+        disabledMessage: 'プロファイルのスナップショットは削除され、新しいセッションはクリーンなブラウザを使用します。',
+        failedSave: '実プロファイル設定を保存できませんでした',
+        prompt: {
+          title: 'サイトにログインしたまま利用',
+          body: 'Hermes が既定ブラウザプロファイルのスナップショットでブラウジングできるようにすると、サイトはログイン済みの状態で開きます。',
+          bulletSnapshot: 'Cookie とログイン情報は管理されたスナップショットにコピーされます。',
+          bulletLiveProfile: '実際のブラウザプロファイルが直接開かれることはありません。',
+          bulletLocal: 'データがこのコンピュータの外に出ることはありません。',
+          dontShowAgain: '今後表示しない',
+          notNow: '今はしない',
+          enable: 'プロファイルを使用'
+        }
       }
     }
   },
@@ -1185,7 +1339,9 @@ export const ja = defineLocale({
     edit: '編集',
     archive: 'アーカイブ',
     skillArchivedTitle: 'スキルをアーカイブしました',
-    skillArchivedMessage: 'hermes curator restore で復元できます。'
+    skillArchivedMessage: 'hermes curator restore で復元できます。',
+    officialCatalog: 'インストール可能',
+    officialPill: '公式'
   },
 
   starmap: {
@@ -1578,6 +1734,7 @@ export const ja = defineLocale({
     defaultBadge: 'デフォルト',
     rename: '名前を変更',
     renameMenu: '名前を変更…',
+    exportMenu: 'エクスポート…',
     editSoul: 'SOUL.md を編集…',
     copySetup: 'セットアップをコピー',
     copying: 'コピー中...',
@@ -1639,7 +1796,11 @@ export const ja = defineLocale({
       message: count => `モデル設定を確認するまで、${count} 件のスケジュール済みジョブがスキップされます。`,
       detailMore: (names, remaining) => `${names}、ほか ${remaining} 件`,
       review: 'スケジュール済みジョブを確認',
-      saveFailed: 'Hermes はモデルの変更を保存しませんでした。'
+      saveFailed: 'Hermes はモデルの変更を保存しませんでした。',
+      confirmTitle: 'モデル選択の警告',
+      confirmDetail: 'このトレードオフを受け入れる場合のみ確認してください。',
+      confirmAction: '確認',
+      declined: 'モデル変更をキャンセルしました — データ学習ティアの警告を拒否しました。'
     },
     search: 'Cron ジョブを検索...',
     loading: 'Cron ジョブを読み込み中...',
@@ -1878,7 +2039,7 @@ export const ja = defineLocale({
       removeFolder: '削除',
       create: '作成',
       menu: 'アクション',
-      menuRename: '名前を変更',
+      menuRename: '名前を変更…',
       menuAppearance: '外観',
       noColor: '色なし',
       menuAddFolder: 'フォルダを追加',
@@ -1941,7 +2102,7 @@ export const ja = defineLocale({
       copyId: 'ID をコピー',
       export: 'エクスポート',
       branchFrom: '分岐',
-      rename: '名前を変更',
+      rename: '名前を変更…',
       archive: 'アーカイブ',
       newWindow: '新しいウィンドウ',
       openInTerminal: 'ターミナルで開く',
@@ -2358,6 +2519,8 @@ export const ja = defineLocale({
     connected: '接続済み',
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
     fireworksPitch: '直接モデル API — Fireworks がホストする最先端モデル',
+    localModelsTitle: 'モデルをローカルで実行',
+    localModelsPitch: 'アカウント不要——モデルをダウンロードしてこのマシンで実行',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
       fireworks: {
@@ -2394,6 +2557,8 @@ export const ja = defineLocale({
     connectedProvider: provider => `${provider} が接続されました`,
     connectedPicking: provider => `${provider} が接続されました。デフォルトモデルを選択中...`,
     signInFailed: 'サインインに失敗しました。再試行してください。',
+    signInExpired:
+      '承認待ちでタイムアウトしました。多くの場合、開いたタブのサインインページが止まっている（サーバー側の問題）ためです。そのページでサインインを完了してから再試行してください。解決しない場合は API キーまたは CLI を利用してください。',
     pickDifferentProvider: '別のプロバイダーを選択',
     signInWith: provider => `${provider} でサインイン`,
     openedBrowser: provider => `${provider} をブラウザーで開きました。`,
@@ -2429,6 +2594,8 @@ export const ja = defineLocale({
     noModels: 'モデルが見つかりません。',
     addProvider: 'プロバイダーを追加',
     loadFailed: 'モデルを読み込めませんでした',
+    downloading: 'ダウンロード中',
+    localDownloadsHeading: 'ローカル',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
     pro: 'Pro',
     proNeedsSubscription: 'Pro モデルには有料の Nous サブスクリプションが必要です。',
@@ -2541,6 +2708,15 @@ export const ja = defineLocale({
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
       contextUsage: 'コンテキスト使用状況',
+      systemResources: {
+        title: 'システムリソース',
+        loading: 'リソース…',
+        gpuUtilization: 'GPU 使用率',
+        gpuMemory: 'GPU メモリ',
+        ram: 'RAM',
+        unifiedNote: 'ユニファイドメモリ——GPU とシステムがこのプールを共有します。',
+        toggle: 'システムリソース'
+      },
       contextUsagePanel: {
         categories: {
           conversation: '会話',
@@ -2617,6 +2793,9 @@ export const ja = defineLocale({
     hide: '非表示',
     openPreview: 'プレビューを開く',
     openInBrowser: 'ブラウザで開く',
+    openInExternal: '外部で開く',
+    popIn: 'ポップイン',
+    popOut: 'ポップアウト',
     linkHint: '⌘/Ctrl+クリックでプレビューペイン',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',
@@ -2723,6 +2902,7 @@ export const ja = defineLocale({
     closeToRight: '右側を閉じる',
     closeAll: 'すべて閉じる',
     newSessionTab: '新しいセッションタブ',
+    newTab: '新しいタブ',
     pluginDisabled: pluginId => `プラグイン「${pluginId}」を無効化しました`,
     pluginDisabledBody: '設定 → プラグイン で再有効化するとペインが戻ります。',
     missingPane: paneId => `ペインが見つかりません: ${paneId}`,
@@ -3015,6 +3195,10 @@ export const ja = defineLocale({
     editFailed: '編集に失敗しました',
     editTurnUnavailable: 'このターンはサーバー履歴にありません（圧縮で削除された可能性があります）。',
     resumeFailed: '再開に失敗しました',
+    readOnlyTranscriptTitle: '読み取り専用で開きました',
+    readOnlyTranscriptBody:
+      'この古いチャットを所有するバックエンドがまだ接続されていないため、読み取り専用のトランスクリプトとして開きました。履歴は無事です。バックエンドが所有を認識するまで送信は無効です。',
+    readOnlyTranscriptSendBlocked: 'このチャットは読み取り専用トランスクリプトとして開いています。送信は無効です。',
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
     resumeStrandedBody:
       'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
@@ -3034,6 +3218,7 @@ export const ja = defineLocale({
     cwdStagedMessage:
       'このアクティブなセッションへの cwd の変更を適用するにはデスクトップバックエンドを再起動してください。',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
+    hydrationSyncing: (profile: string) => `${profile} を同期中\u2026`,
     sessionExported: 'セッションをエクスポートしました',
     sessionExportFailed: 'セッションをエクスポートできませんでした',
     imageSaved: '画像を保存しました',
@@ -3059,6 +3244,53 @@ export const ja = defineLocale({
       systemNote: platform => `↻ ${platform} に引き継ぎました — いつでもここで再開できます。`,
       failed: error => `引き継ぎに失敗しました: ${error}`,
       timedOut: 'ゲートウェイの待機がタイムアウトしました。`hermes gateway` は起動していますか？'
+    }
+  },
+
+  tips: {
+    close: 'このヒントを今後表示しない',
+    items: {
+      'new-session': {
+        title: '新しく始める',
+        text: '新しいチャットは、専用のコンテキスト・ターミナル・作業ディレクトリを持ちます。'
+      },
+      skills: {
+        title: '一度教えれば覚えます',
+        text: 'スキルは手順書のフォルダで、必要な場面で Hermes が自分で読み込みます。'
+      },
+      messaging: {
+        title: 'デスクを離れても Hermes',
+        text: 'Telegram、Discord、Slack などに接続。同じエージェント、同じ記憶のままです。'
+      },
+      artifacts: {
+        title: 'Hermes が作ったものすべて',
+        text: '全セッションの画像・ファイル・リンクを一箇所にまとめています。'
+      },
+      cron: {
+        title: '自動で動く仕事',
+        text: 'プロンプトを毎時・毎晩、または cron 式で実行できます。'
+      },
+      'command-palette': {
+        title: 'すべてはこの一箇所から',
+        text: 'セッション、設定、スキル、コマンドはすべてパレットから呼び出せます。'
+      },
+      profiles: {
+        title: 'プロファイルは独立しています',
+        text: 'それぞれが独自のキー・メモリ・セッションを持つ、別の Hermes です。'
+      },
+      'composer-mentions': {
+        title: 'ファイルとコマンド',
+        text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
+      },
+      'local-setup': {
+        title: 'このマシンはローカルでモデルを実行できます',
+        text: 'お使いのハードウェアでローカルモデルを動かせます。会話はこのコンピュータから出ず、料金もかかりません。',
+        action: 'セットアップ'
+      },
+      'right-pane': {
+        title: '作業用ペイン',
+        text: 'ファイル、ターミナル、レビュー、アプリ内ブラウザはサイドペインにまとまっています。'
+      }
     }
   },
 

@@ -16,6 +16,7 @@ import pytest
 
 from agent.auxiliary_client import (
     _AnthropicCompletionsAdapter,
+    _BedrockCompletionsAdapter,
     _ChatStreamAccumulator,
     _CodexCompletionsAdapter,
     _acreate_with_stream,
@@ -677,3 +678,90 @@ class TestAsyncStreamAggregation:
         )
         assert calls[0]["stream"] is True
         assert result.choices[0].message.content == "ok"
+
+
+# ---------------------------------------------------------------------------
+# _BedrockCompletionsAdapter progress ticking (#101088)
+# ---------------------------------------------------------------------------
+
+_BEDROCK_STREAM_EVENTS = [
+    {"contentBlockDelta": {"contentBlockIndex": 0,
+                           "delta": {"text": "Hello "}}},
+    {"contentBlockDelta": {"contentBlockIndex": 0,
+                           "delta": {"text": "world"}}},
+    {"messageStop": {"stopReason": "end_turn"}},
+    {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 2}}},
+]
+
+
+class TestBedrockAuxProgress:
+    """Aux Bedrock calls must tick the progress hook while tokens move, not
+    once after the whole response returns (#101088)."""
+
+    def _make_client(self, stream_events=None, stream_error=None):
+        from unittest.mock import MagicMock
+
+        client = MagicMock()
+        if stream_error is not None:
+            client.converse_stream.side_effect = stream_error
+        elif stream_events is not None:
+            client.converse_stream.return_value = {"stream": iter(stream_events)}
+        return client
+
+    def test_hook_active_streams_and_ticks_per_event(self):
+        ticks = []
+        client = self._make_client(stream_events=_BEDROCK_STREAM_EVENTS)
+        adapter = _BedrockCompletionsAdapter("us-east-1", "bedrock-model")
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ), aux_progress_hook(lambda: ticks.append(1)):
+            result = adapter.create(
+                messages=[{"role": "user", "content": "summarize"}],
+                max_tokens=500,
+            )
+        client.converse_stream.assert_called_once()
+        assert result.choices[0].message.content == "Hello world"
+        assert result.choices[0].finish_reason == "stop"
+        # one tick per streamed event + the terminal provider-response tick.
+        assert len(ticks) >= len(_BEDROCK_STREAM_EVENTS)
+
+    def test_no_hook_keeps_plain_converse(self):
+        response = SimpleNamespace(choices=[], usage=None)
+        client = self._make_client()
+        adapter = _BedrockCompletionsAdapter("us-east-1", "bedrock-model")
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ), patch(
+            "agent.bedrock_adapter.call_converse", return_value=response,
+        ) as call_converse:
+            result = adapter.create(
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+        assert result is response
+        call_converse.assert_called_once()
+        client.converse_stream.assert_not_called()
+
+    def test_stream_denied_falls_back_to_plain_converse(self):
+        ticks = []
+        denied = Exception(
+            "User: arn:aws:iam::123456789012:user/x is not authorized to "
+            "perform: bedrock:InvokeModelWithResponseStream on resource: ..."
+        )
+        client = self._make_client(stream_error=denied)
+        response = SimpleNamespace(choices=[], usage=None)
+        adapter = _BedrockCompletionsAdapter("us-east-1", "bedrock-model")
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=client,
+        ), patch(
+            "agent.bedrock_adapter.call_converse", return_value=response,
+        ) as call_converse, aux_progress_hook(lambda: ticks.append(1)):
+            result = adapter.create(
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+        assert result is response
+        call_converse.assert_called_once()
+        # IAM-scoped fallback ticks once (response arrived), never streams.
+        assert ticks == [1]

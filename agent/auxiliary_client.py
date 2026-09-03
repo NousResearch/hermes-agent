@@ -2746,7 +2746,7 @@ class _BedrockCompletionsAdapter:
                 "stream); caller downgrades to non-streaming.",
                 model,
             )
-        response = call_converse(
+        converse_args = dict(
             region=self._region,
             model=model,
             messages=messages,
@@ -2764,11 +2764,69 @@ class _BedrockCompletionsAdapter:
             top_p=kwargs.get("top_p"),
             stop_sequences=stop,
         )
+        if not kwargs.get("stream") and _aux_progress_active():
+            return self._create_streaming_with_progress(converse_args)
+        response = call_converse(**converse_args)
         # Converse is a complete-response API in this shim. Mark provider
         # progress only after the response returns so TTFP reflects real
         # Bedrock latency rather than dispatch/setup activity.
         _notify_aux_provider_response()
         return response
+
+    def _create_streaming_with_progress(self, converse_args: Dict[str, Any]) -> Any:
+        """Drive Bedrock Converse streaming so the aux forward-progress hook
+        ticks per event.
+
+        The non-streaming :func:`call_converse` only signals once, after the
+        response returns — a compression inactivity fence watching
+        ``_notify_aux_progress`` would see a flat signal for the whole call
+        and cancel a slow-but-alive summary at the idle window (#101088).
+        Streaming over ``converse_stream`` requires the
+        ``InvokeModelWithResponseStream`` IAM permission; when Bedrock
+        denies the stream, fall back to the non-streaming call (unticked,
+        exactly today's behavior) so a minimal ``InvokeModel``-only policy
+        keeps working.
+        """
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            build_converse_kwargs,
+            call_converse,
+            is_streaming_access_denied_error,
+            stream_converse_with_callbacks,
+        )
+
+        client = _get_bedrock_runtime_client(converse_args["region"])
+        kwargs = build_converse_kwargs(
+            model=converse_args["model"],
+            messages=converse_args["messages"],
+            tools=converse_args.get("tools"),
+            max_tokens=converse_args.get("max_tokens"),
+            temperature=converse_args.get("temperature"),
+            top_p=converse_args.get("top_p"),
+            stop_sequences=converse_args.get("stop_sequences"),
+        )
+        try:
+            resp = client.converse_stream(**kwargs)
+        except Exception as exc:
+            if is_streaming_access_denied_error(exc):
+                logger.info(
+                    "BedrockAuxiliaryClient: converse_stream denied by IAM on "
+                    "(region=%s, model=%s) — falling back to non-streaming "
+                    "converse (no progress ticks)",
+                    converse_args["region"], converse_args["model"],
+                )
+                response = call_converse(**converse_args)
+                _notify_aux_provider_response()
+                return response
+            raise
+        result = stream_converse_with_callbacks(
+            resp,
+            # Wire-level liveness: fires on every yielded event, so the
+            # compression fence sees the stream moving while tokens flow.
+            on_event=lambda: _notify_aux_progress(),
+        )
+        _notify_aux_provider_response()
+        return result
 
 
 class _BedrockChatShim:
@@ -9770,8 +9828,9 @@ def _aux_stream_total_ceiling(effective_timeout: Optional[float]) -> float:
 def _client_streams_internally(client: Any) -> bool:
     """Wire adapters that consume a stream inside .create() already tick the
     progress hook themselves (Codex per SSE event, Anthropic per stream
-    event); Bedrock's Converse shim cannot stream at all. None of them
-    accept chat-completions ``stream=True`` semantics from us."""
+    event, Bedrock per Converse stream event when the hook is active
+    — #101088). None of them accept chat-completions ``stream=True``
+    semantics from us."""
     return isinstance(client, (
         CodexAuxiliaryClient,
         AnthropicAuxiliaryClient,

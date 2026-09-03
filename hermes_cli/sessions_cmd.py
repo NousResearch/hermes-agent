@@ -121,6 +121,34 @@ def _prune_never_active_keyed(db, args):
     )
 
 
+def _export_output_file(output: str, default_name: str) -> Path:
+    """Resolve the ``sessions export`` positional to a writable file path.
+
+    ``hermes sessions export --help`` documents the positional as an output
+    *directory* for md/qmd, and the bulk md/qmd branch below honours that, as
+    does the multi-session trace branch.  The single-file writers still have
+    to name a file inside such a directory rather than hand it to ``open()``
+    and raise ``IsADirectoryError``.  Missing parents are created, matching
+    the ``mkdir(parents=True, exist_ok=True)`` those two branches already do.
+
+    A trailing path separator asks for a directory explicitly, so it is
+    honoured even when the directory does not exist yet — ``open()`` rejects
+    such a path outright today, so no working invocation changes meaning.
+
+    A path that neither exists as a directory nor ends in a separator stays
+    a file name, exactly as it is treated today: ``sessions export
+    ~/my-export --format jsonl --session-id X`` writes a file called
+    ``my-export`` and must keep doing so, which is why a bare non-existent
+    path is not guessed at.
+    """
+    separators = tuple(sep for sep in (os.sep, os.altsep) if sep)
+    path = Path(output).expanduser()
+    if path.is_dir() or output.endswith(separators):
+        path = path / default_name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def cmd_sessions(args, sessions_parser=None):
     import json as _json
 
@@ -493,11 +521,14 @@ def cmd_sessions(args, sessions_parser=None):
                 sys.stdout.write(rendered)
                 db.close()
                 return
-            with open(args.output, "w", encoding="utf-8") as f:
+            out_path = _export_output_file(
+                args.output, f"{args.only}.{args.format}"
+            )
+            with open(out_path, "w", encoding="utf-8") as f:
                 f.write(rendered)
             count, noun = export_record_count(sessions, only=args.only)
             suffix = "" if count == 1 else "s"
-            print(f"Exported {count} {noun}{suffix} to {args.output}")
+            print(f"Exported {count} {noun}{suffix} to {out_path}")
             db.close()
             return
 
@@ -520,10 +551,11 @@ def cmd_sessions(args, sessions_parser=None):
                 content = generate_html_export(sessions[0])
             else:
                 content = generate_multi_session_html_export(sessions)
-            with open(args.output, "w", encoding="utf-8") as f:
+            out_path = _export_output_file(args.output, "sessions.html")
+            with open(out_path, "w", encoding="utf-8") as f:
                 f.write(content)
             suffix = "" if len(sessions) == 1 else "s"
-            print(f"Exported {len(sessions)} session{suffix} to {args.output} (HTML)")
+            print(f"Exported {len(sessions)} session{suffix} to {out_path} (HTML)")
             db.close()
             return
 
@@ -618,9 +650,12 @@ def cmd_sessions(args, sessions_parser=None):
                     if not args.output or args.output == "-":
                         sys.stdout.write(jsonl)
                     else:
-                        with open(args.output, "w", encoding="utf-8") as f:
+                        out_path = _export_output_file(
+                            args.output, f"{ids[0]}.trace.jsonl"
+                        )
+                        with open(out_path, "w", encoding="utf-8") as f:
                             f.write(jsonl)
-                        print(f"Exported 1 session trace to {args.output}")
+                        print(f"Exported 1 session trace to {out_path}")
                 else:
                     out_dir = (
                         Path(args.output).expanduser()
@@ -661,9 +696,12 @@ def cmd_sessions(args, sessions_parser=None):
 
                     sys.stdout.write(line)
                 else:
-                    with open(args.output, "w", encoding="utf-8") as f:
+                    out_path = _export_output_file(
+                        args.output, f"{resolved_session_id}.jsonl"
+                    )
+                    with open(out_path, "w", encoding="utf-8") as f:
                         f.write(line)
-                    print(f"Exported 1 session to {args.output}")
+                    print(f"Exported 1 session to {out_path}")
             else:
                 if filters:
                     candidates = db.list_prune_candidates(**filters)
@@ -696,12 +734,13 @@ def cmd_sessions(args, sessions_parser=None):
                             _json.dumps(_redact(s), ensure_ascii=False) + "\n"
                         )
                 else:
-                    with open(args.output, "w", encoding="utf-8") as f:
+                    out_path = _export_output_file(args.output, "sessions.jsonl")
+                    with open(out_path, "w", encoding="utf-8") as f:
                         for s in sessions:
                             f.write(
                                 _json.dumps(_redact(s), ensure_ascii=False) + "\n"
                             )
-                    print(f"Exported {len(sessions)} sessions to {args.output}")
+                    print(f"Exported {len(sessions)} sessions to {out_path}")
             return
 
         # Markdown / QMD export

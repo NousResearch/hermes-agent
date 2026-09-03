@@ -27,6 +27,29 @@ export type PreviewInputEvent =
   | { keyCode: string; modifiers?: string[]; type: 'char' | 'keyDown' | 'keyUp' }
   | { type: 'mouseMove'; x: number; y: number }
 
+/**
+ * Convert a pointer event's CSS-pixel coordinates into the physical widget
+ * space Chromium's input router expects for a scaled guest.
+ *
+ * On displays where the guest's `devicePixelRatio` is ≠ 1 (fractional scaling
+ * on Wayland/Windows, or any webview frame Chromium composites at a scale
+ * ≠ 1), `webview.sendInputEvent` coordinates are DIVIDED by that scale factor
+ * before the event is dispatched into the page, so a click aimed at a
+ * CSS-space point lands at `point / DPR` — short by `1 − 1/DPR`. Multiplying
+ * by the guest's DPR before sending cancels the division and puts the click
+ * exactly where the act engine measured it (issue #91130).
+ *
+ * Identity at DPR 1, and keyboard events (which carry no x/y) pass through
+ * untouched.
+ */
+export function scalePreviewInputForDpr(event: PreviewInputEvent, dpr: number): PreviewInputEvent {
+  if (dpr === 1 || !('x' in event)) {
+    return event
+  }
+
+  return { ...event, x: Math.round(event.x * dpr), y: Math.round(event.y * dpr) }
+}
+
 export interface PreviewInputHandle {
   /** Give the guest keyboard focus, so key events reach its active element. */
   focus: () => void

@@ -259,6 +259,56 @@ class TestQwenProfile:
         assert tl["metadata"] == meta
         assert "metadata" not in eb
 
+    def test_reasoning_disabled_unless_enabled_is_true(self):
+        p = get_provider_profile("qwen-oauth")
+        assert p is not None
+        disabled_configs: tuple[object, ...] = (
+            None,
+            {},
+            {"effort": "high"},
+            {"enabled": False},
+            {"enabled": "false"},
+            {"enabled": 1},
+            {"enabled": None},
+            [],
+            "malformed",
+        )
+        for config in disabled_configs:
+            eb, _ = p.build_api_kwargs_extras(reasoning_config=config)
+            assert eb == {"enable_thinking": False}, config
+        enabled_with_effort = (
+            {"enabled": True},
+            {"enabled": True, "effort": "none"},
+            {"enabled": True, "effort": " NONE "},
+            {"enabled": True, "effort": "NoNe"},
+            {"enabled": True, "effort": "high"},
+            {"enabled": True, "effort": object()},
+        )
+        for config in enabled_with_effort:
+            eb, _ = p.build_api_kwargs_extras(reasoning_config=config)
+            assert eb == {"enable_thinking": True, "thinking_budget": 32768}, config
+        eb, _ = p.build_api_kwargs_extras(reasoning_config={"enabled": "malformed"})
+        assert eb == {"enable_thinking": False}
+
+    def test_reasoning_is_enabled_with_bounded_budget_and_headroom(self):
+        p = get_provider_profile("qwen-oauth")
+        assert p is not None
+        eb, _ = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}
+        )
+        assert eb == {"enable_thinking": True, "thinking_budget": 32768}
+        assert p.default_max_tokens > eb["thinking_budget"]
+
+    def test_metadata_is_preserved_with_reasoning_contract(self):
+        p = get_provider_profile("qwen-oauth")
+        assert p is not None
+        meta = {"sessionId": "s123", "promptId": "p456"}
+        eb, tl = p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True}, qwen_session_metadata=meta
+        )
+        assert eb == {"enable_thinking": True, "thinking_budget": 32768}
+        assert tl == {"metadata": meta}
+
 
 class TestAlibabaRegionalAndTokenPlanProfiles:
     """#73265: the models.dev catalog advertises alibaba-cn /

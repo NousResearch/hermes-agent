@@ -298,6 +298,41 @@ class TestEnforceTurnBudget:
         result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
+    def test_multimodal_list_content_in_turn_budget(self):
+        """Multimodal list messages must not crash turn budget enforcement and should have their text lengths counted."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        multimodal_msg = {
+            "role": "tool",
+            "tool_call_id": "img1",
+            "content": [
+                {"type": "text", "text": "a" * 150_000},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        }
+        string_msg = {
+            "role": "tool",
+            "tool_call_id": "txt1",
+            "content": "b" * 100_000,
+        }
+        msgs = [multimodal_msg, string_msg]
+        # Total text size is 250K > 200K budget. The string message must be persisted, and the multimodal message preserved.
+        result = enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        assert result[0] is multimodal_msg
+        assert isinstance(result[0]["content"], list)
+        assert PERSISTED_OUTPUT_TAG in result[1]["content"]
+
+    def test_maybe_persist_non_string_returns_unmodified(self):
+        """Non-string tool results (e.g. list/None) should be returned unmodified without raising TypeError."""
+        multimodal_content = [{"type": "text", "text": "hello"}]
+        res = maybe_persist_tool_result(
+            content=multimodal_content,
+            tool_name="view_image",
+            tool_use_id="use_123",
+            threshold=0,
+        )
+        assert res == multimodal_content
+
 
 # ── Per-tool threshold integration ────────────────────────────────────
 

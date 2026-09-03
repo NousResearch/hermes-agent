@@ -336,6 +336,9 @@ def maybe_persist_tool_result(
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
+    if not isinstance(content, str):
+        return content
+
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
     if effective_threshold == float("inf"):
@@ -412,11 +415,18 @@ def enforce_turn_budget(
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):
+        if not isinstance(msg, dict):
+            continue
         content = msg.get("content", "")
-        size = len(content)
-        total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
-            candidates.append((i, size))
+        if isinstance(content, str):
+            size = len(content)
+            total_size += size
+            if PERSISTED_OUTPUT_TAG not in content:
+                candidates.append((i, size))
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    total_size += len(part["text"])
 
     if total_size <= config.turn_budget:
         return tool_messages
@@ -427,7 +437,9 @@ def enforce_turn_budget(
         if total_size <= config.turn_budget:
             break
         msg = tool_messages[idx]
-        content = msg["content"]
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
         replacement = maybe_persist_tool_result(

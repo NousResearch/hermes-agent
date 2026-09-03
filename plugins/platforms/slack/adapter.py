@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -1202,6 +1203,13 @@ class SlackAdapter(BasePlatformAdapter):
         # be workspace-scoped markers (team_id, ts) in multi-workspace mode.
         self._approval_resolved: Dict[Any, bool] = {}
         self._APPROVAL_RESOLVED_MAX = 1000
+        # Opaque button token -> exact server-owned (session, request) pair.
+        # Never put either queue selector in client-controlled Block Kit state.
+        self._approval_state: Dict[str, Tuple[str, str]] = {}
+        self._APPROVAL_STATE_MAX = 1000
+        # Same capability binding for destructive slash confirmations.
+        self._slash_confirm_state: Dict[str, Tuple[str, str]] = {}
+        self._SLASH_CONFIRM_STATE_MAX = 1000
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
         self._clarify_resolved: Dict[Any, bool] = {}
@@ -7218,7 +7226,19 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id = await self._ensure_dm_conversation(
             chat_id, team_id=self._metadata_team_id(metadata)
         )
+        request_id = str(
+            (metadata or {}).get("_gateway_approval_request_id") or ""
+        )
+        if not request_id:
+            # The caller falls back to text /approve. Rendering a FIFO-bound
+            # button without an exact queue identifier would let a stale
+            # message approve a later request in the same session.
+            return SendResult(
+                success=False,
+                error="Missing exact gateway approval request identifier",
+            )
         try:
+            approval_id = secrets.token_urlsafe(24)
             thread_ts = self._resolve_thread_ts(None, metadata)
 
             # Slack hard-caps a section block's text at 3000 chars; an
@@ -7241,7 +7261,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": {"type": "plain_text", "text": "Allow Once"},
                     "style": "primary",
                     "action_id": "hermes_approve_once",
-                    "value": session_key,
+                    "value": approval_id,
                 },
             ]
             if not smart_denied and allow_session:
@@ -7249,21 +7269,21 @@ class SlackAdapter(BasePlatformAdapter):
                     "type": "button",
                     "text": {"type": "plain_text", "text": "Allow Session"},
                     "action_id": "hermes_approve_session",
-                    "value": session_key,
+                    "value": approval_id,
                 })
                 if allow_permanent:
                     actions.append({
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Always Allow"},
                         "action_id": "hermes_approve_always",
-                        "value": session_key,
+                        "value": approval_id,
                     })
             actions.append({
                 "type": "button",
                 "text": {"type": "plain_text", "text": "Deny"},
                 "style": "danger",
                 "action_id": "hermes_deny",
-                "value": session_key,
+                "value": approval_id,
             })
             blocks = [
                 {
@@ -7290,6 +7310,10 @@ class SlackAdapter(BasePlatformAdapter):
             msg_ts = result.get("ts", "")
             if msg_ts:
                 team_id = self._metadata_team_id(metadata)
+                self._approval_state[approval_id] = (session_key, request_id)
+                self._trim_oldest_dict_entries(
+                    self._approval_state, self._APPROVAL_STATE_MAX
+                )
                 self._approval_resolved[
                     self._workspace_message_marker(team_id, msg_ts)
                 ] = False
@@ -7319,6 +7343,7 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
+            confirm_token = secrets.token_urlsafe(24)
             thread_ts = self._resolve_thread_ts(None, metadata)
             # Same 3000-char section-block cap as send_exec_approval: budget
             # the body against the rendered title so the wrapper never pushes
@@ -7326,10 +7351,6 @@ class SlackAdapter(BasePlatformAdapter):
             _title = (title or "Confirm")[:150]
             budget = 3000 - len(f"*{_title}*\n\n") - len("...")
             body = message[:budget] + "..." if len(message) > budget else message
-            # Encode session_key and confirm_id into the button value so the
-            # callback handler can resolve without extra bookkeeping.
-            value = f"{session_key}|{confirm_id}"
-
             blocks = [
                 {
                     "type": "section",
@@ -7346,20 +7367,20 @@ class SlackAdapter(BasePlatformAdapter):
                             "text": {"type": "plain_text", "text": "Approve Once"},
                             "style": "primary",
                             "action_id": "hermes_confirm_once",
-                            "value": value,
+                            "value": confirm_token,
                         },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Always Approve"},
                             "action_id": "hermes_confirm_always",
-                            "value": value,
+                            "value": confirm_token,
                         },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Cancel"},
                             "style": "danger",
                             "action_id": "hermes_confirm_cancel",
-                            "value": value,
+                            "value": confirm_token,
                         },
                     ],
                 },
@@ -7376,8 +7397,17 @@ class SlackAdapter(BasePlatformAdapter):
             result = await self._get_client(
                 chat_id, team_id=self._metadata_team_id(metadata)
             ).chat_postMessage(**kwargs)
+            msg_ts = result.get("ts", "")
+            if msg_ts:
+                self._slash_confirm_state[confirm_token] = (
+                    session_key,
+                    confirm_id,
+                )
+                self._trim_oldest_dict_entries(
+                    self._slash_confirm_state, self._SLASH_CONFIRM_STATE_MAX
+                )
             return SendResult(
-                success=True, message_id=result.get("ts", ""), raw_response=result
+                success=True, message_id=msg_ts, raw_response=result
             )
         except Exception as e:
             logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
@@ -7568,7 +7598,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
-        value = action.get("value", "")
+        confirm_token = action.get("value", "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
@@ -7598,11 +7628,16 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-        # Parse session_key|confirm_id back out
-        if "|" not in value:
-            logger.warning("[Slack] Malformed slash-confirm value: %s", value)
+        # Consume only a server-minted capability. Raw or guessed
+        # session/confirm pairs from the client must never select a handler.
+        if not isinstance(confirm_token, str):
+            logger.warning("[Slack] Malformed slash-confirm token")
             return
-        session_key, confirm_id = value.split("|", 1)
+        confirm_state = self._slash_confirm_state.pop(confirm_token, None)
+        if confirm_state is None:
+            logger.warning("[Slack] Ignoring slash-confirm click with unknown token")
+            return
+        session_key, confirm_id = confirm_state
 
         choice_map = {
             "hermes_confirm_once": "once",
@@ -7711,7 +7746,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         team_id = self._event_team_id({}, body)
         action_id = action.get("action_id", "")
-        session_key = action.get("value", "")
+        approval_id = action.get("value", "")
         message = body.get("message", {})
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
@@ -7753,6 +7788,20 @@ class SlackAdapter(BasePlatformAdapter):
         }
         choice = choice_map.get(action_id, "deny")
 
+        # The Block Kit payload is client-controlled. Resolve only opaque
+        # tokens minted and registered by send_exec_approval; a raw or guessed
+        # session key must never select a gateway approval queue.
+        if not isinstance(approval_id, str):
+            logger.warning("[Slack] Ignoring approval click with unknown token")
+            return
+
+        # Consume the capability before selecting any queue entry. Replays and
+        # double-clicks cannot reuse it after another request is enqueued.
+        approval_state = self._approval_state.pop(approval_id, None)
+        if approval_state is None:
+            logger.warning("[Slack] Ignoring approval click with unknown token")
+            return
+
         # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
         # Check both the workspace-scoped marker and the bare ts: the approval
         # may have been stored without a team id (metadata-poor send path)
@@ -7764,13 +7813,19 @@ class SlackAdapter(BasePlatformAdapter):
         if self._approval_resolved.pop(approval_key, True):
             return
 
+        session_key, request_id = approval_state
+        if not session_key or not request_id:
+            return
+
         # Resolve the approval FIRST — this unblocks the agent thread. Render
         # after, so a click that lands past the approval timeout (count == 0)
         # shows "expired" instead of falsely claiming the command was approved.
         try:
             from tools.approval import resolve_gateway_approval
 
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(
+                session_key, choice, request_id=request_id
+            )
             logger.info(
                 "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count,

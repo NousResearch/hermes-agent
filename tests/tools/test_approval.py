@@ -1371,6 +1371,29 @@ class TestApprovalTimeoutIsNotConsent:
             lambda: {"mode": "manual", "timeout": seconds},
         )
 
+    def test_exact_request_id_never_falls_back_to_fifo(self):
+        """A stale button identifier cannot consume another queued request."""
+        from tools import approval as mod
+
+        first = mod._ApprovalEntry({"request_id": "request-1"})
+        second = mod._ApprovalEntry({"request_id": "request-2"})
+        mod._gateway_queues[self.SESSION_KEY] = [first, second]
+
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id="stale-request"
+        ) == 0
+        assert mod._gateway_queues[self.SESSION_KEY] == [first, second]
+        assert not first.event.is_set()
+        assert not second.event.is_set()
+
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", request_id="request-2"
+        ) == 1
+        assert not first.event.is_set()
+        assert second.event.is_set()
+        assert second.result == "once"
+        assert mod._gateway_queues[self.SESSION_KEY] == [first]
+
     def test_timeout_blocks_with_no_consent_and_timeout_hook(self, monkeypatch):
         """The reported #24912 scenario — user never responds, agent must see
         BLOCKED, and the post hook must distinguish timeout from deny so audit
@@ -1399,6 +1422,8 @@ class TestApprovalTimeoutIsNotConsent:
         assert result.get("outcome") == "timeout"
         # The notify_cb DID fire — we did try to ask the user.
         assert len(notified) == 1
+        assert isinstance(notified[0].get("request_id"), str)
+        assert notified[0]["request_id"]
 
         # The BLOCKED message must explicitly tell the agent not to rephrase;
         # without it the agent treats "Do NOT retry this command" as permission

@@ -33,6 +33,49 @@ from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
+def test_concurrent_context_engine_load_waits_for_module_execution(
+    tmp_path, monkeypatch
+):
+    """Concurrent callers must not reuse a partially executed engine module."""
+    import concurrent.futures
+    import sys
+    import plugins.context_engine as context_plugins
+
+    engine_dir = tmp_path / "slowcontext"
+    engine_dir.mkdir()
+    (engine_dir / "__init__.py").write_text(
+        "import time\n"
+        "time.sleep(0.15)\n"
+        "from agent.context_engine import ContextEngine\n"
+        "class SlowContext(ContextEngine):\n"
+        "    @property\n"
+        "    def name(self): return 'slowcontext'\n"
+        "    def should_compress(self, prompt_tokens=None): return False\n"
+        "    def compress(self, messages, **kwargs): return messages\n"
+        "    def update_from_response(self, usage): pass\n"
+        "def register(ctx): ctx.register_context_engine(SlowContext())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(context_plugins, "_CONTEXT_ENGINE_PLUGINS_DIR", tmp_path)
+    sys.modules.pop("plugins.context_engine.slowcontext", None)
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            engines = list(
+                pool.map(
+                    lambda _: context_plugins.load_context_engine("slowcontext"),
+                    range(32),
+                )
+            )
+    finally:
+        sys.modules.pop("plugins.context_engine.slowcontext", None)
+        if hasattr(context_plugins, "slowcontext"):
+            delattr(context_plugins, "slowcontext")
+
+    assert all(engine is not None for engine in engines)
+    assert {engine.name for engine in engines} == {"slowcontext"}
+
+
 def _bare_agent() -> AIAgent:
     agent = object.__new__(AIAgent)
     agent.session_id = "test-session"

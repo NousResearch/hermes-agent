@@ -95,6 +95,7 @@ Thread safety:
 """
 
 import asyncio
+from collections.abc import Mapping
 import contextvars
 import concurrent.futures
 import errno
@@ -533,6 +534,54 @@ def _check_logging_callback_support() -> bool:
         return "logging_callback" in inspect.signature(ClientSession).parameters
     except (TypeError, ValueError):
         return False
+
+
+_CACHE_SCOPE_COMPAT_LIST_METHODS = frozenset({
+    "tools/list",
+    "resources/list",
+    "resources/templates/list",
+    "prompts/list",
+})
+
+
+class _ListCacheScopeCompatDispatcher:
+    """Normalize one legacy list-result value before SDK validation."""
+
+    def __init__(self, dispatcher):
+        self._dispatcher = dispatcher
+
+    def __getattr__(self, name):
+        return getattr(self._dispatcher, name)
+
+    async def send_raw_request(self, method, params, opts=None):
+        raw = await self._dispatcher.send_raw_request(method, params, opts)
+        if (
+            method in _CACHE_SCOPE_COMPAT_LIST_METHODS
+            and isinstance(raw, Mapping)
+            and raw.get("cacheScope") == ""
+        ):
+            # Do not mutate transport-owned response mappings. Removing this
+            # exact legacy sentinel lets the SDK apply its private default;
+            # every other value and field still reaches normal validation.
+            normalized = dict(raw)
+            del normalized["cacheScope"]
+            return normalized
+        return raw
+
+
+def _install_list_cache_scope_compat(session):
+    """Wrap the MCP 2.x raw dispatcher; mcp 1.x sessions have no such seam."""
+    dispatcher = getattr(session, "_dispatcher", None)
+    if dispatcher is not None and not isinstance(
+        dispatcher, _ListCacheScopeCompatDispatcher
+    ):
+        session._dispatcher = _ListCacheScopeCompatDispatcher(dispatcher)
+    return session
+
+
+def _client_session(*args, **kwargs):
+    """Construct a ClientSession with Hermes' inbound compatibility shims."""
+    return _install_list_cache_scope_compat(ClientSession(*args, **kwargs))
 
 
 # MCP logging levels (RFC 5424 syslog severities) -> Python logging levels.
@@ -3671,7 +3720,7 @@ class MCPServerTask:
                 # fast-fail of in-flight calls when the subprocess dies
                 # (#81995).
                 self._stdio_child_pids = set(new_pids)
-                async with ClientSession(
+                async with _client_session(
                     read_stream, write_stream, **sampling_kwargs
                 ) as session:
                     # Bound the MCP handshake. A stdio server that never
@@ -4062,7 +4111,7 @@ class MCPServerTask:
                 _sse_kwargs["httpx_client_factory"] = _mcp_http_client_factory
             try:
                 async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
-                    async with ClientSession(
+                    async with _client_session(
                         read_stream, write_stream, **sampling_kwargs
                     ) as session:
                         # Bound the handshake — same orphaned-task hang as the
@@ -4133,7 +4182,7 @@ class MCPServerTask:
                     # and get_session_id was never used here.
                     async with streamable_http_client(url, http_client=http_client) as _streams:
                         read_stream, write_stream = _streams[0], _streams[1]
-                        async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                        async with _client_session(read_stream, write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
                             self.initialize_result = await self._negotiate_session(
                                 session, float(connect_timeout)
@@ -4181,7 +4230,7 @@ class MCPServerTask:
                 async with streamablehttp_client(url, **_http_kwargs) as (
                     read_stream, write_stream, _get_session_id,
                 ):
-                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    async with _client_session(read_stream, write_stream, **sampling_kwargs) as session:
                         # Bound the handshake (#59349) — see stdio path.
                         self.initialize_result = await self._negotiate_session(
                             session, float(connect_timeout)

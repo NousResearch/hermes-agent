@@ -1384,6 +1384,28 @@ class TestMultiAgentRouting:
         assert card["supportedInterfaces"][0]["tenant"] == "research"
         assert {s["name"] for s in card["skills"]} == {"research", "web"}
 
+    def test_advertised_skills_keep_configured_toolsets_absent_from_registry(self, monkeypatch):
+        """A configured toolset stays advertised even when the live registry
+        has been populated and does not contain it. In production the registry
+        fills up as soon as ``model_tools`` is imported, so dropping a
+        configured-but-unregistered toolset (e.g. a composite capability like
+        ``research``) would silently hide it from the Agent Card.
+        """
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+        from tools.registry import registry as tool_registry
+
+        monkeypatch.setattr(tool_registry, "get_registered_toolset_names", lambda: ["web"])
+        monkeypatch.setattr(
+            tool_registry,
+            "get_tool_names_for_toolset",
+            lambda name: ["web_search"] if name == "web" else [],
+        )
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={}))
+        skills = adapter._advertised_skills({"advertised_toolsets": ["web", "research"]})
+        assert {s["name"] for s in skills} == {"web", "research"}
+
     def test_tenant_routing_selects_agent_without_path_prefix(self):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig

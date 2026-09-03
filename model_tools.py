@@ -960,6 +960,43 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
     return args
 
+def project_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip arguments not declared in the tool's registered schema.
+
+    Prevents hidden control-plane parameters (e.g. ``force`` on the terminal
+    tool) from reaching handlers when the model includes them in the tool
+    call arguments.  Schemas that explicitly set ``additionalProperties: true``
+    on the top-level parameters object are respected — unknown arguments are
+    preserved for tools that intentionally accept them.
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args
+
+    params = schema.get("parameters") or {}
+    properties = params.get("properties")
+    if not properties:
+        return args
+
+    # JSON Schema: missing additionalProperties defaults to True (allow extra).
+    # Only strip when a schema explicitly forbids them.
+    if params.get("additionalProperties") is not False:
+        return args
+
+    declared = set(properties.keys())
+    unknown = set(args.keys()) - declared
+    if not unknown:
+        return args
+
+    logger.warning(
+        "project_tool_args: stripped unknown arguments for %s: %s",
+        tool_name, ", ".join(sorted(unknown)),
+    )
+    return {k: v for k, v in args.items() if k in declared}
+
 
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:
     """Return True when *schema* permits a value of JSON type *kind*.
@@ -1293,6 +1330,8 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    # Schema projection now happens inside registry.dispatch() so middleware
+    # can still rewrite arguments before they are validated at the handler.
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Legacy tool-name aliases (2026-08 renames) ────────────────────

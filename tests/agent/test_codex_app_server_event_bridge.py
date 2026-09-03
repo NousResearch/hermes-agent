@@ -399,3 +399,76 @@ class TestBridgeWiredInRuntime:
         agent.tool_progress_callback.assert_called_once()
         assert agent.tool_progress_callback.call_args.args[0] == "tool.started"
         assert agent.tool_progress_callback.call_args.args[1] == "exec_command"
+
+    def test_completed_final_message_marks_response_previewed(self, monkeypatch):
+        """A final agentMessage delivered through the bridge must prevent the
+        gateway from sending the same final text a second time."""
+        from agent import codex_runtime
+
+        captured: dict = {}
+        delivered: set[str] = set()
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run_turn(self, user_input, **_):
+                from agent.transports.codex_app_server_session import TurnResult
+
+                captured["on_event"](_item_completed({
+                    "type": "agentMessage",
+                    "id": "final-1",
+                    "text": "Only send this once.",
+                }))
+                return TurnResult(
+                    final_text="Only send this once.",
+                    projected_messages=[],
+                    tool_iterations=0,
+                    turn_id="t1",
+                    thread_id="th1",
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "agent.transports.codex_app_server_session.CodexAppServerSession",
+            FakeSession,
+        )
+
+        def emit_interim(message):
+            delivered.add(message["content"])
+
+        agent = SimpleNamespace(
+            session_cwd=None,
+            _codex_session=None,
+            tool_progress_callback=MagicMock(),
+            _fire_stream_delta=MagicMock(),
+            _fire_reasoning_delta=MagicMock(),
+            _emit_interim_assistant_message=emit_interim,
+            _interim_text_was_delivered=lambda text: text in delivered,
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **_: None,
+            _spawn_background_review=lambda **_: None,
+            session_api_calls=0,
+            session_prompt_tokens=0,
+            session_completion_tokens=0,
+            session_reasoning_tokens=0,
+            session_cached_tokens=0,
+            session_total_tokens=0,
+            context_compressor=None,
+            event_callback=None,
+            _session_db=None,
+        )
+
+        result = codex_runtime.run_codex_app_server_turn(
+            agent,
+            user_message="hi",
+            original_user_message="hi",
+            messages=[],
+            effective_task_id="t",
+        )
+
+        assert result["response_previewed"] is True

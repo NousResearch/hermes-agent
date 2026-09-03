@@ -436,3 +436,5 @@ class TestRuntimeResolutionTargetModel:
 
         assert captured.get("target_model") == "my-pinned-model"
         assert captured.get("requested") == "openrouter"
+        assert mock_agent_cls.call_args.kwargs["model"] == "my-pinned-model"
+        assert mock_agent_cls.call_args.kwargs["provider"] == "openrouter"

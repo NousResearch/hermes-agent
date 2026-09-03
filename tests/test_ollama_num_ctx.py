@@ -187,3 +187,13 @@ class TestCompressorClampsToNumCtx:
         # num_ctx above the resolved window must not RAISE the compressor
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
+
+    def test_runtime_num_ctx_can_satisfy_floor_above_model_metadata(self):
+        agent = self._build_agent(
+            {"agent": {}, "model": {"ollama_num_ctx": 65536}}, probed_ctx=40960
+        )
+
+        assert agent._ollama_num_ctx == 65536
+        # Compression remains conservative: the runtime override authorizes
+        # startup without pretending that the model metadata is larger.
+        assert agent.context_compressor.context_length == 40960

@@ -317,3 +317,101 @@ async def _noop_callback() -> tuple[str, str | None]:
     raise AssertionError(
         "callback handler should not be invoked in bidirectional-generator tests"
     )
+
+
+@pytest.mark.asyncio
+async def test_wrapper_closes_inner_generator_and_frees_the_lock(tmp_path, monkeypatch):
+    """Closing the wrapper MUST close the inner SDK generator, freeing the lock.
+
+    ``httpx`` closes the OUTER generator deterministically, but the bridge only
+    held ``inner`` in a local. Dropped rather than closed, ``inner`` is finalized
+    later by asyncio's async-generator hook, which runs ``athrow(GeneratorExit)``
+    in a **different task**. Its suspended ``async with self.context.lock`` then
+    calls ``anyio.Lock.release()``, which is task-affine — it raises *before*
+    clearing ``_owner_task``, so the lock stays owned by a task that no longer
+    exists.
+
+    Because :class:`MCPOAuthManager` caches one provider per server, every later
+    request for that server then deadlocks inside ``async with
+    self.context.lock`` **before issuing any HTTP**: the server retries, times
+    out, parks, and never recovers until the process restarts. Observed in
+    production as an 11-hour Composio outage whose logs showed reconnect
+    attempts with zero outbound requests (GH#101756).
+
+    A server that answers 405 to the streamable-HTTP GET stream reaches this on
+    every single connect, but any abandoned flow will do it.
+    """
+    import gc
+
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="old_access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="old_refresh",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+
+    # Drive to the suspension point: the inner SDK generator has acquired
+    # context.lock and is parked at ``response = yield request``.
+    outbound = await flow.__anext__()
+    assert outbound is not None
+
+    # What httpx does when the request is torn down mid-flight (a cancelled
+    # call, or the GET stream against a server that answers 405).
+    await flow.aclose()
+
+    # Give an orphaned inner generator every chance to be finalized. With the
+    # bug, this is where the cross-task release fails and the lock is poisoned.
+    gc.collect()
+    await asyncio.sleep(0.1)
+
+    assert not provider.context.lock.locked(), (
+        "context.lock is still held after the flow was closed: the inner SDK "
+        "generator was abandoned instead of closed, so its release ran in a "
+        "foreign task and anyio refused it. Every subsequent request through "
+        "this cached provider will now deadlock before issuing any HTTP."
+    )
+
+    # And prove the provider is actually reusable, which is the property that
+    # was really lost — the lock being free is only the proxy for it.
+    await asyncio.wait_for(provider.context.lock.acquire(), timeout=2.0)
+    provider.context.lock.release()

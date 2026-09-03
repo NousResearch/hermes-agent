@@ -238,3 +238,58 @@ def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
         f"encode_text called {len(calls)}x with zero vector candidates — "
         "lazy hoist regressed to eager"
     )
+
+
+# ---------------------------------------------------------------------------
+# reason() AND-semantics regression tests
+#
+# reason() promises AND semantics: a fact must match ALL supplied entities.
+# The HRR structural score must therefore be computed from EVERY entity's
+# probe key. A prior bug built probe_keys for every entity but dereferenced
+# only probe_keys[0], making the structural tiebreak depend on argument
+# order. These tests pin the corrected behavior.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def reason_provider(tmp_path):
+    """Store seeded with facts exercising reason()'s AND semantics."""
+    db_path = tmp_path / "reason_store.db"
+    store = MemoryStore(str(db_path))
+    # Fact 1: mentions both 'alpha' and 'beta' (legitimate AND hit)
+    store.add_fact("alpha protocol communicates with the beta service", category="project")
+    # Fact 2: mentions only 'alpha' (must rank lower on AND query)
+    store.add_fact("alpha protocol handles authentication tokens", category="project")
+    retriever = FactRetriever(store=store)
+    yield retriever
+    store.close()
+
+
+def test_reason_hrr_scores_all_entities(reason_provider):
+    """reason() must compute the HRR structural score for every supplied
+    entity, not just the first. A fact that structurally matches only the
+    first entity must NOT equal a fact that structurally matches all.
+
+    This test fails on the old code, which dereferenced only probe_keys[0]:
+    the single-entity fact would receive an identical HRR structural score
+    regardless of entity order, defeating AND semantics."""
+    retriever = reason_provider
+    # Query using a fact that matches both, and ensure both entities are
+    # considered. If only probe_keys[0] were used, the score for the
+    # alpha-only fact would be identical whether or not 'beta' supported it.
+    first = retriever.reason(["alpha", "beta"])
+    second = retriever.reason(["beta", "alpha"])
+
+    # Entity-order invariance: results and scores must not depend on order
+    assert [f["fact_id"] for f in first] == [f["fact_id"] for f in second]
+    assert [f["score"] for f in first] == pytest.approx([f["score"] for f in second])
+
+    # AND semantics: the fact containing BOTH 'alpha' and 'beta' must rank
+    # ahead of the fact containing only 'alpha', regardless of order.
+    both_fact_id = None
+    for f in first:
+        if "beta" in f["content"]:
+            both_fact_id = f["fact_id"]
+            break
+    assert both_fact_id is not None
+    assert first[0]["fact_id"] == both_fact_id

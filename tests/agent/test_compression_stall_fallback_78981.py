@@ -20,7 +20,9 @@ These tests pin the contract:
 
 from __future__ import annotations
 
+import concurrent.futures
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -129,6 +131,145 @@ def test_stalled_summary_attempts_configured_fallback_chain():
     assert msgs == compressed, "the fallback attempt's compression must be published"
     assert prompt == "summarized-prompt"
     assert not timeouts, "no continue-without-compression degrade after a recovery"
+
+
+class _InlineExecutor:
+    """Complete work before the host begins waiting on the future."""
+
+    def submit(self, fn, *args):
+        future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+
+class _WorkerFirstDeadlineWorker:
+    """Model the provider-side deadline unwinding just before the host wait."""
+
+    def __init__(
+        self,
+        original,
+        compressed,
+        *,
+        mark_deadline_abort=True,
+        deadline_result=None,
+    ):
+        self.original = original
+        self.compressed = compressed
+        self.mark_deadline_abort = mark_deadline_abort
+        self.deadline_result = deadline_result
+        self.routes = []
+
+    def __call__(self, fence: CompressionCommitFence):
+        route = take_pinned_summary_route()
+        self.routes.append(route)
+        if route is None:
+            # Production marks this when AuxiliaryExplicitCancellation is caused
+            # by the shared route deadline rather than an explicit user stop.
+            if self.mark_deadline_abort:
+                fence.mark_worker_deadline_abort()
+            setattr(fence, "_deadline", time.monotonic() - 1)
+            if self.deadline_result is not None:
+                return self.deadline_result, "primary-aborted"
+            return self.original, "primary-aborted"
+        if not fence.begin_commit():
+            return self.original, "fallback-cancelled"
+        try:
+            return self.compressed, "fallback-complete"
+        finally:
+            fence.finish_commit()
+
+
+def test_worker_first_deadline_abort_still_attempts_fallback():
+    """#102339: which side observes the shared deadline first must not decide
+    whether the configured fallback runs."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "summary"}]
+    worker = _WorkerFirstDeadlineWorker(original, compressed)
+
+    with (
+        _patch_chain([CHAIN_ENTRY]),
+        patch(
+            "agent.conversation_compression._get_compress_timeout_executor",
+            return_value=_InlineExecutor(),
+        ),
+    ):
+        msgs, prompt = run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback="degraded-prompt",
+            idle_timeout_seconds=1,
+            total_ceiling_seconds=2,
+        )
+
+    assert len(worker.routes) == 2, "worker-first deadline abort must run fallback"
+    assert worker.routes[0] is None
+    assert worker.routes[1]["model"] == "backup-summarizer"
+    assert msgs == compressed
+    assert prompt == "fallback-complete"
+
+
+def test_deadline_adjacent_safe_noop_does_not_attempt_fallback():
+    """An unchanged result is not enough: safe no-op/defer outcomes must not
+    be reclassified as route failures merely because the clock crossed."""
+    original = [{"role": "user", "content": "keep-me"}]
+    worker = _WorkerFirstDeadlineWorker(
+        original,
+        [{"role": "user", "content": "unused"}],
+        mark_deadline_abort=False,
+    )
+
+    with (
+        _patch_chain([CHAIN_ENTRY]),
+        patch(
+            "agent.conversation_compression._get_compress_timeout_executor",
+            return_value=_InlineExecutor(),
+        ),
+    ):
+        msgs, prompt = run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback="degraded-prompt",
+            idle_timeout_seconds=1,
+            total_ceiling_seconds=2,
+        )
+
+    assert worker.routes == [None]
+    assert msgs is original
+    assert prompt == "primary-aborted"
+
+
+def test_worker_first_deadline_abort_retries_after_rotation_rebinds_messages():
+    original = [{"role": "user", "content": "live"}]
+    rotated = [{"role": "user", "content": "newer durable snapshot"}]
+    compressed = [{"role": "user", "content": "fallback summary"}]
+    worker = _WorkerFirstDeadlineWorker(
+        original,
+        compressed,
+        deadline_result=rotated,
+    )
+
+    with (
+        _patch_chain([CHAIN_ENTRY]),
+        patch(
+            "agent.conversation_compression._get_compress_timeout_executor",
+            return_value=_InlineExecutor(),
+        ),
+    ):
+        msgs, prompt = run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback="degraded-prompt",
+            idle_timeout_seconds=1,
+            total_ceiling_seconds=2,
+        )
+
+    assert len(worker.routes) == 2
+    assert worker.routes[1]["model"] == "backup-summarizer"
+    assert msgs == compressed
+    assert prompt == "fallback-complete"
 
 
 def test_retry_runs_on_a_host_published_fence():

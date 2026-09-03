@@ -724,6 +724,12 @@ class CompressionCommitFence:
         self._last_progress = time.monotonic()
         self._progress_observed = False
         self._deadline: float | None = None
+        # Set by the compression worker when it unwinds because the shared
+        # route deadline expired. This is distinct from an explicit /stop and
+        # from a safe no-op/defer: the host uses it when the worker finishes at
+        # the same instant as Future.result(timeout=...) so deadline scheduling
+        # cannot decide whether the configured fallback runs (#102339).
+        self._worker_deadline_abort_observed = False
         self._retain_cancelled_lock_until_worker_done = False
         # #97963: set by the worker (mark_commit_watermark_fenced) once its
         # commit path is watermark-fenced — i.e. it captured the session's
@@ -744,6 +750,7 @@ class CompressionCommitFence:
         seconds = float(seconds)
         if seconds <= 0:
             raise ValueError("total compression ceiling must be positive")
+        self._worker_deadline_abort_observed = False
         self._deadline = time.monotonic() + seconds
 
     def touch_progress(self) -> None:
@@ -779,6 +786,15 @@ class CompressionCommitFence:
         ``auxiliary_client.aux_stream_deadline``).
         """
         return self._deadline
+
+    def mark_worker_deadline_abort(self) -> None:
+        """Record that the worker, not an explicit stop, hit this deadline."""
+        self._worker_deadline_abort_observed = True
+
+    @property
+    def worker_deadline_abort_observed(self) -> bool:
+        """Whether the worker returned unchanged because its deadline expired."""
+        return self._worker_deadline_abort_observed
 
     def seconds_since_progress(self) -> float:
         """Seconds since the worker last reported forward progress."""
@@ -1612,6 +1628,17 @@ def run_compress_context_with_progress_timeout(
             )
             try:
                 result = future.result(timeout=wait_slice)
+                if fence.worker_deadline_abort_observed:
+                    # The worker and host share the same absolute deadline. A
+                    # cooperative worker can therefore unwind and satisfy the
+                    # Future milliseconds before this wait raises TimeoutError.
+                    # Enter the ordinary timeout path so that scheduling order
+                    # cannot bypass the configured fallback chain (#102339).
+                    logger.info(
+                        "Context compression worker observed the route deadline "
+                        "before the host timeout; entering stall fallback"
+                    )
+                    break
                 handled_exit = True
                 return result
             except concurrent.futures.TimeoutError:
@@ -3411,6 +3438,7 @@ def compress_context(
     _attempt_generation = _claim_compressor_attempt(agent.context_compressor)
     _durable_cooldown_authoritative: Optional[bool] = None
     _durable_cooldown_state: Optional[dict[str, Any]] = None
+    _hard_cancel_event: Any = None
     if (
         defer_context_engine_notification
         and callable(getattr(agent, _PENDING_CONTEXT_ENGINE_NOTIFICATION, None))
@@ -4312,6 +4340,15 @@ def compress_context(
                     agent.context_compressor, _attempt_generation
                 )
     except AuxiliaryExplicitCancellation:
+        if (
+            commit_fence is not None
+            and commit_fence.deadline_exceeded
+            and not (
+                _hard_cancel_event is not None
+                and _hard_cancel_event.is_set()
+            )
+        ):
+            commit_fence.mark_worker_deadline_abort()
         try:
             _restore_compressor_attempt_state(
                 agent.context_compressor,
@@ -4364,9 +4401,14 @@ def compress_context(
             commit_status="aborted",
             split_status="aborted",
             failure_class=(
-                STALL_INTERRUPTED_FAILURE_CLASS
-                if _stall_backoff
-                else "explicit_interrupt"
+                "route_deadline"
+                if commit_fence is not None
+                and commit_fence.worker_deadline_abort_observed
+                else (
+                    STALL_INTERRUPTED_FAILURE_CLASS
+                    if _stall_backoff
+                    else "explicit_interrupt"
+                )
             ),
         )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)

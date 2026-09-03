@@ -170,6 +170,59 @@ class TestWorkerTeardownOnCeiling:
         assert msgs == [{"role": "user", "content": "keep"}]
 
 
+class TestWorkerDeadlineAbortSignal:
+    def test_deadline_cancellation_is_distinct_from_explicit_stop(self, tmp_path: Path):
+        _db, agent = _build_agent(tmp_path, "WORKER_DEADLINE")
+        live = _messages()
+        fence = CompressionCommitFence()
+
+        def deadline_abort(_messages, **_kwargs):
+            setattr(fence, "_deadline", time.monotonic() - 1)
+            raise AuxiliaryExplicitCancellation()
+
+        getattr(agent, "context_compressor").compress = deadline_abort
+        with patch(
+            "agent.conversation_compression._emit_compression_attempt_telemetry"
+        ) as emit_telemetry:
+            out, _prompt = compress_context(
+                agent,
+                live,
+                "sys",
+                approx_tokens=500_000,
+                commit_fence=fence,
+            )
+
+        assert out is live
+        assert fence.worker_deadline_abort_observed is True
+        assert emit_telemetry.call_args.kwargs["failure_class"] == "route_deadline"
+
+    def test_explicit_stop_at_deadline_does_not_mark_route_failure(self, tmp_path: Path):
+        _db, agent = _build_agent(tmp_path, "WORKER_STOP")
+        live = _messages()
+        fence = CompressionCommitFence()
+
+        def explicit_stop(_messages, **_kwargs):
+            setattr(fence, "_deadline", time.monotonic() - 1)
+            getattr(agent, "_hard_interrupt_requested").set()
+            raise AuxiliaryExplicitCancellation()
+
+        getattr(agent, "context_compressor").compress = explicit_stop
+        with patch(
+            "agent.conversation_compression._emit_compression_attempt_telemetry"
+        ) as emit_telemetry:
+            out, _prompt = compress_context(
+                agent,
+                live,
+                "sys",
+                approx_tokens=500_000,
+                commit_fence=fence,
+            )
+
+        assert out is live
+        assert fence.worker_deadline_abort_observed is False
+        assert emit_telemetry.call_args.kwargs["failure_class"] == "explicit_interrupt"
+
+
 class TestDurableAttemptBackoff:
     def test_backoff_row_records_strategy_and_kind(self, tmp_path: Path):
         db, agent = _build_agent(tmp_path, "BACKOFF_KIND")

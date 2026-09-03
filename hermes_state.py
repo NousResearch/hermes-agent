@@ -5355,6 +5355,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # flight during the drain closes its own connection instead of
         # re-populating a pool nobody will drain again.
         self._read_conns_closed = False
+        # Count of transient pooled-read EIOs absorbed by read_execute's
+        # retry (#100871) — observability for the CoW/sparse-vhd class so an
+        # operator can tell "flake absorbed" from "hard failure" in logs.
+        self._read_ioerr_retries = 0
         # "read-only opens are failing against this file" backoff stamp.
         # Instance-wide rather than per-thread: with a shared pool the open
         # is no longer a per-thread event, and retrying a known-bad open on
@@ -5861,30 +5865,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         convoy on the writer lock instead of opening descriptors — measurably
         slower under a burst, and the alternative is EMFILE, which takes the
         whole process down in a way a restart-on-exit supervisor cannot see.
+
+        A pooled connection that just raised a transient EIO is NOT returned
+        to the pool (see the finally below, #100871): on CoW / sparse-vhd
+        backing stores (WSL2 ext4-on-vhdx, ZFS, APFS-CoW) one bad shared-
+        memory interaction poisons that specific connection while the DB
+        itself stays intact — recycling it would hand every later borrower
+        the same ``disk I/O error``. Callers that want transparent recovery
+        for such reads use ``read_execute``.
         """
         conn = self._checkout_read_conn()
         if conn is not None:
+            poisoned = False
             try:
-                yield conn
+                try:
+                    yield conn
+                except sqlite3.OperationalError as exc:
+                    if "disk i/o error" in str(exc).lower():
+                        # Mark poisoned: the finally closes it instead of
+                        # recycling, and read_execute retries the statement.
+                        poisoned = True
+                    raise
             finally:
                 returned = False
-                with self._read_conns_lock:
-                    if not self._read_conns_closed:
-                        try:
-                            self._read_pool.put_nowait(conn)
-                            returned = True
-                        except queue.Full:
-                            pass
+                if not poisoned:
+                    with self._read_conns_lock:
+                        if not self._read_conns_closed:
+                            try:
+                                self._read_pool.put_nowait(conn)
+                                returned = True
+                            except queue.Full:
+                                pass
                 if not returned:
-                    # close() has already drained the pool, so this connection
-                    # is surplus. Close it here — dropping it on the floor is
-                    # what leaked the fd.
+                    # Surplus, closed-out, or poisoned-by-EIO: close here —
+                    # dropping it on the floor is what leaked the fd, and
+                    # recycling an EIO-poisoned handle is what made one
+                    # flaky shared-memory interaction repeat for every later
+                    # borrower (#100871).
                     #
                     # queue.Full is now unreachable in practice (permits and
-                    # maxsize are both _READ_POOL_MAX, so there can never be a
-                    # ninth connection to return), but the branch stays: it is
-                    # load-bearing if those two ever drift apart, and a leak is
-                    # the failure mode it prevents.
+                    # maxsize are both _READ_POOL_MAX), but the branch stays:
+                    # it is load-bearing if those two ever drift apart, and a
+                    # leak is the failure mode it prevents.
                     self._close_read_conn(conn)
             return
         with self._lock:
@@ -5893,6 +5915,40 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # class) — reopen instead of yielding None to a .execute.
                 self._reopen_after_close_locked(context="read")
             yield cast(sqlite3.Connection, self._conn)
+
+    def read_execute(self, sql: str, params: tuple = ()):
+        """Execute one read statement with transient-EIO retry (#100871).
+
+        On CoW / sparse-virtual-disk backing stores (WSL2 ext4-on-vhdx with
+        ``sparseVhd``, ZFS, APFS-CoW) a pooled read connection can throw
+        ``disk I/O error`` for a single statement while the database itself
+        is intact — ``PRAGMA quick_check`` reports ok and the very next read
+        on a fresh connection succeeds. Field evidence: 37 identical
+        get_session tracebacks on a 447 MB WAL state.db, zero on the prior
+        version, not reproducible by a single-process synthetic load.
+
+        ``_read_ctx`` already refuses to recycle a connection that raised
+        EIO (closes it instead — recycling would hand every later borrower
+        the same poisoned handle), so this retry runs its statement through
+        a NEW connection and absorbs the flake. One retry only: a
+        deterministic EIO (real I/O failure) fails twice and propagates,
+        same shape as the existing retry loops in _on_disk_journal_mode and
+        the write path.
+        """
+        try:
+            with self._read_ctx() as conn:
+                return conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            if "disk i/o error" not in str(exc).lower():
+                raise
+            self._read_ioerr_retries += 1
+            logger.warning(
+                "%s: transient disk I/O error on a pooled read "
+                "(#100871); retrying once on a fresh connection",
+                self.db_path,
+            )
+            with self._read_ctx() as conn:
+                return conn.execute(sql, params)
 
     def _reopen_after_close_locked(self, context: str = "write") -> None:
         """Reopen the writer connection after ``close()`` raced a live caller.
@@ -10909,16 +10965,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # row through here; drain queued token deltas so they see exact
         # totals. No-op attribute check when nothing is queued.
         self.flush_token_counts()
-        with self._read_ctx() as conn:
-            cursor = conn.execute(
-                "SELECT s.*, "
-                "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
-                "FROM sessions s "
-                "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
-                "WHERE s.id = ?",
-                (session_id,),
-            )
-            row = cursor.fetchone()
+        # read_execute (#100871): this exact statement is where 37 identical
+        # transient-EIO tracebacks landed on WSL2 ext4-on-vhdx — the retry
+        # absorbs the CoW/sparse-vhd flake instead of killing the turn.
+        cursor = self.read_execute(
+            "SELECT s.*, "
+            "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved "
+            "FROM sessions s "
+            "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+            "WHERE s.id = ?",
+            (session_id,),
+        )
+        row = cursor.fetchone()
         return self._session_row_dict(row) if row else None
 
     def get_dominant_session_model_route(

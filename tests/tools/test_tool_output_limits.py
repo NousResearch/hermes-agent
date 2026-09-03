@@ -139,3 +139,76 @@ class TestIntegrationReadPagination:
         # Clamped to default MAX_LINES (2000).
         assert limit == tol.DEFAULT_MAX_LINES
         assert offset == 10
+
+
+@pytest.mark.parametrize("order", [("a", "b", "a"), ("b", "a", "b")])
+def test_limits_follow_active_profile_across_switches(tmp_path, order):
+    """A shared gateway must retain independent limits for each profile."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools import file_tools
+    from tools.file_operations import normalize_read_pagination
+
+    expected = {
+        "a": (11_111, 33_333, 111, 1_111),
+        "b": (22_222, 44_444, 222, 2_222),
+    }
+    homes = {}
+    for name, (read_chars, max_bytes, max_lines, max_line_length) in expected.items():
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "\n".join(
+                [
+                    f"file_read_max_chars: {read_chars}",
+                    "tool_output:",
+                    f"  max_bytes: {max_bytes}",
+                    f"  max_lines: {max_lines}",
+                    f"  max_line_length: {max_line_length}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        homes[name] = home
+
+    tol._reset_tool_output_limits_cache()
+    file_tools._reset_max_read_chars_cache()
+    try:
+        for name in order:
+            token = set_hermes_home_override(str(homes[name]))
+            try:
+                read_chars, max_bytes, max_lines, max_line_length = expected[name]
+                assert file_tools._get_max_read_chars() == read_chars
+                assert tol.get_max_bytes() == max_bytes
+                assert tol.get_max_lines() == max_lines
+                assert tol.get_max_line_length() == max_line_length
+                assert normalize_read_pagination(1, 99_999) == (1, max_lines)
+            finally:
+                reset_hermes_home_override(token)
+    finally:
+        tol._reset_tool_output_limits_cache()
+        file_tools._reset_max_read_chars_cache()
+
+
+def test_limit_caches_are_bypassed_when_profile_key_is_unavailable():
+    """A key-resolution failure must not create a shared fallback cache."""
+    from tools import file_tools
+
+    configs = [
+        {"file_read_max_chars": 111},
+        {"file_read_max_chars": 222},
+        {"tool_output": {"max_bytes": 333}},
+        {"tool_output": {"max_bytes": 444}},
+    ]
+    file_tools._reset_max_read_chars_cache()
+    try:
+        with (
+            patch("hermes_constants.hermes_home_key", side_effect=RuntimeError("unavailable")),
+            patch("hermes_cli.config.load_config", side_effect=configs) as load_config,
+        ):
+            assert file_tools._get_max_read_chars() == 111
+            assert file_tools._get_max_read_chars() == 222
+            assert tol.get_max_bytes() == 333
+            assert tol.get_max_bytes() == 444
+        assert load_config.call_count == 4
+    finally:
+        file_tools._reset_max_read_chars_cache()

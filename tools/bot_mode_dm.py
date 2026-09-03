@@ -269,6 +269,13 @@ def message_agent_tool(
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
 
+    # The delivery runner spawns under terminal_tool's isolated host-local
+    # environment (#96631), which does not inherit this gateway's PATH — a
+    # bare "hermes" dies with ENOENT there. Resolve the CLI beside our own
+    # interpreter like bot_relay's deliver RPC (#93590); the turn-lock
+    # matcher matches argv[0] by basename, so absolute paths are fine.
+    from tools.bot_relay import _hermes_cli
+
     root = _hermes_root(Path(home))
     me = _self_profile_name(Path(home))
     roster = _local_roster(root)
@@ -313,7 +320,7 @@ def message_agent_tool(
         # local-teammate path's `-p <resolved>` pin below.
         return _start_delivery(
             [
-                "hermes",
+                _hermes_cli(),
                 "-p",
                 _self_profile_name(root),
                 "peer",
@@ -361,7 +368,7 @@ def message_agent_tool(
 
     return _start_delivery(
         [
-            "hermes",
+            _hermes_cli(),
             "-p",
             resolved,
             "chat",

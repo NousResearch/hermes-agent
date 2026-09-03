@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from tools import bot_mode_dm, bot_mode_probe
+from tools.bot_relay import _hermes_cli
 
 
 @pytest.fixture(autouse=True)
@@ -247,7 +248,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     mode, dm_file, transport_argv = _runner_parts(command)
     assert mode == "query-file"
     assert transport_argv == [
-        "hermes",
+        _hermes_cli(),
         "-p",
         "researcher",
         "chat",
@@ -294,7 +295,7 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     assert mode == "stdin"
     # The registry the tool validated against is the machine root's — the
     # default profile's home — so the CLI runs there, not in reviewer.
-    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+    assert transport_argv == [_hermes_cli(), "-p", "default", "peer", "dm", "spark"]
 
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
@@ -309,7 +310,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert "spark" in result["to"]
     mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
     assert mode == "stdin"
-    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
+    assert transport_argv == [_hermes_cli(), "-p", "default", "peer", "dm", "spark/researcher"]
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
@@ -318,7 +319,40 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert result2["status"] == "sent"
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
-    assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
+    assert transport_argv == [_hermes_cli(), "-p", "default", "peer", "dm", "spark"]
+
+
+def test_delivery_resolves_venv_sibling_cli(tmp_path, monkeypatch):
+    """Docker/service installs have no hermes on the runner's PATH: the
+    delivery runner spawns under terminal_tool's isolated host-local env
+    (#96631), so a bare "hermes" argv[0] dies with ENOENT (#100662). Both
+    transports must resolve the CLI beside the gateway's own interpreter,
+    exactly like bot_relay's deliver RPC (#93590)."""
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    sibling = bin_dir / "hermes"
+    sibling.touch()
+    sibling.chmod(0o755)
+    monkeypatch.setattr("sys.executable", str(bin_dir / "python"))
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
+    agent = _FakeAgent(home, title="Bot Chat")
+
+    local = json.loads(
+        bot_mode_dm.message_agent_tool(target="@researcher", message="hi", agent=agent)
+    )
+    assert local["status"] == "sent"
+    _, _, local_argv = _runner_parts(calls[0]["command"])
+    assert local_argv[0] == str(sibling)
+    assert local_argv[1:3] == ["-p", "researcher"]
+
+    peer = json.loads(
+        bot_mode_dm.message_agent_tool(target="spark", message="hi", agent=agent)
+    )
+    assert peer["status"] == "sent"
+    _, _, peer_argv = _runner_parts(calls[1]["command"])
+    assert peer_argv[0] == str(sibling)
+    assert peer_argv[1:3] == ["-p", "default"]
 
 
 def test_named_profile_sender_prefix(tmp_path, monkeypatch):

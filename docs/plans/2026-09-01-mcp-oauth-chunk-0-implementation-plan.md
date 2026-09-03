@@ -4,7 +4,7 @@
 
 **Goal:** Build deterministic, executable evidence that failed MCP OAuth reauthorization mutates or deletes active credentials on current `NousResearch/main`, while proving that runtime parking and reconnect preserve durable credentials.
 
-**Architecture:** Add a test-only OAuth peer at the existing `_probe_single_server()` provider boundary. The peer writes partial state through the real `HermesTokenStorage`, injects typed failures at eight lifecycle points, and records a safe event ledger; surface tests drive the real CLI, dashboard, and Desktop/TUI workers around that boundary. Known defects are narrowly typed strict expected failures, while already-correct preservation behavior remains an ordinary passing invariant.
+**Architecture:** Add a test-only OAuth peer at the existing `_probe_single_server()` provider boundary. The peer writes partial state through the real `HermesTokenStorage`, injects typed failures at eight lifecycle points, and records a safe event ledger; surface tests drive the real CLI, dashboard, and Desktop/TUI workers around that boundary. The pre-token injection points and token exchange also carry an optional failure *kind* (`definitive` / `indeterminate`), and the probe point yields a classifiable outcome (`authenticated` / `rejected` / `indeterminate`) — Chunk 0 only *exposes* these; Chunk 2 classifies them and Chunk 3 builds the retry / `probe=deferred` behavior. Known defects are narrowly typed strict expected failures, while already-correct preservation behavior remains an ordinary passing invariant.
 
 **Tech Stack:** Python 3, pytest, MCP Python SDK-compatible records, `HermesTokenStorage`, `DashboardOAuthFlow`, and Hermes' `scripts/run_tests.sh` wrapper.
 
@@ -15,7 +15,9 @@
 - Implement from repository commit `0f428209e600727c7d1d2bc5731c92eb21081d3f` or revalidate every referenced symbol against a newer base before editing.
 - Change tests only. Do not modify production behavior, configuration, or credential formats in Chunk 0.
 - Execute real surface entry points and real `HermesTokenStorage`; patch the provider/probe boundary, not persistence methods.
-- Set `HERMES_HOME` to a pytest temporary directory. Never read or write the user's `~/.hermes`, Keychain, or live credentials.
+- Set `HERMES_HOME` to `str(tmp_path.resolve())` — a canonical spelling, so it already matches the identity digest Chunk 1 derives. Never read or write the user's `~/.hermes`, Keychain, or live credentials.
+- Do not add F-2 taxonomy assertions (retry / abort / `probe=deferred` outcomes) — Chunk 0 only exposes the kind and probe-outcome capability; Chunk 2 and Chunk 3 assert the behavior.
+- Do not add the Chunk 4 token time-model fields (`accepted_at_utc`, `expires_at`, `original_expires_in`) or an injectable clock. The OLD/NEW token fixtures use the legacy on-disk shape (`access_token`, `refresh_token`, `token_type`, `expires_in`).
 - Use unmistakably fake sentinel values and never print token, refresh-token, client-secret, authorization-code, callback-state, or absolute temporary-path values.
 - Perform no live network requests, browser launches, callback listeners, or fixed sleeps.
 - Do not inspect production source text or assert implementation line contents.
@@ -75,7 +77,7 @@ from tests.fakes.mcp_oauth_peer import (
 
 
 def test_seed_and_capture_old_oauth_state_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     seeded = seed_old_oauth_state(tmp_path, "reports")
     assert capture_oauth_state(tmp_path, "reports") == seeded
     assert seeded.labels() == ("OLD", "OLD", "OLD")
@@ -202,7 +204,7 @@ def _stable_json(payload: dict) -> bytes:
 
 
 def seed_old_oauth_state(home: Path, server_name: str) -> OAuthArtifactState:
-    storage = HermesTokenStorage(server_name, hermes_home=home)
+    storage = HermesTokenStorage(server_name, hermes_home=Path(home).resolve())
     paths = (storage._tokens_path(), storage._client_info_path(), storage._meta_path())
     payloads = tuple(_stable_json(_OLD_DOCUMENTS[key]) for key in ("token", "client", "metadata"))
     paths[0].parent.mkdir(parents=True, exist_ok=True)
@@ -214,7 +216,7 @@ def seed_old_oauth_state(home: Path, server_name: str) -> OAuthArtifactState:
 
 
 def capture_oauth_state(home: Path, server_name: str) -> OAuthArtifactState:
-    storage = HermesTokenStorage(server_name, hermes_home=home)
+    storage = HermesTokenStorage(server_name, hermes_home=Path(home).resolve())
 
     def read(path: Path) -> bytes | None:
         try:
@@ -261,7 +263,7 @@ git commit -m "test(mcp): add OAuth artifact oracle"
 
 ---
 
-### Task 2: Deterministic OAuth/MCP Failure Peer
+### Task 2: Deterministic OAuth/MCP Failure Peer with Failure-Kind and Probe-Outcome Capability
 
 **Files:**
 - Modify: `tests/fakes/mcp_oauth_peer.py`
@@ -269,7 +271,11 @@ git commit -m "test(mcp): add OAuth artifact oracle"
 
 **Interfaces:**
 - Consumes: Task 1's vocabulary and artifact oracle.
-- Produces: `FakeOAuthMCPPeer.probe(server_name, config, connect_timeout=None, *, details=None) -> list[tuple[str, str]]`, `completed_events`, and `connect_timeouts`.
+- Produces: `FakeOAuthMCPPeer(failure_point, *, kind=OAuthFailureKind.DEFINITIVE, probe_outcome=ProbeOutcome.REJECTED)`, `.probe(server_name, config, connect_timeout=None, *, details=None) -> list[tuple[str, str]]`, `.completed_events`, `.connect_timeouts`.
+- Produces: `OAuthFailureKind` (`DEFINITIVE`, `INDETERMINATE`), `ProbeOutcome` (`AUTHENTICATED`, `REJECTED`, `INDETERMINATE`).
+- Produces: `InjectedOAuthFailure.kind`, `.retry_after` (set only for an `INDETERMINATE` `HTTP 429`), and `.probe_outcome` (set only when `failure_point is MCP_INITIALIZATION`).
+
+Steps 1–5 build the position-only peer and the baseline matrices depend on it with the defaults. Steps 6–10 add the kind and probe-outcome attributes that Chunk 2 (classifier) and Chunk 3 (retry, `probe=deferred`) consume. Chunk 0 asserts only that the attributes are exposed correctly — never a downstream retry, abort, or commit decision.
 
 - [ ] **Step 1: Add failure-point contract tests**
 
@@ -281,7 +287,7 @@ from tests.fakes.mcp_oauth_peer import FakeOAuthMCPPeer, InjectedOAuthFailure
 
 @pytest.mark.parametrize("failure_point", list(OAuthFailurePoint))
 def test_fake_peer_fails_after_exact_requested_event(tmp_path, monkeypatch, failure_point):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     peer = FakeOAuthMCPPeer(failure_point)
     with pytest.raises(InjectedOAuthFailure) as caught:
         peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"}, connect_timeout=315)
@@ -304,7 +310,7 @@ def test_fake_peer_fails_after_exact_requested_event(tmp_path, monkeypatch, fail
     ],
 )
 def test_fake_peer_persists_only_completed_stage_effects(tmp_path, monkeypatch, failure_point, expected_labels):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     peer = FakeOAuthMCPPeer(failure_point)
     with pytest.raises(InjectedOAuthFailure):
         peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
@@ -380,6 +386,100 @@ git add tests/fakes/mcp_oauth_peer.py tests/tools/test_mcp_oauth_reauth_regressi
 git commit -m "test(mcp): add deterministic OAuth failure peer"
 ```
 
+- [ ] **Step 6: Add failure-kind and probe-outcome contract tests**
+
+Append to `tests/tools/test_mcp_oauth_reauth_regression.py`:
+
+```python
+from tests.fakes.mcp_oauth_peer import OAuthFailureKind, ProbeOutcome
+
+_PRE_TOKEN_KINDED = [
+    OAuthFailurePoint.PROTECTED_RESOURCE_DISCOVERY,
+    OAuthFailurePoint.AUTHORIZATION_SERVER_DISCOVERY,
+    OAuthFailurePoint.DYNAMIC_CLIENT_REGISTRATION,
+    OAuthFailurePoint.TOKEN_EXCHANGE,
+]
+
+
+@pytest.mark.parametrize("failure_point", _PRE_TOKEN_KINDED)
+def test_pre_token_failure_carries_default_definitive_kind(tmp_path, monkeypatch, failure_point):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(failure_point)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert caught.value.kind is OAuthFailureKind.DEFINITIVE
+    assert caught.value.retry_after is None
+
+
+@pytest.mark.parametrize("failure_point", _PRE_TOKEN_KINDED)
+def test_pre_token_failure_reports_indeterminate_kind_and_retry_after(tmp_path, monkeypatch, failure_point):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(failure_point, kind=OAuthFailureKind.INDETERMINATE)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert caught.value.kind is OAuthFailureKind.INDETERMINATE
+    assert isinstance(caught.value.retry_after, (int, float))
+
+
+def test_authenticated_probe_returns_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(None)
+    assert peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"}) == [("fake_tool", "Deterministic fake MCP tool")]
+
+
+@pytest.mark.parametrize("outcome", [ProbeOutcome.REJECTED, ProbeOutcome.INDETERMINATE])
+def test_probe_point_reports_requested_failing_outcome(tmp_path, monkeypatch, outcome):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    peer = FakeOAuthMCPPeer(OAuthFailurePoint.MCP_INITIALIZATION, probe_outcome=outcome)
+    with pytest.raises(InjectedOAuthFailure) as caught:
+        peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+    assert caught.value.probe_outcome is outcome
+
+
+def test_publication_and_callback_points_take_no_kind(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
+    for point in (OAuthFailurePoint.AUTHORIZATION_URL_PUBLICATION, OAuthFailurePoint.CALLBACK_RECEIPT):
+        peer = FakeOAuthMCPPeer(point)
+        with pytest.raises(InjectedOAuthFailure) as caught:
+            peer.probe("reports", {"url": "https://mcp.invalid/mcp", "auth": "oauth"})
+        assert caught.value.kind is None
+```
+
+- [ ] **Step 7: Verify the new tests fail**
+
+Run: `scripts/run_tests.sh tests/tools/test_mcp_oauth_reauth_regression.py -q`
+
+Expected: FAIL during collection with `ImportError: cannot import name 'OAuthFailureKind'`.
+
+- [ ] **Step 8: Add failure-kind and probe-outcome to the peer**
+
+In `tests/fakes/mcp_oauth_peer.py`:
+
+- Add `class OAuthFailureKind(str, Enum): DEFINITIVE = "definitive"; INDETERMINATE = "indeterminate"`.
+- Add `class ProbeOutcome(str, Enum): AUTHENTICATED = "authenticated"; REJECTED = "rejected"; INDETERMINATE = "indeterminate"`.
+- Extend `InjectedOAuthFailure.__init__` with keyword-only `kind: OAuthFailureKind | None = None`, `retry_after: float | None = None`, `probe_outcome: ProbeOutcome | None = None`; store all three.
+- `FakeOAuthMCPPeer.__init__(self, failure_point, *, kind=OAuthFailureKind.DEFINITIVE, probe_outcome=ProbeOutcome.REJECTED)`; store both. `probe_outcome` is constrained to `REJECTED` / `INDETERMINATE` (the `authenticated` probe is simply `failure_point=None`).
+- `_KINDED_POINTS = {PROTECTED_RESOURCE_DISCOVERY, AUTHORIZATION_SERVER_DISCOVERY, DYNAMIC_CLIENT_REGISTRATION, TOKEN_EXCHANGE}`.
+- When raising at `self.failure_point`:
+  - if in `_KINDED_POINTS`: pass `kind=self.kind`, and `retry_after=1.0` when `self.kind is INDETERMINATE`.
+  - if `MCP_INITIALIZATION`: raise with `probe_outcome=self.probe_outcome` (and `kind=None`).
+  - otherwise (`AUTHORIZATION_URL_PUBLICATION`, `CALLBACK_RECEIPT`, `TOKEN_PERSISTENCE`): raise with no `kind`.
+- `failure_point is None` runs the whole flow and returns the tool list (the `authenticated` probe path).
+- The `definitive` kind maps to HTTP 400 / `invalid_grant` / `invalid_client` / unsupported registration; `indeterminate` to HTTP 5xx / connection error / timeout / 429. The peer models the classification inputs, not the codes themselves.
+
+- [ ] **Step 9: Run the extended peer contract**
+
+Run: `scripts/run_tests.sh tests/tools/test_mcp_oauth_reauth_regression.py -q`
+
+Expected: all Task 1, Task 2, and the new kind/probe-outcome tests pass; no `XPASS`.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add tests/fakes/mcp_oauth_peer.py tests/tools/test_mcp_oauth_reauth_regression.py
+git commit -m "test(mcp): add failure-kind and probe-outcome capability to the OAuth peer"
+```
+
 ---
 
 ### Task 3: Dashboard Eight-Point Baseline Matrix
@@ -392,6 +492,8 @@ git commit -m "test(mcp): add deterministic OAuth failure peer"
 - Consumes: Tasks 1-2.
 - Exercises: `hermes_cli.web_server._run_dashboard_mcp_oauth(flow, cfg) -> None` and `DashboardOAuthFlow.worker_done: bool`.
 - Produces: One passing pre-write preservation row and seven strict expected failures.
+
+The baseline matrix uses `FakeOAuthMCPPeer(failure_point)` with the defaults — `kind=DEFINITIVE`, and a failing probe at `MCP_INITIALIZATION`. The current bug loses the token regardless of kind, so Tasks 3–5 do not parametrize over kind; the `indeterminate` and probe-outcome variants are Chunk 3's to assert.
 
 - [ ] **Step 1: Add the strict marker and current-result table**
 
@@ -422,7 +524,7 @@ def test_dashboard_failed_reauth_preserves_active_state(tmp_path, monkeypatch, f
     from hermes_cli import mcp_config, web_server
     from tools.mcp_oauth_manager import reset_manager_for_tests
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     reset_manager_for_tests()
     before = seed_old_oauth_state(tmp_path, "reports")
     peer = FakeOAuthMCPPeer(failure_point)
@@ -501,7 +603,7 @@ def test_cli_failed_reauth_preserves_active_state(tmp_path, monkeypatch, capsys,
     from hermes_cli import mcp_config
     from tools.mcp_oauth_manager import reset_manager_for_tests
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     reset_manager_for_tests()
     before = seed_old_oauth_state(tmp_path, "reports")
     peer = FakeOAuthMCPPeer(failure_point)
@@ -582,7 +684,7 @@ def test_tui_failed_reauth_preserves_active_state(tmp_path, monkeypatch, failure
     from hermes_cli import mcp_config
     from tools.mcp_oauth_manager import reset_manager_for_tests
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     reset_manager_for_tests()
     before = seed_old_oauth_state(tmp_path, "reports")
     peer = FakeOAuthMCPPeer(failure_point)
@@ -649,7 +751,7 @@ Add the test:
 
 ```python
 def test_oauth_http_parking_reconnect_and_shutdown_preserve_tokens(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path.resolve()))
     from tools import mcp_tool
 
     _reset_mcp_state(mcp_tool)
@@ -802,9 +904,12 @@ State that no production behavior changed and no live OAuth provider was contact
 Chunk 3 must reuse this harness without rewriting its lifecycle vocabulary or artifact oracle:
 
 1. Route staged reauthorization through the same `FakeOAuthMCPPeer.probe()` boundary.
-2. Require `after == before` for every pre-commit failure.
-3. Remove each `_GH_76590` marker when its row passes.
-4. Treat `XPASS(strict)` as incomplete marker cleanup and any remaining `XFAIL` as an incomplete transactional fix.
-5. Retain the runtime parking/reconnect preservation test unchanged.
+2. Require `after == before` for every pre-commit failure, and for every `rejected` probe.
+3. Drive the F-2 taxonomy through the Chunk 0 `kind=` / `probe_outcome=` parameters — an `indeterminate` pre-token failure through one retry then `authorization_endpoint_unavailable`; an `indeterminate` probe through one retry then a commit flagged `probe=deferred`. Do not add new injection points or a new peer.
+4. Remove each `_GH_76590` marker when its row passes.
+5. Treat `XPASS(strict)` as incomplete marker cleanup and any remaining `XFAIL` as an incomplete transactional fix.
+6. Retain the runtime parking/reconnect preservation test unchanged.
+
+Chunk 2 consumes the same `kind` / `probe_outcome` attributes to test its `classify_outcome` classifier and the `authorization_endpoint_unavailable` code, without the retry or commit behavior.
 
 Chunk 0 does not decide the store protocol, staged adapter implementation, bundle revision format, Keychain identity, expiration policy, or migration command. Those remain owned by Chunks 1 through 7.

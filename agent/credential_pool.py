@@ -129,10 +129,12 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldown before retrying an exhausted credential.
 # Transient 401 auth failures cool down briefly so single-key setups can recover.
-# 429 (rate-limited), 402 (billing/quota), and other failures cool down after 1 hour.
-# Provider-supplied reset_at timestamps override these defaults.
+# 429 (rate-limited) cooldown reduced to 3 minutes — burst rate limits typically
+# reset within 1-2 minutes, and the previous 1-hour default caused prolonged
+# lockouts for single-key users. 402 (billing/quota) and other failures still
+# cool down after 1 hour. Provider-supplied reset_at timestamps override these.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+EXHAUSTED_TTL_429_SECONDS = 60 * 3           # 3 minutes
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 # When a pool has no other credential to rotate to (the offending key is the
 # sole non-DEAD entry), a 1-hour bench means an hour of hard failures with

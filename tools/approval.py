@@ -15,6 +15,7 @@ import functools
 import hashlib
 import logging
 import os
+import posixpath
 import re
 import shlex
 import sys
@@ -386,7 +387,7 @@ def _should_fall_through_to_cli_approval(
 # these static patterns stay free of any import-time path snapshot (which would
 # go stale when HERMES_HOME is set after this module is imported, e.g. under the
 # hermetic test conftest or any deferred-profile-resolution path).
-_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+_SSH_SENSITIVE_PATH = r'(?:~[A-Za-z0-9_.-]*|\$home|\$\{home\})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
@@ -1355,6 +1356,11 @@ def _normalize_command_for_detection(command: str) -> str:
     # would otherwise dissolve (-> C:Usersalice) and make the fold impossible.
     # The fold matches either separator, so POSIX paths are unaffected by order.
     #
+    # Collapse ~ / ~user spellings (~/./.ssh, ~//.ssh, ~/../root/.ssh) before
+    # home folding so a named-home traversal can become an absolute path the
+    # fold still recognizes. Absolute HOME prefixes are canonicalized in the
+    # fold itself so /tmp/../... tokens used by other detectors stay intact.
+    command = _canonicalize_tilde_path_tokens(command)
     # Fold the (more specific) Hermes home first: on Windows it nests under the
     # user home (C:\Users\alice\AppData\...\hermes), so folding the user home
     # first would eat the prefix the Hermes-home fold needs.
@@ -1384,6 +1390,55 @@ def _normalize_command_for_detection(command: str) -> str:
 _PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
 # One path segment (no separators, no terminators) preceded by a separator.
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
+_TILDE_PATH_TOKEN_RE = re.compile(
+    r"(?P<prefix>^|[\s'\"`;|&<>()=])"
+    r"(?P<path>~[A-Za-z0-9_.-]*[^" + _PATH_TOKEN_STOP + r"]*)"
+)
+
+
+def _canonicalize_tilde_path(path: str) -> str:
+    """Collapse repeated separators and ``.`` / ``..`` in a ``~`` path token."""
+    match = re.match(r"(~[A-Za-z0-9_.-]*)(.*)", path)
+    if match is None:
+        return path
+    tilde, rest = match.group(1), match.group(2)
+    rest = re.sub(r"\\([^\n])", r"\1", rest).replace("\\", "/")
+    if not rest:
+        return tilde
+    if not rest.startswith("/"):
+        rest = "/" + rest
+    dummy = "/_home_"
+    canonical = posixpath.normpath(dummy + rest)
+    if canonical == dummy:
+        return tilde
+    if canonical.startswith(dummy + "/"):
+        return tilde + canonical[len(dummy):]
+    return canonical
+
+
+def _canonicalize_tilde_path_tokens(command: str) -> str:
+    """Rewrite ``~/./.ssh`` / ``~//.ssh`` / ``~/../...`` to a canonical form."""
+    return _TILDE_PATH_TOKEN_RE.sub(
+        lambda m: m.group("prefix") + _canonicalize_tilde_path(m.group("path")),
+        command,
+    )
+
+
+def _fold_home_match(match, replacement: str, home_path: str) -> str:
+    """Replace a matched home prefix after resolving equivalent path spellings.
+
+    ``/root/./.ssh``, ``/root//.ssh``, ``/root\\/.ssh``, and
+    ``/root/../root/.ssh`` all resolve to the same target as ``/root/.ssh``.
+    If ``..`` walks out of *home_path*, leave the original token unchanged so
+    ``/root/../etc/passwd`` is not rewritten as a home path.
+    """
+    tail = match.group("tail").replace("\\", "/")
+    home_posix = home_path.replace("\\", "/").rstrip("/")
+    canonical = posixpath.normpath(home_posix + tail)
+    home_norm = posixpath.normpath(home_posix)
+    if canonical == home_norm or canonical.startswith(home_norm + "/"):
+        return replacement + canonical[len(home_norm):]
+    return match.group(0)
 
 
 @functools.lru_cache(maxsize=64)
@@ -1398,33 +1453,40 @@ def _home_prefix_fold_regex(path: str):
     patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
     required (``+``), so a bare home with no path under it is not folded.
 
-    Returns ``None`` for an unset or degenerate path — one with fewer than two
-    components below the root — so a stray HOME / HERMES_HOME such as ``/``,
-    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
-    because the resolved home is stable across calls on this hot path.
+    Returns ``None`` for an unset or filesystem-root path, so a stray HOME /
+    HERMES_HOME such as ``/``, ``C:\\`` or ``""`` cannot rewrite unrelated
+    filesystem prefixes. Single-segment POSIX homes such as ``/root`` are
+    valid. Cached because the resolved home is stable across calls on this hot
+    path.
     """
     if not path:
         return None
     components = [c for c in re.split(r"[/\\]+", path) if c]
-    # Require at least two non-empty components below the root. For POSIX this
-    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
-    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
-    # while accepting a real home (``C:\\Users\\alice``).
-    if len(components) < 2:
+    posix_absolute = path.startswith("/")
+    # POSIX has no drive component, so one component is a valid home. Other
+    # spellings keep the two-component guard, which rejects Windows drive roots.
+    if not components or (not posix_absolute and len(components) < 2):
         return None
     body = r"[/\\]+".join(re.escape(c) for c in components)
-    # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows
-    # drive letter is captured as the first component.
-    return re.compile(r"[/\\]*" + body + _PATH_TAIL)
+    # Keep the root separator mandatory for POSIX paths and require it to begin
+    # a path token. Without the boundary, the regex engine can still start at
+    # the second separator in /srv/root and corrupt it into /srv~.
+    root = (
+        r"(?<![^\s'\"`;|&<>()=])[/\\]+"
+        if posix_absolute
+        else r"[/\\]*"
+    )
+    return re.compile(root + body + _PATH_TAIL)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     """Fold each resolved home *path* prefix in *command* to *replacement*.
 
     *replacement* has no trailing separator (``~`` / ``~/.hermes``); the matched
-    path tail (with its backslashes normalized to ``/``) supplies it. Longest
-    candidate first so a deeper home (e.g. an explicit HOME under USERPROFILE)
-    folds before a shorter overlapping one that would otherwise clobber it.
+    path tail is canonicalized (repeated separators, ``.`` / ``..``, escaped
+    slashes) then appended. Longest candidate first so a deeper home (e.g. an
+    explicit HOME under USERPROFILE) folds before a shorter overlapping one
+    that would otherwise clobber it.
     """
     seen: set[str] = set()
     for path in sorted((p for p in paths if p), key=len, reverse=True):
@@ -1434,7 +1496,7 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
             command = pattern.sub(
-                lambda m: replacement + m.group("tail").replace("\\", "/"),
+                lambda m, home=path: _fold_home_match(m, replacement, home),
                 command,
             )
     return command

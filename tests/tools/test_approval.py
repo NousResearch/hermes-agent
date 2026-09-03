@@ -526,6 +526,88 @@ class TestWindowsAbsolutePathFolding:
         assert dangerous is False
         assert key is None
 
+    def test_windows_equivalent_ssh_spellings_require_approval(self, monkeypatch):
+        monkeypatch.setenv("HOME", r"C:\Users\tester")
+        for cmd in (
+            r"cat key >> C:\Users\tester\.\.ssh\authorized_keys",
+            r"cat key >> C:\Users\tester\\.ssh\authorized_keys",
+            "cat key >> C:/Users/tester/./.ssh/authorized_keys",
+        ):
+            dangerous, key, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert key is not None
+
+
+class TestSingleSegmentPosixHomeFolding:
+    def test_absolute_ssh_write_requires_approval(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/root")
+
+        dangerous, key, _ = detect_dangerous_command(
+            "cat key >> /root/.ssh/authorized_keys"
+        )
+
+        assert dangerous is True
+        assert key is not None
+
+    @pytest.mark.parametrize("home", ["/", "C:\\"])
+    def test_filesystem_root_is_not_treated_as_home(self, monkeypatch, home):
+        monkeypatch.setenv("HOME", home)
+
+        dangerous, key, _ = detect_dangerous_command(
+            "cat key >> /root/.ssh/authorized_keys"
+        )
+
+        assert dangerous is False
+        assert key is None
+
+    def test_nested_same_name_is_not_treated_as_home(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/root")
+
+        normalized = approval_module._normalize_command_for_detection(
+            "cat key >> /srv/root/.ssh/authorized_keys"
+        )
+        dangerous, key, _ = detect_dangerous_command(
+            "cat key >> /srv/root/.ssh/authorized_keys"
+        )
+
+        assert normalized == "cat key >> /srv/root/.ssh/authorized_keys"
+        assert dangerous is False
+        assert key is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            r"cat key >> /root\/.ssh/authorized_keys",
+            "cat key >> /root//.ssh/authorized_keys",
+            "cat key >> /root/./.ssh/authorized_keys",
+            "cat key >> /root/../root/.ssh/authorized_keys",
+            "cat key >> ~root/.ssh/authorized_keys",
+            "cat key >> ~/./.ssh/authorized_keys",
+            "cat key >> ~//.ssh/authorized_keys",
+        ],
+    )
+    def test_equivalent_ssh_write_spellings_require_approval(
+        self, monkeypatch, command
+    ):
+        monkeypatch.setenv("HOME", "/root")
+
+        dangerous, key, _ = detect_dangerous_command(command)
+
+        assert dangerous is True, command
+        assert key is not None
+
+    def test_nested_same_name_with_dot_segments_is_not_treated_as_home(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("HOME", "/root")
+
+        dangerous, key, _ = detect_dangerous_command(
+            "cat key >> /srv/root/./.ssh/authorized_keys"
+        )
+
+        assert dangerous is False
+        assert key is None
+
 
 class TestProjectSensitiveTeePattern:
     def test_tee_to_dotenv_with_trailing_file_arg_requires_approval(self):

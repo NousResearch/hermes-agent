@@ -18168,3 +18168,24 @@ app.on('window-all-closed', () => {
     app.quit()
   }
 })
+
+// SIGTERM/SIGINT (session logout, `kill`, a supervising process stopping us)
+// bypass the normal window-close -> before-quit -> backendShutdown path
+// entirely, since Node's default disposition for those signals is to die
+// immediately. Without an explicit handler here the backend child (and any
+// pooled backends) get reparented to init and keep running after the
+// desktop process is gone. Handle both so a signal-based stop always tears
+// the backend down before the process exits.
+let isExitingFromSignal = false
+
+function handleTerminationSignal() {
+  if (isExitingFromSignal) {
+    return
+  }
+
+  isExitingFromSignal = true
+  void exitAfterBackendShutdown(0)
+}
+
+process.on('SIGTERM', handleTerminationSignal)
+process.on('SIGINT', handleTerminationSignal)

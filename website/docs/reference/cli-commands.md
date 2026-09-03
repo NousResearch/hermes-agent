@@ -252,6 +252,7 @@ Subcommands:
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
+| `simulate-delivery` | Preview how content renders and chunks on a platform (`--platform`, `--input`/`--text`, `--json`) — runs the real adapter formatter/chunker with no network calls or credentials. |
 | `migrate-legacy` | Remove legacy `hermes.service` units left over from pre-rename installs. Profile units (`hermes-gateway-<profile>.service`) and unrelated services are never touched. Flags: `--dry-run`, `-y`/`--yes`. |
 | `enroll` | Experimental: enroll this gateway with a relay connector and save relay credentials for connector-backed platforms. See [Hermes Relay](/user-guide/messaging/relay). |
 

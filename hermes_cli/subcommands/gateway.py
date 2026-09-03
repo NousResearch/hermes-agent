@@ -223,6 +223,30 @@ def build_gateway_parser(
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    # gateway simulate-delivery
+    gateway_simulate = gateway_subparsers.add_parser(
+        "simulate-delivery",
+        help="Preview how content renders and chunks on a platform "
+        "(no network, no credentials)",
+        description=(
+            "Runs input text through the REAL adapter format_message() "
+            "renderer and truncate_message() chunker for the given "
+            "platform — the same code gateway/delivery.py calls before a "
+            "live send — without opening any socket."
+        ),
+    )
+    gateway_simulate.add_argument(
+        "--platform",
+        required=True,
+        help="Target platform (telegram, discord, slack, whatsapp)",
+    )
+    simulate_input = gateway_simulate.add_mutually_exclusive_group(required=True)
+    simulate_input.add_argument("--input", help="Path to a file with the message content")
+    simulate_input.add_argument("--text", help="Message content given directly")
+    gateway_simulate.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON"
+    )
+
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy",

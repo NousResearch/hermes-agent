@@ -3423,6 +3423,126 @@ _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
 # Platform states that mean the adapter is NOT serving its port right now.
 _PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
 
+# Default webhook paths for platforms whose adapter runs its own webhook
+# server on a separate port (see ``_PORT_BINDING_PLATFORM_PORTS`` above).
+# These requests never hit a real route on THIS app — only the dashboard's
+# cookie gate does, because it runs as global middleware ahead of routing.
+# Without this table, every non-loopback deployment that exposes only this
+# app's port (the common case on single-public-port PaaS hosts) silently
+# drops inbound platform webhooks: LINE/Feishu/WeCom already verify the
+# request themselves (HMAC/signature — see each adapter's own ``verify_*``
+# function), so bouncing them through the dashboard's session-cookie gate is
+# both wrong (no browser session exists to check) and redundant (the gate
+# would just be duplicating the adapter's own auth). Mirrors the existing
+# ``/api/cron/fire`` precedent in ``dashboard_auth/public_paths.py``, which
+# bypasses the same gate for the same reason — its own short-lived JWT is
+# the real auth boundary, not this allowlist.
+#
+# A path is proxied ONLY when it matches a platform's DEFAULT path exactly
+# (or a sub-path of it, e.g. LINE's ``/line/webhook/health``). An operator
+# who set a custom ``extra.webhook_path`` / ``extra.path`` away from the
+# default isn't covered — same as before this table existed. Only entries
+# verified against the adapter source are listed; extend this table (and
+# reuse ``_PORT_BINDING_PLATFORM_PORTS`` for the port) as further platforms
+# are confirmed.
+_WEBHOOK_PROXY_DEFAULT_PATHS: Dict[str, str] = {
+    "line": "/line/webhook",
+    "feishu": "/feishu/webhook",
+    "wecom_callback": "/wecom/callback",
+}
+
+
+def _resolve_webhook_proxy_port(platform: str) -> int:
+    """Resolve the live host port for ``platform``'s webhook server.
+
+    Reads this process's own config (top-level ``platforms:`` wins over
+    ``gateway.platforms:``, matching ``load_gateway_config()`` precedence),
+    falling back to the adapter's documented default port. Best-effort: any
+    read/parse failure falls back to the default rather than raising, so a
+    config hiccup degrades to "try the default port" instead of dropping
+    the webhook outright.
+    """
+    port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[platform]
+    try:
+        cfg = load_config() or {}
+        gateway_cfg = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        block: Dict[str, Any] = {}
+        for src in ((gateway_cfg or {}).get("platforms"), cfg.get("platforms")):
+            if isinstance(src, dict) and isinstance(src.get(platform), dict):
+                block.update(src[platform])
+        extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
+        raw = block.get(port_key, (extra or {}).get(port_key, default_port))
+        return int(raw)
+    except Exception:
+        return default_port
+
+
+async def _proxy_platform_webhook(request: Request, platform: str) -> "Response":
+    """Forward ``request`` verbatim to ``platform``'s own webhook server.
+
+    The platform adapter authenticates the request itself (signature/HMAC);
+    this proxy adds no auth of its own and must only ever be reached for a
+    path matched against ``_WEBHOOK_PROXY_DEFAULT_PATHS``.
+    """
+    import httpx
+
+    port = _resolve_webhook_proxy_port(platform)
+    body = await request.body()
+    # Hop-by-hop headers must not be forwarded (RFC 7230 SS6.1); Host/
+    # Content-Length are recomputed by httpx for the new target/body.
+    excluded = {
+        "host", "content-length", "connection", "keep-alive",
+        "transfer-encoding", "upgrade", "proxy-authenticate",
+        "proxy-authorization", "te", "trailer",
+    }
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded}
+    target = f"http://127.0.0.1:{port}{request.url.path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            upstream = await client.request(
+                request.method, target, content=body, headers=headers,
+            )
+    except httpx.RequestError as exc:
+        _log.warning(
+            "Webhook proxy: %s adapter unreachable on port %s: %s",
+            platform, port, exc,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"{platform} webhook adapter unreachable"},
+        )
+    response_headers = {
+        k: v for k, v in upstream.headers.items() if k.lower() not in excluded
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+    )
+
+
+@app.middleware("http")
+async def _webhook_proxy_gate(request: Request, call_next):
+    """Forward known platform-webhook paths straight to their own server.
+
+    Must run before ``_dashboard_auth_gate``: these paths carry no browser
+    session, are authenticated by the platform's own signature check inside
+    the adapter, and — critically — don't correspond to any real route on
+    THIS app at all when the platform's adapter runs on a separate port (the
+    common single-public-port PaaS deployment, e.g. a Fly.io app that only
+    declares one public service). Letting the auth gate see them first means
+    an unauthenticated caller (LINE's own servers, with a valid signature)
+    gets bounced to /login and the webhook is silently dropped — the bug
+    this closes.
+    """
+    path = request.url.path
+    for platform, default_path in _WEBHOOK_PROXY_DEFAULT_PATHS.items():
+        if path == default_path or path.startswith(default_path + "/"):
+            return await _proxy_platform_webhook(request, platform)
+    return await call_next(request)
+
 
 def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict[str, int]:
     """Best-effort map of ``platform -> host TCP port`` for one profile's gateway.

@@ -8181,9 +8181,44 @@ def _drain_or_signal_gateway_for_update(
     return _graceful_restart_via_sigusr1(pid, drain_timeout=drain_budget)
 
 
+def _fleet_update_gate(args) -> None:
+    """WeRoll fleet (2026-09-03): no ungated update on the parked branch.
+
+    Every `hermes update` on this checkout so far came from the Desktop app's
+    Update button (`desktop-update-handoff.log`), bypassing the fleet's tier
+    gate, focused tests, change manifest and three-gateway restart. On 09-02
+    one such click reset 59 fleet commits. From now on an update on `fleet` is
+    refused unless it comes through `~/.hermes/scripts/upstream-update-watch.py`
+    (which sets HERMES_FLEET_GATED_UPDATE=1) or the operator opts in explicitly
+    with the same variable. `hermes update --check` style read-only flags are
+    not affected because this runs only on the mutating path.
+    """
+    import os as _os
+    import subprocess as _sp
+
+    if _os.environ.get("HERMES_FLEET_GATED_UPDATE") == "1":
+        return
+    try:
+        head = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=_m().PROJECT_ROOT,
+                       capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return
+    if head != "fleet":
+        return
+    print(
+        "\u2717 Refusing an ungated update on the parked branch 'fleet' (WeRoll fleet policy, charter \u00a711).\n"
+        "  Updates are tiered by file overlap, tested, manifested and rolled back by\n"
+        "  ~/.hermes/scripts/upstream-update-watch.py (daily on Axel's cron; --apply for Tier A).\n"
+        "  To force this path anyway: HERMES_FLEET_GATED_UPDATE=1 hermes update ...\n"
+        "  Details: ~/Projects/hermes management/upgrade plan.md"
+    )
+    sys.exit(1)
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    _fleet_update_gate(args)
     # A managed-runtime refresh can replace site-packages before the normal
     # ``.[all]`` install runs. Snapshot while the old environment can still
     # prove which optional backends the user had activated.

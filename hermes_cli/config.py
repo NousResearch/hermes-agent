@@ -5153,7 +5153,14 @@ def show_config():
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
     print(f"  Config:       {get_config_path()}")
-    print(f"  Secrets:      {get_env_path()}")
+    from hermes_cli.env_loader import get_loaded_env_files
+
+    loaded_envs = get_loaded_env_files()
+    # Report all loaded files so a user sees the full precedence chain (user env
+    # + project env) instead of guessing which one holds the key they're hunting.
+    print(
+        f"  Secrets:      {', '.join(str(p) for p in loaded_envs) if loaded_envs else get_env_path()}"
+    )
     print(f"  Install:      {get_project_root()}")
     
     # API Keys

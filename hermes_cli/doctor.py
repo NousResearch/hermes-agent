@@ -1478,46 +1478,60 @@ def run_doctor(args):
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.
     managed_scope_check()
-    # Check ~/.hermes/.env (primary location for user config)
-    env_path = HERMES_HOME / '.env'
-    if env_path.exists():
-        check_ok(f"{_DHH}/.env file exists")
+    # Report the .env files the loader actually applied, rather than guessing.
+    from hermes_cli.env_loader import get_loaded_env_files
+
+    loaded_envs = get_loaded_env_files()
+    # If loaded_envs is empty (first-run doctor before any dotenv load, or
+    # loader was mocked), fall back to explicit file checks.
+    if not loaded_envs:
+        env_path = HERMES_HOME / '.env'
+        fallback_env = PROJECT_ROOT / '.env'
+        if env_path.exists():
+            loaded_envs = [env_path]
+        elif fallback_env.exists():
+            loaded_envs = [fallback_env]
+    
+    if loaded_envs:
+        for p in loaded_envs:
+            label = f"{_DHH}/.env" if p.parent == HERMES_HOME else f"project {p.name}"
+            check_ok(f"{label} file exists")
         
-        # Prefer UTF-8 (.env is written as UTF-8 elsewhere). Fall back to
-        # latin-1 for Windows Notepad/cp1252 files that are not valid UTF-8 —
-        # matches hermes_cli.env_loader._load_dotenv_with_fallback.
-        try:
-            content = env_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            content = env_path.read_text(encoding="latin-1")
-        if _has_provider_env_config(content):
+        # Check API keys in the files the loader applied.
+        has_key = False
+        for env_path in loaded_envs:
+            try:
+                content = env_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = env_path.read_text(encoding="latin-1")
+            if _has_provider_env_config(content):
+                has_key = True
+                break
+        if has_key:
             check_ok("API key or custom endpoint configured")
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
+            check_warn(f"No API key found in loaded .env files")
             issues.append("Run 'hermes setup' to configure API keys")
     else:
-        # Also check project root as fallback
-        fallback_env = PROJECT_ROOT / '.env'
-        if fallback_env.exists():
-            check_ok(".env file exists (in project directory)")
+        # No .env files were loaded or present.
+        env_path = HERMES_HOME / '.env'
+        check_fail(f"{_DHH}/.env file missing")
+        if should_fix:
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            env_path.touch()
+            # .env holds API keys — restrict to owner-only access from
+            # creation. touch() obeys umask which is commonly 0o022,
+            # leaving the file world-readable; tighten explicitly.
+            try:
+                os.chmod(str(env_path), 0o600)
+            except OSError:
+                pass
+            check_ok(f"Created empty {_DHH}/.env")
+            check_info("Run 'hermes setup' to configure API keys")
+            fixed_count += 1
         else:
-            check_fail(f"{_DHH}/.env file missing")
-            if should_fix:
-                env_path.parent.mkdir(parents=True, exist_ok=True)
-                env_path.touch()
-                # .env holds API keys — restrict to owner-only access from
-                # creation. touch() obeys umask which is commonly 0o022,
-                # leaving the file world-readable; tighten explicitly.
-                try:
-                    os.chmod(str(env_path), 0o600)
-                except OSError:
-                    pass
-                check_ok(f"Created empty {_DHH}/.env")
-                check_info("Run 'hermes setup' to configure API keys")
-                fixed_count += 1
-            else:
-                check_info("Run 'hermes setup' to create one")
-                issues.append("Run 'hermes setup' to create .env")
+            check_info("Run 'hermes setup' to create one")
+            issues.append("Run 'hermes setup' to create .env")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'

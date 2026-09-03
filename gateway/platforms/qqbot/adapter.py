@@ -673,7 +673,17 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                        self._mark_disconnected()
+                        # Notify the gateway that this adapter has died so it
+                        # can surface the outage, restart the process via systemd
+                        # Restart=on-failure, and stop reporting the platform as
+                        # connected (#14539).  A silent return here left the
+                        # gateway healthy-looking indefinitely.
+                        self._set_fatal_error(
+                            "qq_max_reconnect_attempts",
+                            f"QQ Bot WebSocket reconnect exhausted after "
+                            f"{MAX_RECONNECT_ATTEMPTS} attempts",
+                            retryable=True,
+                        )
                         return
 
             except Exception as exc:
@@ -685,7 +695,14 @@ class QQAdapter(BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    # Notify gateway of permanent failure so it can surface the
+                    # outage and let systemd Restart=on-failure trigger (#14539).
+                    self._set_fatal_error(
+                        "qq_max_reconnect_attempts",
+                        f"QQ Bot WebSocket reconnect exhausted after "
+                        f"{MAX_RECONNECT_ATTEMPTS} attempts",
+                        retryable=True,
+                    )
                     return
 
                 if await self._reconnect(backoff_idx):

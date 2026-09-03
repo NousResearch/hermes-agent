@@ -1564,10 +1564,16 @@ _REQUIRED_PARAM_ERRORS = {
         "content": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).",
     },
     "edit": {
-        "content": "content is required for 'edit'. Provide the full updated SKILL.md text.",
+        "content": "content is required for a full rewrite. Provide the full updated SKILL.md text.",
     },
     "patch": {
-        "old_string": "old_string is required for 'patch'. Provide the text to find.",
+        "old_string": (
+            "old_string is required for 'patch' and must be the EXACT text currently in the "
+            "file. Read the target file first (read_file on the skill's SKILL.md, or the file "
+            "named by file_path) and copy the snippet verbatim, then retry 'patch'. "
+            "Do NOT fall back to action='write_file' — that rewrites the entire file and "
+            "destroys unrelated content."
+        ),
         "new_string": "new_string is required for 'patch'. Use empty string to delete matched text.",
     },
     "write_file": {
@@ -1614,6 +1620,13 @@ def _preflight_staged_skill_write(action: str, name: str, payload: Dict[str, Any
         )
 
     if action == "patch":
+        if content:
+            if payload.get("old_string") or payload.get("new_string") is not None:
+                return (
+                    "Pass EITHER content (full SKILL.md rewrite) OR "
+                    "old_string/new_string (targeted replacement), not both."
+                )
+            return _validate_frontmatter(content) or _validate_content_size(content)
         if not payload.get("old_string"):
             return required["old_string"]
         if payload.get("new_string") is None:
@@ -1838,6 +1851,10 @@ def _skill_manage_batch(
             if decision.blocked:
                 return tool_error(decision.message, success=False)
             if not decision.allow:
+                for i, op in enumerate(operations):
+                    err = _preflight_staged_skill_write(op["action"], names[i], op)
+                    if err:
+                        return tool_error(f"operations[{i}]: {err}", success=False)
                 payload = {"action": "batch", "operations": operations}
                 acts = ", ".join(op["action"] for op in operations)
                 skills = ", ".join(sorted(set(names)))

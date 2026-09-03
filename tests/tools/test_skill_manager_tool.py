@@ -1329,6 +1329,31 @@ class TestStagedWritePreflight:
             assert result["staged"] is True, result
             assert wa.pending_count(wa.SKILLS) == 1
 
+    def test_full_rewrite_patch_stages(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        _skill_on_disk(tmp_path)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage(
+                action="patch", name="budget-skill",
+                content=_skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT)),
+            ))
+            assert result["staged"] is True, result
+            assert wa.pending_count(wa.SKILLS) == 1
+
+    def test_batch_rejects_invalid_create_before_staging(self, tmp_path, monkeypatch):
+        from tools import write_approval as wa
+        over = _desc_of_length(SKILL_PROMPT_DESC_LIMIT + 1)
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            result = json.loads(skill_manage("", "", operations=[{
+                "action": "create",
+                "name": "budget-skill",
+                "content": _skill_md(over),
+            }]))
+            assert result.get("success") is False, result
+            assert result.get("staged") is not True
+            assert "operations[0]" in result["error"]
+            assert wa.pending_count(wa.SKILLS) == 0
+
     def test_missing_content_is_not_staged(self, tmp_path, monkeypatch):
         from tools import write_approval as wa
         with _approval_home(monkeypatch, True), _skill_dir(tmp_path):

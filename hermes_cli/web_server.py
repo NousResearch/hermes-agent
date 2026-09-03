@@ -873,7 +873,18 @@ def should_require_dashboard_auth(
     ``dashboard.public_url`` requires authentication even when a reverse proxy
     reaches a backend bound to loopback. Callers may pass the already-resolved
     host set so startup and request validation use the same snapshot.
+
+    Desktop-spawned backends are an exception: they bind an ephemeral loopback
+    port and authenticate with ``HERMES_DASHBOARD_SESSION_TOKEN`` over
+    ``/api/ws?token=``. They inherit the operator ``config.yaml``, including a
+    ``dashboard.public_url`` meant for a *separate* reverse-proxied
+    ``hermes dashboard`` process. Applying that URL to the Desktop child
+    switches the WS path to ticket auth and rejects the spawn token
+    (``d3df14a7e`` / local Desktop boot overlay). ``HERMES_DESKTOP=1`` is set
+    only by the Electron spawn paths.
     """
+    if host in _LOOPBACK_HOST_VALUES and os.environ.get("HERMES_DESKTOP") == "1":
+        return False
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
     return should_require_auth(host) or any(

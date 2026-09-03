@@ -350,6 +350,40 @@ def test_public_url_aware_gate_preserves_local_only_mode(monkeypatch):
     assert should_require_dashboard_auth("127.0.0.1") is False
 
 
+def test_desktop_loopback_ignores_public_url_gate(monkeypatch):
+    """Desktop's ephemeral loopback child keeps token WS when public_url is set.
+
+    ``HERMES_DESKTOP=1`` is injected by Electron next to the spawn token.
+    A Tailscale/reverse-proxy ``dashboard.public_url`` must still gate a
+    standalone ``hermes dashboard`` on loopback, but must not switch the
+    Desktop child's ``/api/ws?token=`` path to ticket auth.
+    """
+    from hermes_cli.web_server import should_require_dashboard_auth
+
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_PUBLIC_URL",
+        "https://dash.example.ts.net",
+    )
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    assert should_require_dashboard_auth("127.0.0.1") is False
+    assert should_require_dashboard_auth("localhost") is False
+    assert should_require_dashboard_auth("::1") is False
+    # A public Desktop bind (should not happen) still requires the gate.
+    assert should_require_dashboard_auth("0.0.0.0") is True
+
+
+def test_public_url_loopback_gate_still_applies_without_desktop_marker(monkeypatch):
+    """Unmarked loopback processes keep the reverse-proxy public_url gate."""
+    from hermes_cli.web_server import should_require_dashboard_auth
+
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_PUBLIC_URL",
+        "https://dash.example.test",
+    )
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    assert should_require_dashboard_auth("127.0.0.1") is True
+
+
 def test_start_server_loopback_public_url_enables_gate(monkeypatch):
     """A declared external URL turns a loopback reverse proxy into gated mode."""
     from hermes_cli.dashboard_auth import clear_providers, register_provider

@@ -3931,6 +3931,8 @@ def delegate_task(
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -3952,6 +3954,14 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    Per-call model/provider override the delegation config for this call
+    only (skills use this to force a stronger model for heavy work):
+      - model: model id the children run on (e.g. "gpt-5.6-luna")
+      - provider: provider name (e.g. "openai-codex"); resolves full
+        credentials via the same runtime provider system as CLI startup
+      - tasks[] items may also carry their own model/provider, which
+        beat the top-level values for that task
 
     Returns JSON with results array, one entry per task.
     """
@@ -4025,8 +4035,7 @@ def delegate_task(
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    #
+    # children inherit from the parent.  Per-call model/provider beat config.
     # ``credentials_cfg`` (internal callers only — never model-facing) is a
     # per-call override shaped like the delegation config section
     # ({provider, model, base_url, api_key, api_mode}); the /review engine
@@ -4034,7 +4043,10 @@ def delegate_task(
     # without touching the global delegation pin.
     try:
         creds = _resolve_delegation_credentials(
-            credentials_cfg if credentials_cfg else cfg, parent_agent
+            credentials_cfg if credentials_cfg else cfg,
+            parent_agent,
+            model=None if credentials_cfg else model,
+            provider=None if credentials_cfg else provider,
         )
     except ValueError as exc:
         return tool_error(str(exc))
@@ -4170,6 +4182,27 @@ def delegate_task(
         _capture_gateway_steer_authority(_origin_ui_session_id)
     )
 
+    # Orphan guard: resolve per-task credentials for EVERY task before any
+    # child agent is constructed. A task whose model/provider cannot be
+    # resolved fails the whole call here, while building nothing - the
+    # mid-batch failure mode (children 0..k-1 constructed, then task k+1
+    # errors and they leak) cannot happen.
+    task_creds_list: List[Any] = []
+    for i, t in enumerate(task_list):
+        task_model = t.get("model") or model
+        task_provider = t.get("provider") or provider
+        if task_model != model or task_provider != provider:
+            try:
+                task_creds_list.append(
+                    _resolve_delegation_credentials(
+                        cfg, parent_agent, model=task_model, provider=task_provider
+                    )
+                )
+            except ValueError as exc:
+                return tool_error(f"task[{i}] {exc}")
+        else:
+            task_creds_list.append(creds)
+
     # Build all child agents on the main thread (thread-safe construction).
     # _build_child_preserving_parent_tools saves/restores the parent's
     # resolved tool names around each construction under a lock, so child
@@ -4188,6 +4221,9 @@ def delegate_task(
             from tools.delegation_output_schema import append_output_contract
 
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Credentials were fully pre-resolved above (orphan guard); this
+        # loop can no longer fail on credential resolution.
+        task_creds = task_creds_list[i]
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i,
@@ -4196,24 +4232,33 @@ def delegate_task(
                 # Subagents always inherit the parent's toolsets; the model
                 # cannot choose or narrow them (no model-facing toolsets arg).
                 toolsets=None,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_request_overrides=creds.get("request_overrides"),
-                override_max_tokens=creds.get("max_output_tokens"),
-                override_acp_command=creds.get("command"),
-                override_acp_args=creds.get("args"),
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_request_overrides=task_creds.get("request_overrides"),
+                override_max_tokens=task_creds.get("max_output_tokens"),
+                override_acp_command=task_creds.get("command"),
+                override_acp_args=task_creds.get("args"),
                 role=effective_role,
             )
         except ValueError as exc:
-            # Explicit-pin preflight failures (e.g. pinned delegation.command
-            # missing from PATH) refuse the spawn loudly (#80450).
-            return tool_error(str(exc))
+            # Construction-time preflight failure (e.g. pinned
+            # delegation.command missing from PATH, #80450). Dispose of the
+            # children already built for earlier tasks so nothing leaks,
+            # then refuse the whole spawn.
+            for done in children:
+                try:
+                    close = getattr(done, "close", None)
+                    if callable(close):
+                        close()
+                except Exception:
+                    logger.debug("orphan-guard: cleanup of child %s failed", getattr(done, "session_id", "?"), exc_info=True)
+            return tool_error(f"task[{i}] {exc}")
         # Attach the validated schema for the completion-side validation
         # hook in _run_single_child. Absent (None) on schema-less tasks.
         if _task_schema is not None:
@@ -4816,7 +4861,9 @@ def _merge_request_overrides(runtime_overrides, explicit_overrides):
     return merged or None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_delegation_credentials(
+    cfg: dict, parent_agent, model: Optional[str] = None, provider: Optional[str] = None
+) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -4835,10 +4882,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
 
+    Per-call ``model`` / ``provider`` arguments override the delegation config
+    for this call only (a skill can force a stronger model without mutating
+    config.yaml). When only one of the two is given, the other falls back to
+    the delegation config, then to parent inherit.
+
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
+    configured_model = model or str(cfg.get("model") or "").strip() or None
+    configured_provider = provider or str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
@@ -5127,11 +5179,14 @@ def _build_top_level_description() -> str:
         "you. Pass every task in `tasks` — one entry spawns one subagent, "
         "several run in parallel (limit in the tasks description).\n\n"
         "Runs in the background: dispatch returns immediately with live "
-        "transcript paths, and the completed result (one consolidated message, "
-        "results in task order) re-enters the conversation on its own. Do NOT "
-        "wait or poll; continue other work. While children run, `action` "
-        "(list/steer/stop) controls them live — steer when a transcript shows "
-        "a child drifting.\n\n"
+        "transcript paths, and the completed result (one consolidated message "
+        "for a batch) re-enters the conversation on its own. Do NOT wait or "
+        "poll; continue other work.\n\n"
+        "LIVE ORCHESTRATION: while children run, this tool also controls "
+        "them — action='list' (live children + ids), action='steer' "
+        "(subagent_id + message, redirect without stopping), action='stop' "
+        "(subagent_id, end early; partial result still returns). Steer when "
+        "a child drifts.\n\n"
         "USE FOR: reasoning-heavy subtasks, work that would flood your context "
         "with intermediate data, or independent parallel workstreams.\n"
         "DO NOT USE FOR (use these instead):\n"
@@ -5139,7 +5194,7 @@ def _build_top_level_description() -> str:
         "- A single tool call -> call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot ask questions\n"
         "- Durable work that must survive this session -> cronjob or "
-        "terminal(background=True, notify=True); /stop, /new, or "
+        "terminal(background=True) with notify_on_complete; /stop, /new, or "
         "process exit discards running subagents.\n\n"
         "RULES:\n"
         "- Children know nothing of this conversation: pass everything needed "
@@ -5149,10 +5204,11 @@ def _build_top_level_description() -> str:
         "claiming \"uploaded successfully\" or \"file written\" may be wrong. "
         "For external side effects (uploads, remote writes, publishing), "
         "require a verifiable handle (URL, ID, absolute path) and verify it "
-        "yourself before telling the user the operation succeeded.\n"
+        "yourself — fetch the URL, stat the file, read back the content — "
+        "before telling the user the operation succeeded.\n"
         + restrictions_rule +
         "- Children inherit the parent model unless pinned via "
-        "delegation.provider / delegation.model in config.yaml."
+        "delegation.provider/model config, or per-call model/provider."
     )
 
 
@@ -5259,6 +5315,22 @@ DELEGATE_TASK_SCHEMA = {
                                 "background in every task that needs it."
                             ),
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Optional per-task model override (beats the top-level "
+                                "model). Skills use this to force a stronger model for "
+                                "one heavy task without touching global config."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Optional per-task provider override (beats the "
+                                "top-level provider). Resolves full credentials via the "
+                                "runtime provider system."
+                            ),
+                        },
                         "output_schema": {
                             "type": "object",
                             "description": (
@@ -5282,10 +5354,34 @@ DELEGATE_TASK_SCHEMA = {
                 # caller-declared. Unadvertised on purpose; do not re-add.
                 "description": "(rebuilt at get_definitions() time)",
             },
-            # NOTE: the handler also accepts `background` (bool) — DEPRECATED,
-            # ignored: top-level delegations always run in the background.
-            # Deliberately unadvertised (old transcripts/callers only); do not
-            # re-add to the schema.
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for ALL children in this call. Beats "
+                    "delegation config for this call only; skills use it to force a "
+                    "stronger model for heavy work. Omit to inherit the parent model."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional provider override for ALL children in this call. Beats "
+                    "delegation config for this call only; resolves full credentials "
+                    "via the runtime provider system. Omit to inherit the parent provider."
+                ),
+            },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "DEPRECATED / IGNORED. Top-level single and batch "
+                    "delegations run in the background automatically — you do "
+                    "not need to (and cannot) opt in or out. A single result or "
+                    "consolidated batch result re-enters the conversation when "
+                    "the work finishes; just continue working in the meantime. "
+                    "Setting this has no effect; the parameter remains only for "
+                    "backward compatibility."
+                ),
+            },
             "action": {
                 "type": "string",
                 "enum": ["spawn", "list", "steer", "stop"],
@@ -5378,6 +5474,8 @@ registry.register(
         action=args.get("action"),
         subagent_id=args.get("subagent_id"),
         message=args.get("message"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

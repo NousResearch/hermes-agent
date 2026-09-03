@@ -1148,6 +1148,136 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_provider_override_reaches_child(self, mock_creds, mock_cfg):
+        """A skill can force model/provider per delegation call, beating config."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+        }
+        mock_creds.return_value = {
+            "model": "gpt-5.6-luna",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-key-abc",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Heavy PR implementation",
+                model="gpt-5.6-luna",
+                provider="openai-codex",
+                parent_agent=parent,
+            )
+
+            # Resolver must be asked for the per-call pair, not just config.
+            mock_creds.assert_called_once()
+            call_kwargs = mock_creds.call_args.kwargs
+            self.assertEqual(call_kwargs.get("model"), "gpt-5.6-luna")
+            self.assertEqual(call_kwargs.get("provider"), "openai-codex")
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "gpt-5.6-luna")
+            self.assertEqual(kwargs["provider"], "openai-codex")
+            self.assertEqual(kwargs["base_url"], "https://chatgpt.com/backend-api/codex")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_override_beats_top_level(self, mock_creds, mock_cfg):
+        """tasks[] items can pin their own model/provider, beating top-level."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "",
+            "provider": "",
+        }
+
+        # First call resolves the top-level bundle; per-task calls resolve the
+        # task overrides (real resolver mocked to return the requested pair).
+        def fake_resolve(cfg, parent, model=None, provider=None):
+            return {
+                "model": model or "top-model",
+                "provider": provider or "top-provider",
+                "base_url": "https://example.com/v1",
+                "api_key": "key-abc",
+                "api_mode": "chat_completions",
+            }
+
+        mock_creds.side_effect = fake_resolve
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[
+                    {"goal": "summarize the quarterly report for task a", "model": "task-strong-model", "provider": "openai-codex"},
+                    {"goal": "summarize the quarterly report for task b"},
+                ],
+                model="top-model",
+                provider="top-provider",
+                parent_agent=parent,
+            )
+
+            # Two children built → two AIAgent constructions.
+            self.assertEqual(MockAgent.call_count, 2)
+            all_calls = [c[1] for c in MockAgent.call_args_list]
+            models = {c["model"] for c in all_calls}
+            self.assertIn("task-strong-model", models)
+            self.assertIn("top-model", models)
+            providers = {c["provider"] for c in all_calls}
+            self.assertIn("openai-codex", providers)
+            self.assertIn("top-provider", providers)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_no_per_call_override_passes_none_to_resolver(self, mock_creds, mock_cfg):
+        """Without per-call values, resolver is called with None so config wins."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "config-model",
+            "provider": "openrouter",
+        }
+        mock_creds.return_value = {
+            "model": "config-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Normal task", parent_agent=parent)
+
+            call_kwargs = mock_creds.call_args.kwargs
+            self.assertIsNone(call_kwargs.get("model"))
+            self.assertIsNone(call_kwargs.get("provider"))
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "config-model")
+            self.assertEqual(kwargs["provider"], "openrouter")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_config_provider_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         """When delegation.provider is configured, child agent gets resolved credentials."""
         mock_cfg.return_value = {

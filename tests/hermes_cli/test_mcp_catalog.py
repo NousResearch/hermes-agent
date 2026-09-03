@@ -520,12 +520,80 @@ class TestInstall:
         assert "secret-val" not in raw
 
 
+class TestBootstrap:
+    def test_run_bootstrap_uses_shlex_split_without_shell(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog as mc
+
+        calls = []
+
+        class FakeProc:
+            returncode = 0
+
+        def fake_run(argv, *args, **kwargs):
+            calls.append((tuple(argv), kwargs.get("cwd"), kwargs.get("shell")))
+            return FakeProc()
+
+        monkeypatch.setattr(mc.subprocess, "run", fake_run)
+
+        mc._run_bootstrap(
+            tmp_path, ["python -c 'print(\"hello world\")'", "echo done"]
+        )
+
+        assert calls == [
+            (("python", "-c", 'print("hello world")'), str(tmp_path), False),
+            (("echo", "done"), str(tmp_path), False),
+        ]
+
+    def test_run_bootstrap_raises_catalog_error_on_failure(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog as mc
+
+        class FakeProc:
+            def __init__(self, code):
+                self.returncode = code
+
+        calls = []
+
+        def fake_run(argv, *args, **kwargs):
+            calls.append((tuple(argv), kwargs.get("cwd"), kwargs.get("shell")))
+            return FakeProc(7) if "fail" in argv[0] else FakeProc(0)
+
+        monkeypatch.setattr(mc.subprocess, "run", fake_run)
+
+        with pytest.raises(mc.CatalogError, match=r"bootstrap step failed \(exit 7\): fail me"):
+            mc._run_bootstrap(tmp_path, ["echo ok", "fail me"])
+
+        # Failure should stop on the failing command and propagate CatalogError.
+        assert calls == [
+            (("echo", "ok"), str(tmp_path), False),
+            (("fail", "me"), str(tmp_path), False),
+        ]
+
+    def test_run_bootstrap_invalid_syntax_is_reported(self, tmp_path):
+        from hermes_cli import mcp_catalog as mc
+
+        with pytest.raises(mc.CatalogError, match="invalid bootstrap command syntax"):
+            mc._run_bootstrap(tmp_path, ['echo "unterminated'])
+
+    def test_run_bootstrap_empty_command_is_reported(self, tmp_path):
+        from hermes_cli import mcp_catalog as mc
+
+        with pytest.raises(mc.CatalogError, match="invalid bootstrap command"):
+            mc._run_bootstrap(tmp_path, [""])
+
+    def test_run_bootstrap_command_not_found_is_reported(self, monkeypatch, tmp_path):
+        from hermes_cli import mcp_catalog as mc
+
+        def fake_run(argv, *args, **kwargs):
+            raise FileNotFoundError("no such file")
+
+        monkeypatch.setattr(mc.subprocess, "run", fake_run)
+
+        with pytest.raises(mc.CatalogError, match="could not execute"):
+            mc._run_bootstrap(tmp_path, ["totally_missing_cmd --help"])
 
 
-# ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
-
 
 class TestUninstall:
     def test_uninstall_removes_server_block(self, catalog_dir):

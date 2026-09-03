@@ -858,7 +858,252 @@ class TestSharedBoardPaths:
                 # the worker's own tag rather than the inherited routing value.
                 assert env[key] == "kanban"
                 continue
+            if key == "HERMES_CRON_SESSION":
+                # Re-set by the dispatcher as an explicit unattended-safety
+                # pin so approvals.cron_mode=deny applies to worker commands.
+                assert env[key] == "1"
+                continue
             assert key not in env
+
+    def test_unix_worker_home_ignores_ambient_home(self, monkeypatch):
+        import pwd
+
+        monkeypatch.setenv("HOME", "/parent-controlled/home")
+        monkeypatch.setattr(
+            pwd,
+            "getpwuid",
+            lambda _uid: types.SimpleNamespace(pw_dir="/trusted/account/home"),
+        )
+
+        assert kb._unix_worker_home() == "/trusted/account/home"
+
+    def test_worker_spawn_env_has_exact_bounded_parent_surface(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(kb, "_unix_worker_home", lambda: str(tmp_path))
+        source = {
+            "PATH": "/safe/bin",
+            "HOME": "/root",
+            "USER": "root",
+            "LOGNAME": "root",
+            "SHELL": "/bin/bash",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "TZ": "UTC",
+            "PYTHONPATH": "/untrusted/python",
+            "NODE_OPTIONS": "--require=/untrusted/hook.js",
+            "SSL_CERT_FILE": "/trusted/ca.pem",
+            "REQUESTS_CA_BUNDLE": "/trusted/requests-ca.pem",
+            "CURL_CA_BUNDLE": "/trusted/curl-ca.pem",
+            "NODE_EXTRA_CA_CERTS": "/trusted/node-ca.pem",
+            "CHROME_PATH": "/untrusted/chrome",
+            "PLAYWRIGHT_BROWSERS_PATH": "/untrusted/browsers",
+            "XDG_RUNTIME_DIR": "/run/user/0",
+            "VIRTUAL_ENV": "/gateway/venv",
+            "TMPDIR": "/untrusted/tmp",
+            "SSH_AUTH_SOCK": "/untrusted/agent.sock",
+            "DOCKER_HOST": "unix:///untrusted/docker.sock",
+            "COMSPEC": "C:\\untrusted\\cmd.exe",
+            "PATHEXT": ".UNTRUSTED",
+            "APPDATA": "C:\\untrusted\\appdata",
+            "LOCALAPPDATA": "C:\\untrusted\\localappdata",
+            "DISCORD_BOT_TOKEN": "secret",
+            "UNRELATED_PARENT_STATE": "state",
+        }
+
+        assert kb._worker_spawn_env(source) == {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": str(tmp_path),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "TZ": "UTC",
+        }
+
+    def test_worker_spawn_env_constructs_windows_runtime_paths(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+        # Python and Windows may be installed on different drives.
+        monkeypatch.setattr(kb.sys, "executable", r"D:\Hermes\python.exe")
+        folders = {
+            0x0028: r"C:\Users\worker",
+            0x001A: r"C:\Users\worker\AppData\Roaming",
+            0x001C: r"C:\Users\worker\AppData\Local",
+        }
+        monkeypatch.setattr(kb, "_windows_directory", lambda: r"C:\Windows")
+        monkeypatch.setattr(kb, "_windows_shell_folder", folders.__getitem__)
+        source = {
+            "SYSTEMROOT": r"C:\Windows",
+            "WINDIR": r"C:\Windows",
+            "USERPROFILE": r"C:\Users\worker",
+            "PATH": r"C:\untrusted",
+            "COMSPEC": r"C:\untrusted\cmd.exe",
+            "PATHEXT": ".UNTRUSTED",
+            "APPDATA": r"C:\untrusted\appdata",
+            "LOCALAPPDATA": r"C:\untrusted\localappdata",
+            "LANG": "en_US.UTF-8",
+        }
+
+        assert kb._worker_spawn_env(source) == {
+            "SYSTEMROOT": r"C:\Windows",
+            "WINDIR": r"C:\Windows",
+            "SYSTEMDRIVE": "C:",
+            "HOME": r"C:\Users\worker",
+            "USERPROFILE": r"C:\Users\worker",
+            "APPDATA": r"C:\Users\worker\AppData\Roaming",
+            "LOCALAPPDATA": r"C:\Users\worker\AppData\Local",
+            "TEMP": r"C:\Users\worker\AppData\Local\Temp",
+            "TMP": r"C:\Users\worker\AppData\Local\Temp",
+            "PATH": r"D:\Hermes;C:\Windows\System32;C:\Windows",
+            "LANG": "en_US.UTF-8",
+        }
+
+    def test_worker_spawn_env_ignores_parent_controlled_windows_roots(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+        monkeypatch.setattr(kb.sys, "executable", r"C:\Hermes\python.exe")
+        folders = {
+            0x0028: r"C:\Users\worker",
+            0x001A: r"C:\Users\worker\AppData\Roaming",
+            0x001C: r"C:\Users\worker\AppData\Local",
+        }
+        monkeypatch.setattr(kb, "_windows_directory", lambda: r"C:\Windows")
+        monkeypatch.setattr(kb, "_windows_shell_folder", folders.__getitem__)
+        unsafe_roots = [
+            r"D:\payload\Windows",
+            r"\\evil\share\Windows",
+            r"C:\safe\..\payload\Windows",
+            r"Windows",
+            r"\\?\C:\payload\Windows",
+        ]
+        for unsafe in unsafe_roots:
+            env = kb._worker_spawn_env({"SYSTEMROOT": unsafe})
+            assert env == {
+                "SYSTEMROOT": r"C:\Windows",
+                "WINDIR": r"C:\Windows",
+                "SYSTEMDRIVE": "C:",
+                "HOME": r"C:\Users\worker",
+                "USERPROFILE": r"C:\Users\worker",
+                "APPDATA": r"C:\Users\worker\AppData\Roaming",
+                "LOCALAPPDATA": r"C:\Users\worker\AppData\Local",
+                "TEMP": r"C:\Users\worker\AppData\Local\Temp",
+                "TMP": r"C:\Users\worker\AppData\Local\Temp",
+                "PATH": r"C:\Hermes;C:\Windows\System32;C:\Windows",
+            }
+
+    def test_dispatcher_spawn_does_not_inherit_gateway_secrets(
+        self, tmp_path, monkeypatch
+    ):
+        """Kanban workers receive only a bounded non-secret process env.
+
+        The gateway loads platform and provider credentials into its process.
+        Copying the entire parent environment into every worker defeats profile
+        least privilege even when the worker profile has an empty ``.env``.
+        """
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        monkeypatch.setattr(kb, "_unix_worker_home", lambda: str(tmp_path))
+        monkeypatch.setenv("PATH", "/untrusted/bin")
+        monkeypatch.setenv("SHELL", "/untrusted/shell")
+        monkeypatch.setenv("LANG", "C.UTF-8")
+        monkeypatch.setenv("PYTHONPATH", "/untrusted/python")
+        monkeypatch.setenv("NODE_OPTIONS", "--require=/untrusted/hook.js")
+        monkeypatch.setenv("SSL_CERT_FILE", "/untrusted/ca.pem")
+        monkeypatch.setenv("CHROME_PATH", "/untrusted/chrome")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "must-not-reach-worker")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "must-not-reach-worker")
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "must-not-reach-worker")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "must-not-reach-worker")
+        monkeypatch.setenv("UNRELATED_PARENT_STATE", "must-not-reach-worker")
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        task = kb.Task(
+            id="t_secret_isolation",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="scratch",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock="claim-lock-a",
+            claim_expires=None,
+            tenant="tenant-a",
+            branch_name="wt/t_secret_isolation",
+            current_run_id=7,
+        )
+
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        env = captured["env"]
+        assert env["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        assert env["LANG"] == "C.UTF-8"
+        assert "SHELL" not in env
+        assert env["HERMES_HOME"] == str(default_home)
+        assert env["HOME"] == str(tmp_path)
+        assert env["HERMES_KANBAN_TASK"] == "t_secret_isolation"
+        assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "ws")
+        assert env["HERMES_KANBAN_BRANCH"] == "wt/t_secret_isolation"
+        assert env["HERMES_KANBAN_RUN_ID"] == "7"
+        assert env["HERMES_KANBAN_CLAIM_LOCK"] == "claim-lock-a"
+        assert env["HERMES_KANBAN_DB"] == str(default_home / "kanban.db")
+        assert env["HERMES_KANBAN_WORKSPACES_ROOT"] == str(
+            default_home / "kanban" / "workspaces"
+        )
+        assert env["HERMES_KANBAN_BOARD"]
+        assert env["HERMES_PROFILE"] == "coder"
+        assert env["HERMES_CRON_SESSION"] == "1"
+        assert env["HERMES_TENANT"] == "tenant-a"
+        assert "PYTHONPATH" not in env
+        assert "NODE_OPTIONS" not in env
+        assert "SSL_CERT_FILE" not in env
+        assert "CHROME_PATH" not in env
+        assert "DISCORD_BOT_TOKEN" not in env
+        assert "OPENROUTER_API_KEY" not in env
+        assert "COPILOT_GITHUB_TOKEN" not in env
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert "UNRELATED_PARENT_STATE" not in env
+
+        from hermes_cli import config as config_mod
+        from tools import approval as approval_mod
+
+        with (
+            unittest.mock.patch.dict(os.environ, env, clear=True),
+            unittest.mock.patch.object(
+                approval_mod, "_YOLO_MODE_FROZEN", False
+            ),
+            unittest.mock.patch.object(
+                approval_mod,
+                "is_current_session_yolo_enabled",
+                return_value=False,
+            ),
+            unittest.mock.patch.object(
+                config_mod,
+                "load_config",
+                return_value={
+                    "approvals": {"mode": "manual", "cron_mode": "deny"}
+                },
+            ),
+        ):
+            decision = approval_mod.check_dangerous_command(
+                "rm -rf /tmp/kanban-worker-scratch", "local"
+            )
+
+        assert decision["approved"] is False
+        assert "cron jobs run without a user present" in decision["message"]
 
 
 # ---------------------------------------------------------------------------

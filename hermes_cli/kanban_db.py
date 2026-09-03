@@ -10657,6 +10657,117 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _unix_worker_home() -> str:
+    """Resolve the current account home without consulting ``$HOME``."""
+    import pwd
+
+    home = pwd.getpwuid(os.getuid()).pw_dir
+    if not home or not os.path.isabs(home):
+        raise RuntimeError("current account has no absolute home directory")
+    return home
+
+
+def _windows_shell_folder(csidl: int) -> str:
+    """Resolve a Windows shell folder from the OS, not process environment."""
+    import ctypes
+
+    value = ctypes.create_unicode_buffer(32768)
+    loader = getattr(ctypes, "windll", None)
+    if loader is None:
+        raise OSError("Windows DLL loader unavailable")
+    result = loader.shell32.SHGetFolderPathW(None, csidl, None, 0, value)
+    if result != 0 or not value.value:
+        raise OSError(result, f"SHGetFolderPathW failed for CSIDL {csidl}")
+    return value.value
+
+
+def _windows_directory() -> str:
+    """Resolve the actual Windows directory through the kernel API."""
+    import ctypes
+
+    value = ctypes.create_unicode_buffer(32768)
+    loader = getattr(ctypes, "windll", None)
+    if loader is None:
+        raise OSError("Windows DLL loader unavailable")
+    length = loader.kernel32.GetWindowsDirectoryW(value, len(value))
+    if not length or length >= len(value):
+        raise OSError("GetWindowsDirectoryW failed")
+    return value.value
+
+
+def _worker_spawn_env(source: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Return the bounded non-secret environment inherited by Kanban workers.
+
+    The gateway process contains messaging, provider, deployment, and other
+    credentials loaded from its ``.env``.  A worker gets model authentication
+    from its profile-scoped ``auth.json`` and task context from the explicit
+    ``HERMES_KANBAN_*`` pins added by :func:`_default_spawn`; it must not inherit
+    the gateway's complete environment.
+
+    Keep this allowlist intentionally small. Entries are locale and bounded
+    runtime controls only. Provider keys, platform tokens, cloud credentials,
+    SSH agents, Docker sockets, trust-store overrides, executable-path hooks,
+    and unrelated parent state are excluded by construction rather than by a
+    fallible secret-name regex. Home, temporary, and Windows runtime paths are
+    resolved from account or OS APIs that do not trust process environment.
+    """
+    parent = os.environ if source is None else source
+    runtime = {
+        key: parent[key]
+        for key in (
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "LC_MESSAGES",
+            "TZ",
+            "TERMINAL_TIMEOUT",
+            "TERMINAL_MAX_FOREGROUND_TIMEOUT",
+        )
+        if parent.get(key)
+    }
+    if _IS_WINDOWS:
+        import ntpath
+
+        python_dir = ntpath.dirname(sys.executable)
+        system_root = ntpath.normpath(_windows_directory())
+        system_drive = ntpath.splitdrive(system_root)[0]
+        if not re.fullmatch(r"[A-Za-z]:", system_drive):
+            raise RuntimeError("Windows directory has no local drive")
+        user_home = ntpath.normpath(_windows_shell_folder(0x0028))  # CSIDL_PROFILE
+        appdata = ntpath.normpath(_windows_shell_folder(0x001A))  # CSIDL_APPDATA
+        localappdata = ntpath.normpath(
+            _windows_shell_folder(0x001C)
+        )  # CSIDL_LOCAL_APPDATA
+        temp_dir = ntpath.join(localappdata, "Temp")
+        env = {
+            "SYSTEMROOT": system_root,
+            "WINDIR": system_root,
+            "SYSTEMDRIVE": system_drive,
+            "HOME": user_home,
+            "USERPROFILE": user_home,
+            "APPDATA": appdata,
+            "LOCALAPPDATA": localappdata,
+            "TEMP": temp_dir,
+            "TMP": temp_dir,
+            "PATH": ";".join(
+                part
+                for part in (
+                    python_dir,
+                    ntpath.join(system_root, "System32"),
+                    system_root,
+                )
+                if part
+            ),
+        }
+    else:
+        env = {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME": _unix_worker_home(),
+        }
+    env.update(runtime)
+    return env
+
+
 def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
@@ -10744,13 +10855,7 @@ def _default_spawn(
     profile_arg = normalize_profile_name(task.assignee)
 
     prompt = f"work kanban task {task.id}"
-    env = dict(os.environ)
-    # The dispatcher is detached from every conversation. Its worker must never
-    # inherit routing mirrored by a previous gateway turn, even before the first
-    # session binds ContextVars in this process.
-    from gateway.session_context import _VAR_MAP
-    for key in _VAR_MAP:
-        env.pop(key, None)
+    env = _worker_spawn_env()
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root
@@ -10768,8 +10873,9 @@ def _default_spawn(
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).
         # This only happens in test fixtures where the isolated
-        # HERMES_HOME never had profiles created.
-        pass
+        # HERMES_HOME never had profiles created. Preserve only this explicit
+        # path pin; do not fall back to inheriting the complete parent env.
+        env["HERMES_HOME"] = str(Path(env["HOME"]) / ".hermes")
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -10840,6 +10946,11 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+    # Kanban workers are unattended, just like cron sessions. Reuse the
+    # established headless approval path so profile approvals.cron_mode=deny
+    # blocks dangerous commands instead of auto-approving them because no
+    # interactive or gateway approval callback exists.
+    env["HERMES_CRON_SESSION"] = "1"
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

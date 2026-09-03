@@ -2955,6 +2955,16 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
+        # Optional map of canonical Hermes profile id -> POSIX username
+        # (e.g. {dev: hermes-dev, sysadmin: hermes-sysadmin}). Empty/missing
+        # preserves trusted-local-user spawn on the gateway UID. A mapped
+        # profile is launched with sudo -n -u <user> -- and never falls back
+        # to the gateway UID if the drop fails. Root mappings are rejected.
+        "profile_os_users": {},
+        # Optional map of profile id -> Hermes runtime home ROOT (not OS HOME).
+        # When omitted, mapped workers use {passwd_dir}/.hermes. Do not overload
+        # OS HOME; this is the HERMES_HOME root the worker process sees.
+        "profile_os_homes": {},
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or

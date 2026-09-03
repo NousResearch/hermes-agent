@@ -10927,10 +10927,22 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    # Optional profile_os_users: wrap argv with sudo -n -u <user> --
+    # (no shell). Unmapped profiles are a no-op. Mapped profiles fail
+    # closed instead of falling back to the gateway UID.
+    from hermes_cli.kanban_os_users import apply_mapped_worker_launch
+    cmd, env = apply_mapped_worker_launch(
+        profile=profile_arg,
+        argv=cmd,
+        env=env,
+        workspace=workspace,
+        board_db=env.get("HERMES_KANBAN_DB"),
+    )
 
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
-    # that is performing the handoff.
+    # that is performing the handoff. Applied AFTER the sudo wrap so
+    # systemd-run stays on the gateway UID and sudoers only allows hermes.
     cmd = _restart_safe_worker_argv(task, cmd)
 
     # Redirect output to a per-task log under <board-root>/logs/.

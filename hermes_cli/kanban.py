@@ -1052,6 +1052,39 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_repair.add_argument("--json", action="store_true",
                           help="Emit the repair report as JSON")
 
+    # --- os-users (profile_os_users host setup / check; dry-run first) ---
+    p_os = sub.add_parser(
+        "os-users",
+        help="Host setup/check for profile-to-Linux-user worker isolation",
+        description=(
+            "Dry-run-first setup, audit, sudoers snippet, and rollback "
+            "for kanban.profile_os_users. Never prints secrets. Does not "
+            "enable the mapping — that is a separate config change after "
+            "check passes."
+        ),
+    )
+    os_sub = p_os.add_subparsers(dest="os_users_action")
+    p_os_check = os_sub.add_parser(
+        "check",
+        help="Audit mapped users, sudo -n, board WAL, and cross-profile denial",
+    )
+    p_os_check.add_argument("--json", action="store_true")
+    p_os_setup = os_sub.add_parser(
+        "setup",
+        help="Print (default) or apply as root the host provisioning steps",
+    )
+    p_os_setup.add_argument(
+        "--apply", action="store_true",
+        help="Run steps (requires euid 0; never prompts for a password)",
+    )
+    p_os_setup.add_argument("--gateway-user", default=None)
+    p_os_setup.add_argument(
+        "--dev-workspace", default=None,
+        help="Optional extra workspace to ACL for hermes-dev only",
+    )
+    os_sub.add_parser("sudoers", help="Print the sudoers drop-in")
+    os_sub.add_parser("rollback", help="Print rollback steps")
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -1093,6 +1126,10 @@ def kanban_command(args: argparse.Namespace) -> int:
     # task-routing override; otherwise `/kanban --board beta boards show`
     # reports beta as the current board even when the on-disk pointer is
     # alpha.
+    if action == "os-users":
+        from hermes_cli.kanban_os_users import run_os_users_cli
+        return run_os_users_cli(args)
+
     if action == "boards":
         return _dispatch_boards(args)
 

@@ -378,3 +378,37 @@ class TestSalvageFollowups:
             out = mod.cached_fetch_api_models("sk-key", "https://gw.example.com/v1")
         assert out == ["live-models"]
         live.assert_called_once()
+
+
+class TestProbeApiModelsNegativeCache:
+    """#81123: a fully-failed /models probe must degrade fast, not re-burn
+    connect timeouts per URL candidate on every picker open."""
+
+    def _fail(self, req, **kw):
+        raise TimeoutError("connect timed out")
+
+    def test_repeat_failure_skips_network(self, monkeypatch):
+        import hermes_cli.models as mod
+
+        monkeypatch.setattr(mod, "_probe_neg_cache", {})
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", self._fail)
+        r1 = mod.probe_api_models("", "https://blackhole.invalid/v1", timeout=1.0)
+        calls = []
+        monkeypatch.setattr(
+            mod, "_urlopen_model_catalog_request",
+            lambda req, **kw: calls.append(req.full_url) or self._fail(req, **kw),
+        )
+        r2 = mod.probe_api_models("", "https://blackhole.invalid/v1/", timeout=1.0)
+        assert (r1["models"], r2["models"]) == (None, None)
+        assert calls == []  # /v1 + root share one host:port entry
+        assert r2["probed_url"] == "https://blackhole.invalid/v1/models"
+
+    def test_expired_entry_reprobes(self, monkeypatch):
+        import hermes_cli.models as mod
+
+        old = time.monotonic() - mod._PROBE_NEG_TTL - 1
+        monkeypatch.setattr(mod, "_probe_neg_cache", {"blackhole.invalid:443": old})
+        monkeypatch.setattr(mod, "_urlopen_model_catalog_request", self._fail)
+        out = mod.probe_api_models("", "https://blackhole.invalid/v1", timeout=1.0)
+        assert out["models"] is None
+        assert mod._probe_neg_cache["blackhole.invalid:443"] > old

@@ -5864,6 +5864,16 @@ def _compress_context_via_codex_app_server(
     except Exception:
         pass
 
+    # Same as the primary compression path: a post-compaction re-view must
+    # return the full skill content again, not the "unchanged" dedup stub
+    # (#101518) — the earlier skill_view result was compacted away.
+    try:
+        from tools.skills_tool import reset_skill_view_dedup
+
+        reset_skill_view_dedup(task_id)
+    except Exception:
+        pass
+
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s",
         getattr(agent, "session_id", None) or "none",

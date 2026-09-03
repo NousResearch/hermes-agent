@@ -846,6 +846,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 if base_url:
                     result: Dict[str, Any] = {
                         "name": entry.get("name", ep_name),
+                        "provider_key": str(ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
@@ -1092,39 +1093,38 @@ def canonical_custom_identity(
     is upgraded back to its durable ``custom:<name>`` menu key. Three
     recovery sources, in priority order:
 
-    1. ``base_url`` — reverse-lookup the entry that owns the endpoint URL
-       (the one fact that always survives the persistence round-trip when a
-       URL was recorded).
-    2. ``model`` — reverse-lookup the entry that serves the session's model
+    1. ``model`` — reverse-lookup the entry that serves the session's model
        (``model``/``default_model``/``models`` catalog). The session row
        always stores the model name, so when no base_url survived (the
        recurring Desktop/TUI regression vector) the model is the last
        session-scoped fact that can recover the entry — and unlike the
        config fallback below it stays correct after the user points their
        global default at a different provider.
-    3. ``config_provider`` — the active ``config.model.provider`` (or its
+       Model identity must be checked first because multiple named custom
+       providers may intentionally share one gateway URL while exposing
+       disjoint model catalogs.
+    2. ``config_provider`` — the active ``config.model.provider`` (or its
        ``provider``/``HERMES_INFERENCE_PROVIDER`` equivalent). When neither
-       a base_url nor a model recovered the entry, the configured provider
+       a model nor a URL recovered the entry, the configured provider
        is the only durable identity left, so fall back to it when it names
        a real entry.
+    3. ``base_url`` — reverse-lookup the entry that owns the endpoint URL.
+       This is deliberately last: URL ownership is ambiguous when two named
+       providers share an OpenAI-compatible gateway.
 
     Returns ``custom:<name>`` when a routable identity is recovered, else
     ``None`` (caller keeps whatever it had — bare ``"custom"`` only as a last
     resort, e.g. a genuine ad-hoc endpoint with no config entry).
     """
-    # 1. Reverse-lookup by endpoint URL.
-    if base_url:
-        identity = find_custom_provider_identity(base_url)
-        if identity:
-            return identity
-
-    # 2. Reverse-lookup by the session's model name.
+    # 1. Reverse-lookup by the session's model name. This must precede URL
+    # lookup: shared gateway URLs are common and URL lookup returns the first
+    # configured entry, which can silently pair a model with the wrong key.
     if model:
         identity = find_custom_provider_identity_by_model(model)
         if identity:
             return identity
 
-    # 3. Fall back to the configured provider when it names a real entry.
+    # 2. Fall back to the configured provider when it names a real entry.
     candidate = str(config_provider or "").strip()
     if not candidate:
         try:
@@ -1136,29 +1136,28 @@ def canonical_custom_identity(
 
     candidate_norm = _normalize_custom_provider_name(candidate)
     # A bare/non-routable candidate cannot heal a bare custom override.
-    if not candidate_norm or candidate_norm in {"custom", "auto", "openrouter"}:
-        return None
-    # Only return it when it actually resolves to a configured custom entry,
-    # so we never invent a `custom:<x>` that resolution can't honor.
-    try:
-        entry = _get_named_custom_provider(candidate)
-        if entry is not None:
-            # ``candidate`` matched, but it may be the entry's DISPLAY NAME —
-            # ``_get_named_custom_provider`` accepts either spelling. For a
-            # keyed ``providers:`` entry the display name is not the durable
-            # identity, so re-resolve through the endpoint the matched entry
-            # owns and return the same config-key slug every other path
-            # returns (7b5a18817). Without this, a display name that differs
-            # from its key heals to ``custom:<display-name>`` and stops
-            # matching the persisted identity.
-            identity = find_custom_provider_identity(str(entry.get("base_url") or ""))
-            if identity:
-                return identity
-            if candidate_norm.startswith("custom:"):
-                return candidate_norm
-            return f"custom:{candidate_norm}"
-    except Exception:
-        pass
+    if candidate_norm and candidate_norm not in {"custom", "auto", "openrouter"}:
+        # Only return it when it actually resolves to a configured custom
+        # entry, so we never invent a `custom:<x>` that resolution can't honor.
+        try:
+            entry = _get_named_custom_provider(candidate)
+            if entry is not None:
+                # ``candidate`` matched, but it may be the entry's DISPLAY NAME
+                # — ``_get_named_custom_provider`` accepts either spelling.
+                # Return the durable config-key identity instead of deriving it
+                # from the ambiguous base_url.
+                provider_key = str(entry.get("provider_key", "") or "").strip()
+                entry_name = str(entry.get("name", "") or candidate).strip()
+                return custom_provider_slug(entry_name, provider_key)
+        except Exception:
+            pass
+
+    # 3. URL-only recovery is a last resort because several named custom
+    # providers can legitimately share the same gateway URL.
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
     return None
 
 

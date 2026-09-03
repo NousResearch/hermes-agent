@@ -18895,7 +18895,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # agents can observe or mutate it. The dedicated path revalidates that
         # the event is internal and pinned to its authorized profile/root.
         contractor_context = getattr(event, "contractor_context", None)
-        if contractor_context is not None:
+        if isinstance(contractor_context, ContractorTurnContext):
             return await self._handle_contractor_turn(
                 event, source, contractor_context
             )
@@ -21649,7 +21649,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         contractor_context = getattr(event, "contractor_context", None)
-        if contractor_context is not None:
+        if isinstance(contractor_context, ContractorTurnContext):
             return await self._handle_contractor_turn(
                 event, source, contractor_context
             )

@@ -406,16 +406,90 @@ class TestAgentBrowserPostSetup:
 
     def test_browserbase_returns_before_any_chromium_check(self):
         """browserbase hosts its own Chromium; it must never reach the
-        agent-browser-only Chromium-install branch."""
-        with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+        agent-browser-only Chromium-install branch. It must still verify
+        the agent-browser CLI is runnable (issue #86117)."""
+        with patch("shutil.which", return_value=None), patch(
             "subprocess.run"
         ) as run, patch(
             "tools.browser_tool._chromium_installed"
-        ) as chromium_check:
+        ) as chromium_check, patch(
+            "tools.browser_tool._find_agent_browser",
+            return_value="npx agent-browser",
+        ), patch(
+            "tools.browser_tool.warm_agent_browser_npx_cache",
+            return_value=True,
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ) as success:
             _run_post_setup("browserbase")
 
         run.assert_not_called()
         chromium_check.assert_not_called()
+        success.assert_called_with("    agent-browser verified via npx")
+
+    def test_browserbase_npx_warm_cache_fails_raises(self):
+        """When agent-browser resolves only to the npx sentinel and the
+        npx cache warm fails, post-setup must raise RuntimeError so
+        run_post_setup_command returns exit code 1 (issue #86117)."""
+        with patch("shutil.which", return_value=None), patch(
+            "tools.browser_tool._find_agent_browser",
+            return_value="npx agent-browser",
+        ), patch(
+            "tools.browser_tool.warm_agent_browser_npx_cache",
+            return_value=False,
+        ), patch(
+            "hermes_cli.tools_config._print_info"
+        ):
+            with pytest.raises(RuntimeError, match="could not be resolved via npx") as exc:
+                _run_post_setup("browserbase")
+
+        assert "`hermes tools post-setup browserbase`" in str(exc.value)
+
+    def test_browserbase_real_binary_verifies_and_succeeds(self):
+        """When agent-browser resolves to a real binary, post-setup
+        verifies it via agent_browser_runnable and reports success."""
+        with patch("shutil.which", return_value=None), patch(
+            "tools.browser_tool._find_agent_browser",
+            return_value="/usr/local/bin/agent-browser",
+        ), patch(
+            "hermes_constants.agent_browser_runnable",
+            return_value=True,
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ) as success:
+            _run_post_setup("browserbase")
+
+        assert any("already installed" in c.args[0] for c in success.call_args_list)
+
+    def test_browserbase_real_binary_not_runnable_raises(self):
+        """When agent-browser resolves to a binary that fails --version,
+        post-setup must raise RuntimeError (issue #86117)."""
+        with patch("shutil.which", return_value=None), patch(
+            "tools.browser_tool._find_agent_browser",
+            return_value="/usr/local/bin/agent-browser",
+        ), patch(
+            "hermes_constants.agent_browser_runnable",
+            return_value=False,
+        ), patch(
+            "hermes_cli.tools_config._print_success"
+        ):
+            with pytest.raises(RuntimeError, match="not runnable"):
+                _run_post_setup("browserbase")
+
+    def test_browserbase_file_not_found_raises(self):
+        """When agent-browser cannot be resolved at all (no binary, no
+        npx), browserbase post-setup must raise RuntimeError instead of
+        silently reporting success (issue #86117)."""
+        with patch("shutil.which", return_value=None), patch(
+            "tools.browser_tool._find_agent_browser",
+            side_effect=FileNotFoundError("agent-browser CLI not found"),
+        ), patch(
+            "hermes_cli.tools_config._print_warning"
+        ):
+            with pytest.raises(RuntimeError, match="agent-browser CLI not found") as exc:
+                _run_post_setup("browserbase")
+
+        assert "`hermes tools post-setup browserbase`" in str(exc.value)
 
     def test_chromium_already_installed_skips_subprocess(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
@@ -661,7 +735,14 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
     def test_browser_post_setup_attempts_cli_install(self, key):
         with patch("hermes_cli.tools_config._ensure_browser_use_cli") as ensure, patch(
             "shutil.which", return_value=None
-        ), patch("subprocess.run"):
+        ), patch("subprocess.run"), patch(
+            "tools.browser_tool._find_agent_browser",
+            return_value="/usr/bin/agent-browser",
+        ), patch(
+            "hermes_constants.agent_browser_runnable", return_value=True
+        ), patch(
+            "tools.browser_tool._chromium_installed", return_value=True
+        ):
             _run_post_setup(key)
         ensure.assert_called_once()
 

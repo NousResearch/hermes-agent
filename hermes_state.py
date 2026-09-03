@@ -320,13 +320,12 @@ def _answer_interrupted_tool_calls(
             continue
         if call_id in answered:
             continue
-        fn = tc.get("function") if isinstance(tc, dict) else getattr(tc, "function", None)
-        name = (fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)) or ""
+        fn = tc.get("function") or {}
         synthetic.append({
             "role": "tool",
             "content": INTERRUPTED_TOOL_CALL_RESULT,
             "tool_call_id": call_id,
-            "tool_name": name,
+            "tool_name": fn.get("name", "") if isinstance(fn, dict) else "",
             _DB_PERSISTED_MARKER_KEY: True,
         })
     if synthetic:

@@ -1,14 +1,17 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import itertools
 import json
 import logging
 import os
+from concurrent.futures import Future
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
+from gateway.config import Platform, PlatformConfig
 from cron.scheduler import (
     SILENT_MARKER,
     _build_job_prompt,
@@ -538,6 +541,157 @@ class TestDeliverResultErrorReturns:
             result = _deliver_result(job, "Output.")
         assert result is not None
         assert "not configured" in result
+
+
+class TestDeliverResultAmbiguousWrite:
+    """#97230: a live adapter's ambiguous write must suppress standalone fallback.
+
+    A live adapter that partially delivers a multi-chunk payload and then
+    returns ``SendResult(success=False, retryable=False, error_kind="ambiguous")``
+    has told the scheduler the outcome is UNKNOWN — re-sending the entire
+    payload via the standalone path would duplicate the chunks that already
+    landed. The scheduler must record the unknown outcome and stop, exactly
+    like the #38922 in-flight-timeout case. Adapters must be able to report
+    ambiguity in the platform-neutral vocabulary instead of lying with
+    ``success=True``.
+    """
+
+    def _job(self):
+        return {
+            "id": "ambiguous-job",
+            "name": "Ambiguous Job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "555"},
+        }
+
+    def _run(self, send_result, *, fake_standalone):
+        """Drive _deliver_result with a live telegram adapter whose send
+        returns ``send_result``, recording any standalone fallback sends."""
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            try:
+                future.set_result(asyncio.run(coro))
+            except BaseException as e:  # noqa: BLE001
+                future.set_exception(e)
+            return future
+
+        router = MagicMock()
+
+        async def _deliver_to_platform(target, content, metadata):
+            return send_result
+
+        router._deliver_to_platform = _deliver_to_platform
+
+        config = MagicMock()
+        config.platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, token="t", extra={})}
+        adapters = {Platform.TELEGRAM: MagicMock()}
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("cron.scheduler.load_config",
+                   return_value={"cron": {"wrap_response": False}}), \
+             patch("gateway.delivery.DeliveryRouter", return_value=router), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", fake_standalone):
+            return _deliver_result(self._job(), "Nightly report.",
+                                   adapters=adapters, loop=loop)
+
+    def _assert_no_fallback(self, err, standalone_calls):
+        assert standalone_calls == [], (
+            "an ambiguous write must NEVER be replayed via the standalone "
+            "path — already-delivered chunks would be duplicated"
+        )
+        assert err is not None
+        assert "ambiguous" in err
+        assert "555" in err
+
+    def test_ambiguous_send_result_object_suppresses_fallback(self):
+        from gateway.platforms.base import SendResult
+
+        async def fake_standalone(*_a, **_kw):
+            return {"success": True}
+
+        standalone_calls = []
+
+        def recording_fake(*a, **kw):
+            standalone_calls.append((a, kw))
+            return fake_standalone(*a, **kw)
+
+        result = SendResult(
+            success=False,
+            error="chunks 1-2 delivered; final chunk unconfirmed",
+            retryable=False,
+            error_kind="ambiguous",
+        )
+        err = self._run(result, fake_standalone=recording_fake)
+        self._assert_no_fallback(err, standalone_calls)
+
+    def test_ambiguous_dict_result_suppresses_fallback(self):
+        async def fake_standalone(*_a, **_kw):
+            return {"success": True}
+
+        standalone_calls = []
+
+        def recording_fake(*a, **kw):
+            standalone_calls.append((a, kw))
+            return fake_standalone(*a, **kw)
+
+        send_result = {
+            "success": False,
+            "retryable": False,
+            "error": "chunks 1-2 delivered; final chunk unconfirmed",
+            "error_kind": "ambiguous",
+        }
+        err = self._run(send_result, fake_standalone=recording_fake)
+        self._assert_no_fallback(err, standalone_calls)
+
+    def test_ordinary_unconfirmed_failure_still_falls_back_to_standalone(self):
+        """Regression guard: only error_kind="ambiguous" suppresses the
+        fallback — an ordinary unconfirmed failure must still reach the
+        standalone path or the message is silently dropped."""
+        from gateway.platforms.base import SendResult
+
+        async def fake_standalone(*_a, **_kw):
+            return {"success": True}
+
+        standalone_calls = []
+
+        def recording_fake(*a, **kw):
+            standalone_calls.append((a, kw))
+            return fake_standalone(*a, **kw)
+
+        result = SendResult(
+            success=False,
+            error="502 bad gateway",
+            retryable=False,
+            error_kind=None,
+        )
+        err = self._run(result, fake_standalone=recording_fake)
+        assert len(standalone_calls) == 1, (
+            "an ordinary unconfirmed failure keeps the standalone fallback"
+        )
+        assert err is None  # standalone delivered cleanly
+
+    def test_ambiguous_kind_on_success_is_ignored(self):
+        """error_kind is a failure category: a success=True result must never
+        route through the no-fallback branch."""
+        from gateway.platforms.base import SendResult
+
+        async def fake_standalone(*_a, **_kw):
+            return {"success": True}
+
+        standalone_calls = []
+
+        def recording_fake(*a, **kw):
+            standalone_calls.append((a, kw))
+            return fake_standalone(*a, **kw)
+
+        result = SendResult(success=True, message_id="42", error_kind="ambiguous")
+        err = self._run(result, fake_standalone=recording_fake)
+        assert standalone_calls == []
+        assert err is None
 
 
 class TestRunJobSessionPersistence:

@@ -3081,6 +3081,26 @@ def _confirm_adapter_delivery(send_result, job_id: str = "?", unverified: Option
     return True
 
 
+def _send_result_error_kind(send_result) -> Optional[str]:
+    """Return the platform-neutral ``error_kind`` from a send result, if any.
+
+    Accepts both shapes ``_deliver_to_platform`` can return (a
+    ``SendResult`` object or, when the silence-narration filter drops the
+    message, a plain dict) so callers never substring-match raw provider
+    text.  Unlike :func:`gateway.delivery._send_result_error_kind`, this
+    accepts non-SendResult/non-dict objects (returns ``None``) instead of
+    raising on a missing attribute — a producer that never set the field is
+    simply unclassified.
+    """
+    if send_result is None:
+        return None
+    if isinstance(send_result, dict):
+        kind = send_result.get("error_kind")
+    else:
+        kind = getattr(send_result, "error_kind", None)
+    return str(kind) if kind else None
+
+
 def _is_channel_dm_topic(
     runtime_adapter: Any,
     chat_id: Any,
@@ -3841,6 +3861,36 @@ def _deliver_result(
                                 else:
                                     err = "no response from adapter"
                                     shape = "None"
+                                send_error_kind = _send_result_error_kind(send_result)
+                                if send_error_kind == "ambiguous":
+                                    # #97230: the adapter reports an AMBIGUOUS
+                                    # WRITE — the payload (for a multi-chunk send,
+                                    # possibly only some chunks) may already be on
+                                    # the wire, but the adapter cannot confirm the
+                                    # final outcome and has told us a replay is
+                                    # unsafe.  Re-sending the entire payload via
+                                    # the standalone path would DUPLICATE the
+                                    # chunks that already landed.  Treat this like
+                                    # the #38922 in-flight timeout: record the
+                                    # unknown outcome honestly and suppress the
+                                    # standalone fallback (and any second send
+                                    # path for this target).
+                                    msg = (
+                                        f"live adapter send to {platform_name}:{chat_id} "
+                                        f"returned ambiguous result ({shape}, "
+                                        f"error={err}) — outcome unknown, NOT "
+                                        "re-sending via standalone to avoid "
+                                        "duplicate delivery"
+                                    )
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                    # Record the unknown outcome in the RUN
+                                    # status (not just target_errors — that
+                                    # list is folded in only on the paths
+                                    # below, which this `continue` skips): a
+                                    # possibly-unconfirmed delivery must not
+                                    # report ok/delivered.
+                                    delivery_errors.append(msg)
+                                    continue
                                 msg = (
                                     f"live adapter send to {platform_name}:{chat_id} "
                                     f"returned unconfirmed result ({shape}, error={err})"

@@ -2729,6 +2729,13 @@ class SendResult:
 #   not_found     the target chat/thread/message no longer exists.
 #   rate_limited  the platform throttled the send (flood control).
 #   transient     a connection-level failure that is safe to retry.
+#   ambiguous     an ambiguous write: the send may have PARTIALLY or fully
+#                 succeeded on the wire but the adapter cannot confirm the
+#                 final outcome (e.g. a multi-chunk payload delivered some
+#                 chunks before the failure).  Replaying the payload is
+#                 UNSAFE (duplicates already-delivered chunks); consumers
+#                 must record the outcome and wait for human/adjudicated
+#                 reconciliation instead of re-sending.
 #   unknown       classification did not match any known shape.
 SEND_ERROR_KINDS = frozenset(
     {
@@ -2738,6 +2745,7 @@ SEND_ERROR_KINDS = frozenset(
         "not_found",
         "rate_limited",
         "transient",
+        "ambiguous",
         "unknown",
     }
 )

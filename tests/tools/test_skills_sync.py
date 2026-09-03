@@ -522,6 +522,175 @@ class TestSyncSkills:
             assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
 
+class TestSyncedCopyIsWritable:
+    """#101226: copies made from an immutable (Nix/Homebrew) bundled source
+    must land owner-writable so the user and the curator can edit them.
+
+    ``sync_skills()`` exists precisely so bundled skills live in a writable
+    location; ``list_user_modified_bundled_skills`` / ``diff_bundled_skill``
+    / ``reset_bundled_skill`` and origin-hash tracking all presuppose an
+    editable copy. ``shutil.copytree`` uses ``copy2``, preserving the source
+    tree's read-only modes verbatim — the same fingerprint as #34860 /
+    #34972, which fixed removal but never the copy that creates the
+    read-only tree in the first place.
+    """
+
+    RO_DIR = (
+        stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP
+        | stat.S_IROTH | stat.S_IXOTH
+    )  # r-xr-xr-x — the Nix-store directory mode
+
+    def _make_readonly_source(self, bundled):
+        """Make the bundled source tree read-only like an immutable package."""
+        for p in sorted(bundled.rglob("*"), reverse=True):
+            if p.is_dir():
+                os.chmod(p, self.RO_DIR)
+            else:
+                os.chmod(p, stat.S_IREAD)  # r--r--r--
+
+    def _restore_writable(self, root):
+        """Best-effort perm restore so pytest tmp_path teardown succeeds.
+
+        Needed in the RED phase too: the bug being tested leaves the synced
+        copy itself read-only, which would break teardown of skills_dir.
+        """
+        if not root or not Path(root).exists():
+            return
+        for p in sorted(Path(root).rglob("*"), reverse=True):
+            try:
+                os.chmod(p, 0o700 if p.is_dir() else 0o600)
+            except OSError:
+                pass
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+
+    def _setup_bundled(self, tmp_path):
+        """Create a fake bundled skills directory (as in TestSyncSkills)."""
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "category" / "new-skill").mkdir(parents=True)
+        (bundled / "category" / "new-skill" / "SKILL.md").write_text("# New")
+        (bundled / "category" / "new-skill" / "main.py").write_text("print(1)")
+        (bundled / "category" / "DESCRIPTION.md").write_text("Category desc")
+        (bundled / "old-skill").mkdir()
+        (bundled / "old-skill" / "SKILL.md").write_text("# Old")
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        """Return context manager stack for patching sync globals."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_new_skill_copy_is_writable_from_readonly_source(self, tmp_path):
+        """Layer 1: the first-seed copy (new-skill branch) must not inherit
+        the source's read-only modes."""
+        bundled = self._setup_bundled(tmp_path)
+        self._make_readonly_source(bundled)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert "new-skill" in result["copied"]
+        dest = skills_dir / "category" / "new-skill"
+        assert (dest / "SKILL.md").exists()
+        # File owner-writable and dir owner-writable — editable copy.
+        assert os.stat(dest / "SKILL.md").st_mode & stat.S_IWUSR, (
+            "synced skill file is not owner-writable"
+        )
+        assert os.stat(dest).st_mode & stat.S_IWUSR, (
+            "synced skill dir is not owner-writable"
+        )
+        self._restore_writable(bundled)
+
+    def test_updated_skill_copy_is_writable_from_readonly_source(self, tmp_path):
+        """Layer 2: the update-path copy must not inherit read-only modes
+        either."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Simulate an existing install of old-skill at v1.
+        user_skill = skills_dir / "old-skill"
+        user_skill.mkdir(parents=True)
+        (user_skill / "SKILL.md").write_text("# Old v1")
+        # Bundled ships a newer version; the whole bundled tree is read-only.
+        (bundled / "old-skill" / "SKILL.md").write_text("# Old v2")
+        # Manifest records the v1 (user copy) hash so the update branch runs.
+        manifest_file.write_text(
+            f"old-skill:{_dir_hash(user_skill)}\n"
+        )
+        self._make_readonly_source(bundled)
+
+        try:
+            with self._patches(bundled, skills_dir, manifest_file):
+                result = sync_skills(quiet=True)
+
+            assert "old-skill" in result["updated"]
+            assert (user_skill / "SKILL.md").read_text() == "# Old v2"
+            assert os.stat(user_skill / "SKILL.md").st_mode & stat.S_IWUSR, (
+                "updated skill file is not owner-writable"
+            )
+            assert os.stat(user_skill).st_mode & stat.S_IWUSR, (
+                "updated skill dir is not owner-writable"
+            )
+        finally:
+            self._restore_writable(bundled)
+            self._restore_writable(skills_dir)
+
+    def test_official_optional_restore_copy_is_writable(self, tmp_path):
+        """Layer 3: official-optional restore is a sibling call path with the
+        same immutable source; its copy must be owner-writable too."""
+        bundled = self._setup_bundled(tmp_path)
+        optional = tmp_path / "optional-skills"
+        (optional / "research" / "opt-skill").mkdir(parents=True)
+        (optional / "research" / "opt-skill" / "SKILL.md").write_text(
+            "---\nname: opt-skill\ndescription: test optional skill.\n---\n# Opt\n"
+        )
+        self._make_readonly_source(optional)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with patch("tools.skills_sync._get_optional_dir", return_value=optional), \
+                patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+                patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            result = restore_official_optional_skill("opt-skill", restore=True)
+
+        assert result["ok"] is True
+        dest = skills_dir / "research" / "opt-skill"
+        assert (dest / "SKILL.md").exists()
+        assert os.stat(dest / "SKILL.md").st_mode & stat.S_IWUSR, (
+            "restored optional skill file is not owner-writable"
+        )
+        assert os.stat(dest).st_mode & stat.S_IWUSR, (
+            "restored optional skill dir is not owner-writable"
+        )
+        self._restore_writable(optional)
+
+    def test_chmod_failure_is_tolerated(self, tmp_path):
+        """Layer 5: a chmod failure on an exotic filesystem must not crash
+        sync — matching the OSError tolerance _rmtree_writable applies."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync._make_tree_owner_writable",
+                       side_effect=OSError("EPERM on exotic fs")):
+                result = sync_skills(quiet=True)
+
+        assert "new-skill" in result["copied"], (
+            "chmod failure aborted the copy — sync must stay resilient"
+        )
+
+
 class TestGetBundledDir:
     def test_env_var_override_with_default_fallback(self, tmp_path, monkeypatch):
         custom_dir = tmp_path / "custom_skills"

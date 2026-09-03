@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -431,7 +432,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
                 backed_up.append(_move_to_restore_backup(dest, backup_root))
             if not dest.exists():
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(src, dest)
+                _copy_skill_tree(src, dest)
                 restored.append(folder_name)
         elif not canonical_ok:
             continue
@@ -868,7 +869,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(skill_src, dest)
+                    _copy_skill_tree(skill_src, dest)
                     copied.append(skill_name)
                     manifest[skill_name] = bundled_hash
                     if not quiet:
@@ -924,7 +925,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         _rmtree_writable(backup)
                     shutil.move(str(dest), str(backup))
                     try:
-                        shutil.copytree(skill_src, dest)
+                        _copy_skill_tree(skill_src, dest)
                         manifest[skill_name] = bundled_hash
                         updated.append(skill_name)
                         if not quiet:
@@ -1010,6 +1011,60 @@ def sync_skills(quiet: bool = False) -> dict:
     }
 
 
+def _make_tree_owner_writable(path: Path) -> None:
+    """Make ``path`` and everything under it owner-writable, in place.
+
+    Bundled-skill sources may be immutable package trees (Nix store,
+    Homebrew Cellar) where directories are ``r-xr-xr-x`` and files
+    ``r--r--r--``. ``shutil.copytree`` copies with ``copy2``, preserving
+    those modes verbatim, so a synced skill would land unwritable — the
+    exact fingerprint of #34860 / #34972, whose removal-side fixes this
+    prevents at the source (#101226): if no read-only tree is ever created
+    under ``~/.hermes/skills/``, nothing downstream has to tolerate one.
+    Editing is the point of the sync — ``diff_bundled_skill``,
+    ``reset_bundled_skill`` and curator patching all presuppose a copy the
+    user (and the agent) can write.
+
+    Additive-only: existing bits are kept, ``S_IWUSR`` is OR'd in for
+    files, plus ``S_IWUSR | S_IXUSR`` where missing for directories (a
+    writable file inside a non-writable dir still cannot be replaced).
+    Best-effort per entry (OSError swallowed) — a chmod failure on an
+    exotic filesystem must not abort a sync that otherwise succeeded.
+    """
+    try:
+        entries = [Path(path), *Path(path).rglob("*")]
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            mode = entry.stat().st_mode
+            if entry.is_dir():
+                entry.chmod(mode | stat.S_IWUSR | stat.S_IXUSR)
+            else:
+                entry.chmod(mode | stat.S_IWUSR)
+        except OSError:
+            continue
+
+
+def _copy_skill_tree(src: Path, dest: Path) -> None:
+    """Copy a skill directory, dropping the source's read-only modes.
+
+    Bundled/optional sources may be immutable (Nix store, Homebrew) where
+    ``copytree``'s ``copy2`` preserves ``r-xr-xr-x`` dirs and ``r--r--r--``
+    files into ``~/.hermes/skills/`` — see ``_make_tree_owner_writable``,
+    #34860, #34972, #101226.
+
+    Mode normalisation is best-effort: if it fails wholesale (exotic
+    filesystem), the copy has still delivered the correct content, so the
+    failure is swallowed rather than reported as a failed copy.
+    """
+    shutil.copytree(src, dest)
+    try:
+        _make_tree_owner_writable(dest)
+    except OSError:
+        logger.debug("Could not normalise permissions on %s", dest, exc_info=True)
+
+
 def _rmtree_writable(path: Path) -> None:
     """Remove a directory tree, making read-only entries writable first.
 
@@ -1044,7 +1099,6 @@ def _rmtree_writable(path: Path) -> None:
             f"refusing to rmtree {target!r}: not strictly under {skills_root!r} "
             f"(scope guard — see #48200)"
         )
-    import stat
 
     def _on_error(func, fpath, exc_info):
         # Unlinking a child requires the parent dir to be writable, so chmod

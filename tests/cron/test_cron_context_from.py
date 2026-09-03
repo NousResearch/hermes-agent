@@ -175,6 +175,28 @@ class TestBuildJobPromptContextFrom:
         assert "truncated" in prompt
         assert "x" * 10000 not in prompt
 
+    def test_archived_cron_output_injects_response_before_truncation(self, cron_env):
+        """A long archived prompt must not truncate away its actual response."""
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Collect", schedule="every 1h")
+        out_dir = OUTPUT_DIR / job_a["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        archived = (
+            "# Cron Job: Collector\n\n## Prompt\n\n"
+            + "archived prompt noise " * 1000
+            + "\n\n## Response\n\n<IDEA_BRIEF>fresh evidence</IDEA_BRIEF>\n"
+        )
+        (out_dir / "2026-04-22_10-00-00.md").write_text(archived, encoding="utf-8")
+
+        job_b = create_job(
+            prompt="Write the insight", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+
+        assert "<IDEA_BRIEF>fresh evidence</IDEA_BRIEF>" in prompt
+        assert "archived prompt noise" not in prompt
 
     def test_invalid_job_id_skipped(self, cron_env):
         """context_from with path traversal job_id should be skipped."""

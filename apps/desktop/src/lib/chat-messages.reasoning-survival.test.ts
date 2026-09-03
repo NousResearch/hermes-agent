@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+
 import type { SessionMessage } from '@/types/hermes'
 import { chatMessageText, toChatMessages } from './chat-messages'
 

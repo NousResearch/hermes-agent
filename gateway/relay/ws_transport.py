@@ -893,6 +893,8 @@ class WebSocketRelayTransport:
                 "success": False,
                 "error": "relay outbound timed out",
                 "ambiguous": True,
+                "retryable": True,
+                "error_kind": "transient",
             }
         except Exception as exc:  # noqa: BLE001 - a dead socket is a failed send, not a raise
             # No `is None` check can close the window where the socket dies
@@ -915,6 +917,8 @@ class WebSocketRelayTransport:
             }
             if frame_sent:
                 result["ambiguous"] = True
+                result["retryable"] = True
+                result["error_kind"] = "transient"
             return result
         finally:
             self._pending.pop(request_id, None)
@@ -1008,7 +1012,13 @@ class WebSocketRelayTransport:
             for _rid, fut in list(self._pending.items()):
                 if not fut.done():
                     fut.set_result(
-                        {"success": False, "error": "relay transport connection lost"}
+                        {
+                            "success": False,
+                            "error": "relay transport connection lost",
+                            "ambiguous": True,
+                            "retryable": True,
+                            "error_kind": "transient",
+                        }
                     )
             self._pending.clear()
 

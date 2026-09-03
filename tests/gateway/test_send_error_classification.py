@@ -23,7 +23,9 @@ class _FakeBadRequest(Exception):
     "text,expected",
     [
         ("Message_too_long", "too_long"),
+        ("Slack API error: msg_too_long", "too_long"),
         ("Bad Request: message is too long", "too_long"),
+        ("relay request took too long awaiting acknowledgement", "unknown"),
         ("Bad Request: can't parse entities: unsupported start tag", "bad_format"),
         ("Bad Request: can't find end of the entity", "bad_format"),
         ("Forbidden: bot was blocked by the user", "forbidden"),

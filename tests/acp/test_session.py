@@ -146,6 +146,56 @@ class TestWslCwdTranslation:
         assert updated is not None
         assert updated.cwd == "/mnt/c/Users/foo/project"
 
+    @pytest.mark.parametrize(
+        "unc",
+        [
+            r"\\wsl.localhost\Ubuntu\home\me\proj",
+            r"\\wsl$\Ubuntu\home\me\proj",
+        ],
+    )
+    def test_unc_workspace_normalizes_to_its_stored_form(self, unc, monkeypatch):
+        """A workspace and the cwd actually stored for it must compare equal.
+
+        ``_translate_acp_cwd`` stores the POSIX translation of a
+        ``\\\\wsl.localhost\\`` workspace, so a filter that leaves the UNC
+        spelling alone can never match the rows it created.
+        """
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        stored = acp_session._translate_acp_cwd(unc)
+        assert stored == "/home/me/proj"
+
+        assert acp_session._normalize_cwd_for_compare(unc) == (
+            acp_session._normalize_cwd_for_compare(stored)
+        )
+
+    def test_drive_workspace_normalizes_to_its_stored_form(self, monkeypatch):
+        """Control: the drive spelling already matched."""
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        stored = acp_session._translate_acp_cwd(r"E:\Projects\demo")
+        assert stored == "/mnt/e/Projects/demo"
+
+        assert acp_session._normalize_cwd_for_compare(r"E:\Projects\demo") == (
+            acp_session._normalize_cwd_for_compare(stored)
+        )
+
+    def test_unrelated_workspace_still_compares_different(self, monkeypatch):
+        """Guard against over-normalizing everything into one bucket."""
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        assert acp_session._normalize_cwd_for_compare(
+            r"\\wsl.localhost\Ubuntu\home\me\proj"
+        ) != acp_session._normalize_cwd_for_compare(
+            r"\\wsl.localhost\Ubuntu\home\me\other"
+        )
+
+    def test_create_session_stores_unc_workspace_in_posix_form(
+        self, manager, monkeypatch,
+    ):
+        """The stored side of the pair — what the filter has to match."""
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        state = manager.create_session(cwd=r"\\wsl.localhost\Ubuntu\home\me\proj")
+
+        assert state.cwd == "/home/me/proj"
+
 # ---------------------------------------------------------------------------
 # fork
 # ---------------------------------------------------------------------------

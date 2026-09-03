@@ -46,6 +46,16 @@ def test_packaging_declared_as_core_dependency():
     )
 
 
+def test_hermes_state_holders_is_declared_as_top_level_module():
+    """The installed module contract must include hermes_state_holders."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    modules = data["tool"]["setuptools"]["py-modules"]
+    assert "hermes_state_holders" in modules, (
+        "hermes_state.py imports hermes_state_holders; it must be included "
+        "in setuptools py-modules for isolated installs"
+    )
+
+
 def test_faster_whisper_is_not_a_base_dependency():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     deps = data["project"]["dependencies"]

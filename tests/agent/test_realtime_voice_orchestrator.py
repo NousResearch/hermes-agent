@@ -21,6 +21,7 @@ from agent.realtime_voice_orchestrator import (
     run_blocking_tool,
 )
 from agent.realtime_voice_provider import (
+    InputAudioCommitted,
     InputSpeechStarted,
     InputTranscript,
     OutputAudio,
@@ -41,11 +42,13 @@ FULL_CAPABILITIES = frozenset(
     {
         RealtimeCapability.TOOL_CALLING,
         RealtimeCapability.RESPONSE_CANCELLATION,
+        RealtimeCapability.RESPONSE_CANCEL_BY_ID,
         RealtimeCapability.OUTPUT_TRUNCATION,
         RealtimeCapability.INPUT_TRANSCRIPTION,
         RealtimeCapability.OUTPUT_TRANSCRIPTION,
     }
 )
+GLOBAL_CANCEL_CAPABILITIES = FULL_CAPABILITIES - {RealtimeCapability.RESPONSE_CANCEL_BY_ID}
 
 
 class FakeSession(RealtimeVoiceSession):
@@ -384,6 +387,84 @@ async def test_unnamed_responses_are_fenced_after_cancel() -> None:
 
     assert session.cancels == [None]
     assert host.audio == [b"a", b"next"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_by_id_names_the_response_and_leaves_others_alone() -> None:
+    session, host, orchestrator = make(host=RecordingHost(played_ms=100))
+    run_task = asyncio.create_task(orchestrator.run())
+    session.push(
+        ResponseStarted(response_id="r1"),
+        OutputAudio(data=b"a", item_id="i1", response_id="r1"),
+        InputSpeechStarted(),
+        # Audio the provider did not attribute to r1 (e.g. a continuation
+        # racing the cancel): a by-id cancel stopped r1 alone, so it plays.
+        OutputAudio(data=b"other", item_id="i9"),
+        OutputAudio(data=b"tail", item_id="i1", response_id="r1"),
+        ResponseCompleted(response_id="r1", status="cancelled"),
+    )
+    await finish(session, run_task)
+
+    assert session.cancels == ["r1"]
+    assert host.audio == [b"a", b"other"]
+
+
+@pytest.mark.asyncio
+async def test_session_global_cancel_fences_every_response_until_a_new_start() -> None:
+    session = FakeSession(capabilities=GLOBAL_CANCEL_CAPABILITIES)
+    session, host, orchestrator = make(session=session, host=RecordingHost(played_ms=100))
+    run_task = asyncio.create_task(orchestrator.run())
+    session.push(
+        ResponseStarted(response_id="r1"),
+        OutputAudio(data=b"a", item_id="i1", response_id="r1"),
+        InputSpeechStarted(),
+        OutputAudio(data=b"other", item_id="i9", response_id="r9"),  # also cancelled
+        OutputAudio(data=b"unnamed", item_id="i8"),
+        OutputTranscript(text="ghost", final=True, response_id="r9"),
+        ResponseStarted(response_id="r2"),
+        OutputAudio(data=b"next", item_id="i2", response_id="r2"),
+        ResponseCompleted(response_id="r2"),
+    )
+    await finish(session, run_task)
+
+    assert session.cancels == [None]  # the id is not offered to a global cancel
+    assert host.audio == [b"a", b"next"]
+    assert host.transcripts == []
+
+
+@pytest.mark.asyncio
+async def test_session_global_fence_lifts_on_the_cancelled_terminal() -> None:
+    session = FakeSession(capabilities=GLOBAL_CANCEL_CAPABILITIES)
+    session, host, orchestrator = make(session=session, host=RecordingHost(played_ms=100))
+    run_task = asyncio.create_task(orchestrator.run())
+    session.push(
+        ResponseStarted(response_id="r1"),
+        OutputAudio(data=b"a", item_id="i1", response_id="r1"),
+        InputSpeechStarted(),
+        ResponseCompleted(response_id="r1", status="cancelled"),
+        # Fails open again: a provider that never names responses keeps working.
+        OutputAudio(data=b"unnamed", item_id="i8"),
+    )
+    await finish(session, run_task)
+
+    assert session.cancels == [None]
+    assert host.audio == [b"a", b"unnamed"]
+
+
+@pytest.mark.asyncio
+async def test_input_audio_committed_from_an_undeclared_provider_is_harmless() -> None:
+    session = FakeSession(capabilities={RealtimeCapability.TOOL_CALLING})
+    session, host, orchestrator = make(session=session)
+    run_task = asyncio.create_task(orchestrator.run())
+    session.push(
+        InputAudioCommitted(item_id="in_1"),
+        InputTranscript(text="still here", final=True),
+    )
+    await finish(session, run_task)
+
+    assert session.supports(RealtimeCapability.INPUT_COMMIT_EVENTS) is False
+    assert host.transcripts == [("user", "still here", True)]
+    assert host.errors == []
 
 
 # -- tools -------------------------------------------------------------------

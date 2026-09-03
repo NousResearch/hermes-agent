@@ -20,7 +20,9 @@ Response identity
     it interrupted over the next one.
 Barge-in
     ``InputSpeechStarted`` drains local playback, sends one cancel per
-    in-flight response (when the provider supports it), truncates the
+    in-flight response (when the provider supports it — by id with
+    ``RESPONSE_CANCEL_BY_ID``, otherwise session-global, after which every
+    response counts as stopped until a new one starts), truncates the
     provider's copy of the interrupted item at the millisecond the operator
     actually heard (when supported — otherwise the local drop is the whole
     degrade, never a faked truncation), and cancels in-flight tool tasks.
@@ -214,9 +216,15 @@ class _ResponseLedger:
         self.active_id: str | None = None
         self._settled: OrderedDict[str, None] = OrderedDict()
         self._unnamed_cancelled = False
+        #: Set by a session-global cancel: every response the provider had
+        #: in flight is gone, not just the one we named, so nothing may speak
+        #: until a response demonstrably starts (or ends) after the cancel.
+        self._global_fence = False
 
     def may_speak(self, response_id: str | None) -> bool:
         """Ambiguity fails open: muting real speech is the worse failure."""
+        if self._global_fence:
+            return False
         if response_id is None:
             return not self._unnamed_cancelled
         if response_id in self._settled:
@@ -236,11 +244,17 @@ class _ResponseLedger:
         if response_id is None and self.in_flight and self.active_id is not None:
             return  # an unnamed start cannot un-name a live response
         self._unnamed_cancelled = False
+        self._global_fence = False
         self.in_flight = True
         self.active_id = response_id
 
-    def cancel_active(self) -> bool:
-        """Settle the interrupted response; ``False`` when nothing needs a cancel."""
+    def cancel_active(self, *, session_global: bool = False) -> bool:
+        """Settle the interrupted response; ``False`` when nothing needs a cancel.
+
+        ``session_global`` records that the cancel about to go out stops every
+        response the provider has in flight (no ``RESPONSE_CANCEL_BY_ID``), so
+        the fence widens from the named response to all of them.
+        """
         if not self.in_flight:
             return False
         if self.active_id is not None:
@@ -253,12 +267,15 @@ class _ResponseLedger:
             return False
         else:
             self._unnamed_cancelled = True
+        if session_global:
+            self._global_fence = True
         return True
 
     def _release_lost_terminal(self) -> None:
         self.in_flight = False
         self.active_id = None
         self._unnamed_cancelled = False
+        self._global_fence = False
 
     def finish(self, response_id: str | None) -> bool:
         """Close a response; ``False`` when the terminal named some other response."""
@@ -273,6 +290,7 @@ class _ResponseLedger:
         self.in_flight = False
         self.active_id = None
         self._unnamed_cancelled = False
+        self._global_fence = False
         return True
 
 
@@ -440,11 +458,18 @@ class RealtimeVoiceOrchestrator:
         played_ms = self._host.on_barge_in()
         item_id = self._last_audio_item_id
         active_id = self._responses.active_id
-        needs_cancel = self._responses.cancel_active()
+        can_cancel = self._session.supports(RealtimeCapability.RESPONSE_CANCELLATION)
+        by_id = can_cancel and self._session.supports(RealtimeCapability.RESPONSE_CANCEL_BY_ID)
+        # Without RESPONSE_CANCEL_BY_ID the wire cancel is session-global: it
+        # stops whatever the provider has in flight, so the ledger must not
+        # assume the response we named was the only casualty.
+        needs_cancel = self._responses.cancel_active(session_global=can_cancel and not by_id)
         if self._cancel_tools_on_barge_in:
             self._cancel_running_tools()
-        if needs_cancel and self._session.supports(RealtimeCapability.RESPONSE_CANCELLATION):
-            await self._wire_call("cancel", self._session.cancel_response(active_id))
+        if needs_cancel and can_cancel:
+            await self._wire_call(
+                "cancel", self._session.cancel_response(active_id if by_id else None)
+            )
         if item_id is not None and played_ms is not None:
             # One truncation per item: the drained item is spent either way.
             self._last_audio_item_id = None

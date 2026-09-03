@@ -49,14 +49,27 @@ for provider-native fields. Hosts must never treat it as authority.
 
 Capabilities
 ------------
-A session advertises a frozen set of :class:`RealtimeCapability`. Optional
-operations (``commit_audio``, ``create_response``, ``cancel_response``,
-``truncate_output``, ``add_context`` / ``remove_context``,
-``submit_tool_results``) raise :class:`UnsupportedRealtimeCapability` unless
-the matching capability is advertised, and advertising a capability without
-overriding its hook is rejected at construction. Hosts degrade explicitly:
-a provider without ``OUTPUT_TRUNCATION`` gets its playback dropped locally
-instead of a faked truncation.
+A session advertises a frozen set of :class:`RealtimeCapability`. They come
+in two kinds:
+
+*Operational* capabilities unlock a session method — ``submit_tool_results``
+(``TOOL_CALLING``), ``commit_audio`` (``MANUAL_INPUT_COMMIT``),
+``create_response`` (``EXPLICIT_RESPONSE``), ``cancel_response``
+(``RESPONSE_CANCELLATION``), ``truncate_output`` (``OUTPUT_TRUNCATION``),
+``add_context`` / ``remove_context`` (``DYNAMIC_CONTEXT``). Calling one
+without the capability raises :class:`UnsupportedRealtimeCapability`, and
+advertising one without overriding its hook is rejected at construction.
+
+*Passive* capabilities promise what the event stream carries or how a wire
+command behaves: ``INPUT_TRANSCRIPTION``, ``OUTPUT_TRANSCRIPTION``,
+``INPUT_COMMIT_EVENTS``, ``TOOL_CALL_CANCELLATION``, ``SESSION_RESUMPTION``,
+``RESPONSE_CANCEL_BY_ID``. Declared means "you will see it / it is honoured";
+undeclared means "no promise" — a provider that emits an event it never
+declared is tolerated and the event still reaches the host. Hosts degrade
+explicitly: a provider without ``OUTPUT_TRUNCATION`` gets its playback dropped
+locally instead of a faked truncation, and a provider without
+``RESPONSE_CANCEL_BY_ID`` cancels session-wide, so the host must not assume
+the response it named was the only one stopped.
 """
 
 from __future__ import annotations
@@ -74,12 +87,40 @@ MAX_IDENTIFIER_LENGTH = 512
 
 
 class RealtimeCapability(StrEnum):
+    """What a session can do (operational) or promises to carry (passive).
+
+    Operational — unlock a method, require the hook override:
+
+    ``TOOL_CALLING``            ``submit_tool_results`` / ``_submit_tool_results``
+    ``MANUAL_INPUT_COMMIT``     ``commit_audio`` / ``_commit_audio``
+    ``EXPLICIT_RESPONSE``       ``create_response`` / ``_create_response``
+    ``RESPONSE_CANCELLATION``   ``cancel_response`` / ``_cancel_response``
+    ``OUTPUT_TRUNCATION``       ``truncate_output`` / ``_truncate_output``
+    ``DYNAMIC_CONTEXT``         ``add_context`` + ``remove_context`` / both hooks
+
+    Passive — a promise about the stream or the wire, no hook:
+
+    ``INPUT_TRANSCRIPTION``     :class:`InputTranscript` events arrive
+    ``OUTPUT_TRANSCRIPTION``    :class:`OutputTranscript` events arrive
+    ``INPUT_COMMIT_EVENTS``     :class:`InputAudioCommitted` arrives when the
+                                provider closes an input turn, whether its own
+                                turn detection or ``commit_audio`` closed it
+    ``TOOL_CALL_CANCELLATION``  :class:`ToolCallCancelled` retracts calls
+    ``SESSION_RESUMPTION``      :class:`SessionResumptionUpdate` carries handles
+    ``RESPONSE_CANCEL_BY_ID``   ``cancel_response(response_id)`` stops exactly
+                                that response (requires
+                                ``RESPONSE_CANCELLATION``); without it the wire
+                                cancel is session-global and the id is dropped
+    """
+
     TOOL_CALLING = "tool_calling"
     INPUT_TRANSCRIPTION = "input_transcription"
     OUTPUT_TRANSCRIPTION = "output_transcription"
     INPUT_COMMIT_EVENTS = "input_commit_events"
+    MANUAL_INPUT_COMMIT = "manual_input_commit"
     EXPLICIT_RESPONSE = "explicit_response"
     RESPONSE_CANCELLATION = "response_cancellation"
+    RESPONSE_CANCEL_BY_ID = "response_cancel_by_id"
     OUTPUT_TRUNCATION = "output_truncation"
     TOOL_CALL_CANCELLATION = "tool_call_cancellation"
     DYNAMIC_CONTEXT = "dynamic_context"
@@ -258,6 +299,14 @@ class InputSpeechStopped(RealtimeVoiceEvent):
 
 @dataclass(frozen=True, slots=True)
 class InputAudioCommitted(RealtimeVoiceEvent):
+    """The provider closed the operator's input turn into ``item_id``.
+
+    Emitted by server-side turn detection as much as by ``commit_audio()``,
+    so it is promised by the passive ``INPUT_COMMIT_EVENTS`` capability, not
+    by ``MANUAL_INPUT_COMMIT``. Informational: a provider that emits it
+    without declaring the capability is tolerated and the event is delivered.
+    """
+
     item_id: str | None = None
     provider_data: Mapping[str, Any] = field(default_factory=dict)
 
@@ -518,11 +567,15 @@ class RealtimeVoiceSession(abc.ABC):
 
     _CAPABILITY_HOOKS: Mapping[RealtimeCapability, tuple[str, ...]] = {
         RealtimeCapability.TOOL_CALLING: ("_submit_tool_results",),
-        RealtimeCapability.INPUT_COMMIT_EVENTS: ("_commit_audio",),
+        RealtimeCapability.MANUAL_INPUT_COMMIT: ("_commit_audio",),
         RealtimeCapability.EXPLICIT_RESPONSE: ("_create_response",),
         RealtimeCapability.RESPONSE_CANCELLATION: ("_cancel_response",),
         RealtimeCapability.OUTPUT_TRUNCATION: ("_truncate_output",),
         RealtimeCapability.DYNAMIC_CONTEXT: ("_add_context", "_remove_context"),
+    }
+    # Passive capabilities that only refine an operational one.
+    _CAPABILITY_PREREQUISITES: Mapping[RealtimeCapability, RealtimeCapability] = {
+        RealtimeCapability.RESPONSE_CANCEL_BY_ID: RealtimeCapability.RESPONSE_CANCELLATION,
     }
 
     def __init__(
@@ -544,6 +597,12 @@ class RealtimeVoiceSession(abc.ABC):
                         f"advertised capability {capability.value} requires a "
                         f"subclass override of {hook_name}"
                     )
+        for capability, prerequisite in self._CAPABILITY_PREREQUISITES.items():
+            if capability in self._capabilities and prerequisite not in self._capabilities:
+                raise ValueError(
+                    f"advertised capability {capability.value} requires "
+                    f"{prerequisite.value}"
+                )
         for field_name, value in (("input_audio", input_audio), ("output_audio", output_audio)):
             if not isinstance(value, RealtimeAudioFormat):
                 raise TypeError(f"{field_name} must be RealtimeAudioFormat")
@@ -654,12 +713,17 @@ class RealtimeVoiceSession(abc.ABC):
     # -- optional operations ----------------------------------------------
 
     async def commit_audio(self) -> None:
-        """Close the operator's input buffer when turn detection is manual."""
-        self._require(RealtimeCapability.INPUT_COMMIT_EVENTS)
+        """Close the operator's input buffer when turn detection is manual.
+
+        Gated by ``MANUAL_INPUT_COMMIT``. Whether the provider then reports
+        the closed turn as :class:`InputAudioCommitted` is the separate,
+        passive ``INPUT_COMMIT_EVENTS`` promise.
+        """
+        self._require(RealtimeCapability.MANUAL_INPUT_COMMIT)
         await self._commit_audio()
 
     async def _commit_audio(self) -> None:
-        raise UnsupportedRealtimeCapability(RealtimeCapability.INPUT_COMMIT_EVENTS)
+        raise UnsupportedRealtimeCapability(RealtimeCapability.MANUAL_INPUT_COMMIT)
 
     async def create_response(self, *, metadata: Mapping[str, str] | None = None) -> None:
         """Ask the provider to start a response now."""
@@ -673,9 +737,17 @@ class RealtimeVoiceSession(abc.ABC):
         raise UnsupportedRealtimeCapability(RealtimeCapability.EXPLICIT_RESPONSE)
 
     async def cancel_response(self, response_id: str | None = None) -> None:
-        """Stop the in-flight response (the named one when the wire supports it)."""
+        """Stop the in-flight response.
+
+        With ``RESPONSE_CANCEL_BY_ID`` the named response is the one stopped.
+        Without it the wire cancel is session-global: the id is dropped before
+        it reaches the provider, and the caller must not assume the response
+        it named was the only one cancelled. Ask ``supports(...)`` first.
+        """
         _validate_identifier(response_id, "response_id", optional=True)
         self._require(RealtimeCapability.RESPONSE_CANCELLATION)
+        if RealtimeCapability.RESPONSE_CANCEL_BY_ID not in self._capabilities:
+            response_id = None
         await self._cancel_response(response_id)
 
     async def _cancel_response(self, response_id: str | None) -> None:

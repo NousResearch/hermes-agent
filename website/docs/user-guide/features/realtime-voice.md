@@ -62,6 +62,9 @@ interruption; Hermes stops playback immediately, cancels the in-flight response,
 provider exactly how many milliseconds of the answer you actually heard (so the model's
 memory of what it said matches yours), and cancels any tool calls still running for that
 turn. Providers that cannot truncate on the wire get the local stop only — nothing is faked.
+Providers whose cancel is session-wide rather than per-response (they do not declare
+`RESPONSE_CANCEL_BY_ID`) are treated accordingly: everything in flight counts as stopped
+until the next response starts.
 
 ### Tools and approvals
 

@@ -266,7 +266,7 @@ class TestSessionContract:
     async def test_optional_operations_are_capability_gated(self):
         session = _FakeSession()
 
-        with pytest.raises(UnsupportedRealtimeCapability, match="input_commit_events"):
+        with pytest.raises(UnsupportedRealtimeCapability, match="manual_input_commit"):
             await session.commit_audio()
         with pytest.raises(UnsupportedRealtimeCapability, match="response_cancellation"):
             await session.cancel_response()

@@ -170,8 +170,10 @@ def test_capabilities_are_explicit_and_immutable() -> None:
         "input_transcription",
         "output_transcription",
         "input_commit_events",
+        "manual_input_commit",
         "explicit_response",
         "response_cancellation",
+        "response_cancel_by_id",
         "output_truncation",
         "tool_call_cancellation",
         "dynamic_context",
@@ -409,7 +411,7 @@ def test_session_reports_negotiated_audio_formats() -> None:
 async def test_optional_operations_fail_with_typed_capability_error() -> None:
     session = _Session()
     operations = [
-        (session.commit_audio(), RealtimeCapability.INPUT_COMMIT_EVENTS),
+        (session.commit_audio(), RealtimeCapability.MANUAL_INPUT_COMMIT),
         (session.create_response(), RealtimeCapability.EXPLICIT_RESPONSE),
         (session.cancel_response(), RealtimeCapability.RESPONSE_CANCELLATION),
         (session.truncate_output("item", 10), RealtimeCapability.OUTPUT_TRUNCATION),
@@ -448,7 +450,7 @@ async def test_optional_operation_arguments_are_validated_before_capability() ->
     "capability",
     [
         RealtimeCapability.TOOL_CALLING,
-        RealtimeCapability.INPUT_COMMIT_EVENTS,
+        RealtimeCapability.MANUAL_INPUT_COMMIT,
         RealtimeCapability.EXPLICIT_RESPONSE,
         RealtimeCapability.RESPONSE_CANCELLATION,
         RealtimeCapability.OUTPUT_TRUNCATION,
@@ -474,12 +476,62 @@ def test_passive_capabilities_do_not_require_hooks() -> None:
         {
             RealtimeCapability.INPUT_TRANSCRIPTION,
             RealtimeCapability.OUTPUT_TRANSCRIPTION,
+            RealtimeCapability.INPUT_COMMIT_EVENTS,
             RealtimeCapability.TOOL_CALL_CANCELLATION,
             RealtimeCapability.SESSION_RESUMPTION,
         }
     )
 
     assert RealtimeCapability.SESSION_RESUMPTION in session.capabilities
+    assert session.supports(RealtimeCapability.INPUT_COMMIT_EVENTS) is True
+    assert session.supports(RealtimeCapability.MANUAL_INPUT_COMMIT) is False
+
+
+def test_cancel_by_id_requires_response_cancellation() -> None:
+    with pytest.raises(ValueError, match="response_cancel_by_id requires response_cancellation"):
+        _NoOptionalHooksSession({RealtimeCapability.RESPONSE_CANCEL_BY_ID})
+
+
+class _CancellingSession(_Session):
+    def __init__(self, capabilities) -> None:
+        super().__init__(capabilities)
+        self.cancel_targets = []
+
+    async def _cancel_response(self, response_id) -> None:
+        self.cancel_targets.append(response_id)
+
+
+@pytest.mark.asyncio
+async def test_cancel_response_forwards_the_id_only_with_cancel_by_id() -> None:
+    session_global = _CancellingSession({RealtimeCapability.RESPONSE_CANCELLATION})
+    by_id = _CancellingSession(
+        {RealtimeCapability.RESPONSE_CANCELLATION, RealtimeCapability.RESPONSE_CANCEL_BY_ID}
+    )
+
+    await session_global.cancel_response("resp_1")
+    await session_global.cancel_response()
+    await by_id.cancel_response("resp_1")
+    await by_id.cancel_response()
+
+    assert session_global.cancel_targets == [None, None]
+    assert by_id.cancel_targets == ["resp_1", None]
+    assert session_global.supports(RealtimeCapability.RESPONSE_CANCEL_BY_ID) is False
+
+
+@pytest.mark.asyncio
+async def test_input_audio_committed_is_delivered_without_the_capability() -> None:
+    session = _Session()  # declares nothing, cannot commit_audio(), yet commits arrive
+    session.event_values = [
+        InputAudioCommitted(item_id="in_1"),
+        SessionClosed(),
+    ]
+
+    events = [event async for event in session.events()]
+
+    assert events[0] == InputAudioCommitted(item_id="in_1")
+    assert session.supports(RealtimeCapability.INPUT_COMMIT_EVENTS) is False
+    with pytest.raises(UnsupportedRealtimeCapability, match="manual_input_commit"):
+        await session.commit_audio()
 
 
 @pytest.mark.asyncio

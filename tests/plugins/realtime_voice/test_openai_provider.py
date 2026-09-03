@@ -117,6 +117,9 @@ class TestProviderMetadata:
         assert provider.default_voice() == DEFAULT_VOICE == "marin"
         assert provider.capabilities == CAPABILITIES
         assert RealtimeCapability.OUTPUT_TRUNCATION in provider.capabilities
+        assert RealtimeCapability.RESPONSE_CANCEL_BY_ID in provider.capabilities
+        assert RealtimeCapability.MANUAL_INPUT_COMMIT in provider.capabilities
+        assert RealtimeCapability.INPUT_COMMIT_EVENTS in provider.capabilities
         assert RealtimeCapability.SESSION_RESUMPTION not in provider.capabilities
         assert [voice["id"] for voice in provider.list_voices()][:2] == ["marin", "cedar"]
         assert provider.get_setup_schema()["env_vars"][0]["key"] == "OPENAI_API_KEY"

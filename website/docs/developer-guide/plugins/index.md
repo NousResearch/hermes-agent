@@ -672,6 +672,25 @@ orchestrator checks `session.supports(...)` before calling an optional operation
 the base class refuses a session that advertises a capability without overriding its
 hook.
 
+| Capability | Kind | What it declares | Hook to override |
+|---|---|---|---|
+| `TOOL_CALLING` | operational | `submit_tool_results()` delivers `ToolCall` answers | `_submit_tool_results` |
+| `MANUAL_INPUT_COMMIT` | operational | `commit_audio()` closes the operator's input turn from the client | `_commit_audio` |
+| `EXPLICIT_RESPONSE` | operational | `create_response()` starts a response on demand | `_create_response` |
+| `RESPONSE_CANCELLATION` | operational | `cancel_response()` stops the in-flight response | `_cancel_response` |
+| `RESPONSE_CANCEL_BY_ID` | passive | the cancel names its target; without it the wire cancel is **session-global**, the id is dropped before it reaches you, and Hermes treats every in-flight response as stopped until a new one starts (requires `RESPONSE_CANCELLATION`) | — |
+| `OUTPUT_TRUNCATION` | operational | `truncate_output()` trims the provider's copy of an interrupted item; without it the local playback drop is the whole degrade | `_truncate_output` |
+| `DYNAMIC_CONTEXT` | operational | `add_context()` / `remove_context()` inject host text | `_add_context` + `_remove_context` |
+| `INPUT_TRANSCRIPTION` | passive | `InputTranscript` events arrive | — |
+| `OUTPUT_TRANSCRIPTION` | passive | `OutputTranscript` events arrive | — |
+| `INPUT_COMMIT_EVENTS` | passive | `InputAudioCommitted` arrives whenever the provider closes an input turn — its own turn detection or a manual commit; a provider may emit it without `MANUAL_INPUT_COMMIT` | — |
+| `TOOL_CALL_CANCELLATION` | passive | `ToolCallCancelled` retracts calls whose results must not be submitted | — |
+| `SESSION_RESUMPTION` | passive | `SessionResumptionUpdate` carries resumption handles | — |
+
+Passive capabilities are promises: declared means the host will see the event or the
+wire honours the id; undeclared means no promise. A provider that emits an event it never
+declared is tolerated — the event still reaches the host.
+
 ```python
 # ~/.hermes/plugins/my-realtime/__init__.py
 import os

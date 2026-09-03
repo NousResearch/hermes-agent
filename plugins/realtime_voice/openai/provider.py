@@ -84,9 +84,13 @@ CAPABILITIES = frozenset(
         RealtimeCapability.TOOL_CALLING,
         RealtimeCapability.INPUT_TRANSCRIPTION,
         RealtimeCapability.OUTPUT_TRANSCRIPTION,
+        # Server VAD reports every committed turn; the client may also commit.
         RealtimeCapability.INPUT_COMMIT_EVENTS,
+        RealtimeCapability.MANUAL_INPUT_COMMIT,
         RealtimeCapability.EXPLICIT_RESPONSE,
+        # GA response.cancel accepts response_id, so a cancel names its target.
         RealtimeCapability.RESPONSE_CANCELLATION,
+        RealtimeCapability.RESPONSE_CANCEL_BY_ID,
         RealtimeCapability.OUTPUT_TRUNCATION,
         RealtimeCapability.DYNAMIC_CONTEXT,
     }

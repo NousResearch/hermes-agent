@@ -611,6 +611,8 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    requires_runtime_acceptance: bool = False
+    runtime_acceptance_parents: list[str] = Field(default_factory=list)
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
@@ -643,6 +645,8 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            requires_runtime_acceptance=payload.requires_runtime_acceptance,
+            runtime_acceptance_parents=payload.runtime_acceptance_parents,
             model_override=payload.model_override,
             provider_override=payload.provider_override,
             reasoning_effort=payload.reasoning_effort,
@@ -839,6 +843,8 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    requires_runtime_acceptance: Optional[bool] = None
+    runtime_acceptance_parents: Optional[list[str]] = None
     # Per-task model/provider override (the board's model dropdown).
     # ``model_override=""`` clears both. ``clear_model_override=True`` is
     # the explicit clear signal — needed because Optional[str]=None means
@@ -879,6 +885,40 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         review_assignee_deferred = (
             payload.status == "review" and payload.assignee is not None
         )
+
+        payload_fields = getattr(
+            payload, "model_fields_set", getattr(payload, "__fields_set__", set())
+        )
+        gate_fields = {
+            "requires_runtime_acceptance",
+            "runtime_acceptance_parents",
+        } & payload_fields
+        if gate_fields and len(payload_fields) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Update runtime acceptance fields in their own request so "
+                    "immutable gate state cannot partially commit"
+                ),
+            )
+        if payload.requires_runtime_acceptance is not None:
+            try:
+                kanban_db.set_requires_runtime_acceptance(
+                    conn,
+                    task_id,
+                    payload.requires_runtime_acceptance,
+                )
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+        if payload.runtime_acceptance_parents is not None:
+            try:
+                kanban_db.designate_runtime_acceptance_parents(
+                    conn, task_id, payload.runtime_acceptance_parents
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
 
         # --- assignee ----------------------------------------------------
         # For a combined assignee+review patch, request_review must capture

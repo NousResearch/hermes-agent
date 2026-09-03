@@ -785,6 +785,164 @@ def test_dashboard_cancel_keeps_task_in_old_status(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_runtime_acceptance_marker_round_trips_and_cannot_clear_on_complete(
+    client, kanban_home
+):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "runtime-gated",
+            "assignee": "reviewer",
+            "requires_runtime_acceptance": True,
+        },
+    )
+    assert created.status_code == 200, created.text
+    task = created.json()["task"]
+    assert task["requires_runtime_acceptance"] is True
+
+    bypass = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "done",
+            "requires_runtime_acceptance": False,
+            "summary": "approve without evidence",
+        },
+    )
+    assert bypass.status_code == 409
+
+    current = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}"
+    ).json()["task"]
+    assert current["requires_runtime_acceptance"] is True
+    assert current["status"] != "done"
+
+
+def test_runtime_acceptance_marker_cannot_be_cleared_while_entering_review(
+    client, kanban_home
+):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "runtime-gated combined review",
+            "assignee": "coder",
+            "requires_runtime_acceptance": True,
+        },
+    )
+    task_id = created.json()["task"]["id"]
+    with kb.connect_closing() as conn:
+        assert kb.claim_task(conn, task_id, claimer="coder:1") is not None
+
+    bypass = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={
+            "status": "review",
+            "assignee": "reviewer",
+            "requires_runtime_acceptance": False,
+            "summary": "Ready.",
+        },
+    )
+    assert bypass.status_code == 409
+    current = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}"
+    ).json()["task"]
+    assert current["requires_runtime_acceptance"] is True
+    assert current["status"] == "running"
+
+
+def test_runtime_acceptance_marker_cannot_be_cleared_before_review_lifecycle(
+    client, kanban_home
+):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "runtime-gated before review",
+            "assignee": "reviewer",
+            "requires_runtime_acceptance": True,
+        },
+    )
+    task_id = created.json()["task"]["id"]
+
+    clear = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"requires_runtime_acceptance": False},
+    )
+    assert clear.status_code == 409
+
+    complete = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "summary": "approve without evidence"},
+    )
+    assert complete.status_code == 409
+    current = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}"
+    ).json()["task"]
+    assert current["requires_runtime_acceptance"] is True
+    assert current["status"] != "done"
+
+
+
+def test_combined_marker_and_status_patch_is_rejected_without_partial_update(
+    client, kanban_home
+):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "plain card", "assignee": "coder"},
+    ).json()["task"]
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"requires_runtime_acceptance": True, "status": "review"},
+    )
+    assert response.status_code == 409
+    current = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}"
+    ).json()["task"]
+    assert current["requires_runtime_acceptance"] is False
+    assert current["status"] == "ready"
+
+
+
+def test_runtime_acceptance_marker_cannot_be_cleared_before_later_completion(
+    client, kanban_home
+):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "runtime-gated review",
+            "assignee": "coder",
+            "requires_runtime_acceptance": True,
+        },
+    )
+    task_id = created.json()["task"]["id"]
+    with kb.connect_closing() as conn:
+        claimed = kb.claim_task(conn, task_id, claimer="coder:1")
+        assert claimed is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="Ready.",
+            reviewer="reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+
+    clear = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"requires_runtime_acceptance": False},
+    )
+    assert clear.status_code == 409
+
+    complete = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"status": "done", "summary": "approve without evidence"},
+    )
+    assert complete.status_code == 409
+    current = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}"
+    ).json()["task"]
+    assert current["requires_runtime_acceptance"] is True
+    assert current["status"] != "done"
+
+
 def test_dashboard_confirm_dispatches_expected_patch_body(client):
     """Behavioral: the PATCH body shape the bundle produces on confirm
     (status + result + summary) must be accepted by the backend without

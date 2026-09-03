@@ -81,6 +81,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "requires_runtime_acceptance": t.requires_runtime_acceptance,
     }
 
 
@@ -418,6 +419,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Provider the --model belongs to (passed as "
                                "--provider <name> to the worker). Requires "
                                "--model.")
+    p_create.add_argument("--requires-runtime-acceptance", action="store_true",
+                          help="Mark runtime-affecting work. Reviewer completion "
+                               "then requires done QA/live-verification parents "
+                               "plus commit and runtime_evidence metadata. Leave "
+                               "off for ordinary code-only changes.")
+    p_create.add_argument(
+        "--runtime-acceptance-parent",
+        action="append",
+        default=[],
+        help=(
+            "Explicit QA/live-verification parent task id. Repeat for multiple "
+            "parents; each id must also be passed with --parent."
+        ),
+    )
     p_create.add_argument("--goal", action="store_true", dest="goal_mode",
                           help="Run the worker in a goal loop: after each "
                                "turn a judge checks the response against the "
@@ -1686,6 +1701,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            requires_runtime_acceptance=bool(
+                getattr(args, "requires_runtime_acceptance", False)
+            ),
+            runtime_acceptance_parents=tuple(
+                getattr(args, "runtime_acceptance_parent", None) or ()
+            ),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

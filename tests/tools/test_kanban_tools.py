@@ -80,6 +80,30 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_and_list_expose_runtime_acceptance_marker(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="runtime-gated",
+            assignee="reviewer",
+            requires_runtime_acceptance=True,
+        )
+    finally:
+        conn.close()
+
+    shown = json.loads(kt._handle_show({"task_id": tid}))
+    assert shown["task"]["requires_runtime_acceptance"] is True
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    listed = json.loads(kt._handle_list({"assignee": "reviewer", "limit": 10}))
+    row = next(task for task in listed["tasks"] if task["id"] == tid)
+    assert row["requires_runtime_acceptance"] is True
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

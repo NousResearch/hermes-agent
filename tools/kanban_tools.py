@@ -509,6 +509,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "current_run_id": task.current_run_id,
         "model_override": task.model_override,
         "provider_override": task.provider_override,
+        "requires_runtime_acceptance": task.requires_runtime_acceptance,
         "parents": parents,
         "children": children,
         "parent_count": len(parents),
@@ -555,6 +556,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
                     "provider_override": t.provider_override,
+                    "requires_runtime_acceptance": t.requires_runtime_acceptance,
                 }
 
             def _run_dict(r):
@@ -1414,6 +1416,16 @@ def _handle_create(args: dict, **kw) -> str:
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
+    requires_runtime_acceptance, runtime_bool_error = _parse_bool_arg(
+        args, "requires_runtime_acceptance"
+    )
+    if runtime_bool_error:
+        return tool_error(runtime_bool_error)
+    runtime_acceptance_parents = args.get("runtime_acceptance_parents") or []
+    if isinstance(runtime_acceptance_parents, str):
+        runtime_acceptance_parents = [runtime_acceptance_parents]
+    if not isinstance(runtime_acceptance_parents, (list, tuple)):
+        return tool_error("runtime_acceptance_parents must be a list of task ids")
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
@@ -1481,6 +1493,8 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                requires_runtime_acceptance=requires_runtime_acceptance,
+                runtime_acceptance_parents=tuple(runtime_acceptance_parents),
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1821,7 +1835,12 @@ KANBAN_COMPLETE_SCHEMA = {
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "workers alongside ``summary``. For a card marked "
+                    "requires_runtime_acceptance, include `commit` (7-64 "
+                    "hex Git SHA), `runtime_acceptance_parents` (linked QA "
+                    "task ids), and `runtime_evidence` with non-empty "
+                    "candidate_commit (matching commit), environment, "
+                    "command, and result strings."
                 ),
             },
             "result": {
@@ -2278,6 +2297,25 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "requires_runtime_acceptance": {
+                "type": "boolean",
+                "description": (
+                    "Mark this card as runtime-affecting. Reviewer completion "
+                    "then fails closed unless explicit QA/live-verification "
+                    "parents are done and completion metadata cites the tested "
+                    "candidate commit plus production-like runtime_evidence. "
+                    "Leave false for code-only changes; browser/UI evidence is "
+                    "not globally required."
+                ),
+            },
+            "runtime_acceptance_parents": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Explicit QA/live-verification parent task ids for a "
+                    "runtime-gated card. Every id must also appear in parents."
                 ),
             },
             "goal_mode": {

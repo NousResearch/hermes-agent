@@ -113,6 +113,126 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_runtime_acceptance_uses_explicit_parent_indices(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship runtime change", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "runtime acceptance",
+        "tasks": [
+            {
+                "title": "review candidate",
+                "body": "Approve the candidate.",
+                "assignee": "reviewer",
+                "parents": [],
+                "requires_runtime_acceptance": True,
+                "runtime_acceptance_parents": [1],
+            },
+            {
+                "title": "candidate receipt",
+                "body": "Exercise the production-like runtime.",
+                "assignee": "qa",
+                "parents": [0],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "reviewer", "qa"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 2
+    review_id, qa_id = outcome.child_ids
+    with kb.connect() as conn:
+        review = kb.get_task(conn, review_id)
+        links = conn.execute(
+            "SELECT parent_id, child_id FROM task_links "
+            "WHERE parent_id IN (?, ?) AND child_id IN (?, ?)",
+            (review_id, qa_id, review_id, qa_id),
+        ).fetchall()
+        designated = conn.execute(
+            "SELECT parent_id FROM task_runtime_acceptance_parents "
+            "WHERE child_id = ?",
+            (review_id,),
+        ).fetchall()
+    assert review is not None
+    assert review.requires_runtime_acceptance is True
+    assert {row["parent_id"] for row in designated} == {qa_id}
+    assert {(row["parent_id"], row["child_id"]) for row in links} == {
+        (qa_id, review_id),
+    }
+
+
+def test_decompose_rejects_mixed_runtime_parent_indices(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship runtime change", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "runtime acceptance",
+        "tasks": [
+            {
+                "title": "review candidate",
+                "assignee": "reviewer",
+                "requires_runtime_acceptance": True,
+                "runtime_acceptance_parents": [1, "1"],
+            },
+            {"title": "candidate receipt", "assignee": "qa"},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "reviewer", "qa"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok is False
+    assert "runtime_acceptance_parents" in outcome.reason
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert root is not None
+    assert root.status == "triage"
+
+
+
+@pytest.mark.parametrize("parents", [0, False, ""])
+def test_decompose_rejects_scalar_parents_from_llm(kanban_home, parents):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship runtime change", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "bad graph",
+        "tasks": [{"title": "review candidate", "parents": parents}],
+    })
+    patches = _patch_list_profiles(["orchestrator"])
+    for item in patches:
+        item.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for item in patches:
+            item.stop()
+
+    assert outcome.ok is False
+    assert "parents must be a list" in outcome.reason
+
+
+
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)

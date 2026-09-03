@@ -70,7 +70,9 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "requires_runtime_acceptance": false,
+        "runtime_acceptance_parents": [<int>, ...]
       },
       ...
     ]
@@ -89,6 +91,16 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - When work changes runtime behavior (gateway routing, scheduled jobs,
+    service deployments, platform adapters), set "requires_runtime_acceptance":
+    true on the review/approval child AND create an explicit
+    QA/live-verification child that deploys and exercises the change in a
+    production-like environment. On the marked child, set
+    "runtime_acceptance_parents" to the QA child index (or indices). This
+    explicit field is required; titles and body prose are never used to infer
+    QA identity. Express the dependency as QA/live-verification -> review,
+    never review -> later verification. Code-only changes leave the marker
+    false and "runtime_acceptance_parents" empty.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -237,6 +249,41 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         })
         valid.add(p.name)
     return roster, valid
+
+
+def _enforce_runtime_acceptance_order(children: list[dict]) -> None:
+    """Normalize explicit QA -> reviewer edges in-place.
+
+    ``runtime_acceptance_parents`` is a list of sibling indices supplied on
+    each marked review child. Using explicit indices avoids classifying QA by
+    title/body prose, which can both accept unrelated work and reject a valid
+    non-self-describing verification card.
+    """
+    for idx, child in enumerate(children):
+        if not child.get("requires_runtime_acceptance"):
+            continue
+        runtime_parents = child.get("runtime_acceptance_parents") or []
+        for parent_idx in runtime_parents:
+            if children[parent_idx].get("requires_runtime_acceptance"):
+                raise ValueError(
+                    f"tasks[{idx}].runtime_acceptance_parents[{parent_idx}] "
+                    "cannot itself require runtime acceptance"
+                )
+
+    for idx, child in enumerate(children):
+        if not child.get("requires_runtime_acceptance"):
+            continue
+        runtime_parents = child.get("runtime_acceptance_parents") or []
+        for parent_idx in runtime_parents:
+            inverse_parents = children[parent_idx].get("parents") or []
+            children[parent_idx]["parents"] = [
+                parent for parent in inverse_parents if parent != idx
+            ]
+        review_parents = list(child.get("parents") or [])
+        for parent_idx in runtime_parents:
+            if parent_idx not in review_parents:
+                review_parents.append(parent_idx)
+        child["parents"] = review_parents
 
 
 def _format_roster(roster: list[dict]) -> str:
@@ -417,19 +464,67 @@ def decompose_task(
                 "routing to default_assignee %r",
                 task_id, idx, assignee, default_assignee,
             )
-        parents = entry.get("parents") or []
+        parents = entry.get("parents", [])
         if not isinstance(parents, list):
-            parents = []
+            return DecomposeOutcome(
+                task_id, False, f"tasks[{idx}].parents must be a list",
+            )
         # Clean parent indices: drop non-int and out-of-range.
-        clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
+        clean_parents = [
+            p
+            for p in parents
+            if isinstance(p, int)
+            and not isinstance(p, bool)
+            and 0 <= p < len(raw_tasks)
+            and p != idx
+        ]
+        marked = bool(entry.get("requires_runtime_acceptance"))
+        runtime_parents = entry.get("runtime_acceptance_parents", [])
+        if not isinstance(runtime_parents, list):
+            return DecomposeOutcome(
+                task_id,
+                False,
+                f"tasks[{idx}].runtime_acceptance_parents must be a list",
+            )
+        if any(
+            not isinstance(parent_idx, int)
+            or isinstance(parent_idx, bool)
+            or not 0 <= parent_idx < len(raw_tasks)
+            or parent_idx == idx
+            for parent_idx in runtime_parents
+        ):
+            return DecomposeOutcome(
+                task_id,
+                False,
+                f"tasks[{idx}].runtime_acceptance_parents contains an invalid "
+                "sibling index",
+            )
+        clean_runtime_parents = list(dict.fromkeys(runtime_parents))
+        if clean_runtime_parents and not marked:
+            return DecomposeOutcome(
+                task_id,
+                False,
+                f"tasks[{idx}].runtime_acceptance_parents require "
+                "requires_runtime_acceptance=true",
+            )
+        if marked and not clean_runtime_parents:
+            return DecomposeOutcome(
+                task_id,
+                False,
+                f"tasks[{idx}].runtime_acceptance_parents must name at least "
+                "one QA/live-verification task index",
+            )
         children.append({
             "title": title.strip()[:200],
             "body": body.strip(),
             "assignee": chosen,
             "parents": clean_parents,
+            "requires_runtime_acceptance": marked,
+            "runtime_acceptance_parents": clean_runtime_parents,
         })
 
     try:
+        _enforce_runtime_acceptance_order(children)
         with kb.connect_closing() as conn:
             child_ids = kb.decompose_triage_task(
                 conn,

@@ -1220,7 +1220,16 @@ _WINDOWS_BASH_SHELL_HINT = (
     "return, and a lone `\\n` is not delivered as a line terminator, so the "
     "child's prompt silently never returns. When a CLI offers a "
     "non-interactive path (flags, `--with-token`, config files, an OAuth "
-    "device flow polled with curl), prefer it over driving prompts."
+    "device flow polled with curl), prefer it over driving prompts. "
+    "Native Windows CLIs (`schtasks`, `taskkill`, `icacls`, `attrib`) take "
+    "SINGLE-slash flags (e.g. `schtasks /query /tn X /v /fo LIST`) — `//`-style "
+    "escaping is NOT needed here (MSYS conversion is already off) and is passed "
+    "literally, so `schtasks //query` dies with 'Invalid argument/option'. "
+    "If a native tool ever misbehaves under git-bash arg rewriting, prefix the "
+    "call with `MSYS_NO_PATHCONV=1`. Never send `2>/dev/null` on a discovery "
+    "query you will draw conclusions from: read its exit code and raw stderr "
+    "first — a mangled invocation with hidden stderr silently reads as "
+    "'nothing found'."
 )
 
 

@@ -786,6 +786,18 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
+def _is_env_source_suppressed(provider: str, source: str) -> bool:
+    """True when ``hermes auth remove`` suppressed *source* for *provider*."""
+    try:
+        from hermes_cli.auth import is_source_suppressed
+    except Exception:
+        return False
+    try:
+        return bool(is_source_suppressed(provider, source))
+    except Exception:
+        return False
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -826,9 +838,13 @@ def resolve_anthropic_token() -> Optional[str]:
         return cc_token
 
     # 3. Regular API key. An explicit user-configured key must not be shadowed
-    # by auto-discovered Claude Code or credential-pool OAuth credentials.
+    # by auto-discovered Claude Code or credential-pool OAuth credentials —
+    # unless the user removed it with ``hermes auth remove``, which records
+    # ``env:ANTHROPIC_API_KEY`` as suppressed. ``load_pool()`` already skips
+    # the variable then; reading it here anyway sent every request out with
+    # the removed key as ``X-Api-Key`` while the healthy OAuth entry sat idle.
     api_key = _getenv("ANTHROPIC_API_KEY").strip()
-    if api_key:
+    if api_key and not _is_env_source_suppressed("anthropic", "env:ANTHROPIC_API_KEY"):
         return api_key
 
     # 4. Claude Code credential file

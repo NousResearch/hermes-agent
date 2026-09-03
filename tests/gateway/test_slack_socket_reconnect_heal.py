@@ -271,6 +271,30 @@ class TestSocketModeTeardown:
         )
 
 
+    @pytest.mark.asyncio
+    async def test_unbound_connect_task_cannot_outlive_teardown(self, adapter):
+        """A connect task overwritten in SDK task attributes must still be stopped."""
+        handler = _FakeHandler()
+        client = handler.client
+        with patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=handler):
+            adapter._start_socket_mode_handler()
+        await asyncio.sleep(0.01)
+
+        # Reproduce the production race: a reconnect coroutine survives after
+        # the SDK rebinds its public task attributes, so teardown cannot find
+        # it through current_session_monitor/message_receiver anymore.
+        orphan = asyncio.create_task(client.connect())
+        await asyncio.sleep(0.01)
+        assert not orphan.done()
+
+        await adapter._stop_socket_mode_handler()
+        await asyncio.sleep(0.03)
+
+        session = client.aiohttp_client_session
+        assert orphan.done(), "an overwritten connect task outlived teardown"
+        assert session.ws_connect_after_close == 0
+
+
 class TestSocketModeRestart:
 
 

@@ -1164,6 +1164,11 @@ class SlackAdapter(BasePlatformAdapter):
         # user messages without bot_id/subtype=bot_message markers.
         self._user_is_bot_cache: Dict[Tuple[str, str], bool] = {}
         self._socket_mode_task: Optional[asyncio.Task] = None
+        # Track every task entering slack_sdk's unbounded connect() retry loop.
+        # The SDK can overwrite its public task attributes while an older
+        # reconnect is still alive, so those attributes are not a complete
+        # teardown inventory.
+        self._socket_connect_tasks: set[asyncio.Task] = set()
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
@@ -1447,6 +1452,23 @@ class SlackAdapter(BasePlatformAdapter):
         )
         _apply_slack_proxy(self._handler.client, self._proxy_url)
 
+        client = self._handler.client
+        original_connect = client.connect
+        connect_tasks: set[asyncio.Task] = set()
+        self._socket_connect_tasks = connect_tasks
+
+        async def _tracked_connect(*args: Any, **kwargs: Any) -> Any:
+            current = asyncio.current_task()
+            if current is not None:
+                connect_tasks.add(current)
+            try:
+                return await original_connect(*args, **kwargs)
+            finally:
+                if current is not None:
+                    connect_tasks.discard(current)
+
+        client.connect = _tracked_connect
+
         task = asyncio.create_task(self._handler.start_async())
         self._socket_mode_task = task
         self._socket_handler_started_monotonic = time.monotonic()
@@ -1475,9 +1497,18 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_mode_task = None
 
         client = getattr(handler, "client", None)
+        if client is not None:
+            # Stop SDK monitors from starting fresh reconnects while teardown
+            # drains the complete tracked task set.
+            client.closed = True
+            client.auto_reconnect_enabled = False
+        connect_tasks = self._socket_connect_tasks
         await _cancel_socket_tasks(
-            [task] + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS]
+            [task]
+            + [getattr(client, attr, None) for attr in _SOCKET_CLIENT_TASK_ATTRS]
+            + list(connect_tasks)
         )
+        self._socket_connect_tasks = set()
 
         if handler is not None:
             try:

@@ -46,6 +46,11 @@ _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
+# True while _discover_providers() is running. An entry-point plugin that
+# transitively imports hermes_cli.auth mid-scan re-enters list_providers();
+# without this guard the re-entrant call would either recurse or observe a
+# premature `_discovered = True` and freeze a partial snapshot (see #102123).
+_discovering = False
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -322,6 +327,46 @@ def _requires_arguments(fn) -> bool:
 def _discover_providers() -> None:
     """Populate the registry by importing every provider plugin.
 
+    Re-entrancy safe: an entry-point plugin that transitively imports
+    ``hermes_cli.auth`` mid-scan re-enters ``list_providers()``; the
+    ``_discovering`` guard makes that a no-op instead of a recursion, and
+    ``_discovered`` is set only after the full scan so no caller can
+    observe a premature done flag (see #102123). Auth's provider registry
+    is re-synced at the end for importa-time snapshots taken mid-scan.
+    """
+    global _discovered, _discovering
+    if _discovered or _discovering:
+        return
+    _discovering = True
+    try:
+        _discover_providers_inner()
+    finally:
+        _discovering = False
+        _discovered = True
+        _resync_auth_registry()
+
+
+def _resync_auth_registry() -> None:
+    """Best-effort re-sync of ``hermes_cli.auth.PROVIDER_REGISTRY``.
+
+    ``hermes_cli.auth`` snapshots ``list_providers()`` at import time; when
+    that import lands mid-discovery the snapshot is partial and never
+    refreshed. If auth is already imported, re-run its idempotent sync so
+    late-discovered providers appear. Guarded by ``sys.modules`` so this
+    package never imports ``hermes_cli.auth`` itself (circular).
+    """
+    try:
+        auth_mod = sys.modules.get("hermes_cli.auth")
+        sync = getattr(auth_mod, "sync_plugin_providers_to_registry", None)
+        if callable(sync):
+            sync()
+    except Exception:
+        pass
+
+
+def _discover_providers_inner() -> None:
+    """Run every provider-plugin import step (see :func:`_discover_providers`).
+
     Order:
       1. Bundled plugins at ``<repo>/plugins/model-providers/<name>/``
       2. User plugins at ``$HERMES_HOME/plugins/model-providers/<name>/``
@@ -332,10 +377,6 @@ def _discover_providers() -> None:
     Each step imports its plugins, which call ``register_provider()`` at
     module-level. Later steps win on name collision.
     """
-    global _discovered
-    if _discovered:
-        return
-    _discovered = True
 
     # 0. Pip-installed plugins — entry points in the ``hermes_agent.plugins``
     #    group (the same group the general PluginManager uses). The manager

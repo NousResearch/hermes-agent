@@ -423,6 +423,7 @@ def _compute_tool_definitions(
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
+    _kanban_force_injected = False
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
@@ -438,6 +439,7 @@ def _compute_tool_definitions(
             # (for token/cost reasons), but that should not strip the kanban
             # worker's completion/block/heartbeat surface.
             effective_enabled_toolsets.append("kanban")
+            _kanban_force_injected = True
         for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -463,6 +465,10 @@ def _compute_tool_definitions(
     # stripped out. See issue #17309.
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
+            # When kanban was force-injected for a dispatcher-spawned worker,
+            # don't let the profile's disabled_toolsets strip it back out (#98808)
+            if toolset_name == "kanban" and _kanban_force_injected:
+                continue
             if validate_toolset(toolset_name):
                 from toolsets import bundle_non_core_tools, get_toolset
                 if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):

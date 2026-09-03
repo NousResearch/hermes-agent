@@ -330,7 +330,9 @@ def approve_permanent(pattern_key: str):
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_set().update(patterns)
+        governing = _permanent_set()
+        governing.clear()
+        governing.update(patterns)
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
@@ -392,8 +394,7 @@ def load_permanent_allowlist() -> set:
     so is_approved() honors 'always' choices from previous sessions."""
     try:
         patterns = _read_permanent_allowlist()
-        if patterns:
-            load_permanent(patterns)
+        load_permanent(patterns)
         with _lock:
             _permanent_baseline_by_home[_baseline_key()] = set(patterns)
         return patterns

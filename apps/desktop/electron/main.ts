@@ -1439,7 +1439,9 @@ function readPersistedPoolLimits() {
     })
 
     if (fromEnv.maxBackends !== POOL_LIMITS_DEFAULTS.maxBackends || fromEnv.idleMs !== POOL_LIMITS_DEFAULTS.idleMs) {
-      rememberLog(`[pool-limits] no saved file; using env-var overrides: maxBackends=${fromEnv.maxBackends}, idleMs=${fromEnv.idleMs}`)
+      rememberLog(
+        `[pool-limits] no saved file; using env-var overrides: maxBackends=${fromEnv.maxBackends}, idleMs=${fromEnv.idleMs}`
+      )
     } else {
       rememberLog('[pool-limits] no saved file and no env overrides; using defaults')
     }
@@ -12315,9 +12317,7 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
       await waitForBackendExit(child)
 
       if (child && child.exitCode === null && child.signalCode === null) {
-        throw new Error(
-          `Profile backend for "${poolKey}" did not exit; keeping the local slot occupied.`
-        )
+        throw new Error(`Profile backend for "${poolKey}" did not exit; keeping the local slot occupied.`)
       }
 
       releaseBackendChild(child)

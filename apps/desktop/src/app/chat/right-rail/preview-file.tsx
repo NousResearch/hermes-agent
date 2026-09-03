@@ -347,9 +347,7 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
 
   const code = String(children).replace(/\n$/, '')
 
-  const highlighted = (
-    <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
-  )
+  const highlighted = <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
 
   // ```mermaid / ```svg fences route to the shared lazy renderers (same
   // registry the chat transcript uses); everything else stays on Shiki.

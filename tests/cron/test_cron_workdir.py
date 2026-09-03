@@ -13,8 +13,17 @@ Covers:
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
+
+
+def _git(repo, *args):
+    """Run a git command in *repo* (behave a path, not a callable)."""
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True,
+    )
 
 
 @pytest.fixture()
@@ -68,6 +77,37 @@ class TestNormalizeWorkdir:
         f.write_text("hi")
         with pytest.raises(ValueError, match="not a directory"):
             _normalize_workdir(str(f))
+
+    def test_canonical_git_checkout_rejected(self, tmp_path):
+        from cron.jobs import _normalize_workdir
+        repo = tmp_path / "canonical"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        with pytest.raises(ValueError, match="canonical git checkout"):
+            _normalize_workdir(str(repo))
+
+    def test_linked_worktree_accepted(self, tmp_path):
+        from cron.jobs import _normalize_workdir
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q")
+        _git(repo, "config", "user.email", "test@example.com")
+        _git(repo, "config", "user.name", "Test")
+        (repo / "f.txt").write_text("x")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "-m", "init")
+        branch = _git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip()
+        wt = tmp_path / "wt"
+        _git(repo, "worktree", "add", "-q", "-b", "wt-branch", str(wt), branch)
+        result = _normalize_workdir(str(wt))
+        assert result == str(wt.resolve())
+
+    def test_plain_non_repo_accepted(self, tmp_path):
+        from cron.jobs import _normalize_workdir
+        plain = tmp_path / "plain-dir"
+        plain.mkdir()
+        result = _normalize_workdir(str(plain))
+        assert result == str(plain.resolve())
 
 
 # ---------------------------------------------------------------------------

@@ -6500,30 +6500,89 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
 
 
 def _guard_official_docker_root_gateway() -> None:
-    """Refuse gateway startup when the official Docker privilege drop was bypassed."""
+    """Refuse gateway startup when running as root would leave root-owned files.
+
+    Two cases, both fatal unless HERMES_ALLOW_ROOT_GATEWAY is truthy:
+
+      1. The official Docker image whose entrypoint normally drops privileges
+         to the 'hermes' user (legacy, most-specific guard).
+      2. ANY host where the resolved $HERMES_HOME workspace is owned by a
+         NON-root user but the gateway is being launched as root. This is the
+         bindfs dual-systemd-manager trap: root's ``user@0.service`` manager
+         can pick up a user's hermes-gateway.service unit (seen via a bindfs
+         view of the user's ~/.config) and start it AS ROOT. That root process
+         then writes gateway.lock / gateway_state.json / processes.json /
+         channel_directory.json owned by root, which makes every subsequent
+         non-root gateway start crash with PermissionError. Refusing to start
+         as root here means those files are never created as root in the first
+         place.
+    """
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
         return
     if _truthy_env(os.getenv("HERMES_ALLOW_ROOT_GATEWAY")):
         return
-    if not _is_official_docker_checkout():
-        return
 
-    print_error(
-        "Refusing to run the Hermes gateway as root inside the official Docker image."
-    )
-    print(
-        "  The image entrypoint normally drops privileges to the 'hermes' user. "
-        "If you override entrypoint in Docker Compose, include "
-        "/opt/hermes/docker/entrypoint.sh before the Hermes command."
-    )
-    print(
-        "  Running the gateway as root can leave root-owned files in "
-        "$HERMES_HOME and break later non-root dashboard/gateway runs."
-    )
-    print(
-        "  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally accept this risk."
-    )
-    sys.exit(1)
+    # Case 1 (legacy, most specific): official Docker checkout. Checked FIRST so
+    # the Docker-specific guidance wins over the general message inside the
+    # official image.
+    if _is_official_docker_checkout():
+        print_error(
+            "Refusing to run the Hermes gateway as root inside the official "
+            "Docker image."
+        )
+        print(
+            "  The image entrypoint normally drops privileges to the 'hermes' "
+            "user. If you override entrypoint in Docker Compose, include "
+            "/opt/hermes/docker/entrypoint.sh before the Hermes command."
+        )
+        print(
+            "  Running the gateway as root can leave root-owned files in "
+            "$HERMES_HOME and break later non-root dashboard/gateway runs."
+        )
+        print(
+            "  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally "
+            "accept this risk."
+        )
+        sys.exit(1)
+
+    # Case 2 (general): workspace owned by a non-root user.
+    home = None
+    home_uid = 0
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = Path(get_hermes_home())
+        home_uid = home.stat().st_uid if home.exists() else 0
+    except Exception:
+        home_uid = 0
+    if home_uid != 0:
+        try:
+            import pwd
+
+            owner = pwd.getpwuid(home_uid).pw_name
+        except Exception:
+            owner = str(home_uid)
+        print_error(
+            "Refusing to run the Hermes gateway as root: the workspace "
+            f"({home}) is owned by '{owner}', not root."
+        )
+        print(
+            "  Running the gateway as root would create root-owned runtime "
+            "files (gateway.lock, gateway_state.json, processes.json, "
+            "channel_directory.json) that break the real non-root gateway "
+            "with PermissionError."
+        )
+        print(
+            "  This usually means root's systemd user-manager "
+            "(user@0.service) started a unit it sees via a bindfs view of the "
+            f"user's ~/.config. Start the gateway as '{owner}' instead "
+            f"(systemctl --user, or `sudo -u {owner} ...`)."
+        )
+        print(
+            "  Set HERMES_ALLOW_ROOT_GATEWAY=1 only if you intentionally "
+            "accept root-owned workspace files."
+        )
+        sys.exit(1)
 
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):

@@ -972,6 +972,99 @@ def test_module_has_logger():
     assert gateway.logger.name == "hermes_cli.gateway"
 
 
+class TestGuardOfficialDockerRootGateway:
+    """``_guard_official_docker_root_gateway`` refuses to launch the gateway as
+    root when doing so would leave root-owned runtime files. Two cases, both
+    fatal unless ``HERMES_ALLOW_ROOT_GATEWAY`` is truthy:
+
+      1. inside the official Docker image (checked first, most specific), and
+      2. on ANY host where the resolved ``$HERMES_HOME`` workspace is owned by a
+         non-root user (the bindfs dual-systemd trap — PR #50047 generalized the
+         guard beyond the Docker-only case).
+    """
+
+    def _force_root(self, monkeypatch):
+        monkeypatch.setattr(gateway.os, "geteuid", lambda: 0, raising=False)
+
+    def test_non_root_euid_is_noop(self, monkeypatch, tmp_path):
+        """A normal (non-root) launch never trips the guard, regardless of who
+        owns the workspace."""
+        monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
+        gateway._guard_official_docker_root_gateway()
+
+    def test_root_with_non_root_workspace_refuses(self, monkeypatch, tmp_path, capsys):
+        """Root launch + non-root-owned workspace (NOT the official Docker
+        image) is refused: the generalized Case 2 guard. This is the exact
+        scenario PR #50047 added beyond the Docker-only guard."""
+        pwd = pytest.importorskip("pwd")
+        self._force_root(monkeypatch)
+        monkeypatch.delenv("HERMES_ALLOW_ROOT_GATEWAY", raising=False)
+        monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: False)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: tmp_path, raising=False
+        )
+        monkeypatch.setattr(
+            gateway.Path,
+            "stat",
+            lambda self, *a, **k: SimpleNamespace(st_uid=1000),
+            raising=False,
+        )
+        monkeypatch.setattr(gateway.Path, "exists", lambda self: True, raising=False)
+        monkeypatch.setattr(
+            pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="alice")
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            gateway._guard_official_docker_root_gateway()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "workspace" in out
+        assert "alice" in out
+
+    def test_root_with_root_owned_workspace_is_allowed(self, monkeypatch, tmp_path):
+        """Root launch is fine when the workspace itself is root-owned (nobody
+        else is broken by root-owned runtime files) and it is not the official
+        Docker image."""
+        self._force_root(monkeypatch)
+        monkeypatch.delenv("HERMES_ALLOW_ROOT_GATEWAY", raising=False)
+        monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: False)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home", lambda: tmp_path, raising=False
+        )
+        monkeypatch.setattr(
+            gateway.Path,
+            "stat",
+            lambda self, *a, **k: SimpleNamespace(st_uid=0),
+            raising=False,
+        )
+        monkeypatch.setattr(gateway.Path, "exists", lambda self: True, raising=False)
+        gateway._guard_official_docker_root_gateway()
+
+    def test_allow_root_env_override_bypasses_guard(self, monkeypatch, tmp_path):
+        """``HERMES_ALLOW_ROOT_GATEWAY=1`` bypasses both cases even as root with
+        a non-root workspace inside the official image."""
+        self._force_root(monkeypatch)
+        monkeypatch.setenv("HERMES_ALLOW_ROOT_GATEWAY", "1")
+        monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
+        gateway._guard_official_docker_root_gateway()
+
+    def test_official_docker_case_wins_over_workspace_case(self, monkeypatch, tmp_path, capsys):
+        """Inside the official image the Docker-specific guidance is emitted,
+        not the general workspace-owner message (ordering: Docker checked
+        first)."""
+        self._force_root(monkeypatch)
+        monkeypatch.delenv("HERMES_ALLOW_ROOT_GATEWAY", raising=False)
+        monkeypatch.setattr(gateway, "_is_official_docker_checkout", lambda: True)
+
+        with pytest.raises(SystemExit) as exc:
+            gateway._guard_official_docker_root_gateway()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "official Docker image" in out
+        assert "owned by" not in out
+
+
 class TestWindowsScheduledTaskSupervisorGuard:
     """The reaper must skip when the profile's scheduled task is still a
     supervisor — Running *or* Ready.

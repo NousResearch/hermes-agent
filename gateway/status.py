@@ -914,6 +914,43 @@ def _try_acquire_file_lock(handle) -> bool:
         return False
 
 
+def _probe_file_lock_free(handle) -> bool:
+    """Write-free, non-blocking liveness probe for the runtime lock.
+
+    Returns True when the lock is FREE (no other process holds the exclusive
+    owner lock) and False when it is currently held. Unlike
+    :func:`_try_acquire_file_lock` (which takes the EXCLUSIVE owner lock and
+    seeds an empty file first), this takes a SHARED / READ lock and NEVER
+    writes, so it is safe to run on a READ-ONLY handle on every platform.
+
+    One shape on both platforms: take a non-blocking read lock, release it,
+    report free; contention with the owner's exclusive lock reports held.
+
+      * POSIX: ``fcntl.flock`` with ``LOCK_SH | LOCK_NB``. A shared lock is
+        refused while any process holds ``LOCK_EX`` (the owner), so it contends
+        exactly when the gateway is live.
+      * Windows: ``msvcrt.locking`` with ``LK_NBRLCK`` (non-blocking READ lock)
+        over the same reserved byte range the owner locks. A read lock needs
+        only read access to the handle, so no seed write is required here — the
+        "\\n" seed the owner writes is an owner-side concern, not a probe one.
+    """
+    try:
+        if _IS_WINDOWS:
+            handle.seek(_WINDOWS_LOCK_OFFSET)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBRLCK, 1)
+            try:
+                handle.seek(_WINDOWS_LOCK_OFFSET)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return True
+    except (BlockingIOError, OSError):
+        return False
+
+
 def _pid_exists(pid: int) -> bool:
     """Cross-platform "is this PID alive" check that does NOT kill the target.
 
@@ -1120,21 +1157,47 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
+    # Passive liveness probe only: we open the lock solely to test whether some
+    # OTHER process holds it, then release immediately. ONE unified code path on
+    # every platform:
+    #
+    #   * Open READ-ONLY ("r"). The probe never writes, so a read-only handle is
+    #     sufficient. This also means an alien/root-owned lock file (e.g. a stray
+    #     root-context start left a root-owned gateway.lock) no longer crashes
+    #     the gateway with PermissionError from opening "a+" (read-write) — the
+    #     historical bug this fixes.
+    #   * An EMPTY (zero-byte) lock file can NEVER be actively held: the real
+    #     owner in _try_acquire_file_lock() always seeds at least one byte
+    #     (writes "\n") BEFORE taking the OS lock, so a live lock is always
+    #     non-empty. We detect that empty-lock case explicitly and report FREE,
+    #     instead of relying on a probe-side seed write. That is what makes the
+    #     read-only path correct on Windows too: msvcrt.locking on a zero-length
+    #     range would otherwise be ambiguous, and a read-only handle cannot seed.
+    #   * Otherwise run the write-free _probe_file_lock_free() helper, which uses
+    #     fcntl on POSIX and msvcrt.locking on Windows — same shape, no writes.
     try:
-        handle = open(resolved_lock_path, "a+", encoding="utf-8")
+        handle = open(resolved_lock_path, "r", encoding="utf-8")
     except PermissionError:
-        # Stale root-owned lock file from a previous launchd Background
-        # session that ran as root.  The parent directory owner can unlink
-        # files even when they don't own them, so remove the stale lock
-        # and report inactive — the new process will create a fresh one.
+        # Alien-owned lock we cannot even open read-only. Fall back to a bare
+        # existence probe via os.open(O_RDONLY); if the file is present at all
+        # someone owns it, so conservatively report ACTIVE rather than
+        # spuriously declaring the gateway dead and triggering a --replace. The
+        # probe never mutates or unlinks the file.
         try:
-            resolved_lock_path.unlink()
+            fd = os.open(resolved_lock_path, os.O_RDONLY)
         except OSError:
-            pass
-        return False
+            return True
+        os.close(fd)
+        return True
     try:
-        if _try_acquire_file_lock(handle):
-            _release_file_lock(handle)
+        try:
+            is_empty = os.fstat(handle.fileno()).st_size == 0
+        except OSError:
+            is_empty = False
+        if is_empty:
+            # No owner can be holding a not-yet-seeded lock.
+            return False
+        if _probe_file_lock_free(handle):
             return False
         return True
     finally:

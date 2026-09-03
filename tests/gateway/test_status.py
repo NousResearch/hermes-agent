@@ -1173,13 +1173,18 @@ class TestLaunchdPlistRespawnGovernance:
 
 
 class TestPermissionErrorOnLockFile:
-    """Stale root-owned lock files from launchd Background sessions must not
-    crash the gateway on restart (issue #42685)."""
+    """A lock file the probe cannot open (alien/root-owned) must not crash the
+    gateway. The unified passive liveness probe reasons conservatively: an
+    unopenable-but-present lock is reported ACTIVE (someone owns it) so we never
+    spuriously declare the gateway dead and trigger a --replace, and the probe
+    never mutates or unlinks the file (issue #42685, PR #50047)."""
 
-    def test_permission_error_on_lock_file_returns_false_and_removes(self, tmp_path, monkeypatch):
-        """When the lock file is not writable (root-owned), the function should
-        remove the stale file and report the lock as inactive."""
+    def test_permission_error_on_lock_file_reports_active_and_preserves(self, tmp_path, monkeypatch):
+        """When the probe cannot open the lock (root-owned) but a read-only
+        O_RDONLY probe still succeeds, the lock is reported active and the file
+        is left untouched (the passive probe never mutates it)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
         lock_path = tmp_path / "gateway.lock"
         lock_path.write_text("stale", encoding="utf-8")
 
@@ -1193,13 +1198,17 @@ class TestPermissionErrorOnLockFile:
         monkeypatch.setattr("builtins.open", deny_write)
 
         result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
-        assert not lock_path.exists(), "stale root-owned lock file should be removed"
+        assert result is True
+        assert lock_path.exists(), (
+            "passive liveness probe must not unlink the lock file"
+        )
 
-    def test_permission_error_unlink_failure_still_returns_false(self, tmp_path, monkeypatch):
-        """Even if unlinking the stale lock file fails (e.g. directory not writable),
-        the function should still return False to allow startup."""
+    def test_permission_error_with_unreadable_lock_still_reports_active(self, tmp_path, monkeypatch):
+        """Even when the fallback os.open(O_RDONLY) probe also fails, the
+        function conservatively reports the lock active (someone owns the file)
+        rather than declaring the gateway dead."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
         lock_path = tmp_path / "gateway.lock"
         lock_path.write_text("stale", encoding="utf-8")
 
@@ -1210,18 +1219,18 @@ class TestPermissionErrorOnLockFile:
                 raise PermissionError(13, "Permission denied", str(path))
             return real_open(path, *args, **kwargs)
 
-        real_unlink = Path.unlink
+        real_os_open = os.open
 
-        def deny_unlink(self, *args, **kwargs):
-            if str(self) == str(lock_path):
-                raise OSError(13, "Permission denied", str(self))
-            return real_unlink(self, *args, **kwargs)
+        def deny_os_open(path, *args, **kwargs):
+            if str(path) == str(lock_path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_os_open(path, *args, **kwargs)
 
         monkeypatch.setattr("builtins.open", deny_write)
-        monkeypatch.setattr(Path, "unlink", deny_unlink)
+        monkeypatch.setattr(os, "open", deny_os_open)
 
         result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
+        assert result is True
 
     def test_acquire_gateway_runtime_lock_recovers_from_permission_error(self, tmp_path, monkeypatch):
         """acquire_gateway_runtime_lock must survive a stale root-owned lock
@@ -1251,6 +1260,191 @@ class TestPermissionErrorOnLockFile:
             assert status.acquire_gateway_runtime_lock() is True
         finally:
             status.release_gateway_runtime_lock()
+
+
+class TestLivenessProbeMode:
+    """The passive liveness probe in ``is_gateway_runtime_lock_active`` is a
+    SINGLE unified code path on every platform: it opens the lock READ-ONLY
+    ("r"), never writes/seeds/unlinks it, detects the empty-lock case
+    explicitly, then runs a write-free shared/read-lock probe (fcntl LOCK_SH on
+    POSIX, msvcrt LK_NBRLCK on Windows). PR #50047 (unified cross-platform)."""
+
+    def test_probe_opens_lock_read_only_on_this_host(self, tmp_path, monkeypatch):
+        """The lock is opened in read-only mode "r" (never "a+"), so an
+        alien/root-owned file can't crash the probe and the file is never
+        mutated. Capture the mode the probe passes to open()."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("held", encoding="utf-8")
+
+        seen_modes = []
+        real_open = open
+
+        def spy_open(path, mode="r", *args, **kwargs):
+            if str(path) == str(lock_path):
+                seen_modes.append(mode)
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", spy_open)
+        status.is_gateway_runtime_lock_active(lock_path)
+
+        assert seen_modes, "probe should have opened the lock file"
+        assert all(m == "r" for m in seen_modes), (
+            f"probe must open read-only, saw modes: {seen_modes}"
+        )
+
+    def test_empty_lock_reports_free_without_writing(self, tmp_path, monkeypatch):
+        """A zero-byte lock file can never be actively held (the owner seeds a
+        byte BEFORE locking), so the probe reports FREE by the explicit
+        empty-check and never writes to the file. Platform-agnostic."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("", encoding="utf-8")
+        assert lock_path.stat().st_size == 0
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is False
+        # The read-only probe must not seed/rewrite the empty file.
+        assert lock_path.stat().st_size == 0
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX fcntl.flock path")
+    def test_free_lock_reports_not_active_and_is_unchanged(self, tmp_path, monkeypatch):
+        """An existing but UNHELD (non-empty) lock file is reported not active,
+        and the read-only probe leaves the file's contents untouched."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("free-content", encoding="utf-8")
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is False
+        assert lock_path.read_text(encoding="utf-8") == "free-content"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX fcntl.flock path")
+    def test_held_lock_reports_active(self, tmp_path, monkeypatch):
+        """A lock held EXCLUSIVELY by another handle (simulating another live
+        gateway) is reported active: the probe's non-blocking shared-lock
+        attempt contends with the owner's LOCK_EX."""
+        import fcntl
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("held", encoding="utf-8")
+
+        holder = open(lock_path, "a+", encoding="utf-8")
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            assert status.is_gateway_runtime_lock_active(lock_path) is True
+        finally:
+            fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            holder.close()
+        # Once released, the same file is reported free again.
+        assert status.is_gateway_runtime_lock_active(lock_path) is False
+
+    def test_windows_empty_unlocked_lock_reports_free(self, tmp_path, monkeypatch):
+        """Regression for the exact bug the sweeper flagged, now fixed in ONE
+        unified path: on Windows an EMPTY unlocked lock must report NOT active.
+
+        The original design opened the lock read-write on Windows so the
+        byte-seed write could run before ``msvcrt.locking``; a read-only handle
+        would raise on that write and falsely report the lock ACTIVE. The
+        unified fix instead opens read-only on EVERY platform and detects the
+        empty-lock case EXPLICITLY (an unseeded file cannot be held), so the
+        Windows path never needs a write and never even calls ``msvcrt.locking``
+        for the empty case.
+
+        We force the Windows branch on this POSIX host by patching
+        ``status._IS_WINDOWS`` and injecting a stub ``msvcrt`` (the real module
+        does not exist off Windows)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        locking_calls = []
+
+        def fake_locking(fd, mode, size):
+            locking_calls.append((mode, size))
+
+        fake_msvcrt = SimpleNamespace(
+            LK_NBRLCK=3, LK_NBLCK=1, LK_UNLCK=2, locking=fake_locking
+        )
+        monkeypatch.setattr(status, "msvcrt", fake_msvcrt, raising=False)
+
+        # Empty (zero-byte) UNLOCKED lock.
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("", encoding="utf-8")
+        assert lock_path.stat().st_size == 0
+
+        result = status.is_gateway_runtime_lock_active(lock_path)
+
+        assert result is False, (
+            "empty unlocked lock must be reported NOT active on the Windows "
+            "path without requiring any write to the read-only handle"
+        )
+        # The read-only probe must not have written a seed byte...
+        assert lock_path.stat().st_size == 0
+        # ...and must not even reach msvcrt.locking for the empty case.
+        assert locking_calls == []
+
+    def test_windows_nonempty_unlocked_lock_reports_free(self, tmp_path, monkeypatch):
+        """On Windows, a NON-empty but unlocked lock is probed with a write-free
+        read lock (``LK_NBRLCK``). When ``msvcrt.locking`` succeeds (no
+        contention) the lock is reported NOT active, and the file is never
+        written to."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        locking_calls = []
+
+        def fake_locking(fd, mode, size):
+            # Read-lock acquire and release both succeed -> unlocked.
+            locking_calls.append((mode, size))
+
+        fake_msvcrt = SimpleNamespace(
+            LK_NBRLCK=3, LK_NBLCK=1, LK_UNLCK=2, locking=fake_locking
+        )
+        monkeypatch.setattr(status, "msvcrt", fake_msvcrt, raising=False)
+
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("seeded\n", encoding="utf-8")
+
+        result = status.is_gateway_runtime_lock_active(lock_path)
+
+        assert result is False
+        # Write-free: the probe used the read lock, never re-seeded the file.
+        assert lock_path.read_text(encoding="utf-8") == "seeded\n"
+        assert (fake_msvcrt.LK_NBRLCK, 1) in locking_calls
+        assert (fake_msvcrt.LK_UNLCK, 1) in locking_calls
+
+    def test_windows_probe_reports_active_when_msvcrt_locking_contends(
+        self, tmp_path, monkeypatch
+    ):
+        """On Windows, if ``msvcrt.locking`` raises on the read-lock acquire
+        (byte range already exclusively locked by the live owner), the probe
+        reports the lock ACTIVE."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_gateway_lock_handle", None, raising=False)
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        def fake_locking(fd, mode, size):
+            if mode == 3:  # LK_NBRLCK acquire attempt -> contended
+                raise OSError(36, "Resource deadlock avoided")
+
+        monkeypatch.setattr(
+            status,
+            "msvcrt",
+            SimpleNamespace(
+                LK_NBRLCK=3, LK_NBLCK=1, LK_UNLCK=2, locking=fake_locking
+            ),
+            raising=False,
+        )
+
+        lock_path = tmp_path / "gateway.lock"
+        lock_path.write_text("held\n", encoding="utf-8")
+
+        assert status.is_gateway_runtime_lock_active(lock_path) is True
 
 
 class TestNormalizeUpdatedAt:

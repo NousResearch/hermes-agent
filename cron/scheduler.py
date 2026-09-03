@@ -4520,6 +4520,71 @@ def _windows_cron_bootstrap_argv(
     return [python_exe, "-c", bootstrap, script_path]
 
 
+def _is_wsl_bash(bash_path: str | os.PathLike[str] | None) -> bool:
+    """True when *bash_path* is Windows' WSL shim, which cannot open Win32 paths.
+
+    Measured 2026-08-31: System32 bash.exe plus a Win32 script path exits 127
+    with a collapsed path (``D:Hermesscriptsx.sh``). Git Bash (MSYS) can open
+    the same file; the WSL shim cannot, even with forward slashes, because
+    ``D:/...`` is not a Linux path. ``_find_bash`` prefers Git for Windows,
+    but still appends ``shutil.which('bash')`` — if that is the only starter,
+    cron must fail closed rather than spawn WSL.
+    """
+    if not bash_path:
+        return False
+    parts = {p.lower() for p in Path(str(bash_path)).parts}
+    if "windowsapps" in parts:
+        return True
+    return "windows" in parts and ("system32" in parts or "sysnative" in parts)
+
+
+def _cron_bash_script_arg(path: Path, is_windows: bool | None = None) -> str:
+    """Script argv for bash. Windows must not use backslashes.
+
+    Git Bash and WSL both treat backslash as an escape, so a native
+    ``D:\\Hermes\\scripts\\x.sh`` collapses to ``D:Hermesscriptsx.sh``.
+    Prefer the shared MSYS form (``_bash_safe_path`` -> ``/d/Hermes/scripts/x.sh``);
+    fall back to ``Path.as_posix()``. On POSIX the native ``str(path)`` is
+    already slash-separated.
+    """
+    if is_windows is None:
+        is_windows = sys.platform == "win32"
+    if not is_windows:
+        return str(path)
+    try:
+        from tools.environments.local import _bash_safe_path
+
+        return _bash_safe_path(str(path))
+    except Exception:
+        return path.as_posix()
+
+
+def _resolve_cron_bash() -> Optional[str]:
+    """Pick a bash that can execute HERMES_HOME/scripts/*.sh.
+
+    Delegates to ``tools.environments.local._find_bash`` (PortableGit,
+    Git for Windows known install dirs, then PATH). Fail closed if the
+    resolved binary is the WSL System32/WindowsApps shim: that process
+    cannot open Win32 script paths (measured 2026-08-31, exit 127).
+    """
+    found: Optional[str] = None
+    try:
+        from tools.environments.local import _find_bash
+
+        found = _find_bash()
+    except RuntimeError:
+        found = None
+    except Exception:
+        found = shutil.which("bash") or (
+            "/bin/bash" if os.path.isfile("/bin/bash") else None
+        )
+    if not found:
+        return None
+    if _is_wsl_bash(found):
+        return None
+    return found
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -4619,17 +4684,18 @@ def _run_job_script(
         # all work.  On native Windows without Git for Windows installed
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        # traceback. Prefer Git Bash over the WSL System32 shim: that
+        # shim cannot open Win32 paths (measured 2026-08-31: exit 127,
+        # ``D:Hermesscripts....sh``). Pass the script as posix on Windows
+        # so bash does not eat backslashes as escapes.
+        _bash = _resolve_cron_bash()
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
-        )
-        argv = [_bash, str(path)]
+            )
+        argv = [_bash, _cron_bash_script_arg(path)]
         env_overlay: dict[str, str] = {}
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)

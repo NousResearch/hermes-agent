@@ -107,6 +107,88 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_cron_bash_script_arg_windows_has_no_backslash(self):
+        """Windows bash eats backslashes in the script argv (exit 127).
+
+        Shared `_bash_safe_path` emits the MSYS form `/d/...`; the posix
+        fallback `D:/...` is also accepted. Either form is bash-openable;
+        a native backslash path is not.
+        """
+        from cron.scheduler import _cron_bash_script_arg
+
+        path = Path("D:/Hermes/scripts/exc-dev-watchdog.sh")
+        arg = _cron_bash_script_arg(path, is_windows=True)
+        assert "\\" not in arg
+        assert arg.lower().endswith("/hermes/scripts/exc-dev-watchdog.sh")
+
+    def test_cron_bash_script_arg_posix_keeps_native(self):
+        from cron.scheduler import _cron_bash_script_arg
+
+        path = Path("/home/user/.hermes/scripts/watch.sh")
+        assert _cron_bash_script_arg(path, is_windows=False) == str(path)
+
+    def test_is_wsl_bash_detects_system32_and_windowsapps(self):
+        from cron.scheduler import _is_wsl_bash
+
+        assert _is_wsl_bash(r"C:\Windows\System32\bash.exe") is True
+        assert _is_wsl_bash(r"C:\Windows\Sysnative\bash.exe") is True
+        assert _is_wsl_bash(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\bash.exe") is True
+        assert _is_wsl_bash(r"C:\Program Files\Git\usr\bin\bash.exe") is False
+        assert _is_wsl_bash("/usr/bin/bash") is False
+
+    def test_resolve_cron_bash_skips_wsl_when_find_bash_returns_shim(self, monkeypatch):
+        """Fail closed: WSL bash cannot see Win32 D: paths even as posix."""
+        from cron import scheduler as sched_mod
+
+        wsl = r"C:\Windows\System32\bash.exe"
+        monkeypatch.setattr("tools.environments.local._find_bash", lambda: wsl)
+        assert sched_mod._resolve_cron_bash() is None
+
+    def test_resolve_cron_bash_runtime_error_is_none(self, monkeypatch):
+        from cron import scheduler as sched_mod
+
+        def _boom():
+            raise RuntimeError("Git Bash not found")
+
+        monkeypatch.setattr("tools.environments.local._find_bash", _boom)
+        assert sched_mod._resolve_cron_bash() is None
+
+    def test_windows_sh_script_argv_is_posix_and_not_wsl(self, cron_env, monkeypatch):
+        """_run_job_script must not hand a backslash path or WSL bash to Popen."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "probe.sh"
+        script.write_text("echo ok\n", encoding="utf-8")
+
+        captured = {}
+
+        class FakeProc:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+                captured["kwargs"] = kwargs
+                self.returncode = 0
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return ("ok\n", "")
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        git_bash = r"C:\Program Files\Git\usr\bin\bash.EXE"
+        monkeypatch.setattr("tools.environments.local._find_bash", lambda: git_bash)
+        monkeypatch.setattr(sched_mod.subprocess, "Popen", FakeProc)
+
+        success, output = _run_job_script("probe.sh")
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"][0] == git_bash
+        assert sched_mod._is_wsl_bash(captured["argv"][0]) is False
+        assert "\\" not in captured["argv"][1]
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""

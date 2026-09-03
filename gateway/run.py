@@ -3399,7 +3399,10 @@ class _GatewayModelContext:
     context_source: str
 
 
-def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModelContext:
+def _resolve_gateway_model_context(
+    model: Optional[str] = None,
+    runtime_kwargs: Optional[dict] = None,
+) -> _GatewayModelContext:
     """Resolve the configured gateway route and its effective context window.
 
     This is the shared non-resident authority for status/session banners and
@@ -3444,7 +3447,11 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         pass
 
     try:
-        runtime = _resolve_runtime_agent_kwargs()
+        runtime = (
+            runtime_kwargs
+            if runtime_kwargs is not None
+            else _resolve_runtime_agent_kwargs()
+        )
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
@@ -10528,6 +10535,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Resolve reasoning effort for a session, honoring session overrides.
 
         Priority: session-scoped ``/reasoning --session`` override >
+        channel override (``channel_overrides.reasoning_effort``) >
         per-model override (``agent.reasoning_overrides``) > global
         ``agent.reasoning_effort``. ``model`` should be the session's
         *effective* model (session ``/model`` override included) so
@@ -10545,6 +10553,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
+
+        # Channel-scoped reasoning effort — the channel is a first-class
+        # config scope (model/provider/system_prompt already are), so a
+        # listing channel and a strategy channel can have different
+        # thinking budgets without a global setting (#79468).
+        if source is not None:
+            try:
+                override = _get_channel_override(
+                    self.config,
+                    source.platform,
+                    source.chat_id,
+                    thread_id=getattr(source, "thread_id", None),
+                    parent_id=getattr(source, "parent_chat_id", None),
+                )
+                if override is not None and override.reasoning_effort:
+                    from hermes_constants import parse_reasoning_effort
+
+                    parsed = parse_reasoning_effort(override.reasoning_effort)
+                    if parsed is not None:
+                        return parsed
+            except Exception:
+                pass
+
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(
@@ -23960,17 +23991,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source)
+        return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When a session source is available, resolve the model and runtime as
+        one effective route. This keeps provider, endpoint, and context
+        metadata aligned with channel/thread model routing instead of mixing a
+        channel model with the global provider route (#79468).
         """
-        resolved = _resolve_gateway_model_context()
+        model = None
+        runtime_kwargs = None
+        if source is not None:
+            user_config = _load_gateway_runtime_config()
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                user_config=user_config,
+            )
+        resolved = _resolve_gateway_model_context(
+            model=model,
+            runtime_kwargs=runtime_kwargs,
+        )
         model = resolved.model
         provider = resolved.provider
         base_url = resolved.base_url

@@ -161,3 +161,37 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_refuses_typed_exact_head_pr_task_before_llm(kanban_home):
+    profile_dir = kanban_home / "profiles" / "write-maintainer"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "profile.yaml").write_text(
+        "name: write-maintainer\nauthority: write\n",
+        encoding="utf-8",
+    )
+    body = jsonlib.dumps(
+        {
+            "repository": "acme/widgets",
+            "pr_number": 17,
+            "expected_head_sha": "a" * 40,
+            "action": "repair_and_push",
+        }
+    )
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="Repair pull request 17",
+            body=body,
+            triage=True,
+            assignee="write-maintainer",
+        )
+
+    with patch(
+        "agent.auxiliary_client.call_llm",
+        side_effect=AssertionError("typed PR work must not reach the decomposer"),
+    ):
+        outcome = decomp.decompose_task(task_id, author="auto-decomposer")
+
+    assert outcome.ok is False
+    assert "atomic PR automation" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "triage"

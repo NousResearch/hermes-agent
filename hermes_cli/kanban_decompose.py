@@ -289,6 +289,12 @@ def decompose_task(
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
         )
+    if kb.is_atomic_pr_automation_task(body=task.body):
+        return DecomposeOutcome(
+            task_id,
+            False,
+            "atomic PR automation task must retain its typed exact-head owner",
+        )
 
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)

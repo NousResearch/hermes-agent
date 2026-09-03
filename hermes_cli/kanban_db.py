@@ -94,6 +94,162 @@ from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
 
+_PR_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_PR_HEAD_RE = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+_PR_READ_ONLY_ACTION_RE = re.compile(
+    r"^(?:verify|review|inspect|audit|check|read)(?:_|$)", re.IGNORECASE
+)
+_PR_WRITE_ACTION_RE = re.compile(
+    r"^(?:request_changes|repair|fix|push|reply|respond|refresh|resolve|"
+    r"merge|update|edit|publish|close|reopen|approve|comment)(?:_|$)",
+    re.IGNORECASE,
+)
+_PR_MIXED_WRITE_ACTION_RE = re.compile(
+    r"(?:^|_)(?:and|then|to)_(?:request_changes|repair|fix|push|reply|"
+    r"respond|refresh|resolve|merge|update|edit|publish|close|reopen|"
+    r"approve|comment)(?:_|$)",
+    re.IGNORECASE,
+)
+
+
+def _pr_task_payload(body: Optional[str]) -> Optional[dict[str, Any]]:
+    try:
+        payload = json.loads(body or "")
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _validate_exact_pr_identity(payload: Mapping[str, Any]) -> None:
+    repository = payload.get("repository")
+    pr_number = payload.get("pr_number")
+    expected_head_sha = payload.get("expected_head_sha")
+    if (
+        not isinstance(repository, str)
+        or _PR_REPOSITORY_RE.fullmatch(repository) is None
+        or isinstance(pr_number, bool)
+        or not isinstance(pr_number, int)
+        or pr_number <= 0
+        or not isinstance(expected_head_sha, str)
+        or _PR_HEAD_RE.fullmatch(expected_head_sha) is None
+    ):
+        raise ValueError(
+            "typed pull-request task requires an exact PR identity: "
+            "repository owner/name, positive pr_number, and full expected_head_sha"
+        )
+
+
+def _classify_pr_task(body: Optional[str]) -> Optional[str]:
+    """Return ``read`` or ``write`` for a typed exact-head PR task.
+
+    Free-form prose is deliberately ignored. A mapping becomes a PR task only
+    when it carries an action plus at least one identity field; once it crosses
+    that boundary, malformed or partial identity fails closed.
+    """
+    payload = _pr_task_payload(body)
+    if payload is None:
+        return None
+    action = payload.get("action")
+    identity_fields = ("repository", "pr_number", "expected_head_sha")
+    if not isinstance(action, str) or not action.strip():
+        if not any(field in payload for field in identity_fields):
+            return None
+        _validate_exact_pr_identity(payload)
+        return "write"
+    if not any(field in payload for field in identity_fields):
+        return None
+    _validate_exact_pr_identity(payload)
+    normalized_action = action.strip()
+    if _PR_WRITE_ACTION_RE.search(normalized_action):
+        return "write"
+    if _PR_READ_ONLY_ACTION_RE.search(normalized_action):
+        if _PR_MIXED_WRITE_ACTION_RE.search(normalized_action):
+            return "write"
+        return "read"
+    # Unknown operations against an exact PR identity are not proven read-only.
+    return "write"
+
+
+def is_atomic_pr_automation_task(*, body: Optional[str]) -> bool:
+    """Return whether a task carries typed repository/PR/head identity."""
+    return _classify_pr_task(body) is not None
+
+
+def _canonical_pr_task_identity(body: Optional[str]) -> tuple[object, ...] | None:
+    """Return the immutable identity/action tuple for one admitted PR task."""
+    classification = _classify_pr_task(body)
+    if classification is None:
+        return None
+    payload = _pr_task_payload(body)
+    assert payload is not None  # classification already parsed and validated it
+    action = payload.get("action")
+    return (
+        payload["repository"],
+        payload["pr_number"],
+        payload["expected_head_sha"],
+        action.strip().casefold() if isinstance(action, str) else None,
+    )
+
+
+def _validate_pr_task_identity_transition(
+    *, existing_body: Optional[str], replacement_body: Optional[str]
+) -> None:
+    """Prevent specification from downgrading an admitted typed PR task."""
+    existing_identity = _canonical_pr_task_identity(existing_body)
+    if existing_identity is None:
+        return
+    replacement_identity = _canonical_pr_task_identity(replacement_body)
+    if replacement_identity != existing_identity:
+        raise ValueError(
+            "specification must preserve exact pull-request identity and action"
+        )
+
+
+def _profile_read_only_status(profile: Optional[str]) -> Optional[bool]:
+    """Return read-only status, or ``None`` when profile metadata is unknown."""
+    if not profile:
+        return None
+    try:
+        import yaml
+
+        from hermes_cli.profiles import get_profile_dir
+
+        profile_path = get_profile_dir(profile) / "profile.yaml"
+        with profile_path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    authority = str(
+        data.get("execution_authority") or data.get("authority") or ""
+    ).strip().casefold()
+    if authority in {"read-only", "read_only", "readonly", "review-only"}:
+        return True
+    if authority in {"write", "read-write", "read_write", "readwrite"}:
+        return False
+    description = str(data.get("description") or "").casefold()
+    if "read-only" in description or "read only" in description:
+        return True
+    return None
+
+
+def _validate_pr_task_assignee_authority(
+    *, body: Optional[str], assignee: Optional[str]
+) -> None:
+    if _classify_pr_task(body) != "write":
+        return
+    status = _profile_read_only_status(assignee)
+    if status is True:
+        raise ValueError(
+            f"read-only profile {assignee!r} cannot own pull-request write work"
+        )
+    if status is None:
+        raise ValueError(
+            f"cannot verify write authority for profile {assignee!r}; "
+            "refusing pull-request write work"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -3242,6 +3398,7 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    _validate_pr_task_assignee_authority(body=body, assignee=assignee)
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -3719,7 +3876,8 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
+            "SELECT status, claim_lock, assignee, body FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if not row:
             return False
@@ -3728,6 +3886,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 f"cannot reassign {task_id}: currently running (claimed). "
                 "Wait for completion or reclaim the stale lock first."
             )
+        _validate_pr_task_assignee_authority(body=row["body"], assignee=profile)
         if row["assignee"] != profile:
             # The retry guard is scoped to the task/profile combination. A
             # human reassigning the task is an explicit recovery action, so the
@@ -4666,6 +4825,29 @@ def claim_task(
                 {"reason": "parents_not_done"},
             )
             return None
+        authority_row = conn.execute(
+            "SELECT body, assignee FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if authority_row is not None:
+            try:
+                _validate_pr_task_assignee_authority(
+                    body=authority_row["body"],
+                    assignee=authority_row["assignee"],
+                )
+            except ValueError as exc:
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', block_kind = 'capability' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _append_event(
+                    conn,
+                    task_id,
+                    "claim_rejected",
+                    {"reason": "authority_revoked", "detail": str(exc)},
+                )
+                return None
         # Defensive: if a prior run somehow leaked (invariant violation from
         # an unknown code path), close it as 'reclaimed' so we don't strand
         # it when the CAS resets the pointer below. No-op when the invariant
@@ -4785,6 +4967,34 @@ def claim_review_task(
                         "source_status": "review",
                     },
                 )
+            return None
+        authority_row = conn.execute(
+            "SELECT body, assignee FROM tasks WHERE id = ? AND status = 'review'",
+            (task_id,),
+        ).fetchone()
+        if authority_row is None:
+            return None
+        try:
+            _validate_pr_task_assignee_authority(
+                body=authority_row["body"],
+                assignee=authority_row["assignee"],
+            )
+        except ValueError as exc:
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = 'capability' "
+                "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                (task_id,),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {
+                    "reason": "authority_revoked",
+                    "detail": str(exc),
+                    "source_status": "review",
+                },
+            )
             return None
         cur = conn.execute(
             """
@@ -6538,7 +6748,7 @@ def request_review(
         if not _parents_satisfied(conn, task_id):
             return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
+            "SELECT assignee, body, status, claim_lock, current_run_id "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
@@ -6597,6 +6807,13 @@ def request_review(
                     )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
+        try:
+            _validate_pr_task_assignee_authority(
+                body=trow["body"],
+                assignee=reviewer if reviewer is not None else implementer,
+            )
+        except ValueError as exc:
+            return _ret(False, str(exc))
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         params: tuple[Any, ...]
         if expected_run_id is None:
@@ -6681,7 +6898,7 @@ def request_changes(
 
     with write_txn(conn):
         task_row = conn.execute(
-            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            "SELECT body, status, assignee, current_run_id FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if task_row is None:
@@ -6732,6 +6949,14 @@ def request_changes(
         implementer = requested_payload.get("implementer")
         if not isinstance(implementer, str) or not implementer.strip():
             return False, "review handoff has no valid implementer provenance"
+        implementer = _canonical_assignee(implementer)
+        try:
+            _validate_pr_task_assignee_authority(
+                body=task_row["body"],
+                assignee=implementer,
+            )
+        except ValueError as exc:
+            return False, str(exc)
         reviewer = task_row["assignee"]
         if isinstance(reviewer, str) and reviewer.strip():
             reviewer = _canonical_assignee(reviewer)
@@ -6975,11 +7200,12 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     now = int(time.time())
     with write_txn(conn):
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("review",), now=now,
-            note="invariant recovery on review reopen",
-        )
-        new_status = _landing_status_after_parents(conn, task_id)
+        task_row = conn.execute(
+            "SELECT body, status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task_row is None or task_row["status"] != "review":
+            return False
         review_event = conn.execute(
             "SELECT payload FROM task_events "
             "WHERE task_id = ? AND kind = 'review_requested' "
@@ -6997,6 +7223,20 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         implementer = handoff.get("implementer")
         if not isinstance(implementer, str) or not implementer.strip():
             implementer = None
+        else:
+            implementer = _canonical_assignee(implementer)
+        try:
+            _validate_pr_task_assignee_authority(
+                body=task_row["body"],
+                assignee=implementer,
+            )
+        except ValueError:
+            return False
+        _reclaim_dangling_run(
+            conn, task_id, statuses=("review",), now=now,
+            note="invariant recovery on review reopen",
+        )
+        new_status = _landing_status_after_parents(conn, task_id)
         assignee_sql = ", assignee = ?" if implementer else ""
         params: tuple[Any, ...] = (
             (new_status, implementer, task_id)
@@ -7232,6 +7472,19 @@ def specify_triage_task(
         ).fetchone()
         if existing is None:
             return False
+        effective_body = body if body is not None else existing["body"]
+        effective_assignee = (
+            assignee if assignee is not None else existing["assignee"]
+        )
+        if body is not None:
+            _validate_pr_task_identity_transition(
+                existing_body=existing["body"],
+                replacement_body=body,
+            )
+        _validate_pr_task_assignee_authority(
+            body=effective_body,
+            assignee=effective_assignee,
+        )
         sets: list[str] = ["status = 'todo'"]
         params: list[Any] = []
         changed_fields: list[str] = []
@@ -7381,7 +7634,7 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
+            "SELECT id, body, assignee, status, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
@@ -7389,6 +7642,14 @@ def decompose_triage_task(
             return None
         if root_row["status"] != "triage":
             return None
+        _validate_pr_task_assignee_authority(
+            body=root_row["body"],
+            assignee=(
+                root_assignee
+                if root_assignee is not None
+                else root_row["assignee"]
+            ),
+        )
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -7406,6 +7667,11 @@ def decompose_triage_task(
             title = child["title"].strip()
             body = child.get("body")
             assignee = _canonical_assignee(child.get("assignee"))
+            stored_body = body if isinstance(body, str) else None
+            _validate_pr_task_assignee_authority(
+                body=stored_body,
+                assignee=assignee,
+            )
             # Per-child override wins; otherwise inherit the root's
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
@@ -7435,7 +7701,7 @@ def decompose_triage_task(
                 (
                     new_id,
                     title,
-                    body if isinstance(body, str) else None,
+                    stored_body,
                     assignee,
                     child_ws_kind,
                     child_ws_path,
@@ -10045,7 +10311,7 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, body FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -10139,29 +10405,78 @@ def _dispatch_once_locked(
             # routed".
             if _default_assignee and _default_assignee_resolved:
                 # Dry-run: show what WOULD happen (auto-assign + spawn) without
-                # mutating the DB. Real run: mutate the row + emit the
-                # 'assigned' event so the board state matches what just happened.
-                if not dry_run:
+                # mutating the DB, but apply the same authority predicate as the
+                # live assignment. Real run: re-read and validate inside the
+                # write transaction before mutating the row + emitting the
+                # 'assigned' event.
+                if dry_run:
+                    try:
+                        _validate_pr_task_assignee_authority(
+                            body=row["body"],
+                            assignee=_default_assignee,
+                        )
+                    except ValueError:
+                        result.skipped_unassigned.append(row["id"])
+                        continue
+                else:
+                    assignment_applied = False
                     try:
                         with write_txn(conn):
-                            conn.execute(
-                                "UPDATE tasks SET assignee = ? WHERE id = ? "
-                                "AND (assignee IS NULL OR assignee = '')",
-                                (_default_assignee, row["id"]),
-                            )
-                            _append_event(
-                                conn, row["id"], "assigned",
-                                {
-                                    "assignee": _default_assignee,
-                                    "source": "kanban.default_assignee",
-                                },
-                            )
+                            current = conn.execute(
+                                "SELECT body, assignee FROM tasks WHERE id = ? "
+                                "AND status = 'ready' AND claim_lock IS NULL",
+                                (row["id"],),
+                            ).fetchone()
+                            if current is not None and not current["assignee"]:
+                                try:
+                                    _validate_pr_task_assignee_authority(
+                                        body=current["body"],
+                                        assignee=_default_assignee,
+                                    )
+                                except ValueError as exc:
+                                    blocked = conn.execute(
+                                        "UPDATE tasks SET status = 'blocked', "
+                                        "block_kind = 'capability' WHERE id = ? "
+                                        "AND status = 'ready' AND claim_lock IS NULL "
+                                        "AND (assignee IS NULL OR assignee = '')",
+                                        (row["id"],),
+                                    )
+                                    if blocked.rowcount == 1:
+                                        _append_event(
+                                            conn,
+                                            row["id"],
+                                            "claim_rejected",
+                                            {
+                                                "reason": "authority_revoked",
+                                                "detail": str(exc),
+                                                "source": "kanban.default_assignee",
+                                            },
+                                        )
+                                else:
+                                    updated = conn.execute(
+                                        "UPDATE tasks SET assignee = ? WHERE id = ? "
+                                        "AND status = 'ready' AND claim_lock IS NULL "
+                                        "AND (assignee IS NULL OR assignee = '')",
+                                        (_default_assignee, row["id"]),
+                                    )
+                                    if updated.rowcount == 1:
+                                        _append_event(
+                                            conn, row["id"], "assigned",
+                                            {
+                                                "assignee": _default_assignee,
+                                                "source": "kanban.default_assignee",
+                                            },
+                                        )
+                                        assignment_applied = True
                     except Exception:
                         _log.debug(
                             "kanban dispatch: failed to apply default_assignee=%r "
                             "to task %s",
                             _default_assignee, row["id"], exc_info=True,
                         )
+                        result.skipped_unassigned.append(row["id"])
+                        continue
+                    if not assignment_applied:
                         result.skipped_unassigned.append(row["id"])
                         continue
                 row_assignee = _default_assignee

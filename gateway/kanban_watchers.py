@@ -1671,7 +1671,7 @@ class GatewayKanbanWatchersMixin:
             return False
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs
-        # before the dispatcher fans out workers. Gated by
+        # after the dispatcher has first claimed already-ready work. Gated by
         # ``kanban.auto_decompose`` (default True). Capped by
         # ``kanban.auto_decompose_per_tick`` (default 3) so a bulk-load
         # of triage tasks doesn't burst-spend the aux LLM in one tick;
@@ -1791,13 +1791,15 @@ class GatewayKanbanWatchersMixin:
                     ready_pending = False
                     bad_ticks = 0
                 else:
+                    # Claim ready work before awaiting auxiliary-model decomposition;
+                    # a slow decomposer must not hold the dispatch lane hostage.
+                    results = await _to_thread_process_service(_tick_once)
                     # Re-read the auto-decompose toggle live each tick so a user
                     # flipping kanban.auto_decompose=false to STOP runaway fan-out
                     # takes effect on the next tick, not on gateway restart (#49638).
                     _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
                     if _ad_enabled:
                         await _to_thread_process_service(_auto_decompose_tick, _ad_per_tick)
-                    results = await _to_thread_process_service(_tick_once)
                     any_spawned = False
                     for slug, res in (results or []):
                         if res is not None and getattr(res, "spawned", None):

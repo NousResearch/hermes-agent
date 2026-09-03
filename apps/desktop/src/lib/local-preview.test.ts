@@ -184,6 +184,13 @@ describe('PDF previews', () => {
     })
   })
 
+  it('classifies notebooks as JSON text so the pane can render them', () => {
+    expect(localPreviewTarget('/tmp/analysis.ipynb')).toMatchObject({
+      language: 'json',
+      previewKind: 'text'
+    })
+  })
+
   it('does not UTF-8-enrich remote PDFs before loading their bytes', async () => {
     vi.clearAllMocks()
     window.hermesDesktop = {

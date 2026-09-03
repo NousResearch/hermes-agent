@@ -1216,6 +1216,7 @@ const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+const NOTEBOOK_PREVIEW_MAX_BYTES = 16 * 1024 * 1024
 
 const PREVIEW_LANGUAGE_BY_EXT = {
   '.c': 'c',
@@ -1230,6 +1231,7 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.html': 'html',
   '.java': 'java',
   '.js': 'javascript',
+  '.ipynb': 'json',
   '.json': 'json',
   '.jsx': 'jsx',
   '.kt': 'kotlin',
@@ -1273,6 +1275,10 @@ function looksBinary(buffer) {
   return suspicious / buffer.length > 0.12
 }
 
+function textPreviewMaxBytes(filePath) {
+  return path.extname(filePath || '').toLowerCase() === '.ipynb' ? NOTEBOOK_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES
+}
+
 function previewFileMetadata(filePath, mimeType) {
   let byteSize = 0
   let binary = false
@@ -1299,7 +1305,7 @@ function previewFileMetadata(filePath, mimeType) {
   return {
     binary,
     byteSize,
-    large: byteSize > TEXT_PREVIEW_MAX_BYTES
+    large: byteSize > textPreviewMaxBytes(filePath)
   }
 }
 
@@ -16702,7 +16708,8 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
 
   const ext = path.extname(resolvedPath).toLowerCase()
   const handle = await fs.promises.open(resolvedPath, 'r')
-  const bytesToRead = Math.min(stat.size, TEXT_PREVIEW_MAX_BYTES)
+  const previewMax = textPreviewMaxBytes(resolvedPath)
+  const bytesToRead = Math.min(stat.size, previewMax)
 
   try {
     const buffer = Buffer.alloc(bytesToRead)
@@ -16715,7 +16722,7 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
       mimeType: mimeTypeForPath(resolvedPath),
       path: resolvedPath,
       text: buffer.subarray(0, bytesRead).toString('utf8'),
-      truncated: stat.size > TEXT_PREVIEW_MAX_BYTES
+      truncated: stat.size > previewMax
     }
   } finally {
     await handle.close()

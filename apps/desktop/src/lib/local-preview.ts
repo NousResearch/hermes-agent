@@ -22,6 +22,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.hpp': 'cpp',
   '.html': 'html',
   '.java': 'java',
+  '.ipynb': 'json',
   '.js': 'javascript',
   '.json': 'json',
   '.jsx': 'jsx',

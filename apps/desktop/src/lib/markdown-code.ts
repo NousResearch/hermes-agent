@@ -191,6 +191,7 @@ const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   html: 'html',
   ini: 'ini',
   java: 'java',
+  ipynb: 'json',
   jl: 'julia',
   js: 'javascript',
   json: 'json',

@@ -77,6 +77,26 @@ def test_fs_download_rejects_sensitive_files(client, tmp_path):
     assert response.status_code == 403
 
 
+def test_fs_read_text_does_not_truncate_notebooks_under_16mb(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "_FS_TEXT_PREVIEW_MAX_BYTES", 32)
+    payload = b'{"nbformat": 4, "cells": []}' + b" " * 40
+    notebook = tmp_path / "analysis.ipynb"
+    notebook.write_bytes(payload)
+    text_file = tmp_path / "notes.txt"
+    text_file.write_bytes(b"x" * 40)
+
+    notebook_response = client.get("/api/fs/read-text", params={"path": str(notebook)})
+    text_response = client.get("/api/fs/read-text", params={"path": str(text_file)})
+
+    assert notebook_response.status_code == 200
+    assert notebook_response.json()["truncated"] is False
+    assert notebook_response.json()["language"] == "json"
+    assert notebook_response.json()["text"] == payload.decode()
+    assert text_response.status_code == 200
+    assert text_response.json()["truncated"] is True
+    assert len(text_response.json()["text"]) == 32
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"

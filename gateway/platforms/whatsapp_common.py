@@ -147,7 +147,19 @@ class WhatsAppBehaviorMixin:
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
-        """Parse allow_from / group_allow_from from config or env var."""
+        """Parse allow_from / group_allow_from from config or env var.
+
+        A real list is taken as-is. A string is split on commas, so string
+        entries must be bare and comma-separated::
+
+            120363000000000000@g.us,120363111111111111@g.us
+
+        A JSON *array string* such as ``'["120363000000000000@g.us"]'`` is
+        NOT parsed as JSON: it becomes one entry that still carries the
+        brackets and quotes, and therefore matches no real JID (#78366).
+        ``hermes config set`` accepts that form without complaint, which
+        makes it easy to hit.
+        """
         if raw is None:
             return set()
         if isinstance(raw, list):
@@ -276,16 +288,49 @@ class WhatsAppBehaviorMixin:
             return self._open_dm_opted_in()
         return False
 
+    def _log_group_drop(self, chat_id: str, reason: str) -> None:
+        """Explain a group-intake drop (#78366).
+
+        Debug rather than warning: a busy group would otherwise emit a line
+        per message. Operators diagnosing this already run the bridge with
+        debug logging on -- the gap being closed is that even then, nothing
+        said *why* the message vanished.
+        """
+        logger.debug(
+            "[%s] dropping group message from %s -- %s (group_policy=%r)",
+            self.name,
+            chat_id,
+            reason,
+            self._group_policy,
+        )
+
     def _is_group_allowed(self, chat_id: str) -> bool:
-        """Check whether a group chat should be processed."""
+        """Check whether a group chat should be processed.
+
+        Every ``False`` returned here drops the message silently inside
+        ``_should_process_message``, so each branch first records the policy
+        that decided it. Outbound delivery to the same group keeps working,
+        which means a misconfigured ``group_policy`` is otherwise
+        indistinguishable from "no message ever arrived" -- the bridge, the
+        user allowlist and outbound delivery all look healthy (#78366).
+        """
         if self._group_policy == "disabled":
+            self._log_group_drop(chat_id, "group_policy is 'disabled'")
             return False
         if self._group_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
+            if self._matches_whatsapp_allowlist(chat_id, self._group_allow_from):
+                return True
+            self._log_group_drop(chat_id, "chat is not in group_allow_from")
+            return False
         if self._group_policy == "pairing":
+            self._log_group_drop(
+                chat_id,
+                "'pairing' admits no group chat; use 'allowlist' or 'open'",
+            )
             return False
         if self._group_policy == "open":
             return True
+        self._log_group_drop(chat_id, "unrecognized group_policy")
         return False
 
     def _compile_mention_patterns(self):

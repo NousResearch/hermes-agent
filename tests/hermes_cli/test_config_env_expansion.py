@@ -1,5 +1,7 @@
 """Tests for ${ENV_VAR} substitution in config.yaml values."""
 
+import logging
+
 import pytest
 from hermes_cli.config import _expand_env_vars, load_config
 
@@ -150,3 +152,31 @@ class TestExpansionUnderProfileScope:
             ss.set_multiplex_active(was_active)
         # Unscoped (default profile / single-profile CLI): legacy environ read.
         assert _expand_env_vars("${MATRIX_ACCESS_TOKEN}") == "default-token"
+
+
+class TestUnresolvedBareRefWarns:
+    """A bare ``${VAR}`` ref whose variable is unset must log the same
+    warning as the ``${env:VAR}`` shape (hermes_cli/config.py
+    ``_env_expand_match``).  Silently keeping the literal placeholder sends
+    a string like ``${SOME_KEY}`` to the API as a bearer token and surfaces
+    only as an opaque 401; the ``env:`` prefix already warned, the legacy
+    bare form did not."""
+
+    def test_missing_bare_var_keeps_literal_and_warns(self, caplog):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.delenv("HERMES_MISSING_BARE_REF_KEY", raising=False)
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                result = _expand_env_vars("${HERMES_MISSING_BARE_REF_KEY}")
+        assert result == "${HERMES_MISSING_BARE_REF_KEY}"
+        assert any(
+            "HERMES_MISSING_BARE_REF_KEY is not set" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_resolved_bare_var_does_not_warn(self, caplog):
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("HERMES_PRESENT_BARE_REF_KEY", "sk-present")
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                result = _expand_env_vars("${HERMES_PRESENT_BARE_REF_KEY}")
+        assert result == "sk-present"
+        assert not caplog.records

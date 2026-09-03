@@ -3073,7 +3073,13 @@ def _env_expand_match(m: re.Match) -> str:
         return raw
     # Legacy ``${VAR}`` — bare name.
     val = _env_ref_lookup(inner)
-    return val if val is not None else raw
+    if val is None:
+        logger.warning(
+            "Config ref %r: %s is not set (check ~/.hermes/.env); "
+            "keeping the literal placeholder", raw, inner,
+        )
+        return raw
+    return val
 
 
 def _env_ref_var_name(ref: str) -> Optional[str]:

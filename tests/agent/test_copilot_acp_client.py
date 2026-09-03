@@ -32,7 +32,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             "</tool_call>"
         )
 
-        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "")):
+        with patch.object(self.client, "_run_prompt", return_value=(tool_response, "", True)):
             stream = self.client._create_chat_completion(
                 model="copilot-acp",
                 messages=[{"role": "user", "content": "read README.md"}],
@@ -414,10 +414,52 @@ def test_run_prompt_receives_picker_model():
 
     def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
         seen["model"] = model
-        return "ok", ""
+        return "ok", "", True
 
     with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
         client._create_chat_completion(
             model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
         )
     assert seen["model"] == "gpt-5.6-terra"
+
+
+def test_completion_model_reflects_fallback_when_selection_not_applied():
+    # Regression: when Copilot doesn't offer the requested model (unknown or
+    # policy-disabled id) or the session/set_config_option|set_model RPC
+    # fails, _run_prompt silently continues with the session's own default
+    # model. completion.model must not then claim the requested id was
+    # actually used — downstream cost/audit attribution (agent/aux_accounting.py,
+    # agent/plugin_llm.py) trusts this field as authoritative.
+    client = CopilotACPClient(acp_cwd="/tmp")
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        # Mirrors what the real _run_prompt does on a rejected/failed
+        # selection: it logs a warning and returns the text produced by
+        # whatever model the session actually ran, with model_applied=False.
+        return "response from the session's actual default model", "", False
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        completion = client._create_chat_completion(
+            model="claude-fable-5-DEFINITELY-NOT-SERVED",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    assert completion.model == "copilot-acp"
+    assert completion.model != "claude-fable-5-DEFINITELY-NOT-SERVED"
+
+
+def test_completion_model_reflects_requested_model_when_applied():
+    # Companion to the fallback regression above: when selection genuinely
+    # succeeds, completion.model must still report the requested id.
+    client = CopilotACPClient(acp_cwd="/tmp")
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        return "response from the requested model", "", True
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        completion = client._create_chat_completion(
+            model="gpt-5.6-terra",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    assert completion.model == "gpt-5.6-terra"

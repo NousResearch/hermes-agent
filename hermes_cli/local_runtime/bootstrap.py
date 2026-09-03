@@ -30,23 +30,37 @@ _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
 def _detect_gpu_vendor() -> str | None:
     """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi
     (resolved by the hardware probe's PATH-independent ladder — a stripped
-    service PATH must not demote an NVIDIA box to vulkan/cpu); anything
-    else defers to select_backend's fallback ladder."""
+    service PATH must not demote an NVIDIA box to vulkan/cpu); then tries
+    vulkaninfo for AMD/Intel GPUs; anything else defers to select_backend's
+    fallback ladder."""
     from hermes_cli.local_runtime.hardware import _nvidia_smi_path
 
     smi = _nvidia_smi_path()
-    if smi is None:
-        return None
+    if smi is not None:
+        try:
+            out = subprocess.run(
+                [smi, "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0 and out.stdout.strip():
+                return "nvidia " + out.stdout.strip().splitlines()[0]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    # Probe for AMD/Intel via vulkaninfo
     try:
         out = subprocess.run(
-            [smi, "--query-gpu=name", "--format=csv,noheader"],
+            ["vulkaninfo", "--summary"],
             capture_output=True, text=True, timeout=10)
         if out.returncode == 0 and out.stdout.strip():
-            return "nvidia " + out.stdout.strip().splitlines()[0]
+            lower_out = out.stdout.lower()
+            if "amd" in lower_out or "radeon" in lower_out:
+                return "amd"
+            if "intel" in lower_out or "arc" in lower_out:
+                return "intel"
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return None
 
+    return None
 
 def models_dir() -> Path:
     """Machine-scoped, deliberately NOT profile-scoped: a 20 GB GGUF is a

@@ -1147,6 +1147,41 @@ function ClarifyToolBatchPending({
     [allStaged, confirmAll, ready]
   )
 
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLFormElement>) => {
+      if (
+        event.key !== 'Enter' ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.shiftKey ||
+        event.nativeEvent.isComposing ||
+        event.defaultPrevented
+      ) {
+        return
+      }
+
+      // A choice is deliberately type="button" so staging never submits. Once
+      // focused, though, its native Enter activation would just pick it again.
+      // Own that one collision at the form boundary; text fields and the Skip /
+      // Confirm actions retain their native editing and button semantics.
+      const target = event.target
+
+      if (!(target instanceof HTMLButtonElement) || !target.hasAttribute('data-choice')) {
+        return
+      }
+
+      event.preventDefault()
+
+      // A preview batch (not yet `ready`) has nothing to submit; `disabled`
+      // below covers the same state for the Confirm action.
+      if (ready && allStaged && !submitting) {
+        void confirmAll()
+      }
+    },
+    [allStaged, confirmAll, ready, submitting]
+  )
+
   const disabled = submitting || !ready
 
   if (questions.length === 0) {
@@ -1163,6 +1198,7 @@ function ClarifyToolBatchPending({
       className="my-1.5 grid gap-4"
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
+      onKeyDown={handleKeyDown}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
     >

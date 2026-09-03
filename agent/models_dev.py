@@ -761,6 +761,35 @@ def lookup_models_dev_context(
 
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
+        # Upstream-aggregator fallback.
+        #
+        # Many Hermes custom providers (Cloudflare Worker proxies,
+        # internal gateways, OpenAI-compatible rehosts) are NOT themselves
+        # entries in the public models.dev catalog -- they re-serve models
+        # published by one of a small set of upstream aggregators.
+        #
+        # Before this branch, a configured provider of `lexgf` (a thin CF
+        # Worker proxying OpenRouter) hit this early-return immediately
+        # and skipped the catalog entirely. Same story for `custom:lexgf`,
+        # `local-lexg`, `local-lexg-kilo`, `lexfree`, `lexzm`, `lexgw`
+        # -- any of the user-flavoured routes the user defines in
+        # `providers:` or `custom_providers:` that fronts a known
+        # upstream. Result: those models fell through to the 256K
+        # hardcoded fallback and compression fired on long sessions that
+        # the model would in fact have held in full.
+        #
+        # The candidate list is ordered by observed coverage in the live
+        # catalog (openrouter has the widest multi-provider footprint,
+        # then kilo for the free tier, then per-vendor IDs). Each
+        # candidate is a single dict.get() against the in-memory catalog,
+        # so the cost is O(N candidates) per catalog miss -- and only
+        # on the miss path. Hot-path cost on cache hits is unchanged.
+        ctx = _lookup_in_upstream_aggregators(
+            model,
+            allow_network=allow_network,
+        )
+        if ctx:
+            return ctx
         return _default_override_context(provider)
 
     # NOTE: keep the zero-argument call on the allow_network path. Dozens
@@ -816,8 +845,58 @@ def lookup_models_dev_context(
                 if ctx:
                     return ctx
 
-    # Catalog miss — a _default override may fill the gap (#84482).
+    # Catalog miss -- a _default override may fill the gap (#84482).
     return _default_override_context(provider)
+
+
+# Upstream-aggregator candidates consulted when the configured provider
+# is not in the models.dev provider map. Order is by observed catalog
+# coverage, not by vendor importance; a custom route that fronts
+# OpenRouter resolves on the first candidate, and the rest are skipped.
+_UPSTREAM_AGGREGATOR_CANDIDATES = (
+    "openrouter", "kilo", "deepseek", "moonshotai", "zai",
+    "anthropic", "google", "openai", "xai", "nvidia",
+    "qwen", "xiaomimimo", "stepfun", "minimax",
+)
+
+
+def _lookup_in_upstream_aggregators(
+    model: str, *, allow_network: bool = False
+) -> Optional[int]:
+    """Scan known upstream-aggregator providers for ``model`` and return
+    the first matching context window.
+
+    This is the fallback used when the configured provider is not itself
+    in the public models.dev catalog but re-serves models that are. The
+    scan is in-memory only by default (allow_network=False) so it stays
+    off the no-network-on-hot-paths invariant.
+    """
+    data = (
+        fetch_models_dev()
+        if allow_network
+        else fetch_models_dev(allow_network=False)
+    )
+    model_lower = model.lower()
+    for candidate in _UPSTREAM_AGGREGATOR_CANDIDATES:
+        cand_data = data.get(candidate)
+        if not isinstance(cand_data, dict):
+            continue
+        cand_models = cand_data.get("models", {})
+        if not isinstance(cand_models, dict):
+            continue
+        # Exact match first.
+        entry = cand_models.get(model)
+        if isinstance(entry, dict):
+            ctx = _extract_context(entry)
+            if ctx:
+                return ctx
+        # Case-insensitive fallback.
+        for mid, mdata in cand_models.items():
+            if mid.lower() == model_lower and isinstance(mdata, dict):
+                ctx = _extract_context(mdata)
+                if ctx:
+                    return ctx
+    return None
 
 
 def _default_override_context(provider: str) -> Optional[int]:

@@ -82,6 +82,16 @@ SAMPLE_REGISTRY = {
             },
         },
     },
+    "openrouter": {
+        "id": "openrouter",
+        "name": "OpenRouter",
+        "models": {
+            "gpt-5.4": {
+                "id": "gpt-5.4",
+                "limit": {"context": 1050000, "output": 128000},
+            },
+        },
+    },
     "audio-only": {
         "id": "audio-only",
         "models": {
@@ -145,6 +155,41 @@ class TestLookupModelsDevContext:
         # audio-only is not a mapped provider, but test the filtering directly
         data = SAMPLE_REGISTRY["audio-only"]["models"]["tts-model"]
         assert _extract_context(data) is None
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unknown_provider_falls_back_to_upstream_aggregator(
+        self, mock_fetch
+    ):
+        """An unmapped provider (e.g. `lexgf`) should still find a model
+        that lives in one of the upstream-aggregator catalogs (openrouter,
+        kilo, deepseek, etc.) instead of returning None."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        # `lexgf` is not in PROVIDER_TO_MODELS_DEV; gpt-5.4 IS in
+        # the openrouter catalog.
+        assert (
+            lookup_models_dev_context("lexgf", "gpt-5.4") == 1050000
+        )
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_unknown_provider_no_aggregator_match(self, mock_fetch):
+        """When neither the configured provider nor any upstream
+        aggregator has the model, lookup still returns None (i.e. the
+        fallback does not invent a value)."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert (
+            lookup_models_dev_context("lexgf", "eaon-gpt-5.6-sol") is None
+        )
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_known_provider_not_shadowed_by_fallback(self, mock_fetch):
+        """A configured provider that IS in PROVIDER_TO_MODELS_DEV must
+        use the primary catalog, not be shadowed by the fallback scan."""
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        # `xai` is mapped directly; grok-build-0.1 has 256K in the xai
+        # catalog (NOT the openrouter or any other aggregator entry).
+        assert (
+            lookup_models_dev_context("xai", "grok-build-0.1") == 256000
+        )
 
 
 

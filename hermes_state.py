@@ -979,6 +979,15 @@ _WAL_INCOMPAT_MARKERS = (
     "disk i/o error",         # ZFS SHM corruption under concurrent connections
 )
 
+# A burst of fresh connections can all probe DELETE before one wins the
+# exclusive header transition to WAL. SQLite may return SQLITE_BUSY from
+# PRAGMA journal_mode=WAL immediately in that lock-upgrade race even when the
+# connection has a longer busy_timeout. Give the winner a short bounded window
+# to publish WAL, then let the losing connections converge by re-probing.
+_WAL_BUSY_CONVERGENCE_SECONDS = 1.0
+_WAL_BUSY_RETRY_MIN_SECONDS = 0.01
+_WAL_BUSY_RETRY_MAX_SECONDS = 0.05
+
 # Upper bound for the write-ahead log. SQLite defaults to -1 (unlimited),
 # which lets state.db-wal keep the high-water mark of the largest-ever
 # transaction forever. See _apply_wal_size_limit().
@@ -1215,6 +1224,53 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
             "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
         )
     return None
+
+
+def _is_sqlite_busy(exc: sqlite3.OperationalError) -> bool:
+    """Return whether ``exc`` is SQLITE_BUSY (not SQLITE_LOCKED)."""
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if isinstance(error_code, int):
+        # Extended result codes retain the primary code in the low byte.
+        return error_code & 0xFF == sqlite3.SQLITE_BUSY
+    # Compatibility for runtimes/test doubles without sqlite_errorcode.
+    return str(exc).strip().lower() in {"database is locked", "database is busy"}
+
+
+def _set_wal_with_busy_convergence(conn: sqlite3.Connection):
+    """Set WAL while absorbing only the fresh-connection SQLITE_BUSY race.
+
+    A losing connection re-probes after BUSY: if a peer established WAL, that
+    is success; otherwise retry until one monotonic deadline. Exhaustion
+    re-raises SQLITE_BUSY. This never switches to DELETE and deliberately does
+    not retry SQLITE_LOCKED, WAL-incompatible storage errors, or other faults.
+    """
+    deadline = time.monotonic() + _WAL_BUSY_CONVERGENCE_SECONDS
+    last_busy: Optional[sqlite3.OperationalError] = None
+    while True:
+        try:
+            return conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_busy(exc):
+                raise
+            last_busy = exc
+
+        # Re-probe even if SQLite consumed the time budget waiting: a peer may
+        # have completed the WAL transition while this setter was blocked.
+        if _on_disk_journal_mode(conn) == "wal":
+            return ("wal",)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            assert last_busy is not None
+            raise last_busy
+        time.sleep(
+            min(
+                remaining,
+                random.uniform(
+                    _WAL_BUSY_RETRY_MIN_SECONDS,
+                    _WAL_BUSY_RETRY_MAX_SECONDS,
+                ),
+            )
+        )
 
 
 def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
@@ -1544,7 +1600,7 @@ def apply_wal_with_fallback(
         # returned row, not the mere absence of an exception; otherwise we
         # report a false ``"wal"`` AND skip the fallback WARNING, leaving the
         # DB silently in DELETE (reader-blocks-writer) with no signal.
-        row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        row = _set_wal_with_busy_convergence(conn)
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
             if _upgrading_existing_db:

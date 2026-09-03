@@ -114,6 +114,83 @@ class TestApplyWalWithFallback:
         assert cur.fetchone()[0].lower() == "wal"
         conn.close()
 
+    def test_busy_setter_converges_when_peer_establishes_wal(self, monkeypatch):
+        """A loser in the fresh-connection WAL race accepts the peer's WAL."""
+        attempts = [0]
+
+        class _Conn:
+            def execute(self, sql):
+                attempts[0] += 1
+                raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(
+            hermes_state, "_on_disk_journal_mode", lambda _conn: "wal"
+        )
+
+        assert hermes_state._set_wal_with_busy_convergence(_Conn()) == ("wal",)
+        assert attempts[0] == 1
+
+    def test_busy_setter_retries_when_mode_remains_delete(self, monkeypatch):
+        """If no peer won yet, one bounded retry may establish WAL locally."""
+        attempts = [0]
+
+        class _Cursor:
+            def fetchone(self):
+                return ("wal",)
+
+        class _Conn:
+            def execute(self, sql):
+                attempts[0] += 1
+                if attempts[0] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                return _Cursor()
+
+        monkeypatch.setattr(
+            hermes_state, "_on_disk_journal_mode", lambda _conn: "delete"
+        )
+        monkeypatch.setattr(hermes_state.time, "sleep", lambda _seconds: None)
+
+        assert hermes_state._set_wal_with_busy_convergence(_Conn()) == ("wal",)
+        assert attempts[0] == 2
+
+    def test_busy_setter_deadline_fails_closed_without_delete(self, monkeypatch):
+        """Persistent BUSY is bounded and never converted into a downgrade."""
+        calls = []
+        clock = iter([0.0, 2.0])
+
+        class _Conn:
+            def execute(self, sql):
+                calls.append(sql)
+                raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(
+            hermes_state, "_on_disk_journal_mode", lambda _conn: "delete"
+        )
+        monkeypatch.setattr(hermes_state.time, "monotonic", lambda: next(clock))
+
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            hermes_state._set_wal_with_busy_convergence(_Conn())
+
+        assert calls == ["PRAGMA journal_mode=WAL"]
+        assert not any("journal_mode=DELETE" in sql for sql in calls)
+
+    def test_sqlite_locked_is_not_retried_as_busy(self, monkeypatch):
+        """SQLITE_LOCKED is not the cross-connection convergence race."""
+        attempts = [0]
+
+        class _Conn:
+            def execute(self, sql):
+                attempts[0] += 1
+                raise sqlite3.OperationalError("database table is locked")
+
+        monkeypatch.setattr(
+            hermes_state, "_on_disk_journal_mode", lambda _conn: "delete"
+        )
+
+        with pytest.raises(sqlite3.OperationalError, match="database table is locked"):
+            hermes_state._set_wal_with_busy_convergence(_Conn())
+        assert attempts[0] == 1
+
     def test_falls_back_to_delete_on_locking_protocol(self, tmp_path, caplog):
         """NFS-style ``locking protocol`` error → DELETE mode + one ERROR."""
         conn, _ = _open_blocking(tmp_path / "nfs.db", isolation_level=None)

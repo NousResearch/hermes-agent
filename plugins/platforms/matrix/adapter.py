@@ -412,6 +412,40 @@ def _strip_reply_fallback(body: str) -> str:
     return "\n".join(stripped) if stripped else body
 
 
+# Phantom interrupt / redirect / self-improvement-review messages emitted by
+# the gateway's own orchestrator (or leaked from upstream runtime scaffolding)
+# arrive at intake as if they were user messages. If we dispatch them they
+# trigger another phantom notice, forming a self-perpetuating loop until
+# the homeserver rate-limits the connection.
+#
+# Filter at intake. Full-prefix match only — a real user message that
+# happens to mention one of these tokens mid-sentence (e.g. "⚡ Interrupting
+# my workout to ask you…") must still pass through. See
+# ``test_matrix_phantom_intake_filter.py``.
+PHANTOM_INTAKE_PREFIXES = (
+    "[This response was interrupted by a user correction.]",
+    "↪ Redirected current run",
+    "⚡ Interrupting current task",  # bare-prefix; matches `.`, `:`, and ` (running: <tool>)` variants
+    "⚡ Stopped.",
+    "No active task to stop.",
+    "♻️ Recovered reply",
+    "💾 Self-improvement review:",
+    "💭 Reasoning:",
+)
+
+
+def _is_phantom_intake_message(body: str) -> bool:
+    """Return True if ``body`` matches a phantom notice shape that should
+    be dropped at intake instead of dispatched to the model."""
+    if not body:
+        return False
+    stripped = body.lstrip()
+    for prefix in PHANTOM_INTAKE_PREFIXES:
+        if stripped.startswith(prefix):
+            return True
+    return False
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -993,30 +1027,16 @@ def _startup_env_secret(name: str) -> str:
         return os.getenv(name, "").strip()
 
 
-def matrix_deps_present() -> bool:
-    """PASSIVE probe: are the ``platform.matrix`` packages installed?
-
-    Registry ``check_fn`` — called from status displays and config loading,
-    so it must never install anything.  The ACTIVE lazy-installer
-    (``check_matrix_requirements``) is registered as ``ensure_deps_fn``
-    and runs from ``create_adapter()`` when this returns False (#79812).
-    """
-    try:
-        from tools.lazy_deps import is_available
-        return is_available("platform.matrix")
-    except Exception:  # pragma: no cover — defensive
-        return False
-
-
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used.
 
-    Combined credentials + deps answer for setup/status callers.  The
-    registry's ``ensure_deps_fn`` is the deps-only
-    :func:`ensure_matrix_deps` below — credentials must NOT gate the
-    installer (they're handled by ``is_connected``, which also accepts
-    ``PlatformConfig.extra``-configured setups that these env checks
-    would wrongly veto).
+    Lazy-installs the full ``platform.matrix`` feature group via
+    ``tools.lazy_deps.ensure_and_bind`` whenever any of the declared
+    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
+    missing — not just mautrix itself.  Previously this short-circuited on
+    ``import mautrix``, which left the other four packages uninstalled
+    forever and broke E2EE connect with ``No module named 'asyncpg'``
+    (#31116).  Rebinds module-level type globals on success.
     """
     token = _startup_env_secret("MATRIX_ACCESS_TOKEN")
     password = _startup_env_secret("MATRIX_PASSWORD")
@@ -1029,20 +1049,6 @@ def check_matrix_requirements() -> bool:
         logger.warning("Matrix: MATRIX_HOMESERVER not set")
         return False
 
-    return ensure_matrix_deps()
-
-
-def ensure_matrix_deps() -> bool:
-    """ACTIVE deps-only installer (registry ``ensure_deps_fn``).
-
-    Lazy-installs the full ``platform.matrix`` feature group via
-    ``tools.lazy_deps.ensure_and_bind`` whenever any of the declared
-    packages (mautrix, Markdown, aiosqlite, asyncpg, aiohttp-socks) is
-    missing — not just mautrix itself.  Previously this short-circuited on
-    ``import mautrix``, which left the other four packages uninstalled
-    forever and broke E2EE connect with ``No module named 'asyncpg'``
-    (#31116).  Rebinds module-level type globals on success.
-    """
     # Check whether any package in the platform.matrix feature group is
     # missing.  ``feature_missing`` is cheap (per-spec importlib.metadata
     # lookups) and correctly handles ``mautrix[encryption]`` by stripping
@@ -3242,6 +3248,34 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id,
         )
 
+        # Phantom intake filter — drop orchestrator-emitted notices
+        # (interrupts, redirects, self-improvement reviews, recovered
+        # replies, reasoning bubbles) before any sender/room gating so
+        # they never reach the model. See _is_phantom_intake_message
+        # for the full shape list.
+        _content_for_phantom_check = getattr(event, "content", None)
+        if _content_for_phantom_check is not None:
+            if hasattr(_content_for_phantom_check, "body"):
+                _phantom_body = str(
+                    getattr(_content_for_phantom_check, "body", "") or ""
+                )
+            elif isinstance(_content_for_phantom_check, dict):
+                _phantom_body = str(
+                    _content_for_phantom_check.get("body", "") or ""
+                )
+            else:
+                _phantom_body = ""
+            if _is_phantom_intake_message(_phantom_body):
+                logger.debug(
+                    "Matrix: dropping phantom notice at intake (event=%s sender=%s "
+                    "room=%s head=%r)",
+                    getattr(event, "event_id", "?"),
+                    sender,
+                    room_id,
+                    _phantom_body[:40],
+                )
+                return
+
         # Ignore own messages (case-insensitive; also drops when our own
         # user_id hasn't been resolved yet — see _is_self_sender docstring
         # and issue #15763).
@@ -3520,24 +3554,21 @@ class MatrixAdapter(BasePlatformAdapter):
         if in_reply_to:
             reply_to = in_reply_to.get("event_id")
 
-        # Capture the reply fallback BEFORE stripping it from body, so the
-        # gateway prompt layer can render "[Replying to: \"<original>\"]".
-        # Other adapters (Signal, Slack, Telegram) populate reply_to_text
-        # from their quote payload; Matrix stores it inline as `> <@user:srv>
-        # <text>\n\n<actual reply>` and discards it after stripping.
-        reply_to_text: Optional[str] = None
-        reply_to_author_id: Optional[str] = None
-        reply_to_author_name: Optional[str] = None
+        # Strip reply fallback from body.
         if reply_to and body.startswith("> "):
-            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-            body = _strip_reply_fallback(body)
-
-            # Resolve the replied-to author's display name when we have the
-            # state_store available — falls back to the localpart otherwise.
-            if reply_to_author_id:
-                reply_to_author_name = await self._get_display_name(
-                    room_id, reply_to_author_id
-                )
+            lines = body.split("\n")
+            stripped = []
+            past_fallback = False
+            for line in lines:
+                if not past_fallback:
+                    if line.startswith("> ") or line == ">":
+                        continue
+                    if line == "":
+                        past_fallback = True
+                        continue
+                    past_fallback = True
+                stripped.append(line)
+            body = "\n".join(stripped) if stripped else body
 
         # Re-run bang normalization after reply-fallback stripping so a quoted
         # reply whose actual content is a bang command (e.g. ``> quoted\n\n!model``)
@@ -3555,15 +3586,6 @@ class MatrixAdapter(BasePlatformAdapter):
             raw_message=source_content,
             message_id=event_id,
             reply_to_message_id=reply_to,
-            reply_to_text=reply_to_text,
-            reply_to_author_id=reply_to_author_id,
-            reply_to_author_name=reply_to_author_name,
-            # Sender metadata at MessageEvent level — `source.user_name`
-            # already carries this, but downstream code (e.g. the prompt
-            # layer, ghost-context rendering) historically reads the
-            # top-level fields. Mirror them so matrix matches signal/slack.
-            user_id=sender,
-            user_name=display_name,
         )
 
         if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
@@ -3752,24 +3774,6 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         body, is_dm, chat_type, thread_id, display_name, source = ctx
 
-        # Reply-to detection (mirrors _handle_text_message).
-        reply_to = None
-        in_reply_to = relates_to.get("m.in_reply_to", {})
-        if in_reply_to:
-            reply_to = in_reply_to.get("event_id")
-
-        reply_to_text: Optional[str] = None
-        reply_to_author_id: Optional[str] = None
-        reply_to_author_name: Optional[str] = None
-        if reply_to and body.startswith("> "):
-            reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
-            body = _strip_reply_fallback(body)
-
-            if reply_to_author_id:
-                reply_to_author_name = await self._get_display_name(
-                    room_id, reply_to_author_id
-                )
-
         if msgtype == "m.image" and _looks_like_matrix_image_filename(body):
             body = ""
         elif msgtype in ("m.audio", "m.file", "m.video") and _looks_like_matrix_media_filename(body):
@@ -3791,12 +3795,6 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=reply_to,
-            reply_to_text=reply_to_text,
-            reply_to_author_id=reply_to_author_id,
-            reply_to_author_name=reply_to_author_name,
-            user_id=sender,
-            user_name=display_name,
         )
 
         await self.handle_message(msg_event)
@@ -5271,21 +5269,13 @@ async def _standalone_send(
         except ImportError:
             pass
 
-        # Use asyncio.wait_for() instead of aiohttp.ClientTimeout to avoid
-        # "Timeout context manager should be used inside a task" errors when
-        # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
-        async with aiohttp.ClientSession() as session:
-            async def _do_send():
-                async with session.put(url, headers=headers, json=payload) as resp:
-                    if resp.status not in {200, 201}:
-                        body = await resp.text()
-                        return {"error": f"Matrix API error ({resp.status}): {body}"}
-                    data = await resp.json()
-                    return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
-            try:
-                return await asyncio.wait_for(_do_send(), timeout=30)
-            except asyncio.TimeoutError:
-                return {"error": "Matrix API timeout (30s)"}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.put(url, headers=headers, json=payload) as resp:
+                if resp.status not in {200, 201}:
+                    body = await resp.text()
+                    return {"error": f"Matrix API error ({resp.status}): {body}"}
+                data = await resp.json()
+        return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
     except Exception as e:
         return {"error": f"Matrix send failed: {e}"}
 
@@ -5468,8 +5458,7 @@ def register(ctx) -> None:
         name="matrix",
         label="Matrix",
         adapter_factory=_build_adapter,
-        check_fn=matrix_deps_present,
-        ensure_deps_fn=ensure_matrix_deps,
+        check_fn=check_matrix_requirements,
         is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
         install_hint="pip install 'mautrix[encryption]'",

@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.local_runtime.endpoint import _state_endpoint
 
 logger = logging.getLogger(__name__)
@@ -465,7 +466,8 @@ def local_models_hardware():
         smi = subprocess.run(
             [smi_exe, "--query-gpu=name,utilization.gpu,memory.used",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5) if smi_exe else None
+            capture_output=True, text=True, timeout=5,
+            creationflags=windows_hide_flags()) if smi_exe else None
         if smi and smi.returncode == 0 and smi.stdout.strip():
             name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
             out["gpu_name"] = name

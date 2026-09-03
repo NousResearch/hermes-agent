@@ -1,0 +1,186 @@
+# Publish SHA-keyed unpacked Desktop artifacts + desktop-index.json.
+#
+# Complementary to the electron-updater installer lane proposed in the
+# open release-desktop.yml work: this workflow produces the zip + checksum
+# index that `hermes update` consumes (SHA → nearest tag → source rebuild).
+# Signing/notarization is optional — unset Apple/Windows secrets still
+# produce working unsigned / ad-hoc artifacts.
+#
+# Default: per release tag + workflow_dispatch (not every merged commit).
+# The index still records the core commit SHA so the exact-SHA rung hits
+# on release commits.
+
+name: Desktop prebuilt artifacts
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to pack (defaults to the triggering ref)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-prebuilt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    if: github.repository == 'NousResearch/hermes-agent'
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            runs-on: ubuntu-latest
+            platform: linux
+            arch: x64
+            unpacked: linux-unpacked
+          - label: macOS Apple Silicon
+            runs-on: macos-latest
+            platform: darwin
+            arch: arm64
+            unpacked: mac-arm64
+          - label: macOS Intel
+            runs-on: macos-13
+            platform: darwin
+            arch: x64
+            unpacked: mac
+          - label: Windows x64
+            runs-on: windows-latest
+            platform: win32
+            arch: x64
+            unpacked: win-unpacked
+
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci
+
+      - name: Pack unpacked Desktop app
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_IDENTITY_AUTO_DISCOVERY || 'false' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run pack -- --${{ matrix.platform == 'darwin' && 'mac' || matrix.platform == 'win32' && 'win' || 'linux' }} --${{ matrix.arch }}
+
+      - name: Zip unpacked tree + write index fragment
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          UNPACKED: ${{ matrix.unpacked }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          SHORT="${SHA:0:12}"
+          NAME="hermes-desktop-${PLATFORM}-${ARCH}-${SHORT}.zip"
+          UNPACKED_DIR="apps/desktop/release/${UNPACKED}"
+          if [ ! -d "$UNPACKED_DIR" ]; then
+            # mac Intel sometimes lands as mac-x64 instead of mac
+            if [ "$PLATFORM" = "darwin" ] && [ -d "apps/desktop/release/mac-x64" ]; then
+              UNPACKED_DIR="apps/desktop/release/mac-x64"
+            else
+              echo "unpacked dir missing: $UNPACKED_DIR" >&2
+              ls -la apps/desktop/release || true
+              exit 1
+            fi
+          fi
+          python3 scripts/desktop_artifact_index.py zip-dir "$UNPACKED_DIR" "$NAME" > sha256.txt
+          DIGEST="$(tr -d '[:space:]' < sha256.txt)"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            URL="https://github.com/NousResearch/hermes-agent/releases/download/${RELEASE_TAG}/${NAME}"
+          else
+            URL="https://github.com/NousResearch/hermes-agent/releases/download/${RELEASE_TAG}/${NAME}"
+          fi
+          python3 scripts/desktop_artifact_index.py fragment \
+            --commit "$SHA" \
+            --platform "$PLATFORM" \
+            --arch "$ARCH" \
+            --url "$URL" \
+            --sha256 "$DIGEST" \
+            --tag "$RELEASE_TAG" \
+            --filename "$NAME" \
+            --output "fragment.json"
+          mkdir -p dist-prebuilt
+          mv "$NAME" fragment.json dist-prebuilt/
+
+      - name: Upload job artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hermes-desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist-prebuilt/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach zip to the triggering release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist-prebuilt/*.zip --clobber
+
+  index:
+    if: github.repository == 'NousResearch/hermes-agent'
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Download pack fragments
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: fragments
+          pattern: hermes-desktop-*
+          merge-multiple: false
+
+      - name: Merge desktop-index.json
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find fragments -name fragment.json | sort)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "no index fragments produced" >&2
+            exit 1
+          fi
+          python3 scripts/desktop_artifact_index.py merge "${FILES[@]}" --output desktop-index.json
+          python3 -c "import json; json.load(open('desktop-index.json')); print('index ok')"
+
+      - name: Upload merged index
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-index
+          path: desktop-index.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach index to the triggering release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" desktop-index.json --clobber

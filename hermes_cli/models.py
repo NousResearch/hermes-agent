@@ -6224,6 +6224,9 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+_MAX_MODEL_CATALOG_PAGES = 100
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
@@ -6235,8 +6238,8 @@ def probe_api_models(
 
     For ``anthropic_messages`` mode, uses ``x-api-key`` and
     ``anthropic-version`` headers (Anthropic's native auth) instead of
-    ``Authorization: Bearer``.  The response shape (``data[].id``) is
-    identical, so the same parser works for both.
+    ``Authorization: Bearer``. Catalog entries normally use ``data[].id``;
+    compatible endpoints may use ``data[].model`` and cursor pagination.
     """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
@@ -6258,10 +6261,15 @@ def probe_api_models(
             "used_fallback": False,
         }
 
-    if normalized.endswith("/v1"):
-        alternate_base = normalized[:-3].rstrip("/")
+    parsed_normalized = urllib.parse.urlsplit(normalized)
+    normalized_path = parsed_normalized.path.rstrip("/")
+    if normalized_path.endswith("/v1"):
+        alternate_path = normalized_path[:-3].rstrip("/")
     else:
-        alternate_base = normalized + "/v1"
+        alternate_path = normalized_path + "/v1"
+    alternate_base = urllib.parse.urlunsplit(
+        parsed_normalized._replace(path=alternate_path)
+    )
 
     candidates: list[tuple[str, bool]] = [(normalized, False)]
     if alternate_base and alternate_base != normalized:
@@ -6287,9 +6295,10 @@ def probe_api_models(
 
     _ssl_context = _custom_provider_ssl_context(normalized)
     for candidate_base, is_fallback in candidates:
-        url = candidate_base.rstrip("/") + "/models"
+        parsed_base = urllib.parse.urlsplit(candidate_base)
+        models_path = parsed_base.path.rstrip("/") + "/models"
+        url = urllib.parse.urlunsplit(parsed_base._replace(path=models_path))
         tried.append(url)
-        req = urllib.request.Request(url, headers=headers)
         # Only thread ssl_context when a per-provider TLS override actually
         # applies. Public/unconfigured endpoints keep the original 2-arg call,
         # so nothing changes for them (and existing call-seam mocks stay valid).
@@ -6297,15 +6306,67 @@ def probe_api_models(
         if _ssl_context is not None:
             _open_kwargs["ssl_context"] = _ssl_context
         try:
-            with _urlopen_model_catalog_request(req, **_open_kwargs) as resp:
-                data = json.loads(resp.read().decode())
-                return {
-                    "models": [m.get("id", "") for m in data.get("data", [])],
-                    "probed_url": url,
-                    "resolved_base_url": candidate_base.rstrip("/"),
-                    "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
-                    "used_fallback": is_fallback,
-                }
+            discovered_models: list[str] = []
+            seen_models: set[str] = set()
+            seen_cursors = {
+                value.strip()
+                for key, value in urllib.parse.parse_qsl(
+                    parsed_base.query, keep_blank_values=True
+                )
+                if key == "cursor" and value.strip()
+            }
+            page_url = url
+            for _page in range(_MAX_MODEL_CATALOG_PAGES):
+                req = urllib.request.Request(page_url, headers=headers)
+                with _urlopen_model_catalog_request(req, **_open_kwargs) as resp:
+                    data = json.loads(resp.read().decode())
+                if not isinstance(data, dict):
+                    raise ValueError("invalid model catalog response")
+                page_items = data.get("data")
+                if not isinstance(page_items, list):
+                    raise ValueError("invalid model catalog data")
+                if "has_more" in data and not isinstance(data["has_more"], bool):
+                    raise ValueError("invalid model catalog pagination metadata")
+                for item in page_items:
+                    if not isinstance(item, dict):
+                        continue
+                    raw_id = item.get("id")
+                    raw_model = item.get("model")
+                    model_id = raw_id.strip() if isinstance(raw_id, str) else ""
+                    if not model_id and isinstance(raw_model, str):
+                        model_id = raw_model.strip()
+                    if not model_id or model_id in seen_models:
+                        continue
+                    seen_models.add(model_id)
+                    discovered_models.append(model_id)
+
+                if data.get("has_more") is not True:
+                    return {
+                        "models": discovered_models,
+                        "probed_url": url,
+                        "resolved_base_url": candidate_base.rstrip("/"),
+                        "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
+                        "used_fallback": is_fallback,
+                    }
+
+                raw_cursor = data.get("next_cursor")
+                cursor = raw_cursor.strip() if isinstance(raw_cursor, str) else ""
+                if not cursor or cursor in seen_cursors:
+                    raise ValueError("invalid model catalog cursor")
+                seen_cursors.add(cursor)
+                parsed = urllib.parse.urlsplit(url)
+                query = [
+                    (key, value)
+                    for key, value in urllib.parse.parse_qsl(
+                        parsed.query, keep_blank_values=True
+                    )
+                    if key != "cursor"
+                ]
+                query.append(("cursor", cursor))
+                page_url = urllib.parse.urlunsplit(
+                    parsed._replace(query=urllib.parse.urlencode(query))
+                )
+            raise ValueError("model catalog page limit exceeded")
         except Exception:
             continue
 

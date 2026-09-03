@@ -189,17 +189,212 @@ class TestFetchApiModels:
 
         def _fake_urlopen(req, timeout=5.0):
             calls.append(req.full_url)
-            if req.full_url.endswith("/v1/models"):
+            if req.full_url == "http://localhost:8000/models?tenant=alpha#section":
                 return _Resp()
             raise Exception("404")
 
         with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_fake_urlopen):
-            probe = probe_api_models("key", "http://localhost:8000")
+            probe = probe_api_models(
+                "key",
+                "http://localhost:8000/v1?tenant=alpha#section",
+            )
 
-        assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
+        assert calls == [
+            "http://localhost:8000/v1/models?tenant=alpha#section",
+            "http://localhost:8000/models?tenant=alpha#section",
+        ]
         assert probe["models"] == ["local-model"]
-        assert probe["resolved_base_url"] == "http://localhost:8000/v1"
+        assert probe["resolved_base_url"] == "http://localhost:8000?tenant=alpha#section"
         assert probe["used_fallback"] is True
+
+    def test_probe_api_models_accepts_model_field_and_follows_cursor_pagination(self):
+        class _Resp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self._payload
+
+        requested_urls = []
+
+        def _urlopen(req, **_kwargs):
+            requested_urls.append(req.full_url)
+            if req.full_url == "https://catalog.example/v1/models?tenant=alpha#section":
+                return _Resp(
+                    b'{"data": ['
+                    b'{"model": "vendor/first"}, '
+                    b'{"id": "standard/id", "model": "fallback/ignored"}, '
+                    b'{"id": "  ", "model": "valid/from-model"}, '
+                    b'{"id": 123, "model": "valid/after-non-string-id"}, '
+                    b'{"id": [], "model": {}}, '
+                    b'{"model": ""}, {}, "not-an-object"], '
+                    b'"has_more": true, "next_cursor": "cursor-1"}'
+                )
+            if req.full_url == "https://catalog.example/v1/models?tenant=alpha&cursor=cursor-1#section":
+                return _Resp(
+                    b'{"data": ['
+                    b'{"model": "vendor/second"}, '
+                    b'{"model": "vendor/first"}], '
+                    b'"has_more": false, "next_cursor": null}'
+                )
+            raise AssertionError(f"unexpected URL: {req.full_url}")
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_urlopen):
+            probe = probe_api_models(
+                "key",
+                "https://catalog.example/v1?tenant=alpha#section",
+            )
+
+        assert requested_urls == [
+            "https://catalog.example/v1/models?tenant=alpha#section",
+            "https://catalog.example/v1/models?tenant=alpha&cursor=cursor-1#section",
+        ]
+        assert probe["models"] == [
+            "vendor/first",
+            "standard/id",
+            "valid/from-model",
+            "valid/after-non-string-id",
+            "vendor/second",
+        ]
+
+    @pytest.mark.parametrize(
+        "malformed_page",
+        [
+            b'{"data": "not-a-list", "has_more": false}',
+            b'{"data": [{"id": "page-2"}], "has_more": "true", '
+            b'"next_cursor": "cursor-2"}',
+        ],
+    )
+    def test_probe_api_models_rejects_malformed_late_page(self, malformed_page):
+        class _Resp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return self._payload
+
+        calls = []
+
+        def _urlopen(req, **_kwargs):
+            calls.append(req.full_url)
+            if req.full_url == "https://catalog.example/v1/models":
+                return _Resp(
+                    b'{"data": [{"id": "page-1"}], '
+                    b'"has_more": true, "next_cursor": "cursor-1"}'
+                )
+            if req.full_url == "https://catalog.example/v1/models?cursor=cursor-1":
+                return _Resp(malformed_page)
+            raise OSError("fallback endpoint unavailable")
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_urlopen):
+            probe = probe_api_models("key", "https://catalog.example/v1")
+
+        assert calls[:2] == [
+            "https://catalog.example/v1/models",
+            "https://catalog.example/v1/models?cursor=cursor-1",
+        ]
+        assert probe["models"] is None
+
+    def test_probe_api_models_rejects_repeated_cursor(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data": [{"id": "partial"}], '
+                    b'"has_more": true, "next_cursor": "same"}'
+                )
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            probe = probe_api_models("key", "https://catalog.example/v1")
+
+        assert probe["models"] is None
+
+    def test_probe_api_models_does_not_request_initial_cursor_twice(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data": [{"id": "partial"}], '
+                    b'"has_more": true, "next_cursor": "same"}'
+                )
+
+        calls = []
+
+        def _urlopen(req, **_kwargs):
+            calls.append(req.full_url)
+            return _Resp()
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_urlopen):
+            probe = probe_api_models(
+                "key",
+                "https://catalog.example/v1?cursor=same",
+            )
+
+        assert calls == [
+            "https://catalog.example/v1/models?cursor=same",
+            "https://catalog.example/models?cursor=same",
+        ]
+        assert probe["models"] is None
+
+    def test_probe_api_models_limits_cursor_pages(self):
+        class _Resp:
+            def __init__(self, cursor):
+                self._cursor = cursor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    '{"data": [{"id": "page-%s"}], '
+                    '"has_more": true, "next_cursor": "cursor-%s"}'
+                    % (self._cursor, self._cursor + 1)
+                ).encode()
+
+        calls = []
+
+        def _urlopen(req, **_kwargs):
+            calls.append(req.full_url)
+            if not req.full_url.startswith("https://catalog.example/v1/models"):
+                raise OSError("fallback endpoint unavailable")
+            return _Resp(len(calls))
+
+        with (
+            patch("hermes_cli.models._MAX_MODEL_CATALOG_PAGES", 2),
+            patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_urlopen),
+        ):
+            probe = probe_api_models("key", "https://catalog.example/v1")
+
+        assert calls[:2] == [
+            "https://catalog.example/v1/models",
+            "https://catalog.example/v1/models?cursor=cursor-2",
+        ]
+        assert probe["models"] is None
 
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:

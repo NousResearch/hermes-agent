@@ -82,6 +82,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**graph-engineering**](/docs/user-guide/skills/optional/data-science/data-science-graph-engineering) | Build knowledge graphs and agent task graphs. |
 | [**jupyter-notebook**](/docs/user-guide/skills/optional/data-science/data-science-jupyter-notebook) | Iterative Python via live Jupyter kernel (hamelnb). |
 
 ## devops

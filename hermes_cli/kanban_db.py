@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -6898,7 +6898,12 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "todo" if undone_parents else "ready"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    active_pr_url: Optional[str] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` to its safe resumable phase.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -6907,9 +6912,33 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    ``active_pr_url`` is an explicit, one-shot CI-repair admission for the
+    same PR already recorded in a recent task comment. The authorization is
+    stored structurally on the ``unblocked`` event and consumed by the next
+    claim or terminal transition; ordinary unblocks leave the duplicate-PR
+    guard intact.
     """
     now = int(time.time())
     with write_txn(conn):
+        admitted_pr_url: Optional[str] = None
+        if active_pr_url is not None:
+            admitted_pr_url = _canonical_github_pr_url(active_pr_url)
+            if admitted_pr_url is None:
+                return False
+            pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+            evidence = conn.execute(
+                "SELECT body FROM task_comments "
+                "WHERE task_id = ? AND created_at >= ?",
+                (task_id, pr_cutoff),
+            ).fetchall()
+            if not any(
+                _canonical_github_pr_url(match.group(0)) == admitted_pr_url
+                for comment in evidence
+                if comment["body"]
+                for match in _RESPAWN_GUARD_PR_URL_RE.finditer(comment["body"])
+            ):
+                return False
         current = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),
@@ -6948,14 +6977,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
+        payload: dict[str, Any] = {}
+        if new_status != "ready" or resume_status != "ready":
+            payload.update({"status": new_status, "resume_status": resume_status})
+        if admitted_pr_url is not None:
+            payload["active_pr_admission"] = {"url": admitted_pr_url}
+        _append_event(conn, task_id, "unblocked", payload or None)
         return True
 
 
@@ -8014,14 +8041,89 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # for operators who want a tighter/looser probe cadence.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
+# Within this window a GitHub PR URL in a comment is checked before re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
+
+# Live PR state is checked at most once per URL per interval. Dispatcher ticks
+# commonly run every minute, so caching both successful and failed lookups keeps
+# a GitHub outage (or many ready tasks referencing one PR) from creating a
+# request storm. The cache is process-local because the guard is advisory and
+# every dispatcher process already serializes its own board ticks.
+_RESPAWN_GUARD_PR_STATE_CACHE_TTL = 600  # 10 minutes
+_RESPAWN_GUARD_PR_STATE_CACHE_MAX = 256
+_RESPAWN_GUARD_PR_STATE_CACHE: dict[
+    tuple[str, int], tuple[float, Optional[str], Callable[[str], str]]
+] = {}
 
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+    r"https?://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>\d+)",
     re.IGNORECASE,
 )
+
+# State transitions that revoke an unused repair admission. ``claimed`` is the
+# normal consumer; terminal/requeue events prevent an old admission surviving a
+# lifecycle boundary and authorizing a later, unrelated run.
+_ACTIVE_PR_ADMISSION_CONSUMING_EVENTS = (
+    "claimed",
+    "completed",
+    "blocked",
+    "archived",
+    "gave_up",
+    "timed_out",
+    "crashed",
+    "reclaimed",
+    "scheduled",
+    "review_requested",
+    "review_reopened",
+    "changes_requested",
+    "status",
+)
+
+
+def _canonical_github_pr_url(pr_url: str) -> Optional[str]:
+    """Return a stable identity for a supported GitHub pull-request URL."""
+    match = _RESPAWN_GUARD_PR_URL_RE.fullmatch(str(pr_url).strip().rstrip("/"))
+    if match is None:
+        return None
+    return (
+        "https://github.com/"
+        f"{match.group('owner').casefold()}/{match.group('repo').casefold()}"
+        f"/pull/{int(match.group('number'))}"
+    )
+
+
+def _has_unconsumed_active_pr_admission(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pr_url: str,
+) -> bool:
+    """Whether the latest matching repair admission has not crossed a run boundary."""
+    canonical_url = _canonical_github_pr_url(pr_url)
+    if canonical_url is None:
+        return False
+    for event in conn.execute(
+        "SELECT id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'unblocked' ORDER BY id DESC",
+        (task_id,),
+    ).fetchall():
+        try:
+            payload = json.loads(event["payload"]) if event["payload"] else {}
+        except (json.JSONDecodeError, TypeError):
+            continue
+        admission = payload.get("active_pr_admission") if isinstance(payload, dict) else None
+        if not isinstance(admission, dict):
+            continue
+        if _canonical_github_pr_url(admission.get("url", "")) != canonical_url:
+            continue
+        placeholders = ", ".join("?" for _ in _ACTIVE_PR_ADMISSION_CONSUMING_EVENTS)
+        consumed = conn.execute(
+            "SELECT 1 FROM task_events "
+            f"WHERE task_id = ? AND id > ? AND kind IN ({placeholders}) LIMIT 1",
+            (task_id, int(event["id"]), *_ACTIVE_PR_ADMISSION_CONSUMING_EVENTS),
+        ).fetchone()
+        return consumed is None
+    return False
 
 
 @dataclass
@@ -8074,7 +8176,7 @@ class DispatchResult:
 
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    ``"active_pr"`` (open or unresolvable GitHub PR in a recent comment)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
@@ -9397,8 +9499,85 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _resolve_github_pr_state(pr_url: str) -> str:
+    """Return ``open``, ``closed``, or ``merged`` for a GitHub PR URL.
+
+    ``gh api`` reuses the operator's existing GitHub authentication (including
+    keychain-backed credentials for private repositories) without adding token
+    handling to the dispatcher. Callers fail closed if gh is unavailable or the
+    lookup cannot be completed.
+    """
+    match = _RESPAWN_GUARD_PR_URL_RE.fullmatch(pr_url)
+    if match is None:
+        raise ValueError("unsupported GitHub pull request URL")
+    endpoint = (
+        f"repos/{match.group('owner')}/{match.group('repo')}"
+        f"/pulls/{match.group('number')}"
+    )
+    completed = subprocess.run(
+        [
+            "gh", "api", endpoint,
+            "--jq", 'if .merged_at then "merged" else .state end',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("GitHub PR state lookup failed")
+    state = completed.stdout.strip().lower()
+    if state not in {"open", "closed", "merged"}:
+        raise RuntimeError("GitHub PR state lookup returned an unknown state")
+    return state
+
+
+def _cached_github_pr_state(
+    pr_url: str,
+    resolver: Callable[[str], str],
+) -> Optional[str]:
+    """Resolve PR state with a bounded TTL cache; ``None`` means unknown."""
+    now = time.monotonic()
+    # Keep the resolver itself in the cache value so its id cannot be reused
+    # while the entry is alive (important for injected test/custom resolvers).
+    # Canonicalizing bounds requests when equivalent spellings of the same PR
+    # appear across tasks/comments (http/https, case, or a zero-padded number).
+    cache_url = _canonical_github_pr_url(pr_url) or pr_url.casefold()
+    key = (cache_url, id(resolver))
+    cached = _RESPAWN_GUARD_PR_STATE_CACHE.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+
+    try:
+        state = resolver(pr_url).strip().lower()
+        if state not in {"open", "closed", "merged"}:
+            raise ValueError(f"unknown PR state: {state!r}")
+    except Exception as exc:
+        _log.debug("GitHub PR state lookup failed for %s: %s", pr_url, exc)
+        state = None
+
+    # Remove expired entries first, then cap insertion-order growth. Failures
+    # are cached too: fail-closed must not become retry-every-minute.
+    expired = [cache_key for cache_key, value in _RESPAWN_GUARD_PR_STATE_CACHE.items()
+               if value[0] <= now]
+    for cache_key in expired:
+        _RESPAWN_GUARD_PR_STATE_CACHE.pop(cache_key, None)
+    while len(_RESPAWN_GUARD_PR_STATE_CACHE) >= _RESPAWN_GUARD_PR_STATE_CACHE_MAX:
+        _RESPAWN_GUARD_PR_STATE_CACHE.pop(next(iter(_RESPAWN_GUARD_PR_STATE_CACHE)))
+    _RESPAWN_GUARD_PR_STATE_CACHE[key] = (
+        now + _RESPAWN_GUARD_PR_STATE_CACHE_TTL,
+        state,
+        resolver,
+    )
+    return state
+
+
 def check_respawn_guard(
-    conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    lane: str = "ready",
+    pr_state_resolver: Optional[Callable[[str], str]] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -9447,8 +9626,8 @@ def check_respawn_guard(
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) and its live state is open or
+        cannot be resolved. A merged or closed PR no longer suppresses work.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9536,14 +9715,22 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A recent, still-open GitHub PR means a prior worker's work is active.
+    #    Lookup failures fail closed to preserve the duplicate-PR safety guard.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    resolver = pr_state_resolver or _resolve_github_pr_state
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not c["body"]:
+            continue
+        for match in _RESPAWN_GUARD_PR_URL_RE.finditer(c["body"]):
+            if _has_unconsumed_active_pr_admission(conn, task_id, match.group(0)):
+                continue
+            state = _cached_github_pr_state(match.group(0), resolver)
+            if state not in {"closed", "merged"}:
+                return "active_pr"
 
     return None
 

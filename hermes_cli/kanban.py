@@ -689,7 +689,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_unblock.add_argument(
         "--reason",
         default=None,
-        help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
+        help="Optional reason/note — recorded as a comment after unblocking. Quote multi-word reasons.",
+    )
+    p_unblock.add_argument(
+        "--ci-repair-pr",
+        default=None,
+        help=(
+            "Authorize exactly one repair worker for this already-commented PR URL. "
+            "The next claim or terminal transition consumes the authorization."
+        ),
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
@@ -2516,16 +2524,20 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None
-    author = _profile_author() if reason else None
+    author = _profile_author() if reason else ""
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            if reason:
-                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            if not kb.unblock_task(
+                conn,
+                tid,
+                active_pr_url=getattr(args, "ci_repair_pr", None),
+            ):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
+                if reason:
+                    kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 

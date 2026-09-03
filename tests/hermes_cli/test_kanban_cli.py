@@ -70,6 +70,50 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_unblock_cli_records_structured_ci_repair_admission(kanban_home):
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/123"
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="repair", assignee="worker")
+        kb.add_comment(conn, task_id, "worker", f"Opened {pr_url}")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="CI failed",
+            expected_run_id=claimed.current_run_id,
+        )
+
+    output = kc.run_slash(
+        f"unblock --ci-repair-pr {pr_url} --reason 'retry failed CI' {task_id}"
+    )
+    assert f"Unblocked {task_id}" in output
+
+    with kb.connect_closing() as conn:
+        unblocked = [
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "unblocked"
+        ][-1]
+        assert unblocked.payload is not None
+        assert unblocked.payload["active_pr_admission"] == {
+            "url": "https://github.com/nousresearch/hermes-agent/pull/123"
+        }
+
+
+def test_unblock_cli_failure_does_not_append_reason_comment(kanban_home):
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/123"
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="repair", assignee="worker")
+        before = kb.list_comments(conn, task_id)
+
+    output = kc.run_slash(
+        f"unblock --ci-repair-pr {pr_url} --reason 'retry failed CI' {task_id}"
+    )
+    assert f"cannot unblock {task_id}" in output
+    with kb.connect_closing() as conn:
+        assert kb.list_comments(conn, task_id) == before
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

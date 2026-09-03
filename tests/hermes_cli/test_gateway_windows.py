@@ -314,6 +314,88 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+def test_tasks_referencing_script_finds_other_tasks(monkeypatch):
+    """A manually-created boot task referencing the shared .vbs must be
+    detected so uninstall does not delete files it still needs."""
+    csv_out = (
+        '"TaskName","Next Run Time","Status","Task To Run"\r\n'
+        '"Hermes_Gateway","N/A","Ready","wscript.exe //B //Nologo \\"C:\\Hermes\\gateway-service\\Hermes_Gateway.vbs\\""\r\n'
+        '"Hermes_Gateway_OnStart","N/A","Ready","wscript.exe //B //Nologo \\"C:\\Hermes\\gateway-service\\Hermes_Gateway.vbs\\""\r\n'
+    )
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, csv_out, ""))
+    referencing = gateway_windows._tasks_referencing_script(
+        Path("C:/Hermes/gateway-service/Hermes_Gateway.cmd")
+    )
+    assert referencing is not None
+    assert "Hermes_Gateway_OnStart" in referencing
+
+
+@pytest.mark.windows_only
+def test_tasks_referencing_script_none_when_scan_fails(monkeypatch):
+    """A failed scan must return None (fail safe), not an empty list."""
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (1, "", "access denied"))
+    assert gateway_windows._tasks_referencing_script(Path("C:/Hermes/gateway-service/Hermes_Gateway.cmd")) is None
+
+
+@pytest.mark.windows_only
+def test_uninstall_keeps_scripts_referenced_by_other_tasks(monkeypatch, tmp_path, capsys):
+    """uninstall() must not delete the shared .cmd/.vbs when another task
+    (e.g. a manual boot task) still references them."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    vbs_path = tmp_path / "Hermes_Gateway_alice.vbs"
+    script_path.write_text("rem gateway wrapper")
+    vbs_path.write_text("' gateway launcher")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: tmp_path / "Startup" / "Hermes_Gateway_alice.vbs")
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "Startup" / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, "", ""))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_tasks_referencing_script",
+        lambda path: ["Hermes_Gateway_OnStart"],
+    )
+
+    gateway_windows.uninstall()
+
+    assert script_path.exists()
+    assert vbs_path.exists()
+    out = capsys.readouterr().out
+    assert "Kept task scripts" in out
+    assert "Hermes_Gateway_OnStart" in out
+
+
+@pytest.mark.windows_only
+def test_uninstall_removes_scripts_when_unreferenced(monkeypatch, tmp_path, capsys):
+    """uninstall() deletes the .cmd/.vbs when no other task references them."""
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    vbs_path = tmp_path / "Hermes_Gateway_alice.vbs"
+    script_path.write_text("rem gateway wrapper")
+    vbs_path.write_text("' gateway launcher")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: tmp_path / "Startup" / "Hermes_Gateway_alice.vbs")
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "Startup" / "Hermes_Gateway_alice.cmd")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: (0, "", ""))
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_tasks_referencing_script", lambda path: [])
+
+    gateway_windows.uninstall()
+
+    assert not script_path.exists()
+    assert not vbs_path.exists()
+    out = capsys.readouterr().out
+    assert "Removed Task script" in out
+    assert "Removed Task launcher" in out
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""

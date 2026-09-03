@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -51,6 +52,18 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture
+def trusted_test_bws(monkeypatch):
+    """Bypass binary discovery for subprocess-shape tests using fake files.
+
+    These tests exercise fetch/cache behavior with mocked subprocesses, so the
+    security boundary itself is covered separately by the binary-boundary
+    tests.  Returning the supplied path models a successful use-time gate
+    without making a test fixture look like a real installed BWS binary.
+    """
+    monkeypatch.setattr(bw, "verify_bws_for_use", lambda path: Path(path))
+
+
 # ---------------------------------------------------------------------------
 # _platform_asset_name
 # ---------------------------------------------------------------------------
@@ -79,11 +92,65 @@ def test_platform_asset_name(system, machine, libc_text, expected):
     with mock.patch.object(bw.platform, "system", return_value=system), \
          mock.patch.object(bw.platform, "machine", return_value=machine), \
          mock.patch.object(
-             bw.subprocess,
-             "run",
-             return_value=mock.Mock(stdout=libc_text, stderr=libc_text),
+             bw, "_resolve_executable", side_effect=lambda path, **kwargs: Path(path)
+         ), \
+         mock.patch.object(
+             bw, "_probe_binary_version", return_value="musl" in libc_text
          ):
         assert bw._platform_asset_name() == expected
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux ldd policy")
+def test_platform_asset_name_rejects_untrusted_ldd(tmp_path, monkeypatch):
+    marker = tmp_path / "ldd-ran"
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    untrusted_dir.chmod(0o777)
+    fake_ldd = untrusted_dir / "ldd"
+    fake_ldd.write_text(
+        "#!/bin/sh\n"
+        "printf '%s' \"${BWS_ACCESS_TOKEN-}\" > \"$LDD_MARKER\"\n"
+        "printf 'musl libc\\n'\n"
+    )
+    fake_ldd.chmod(0o755)
+    monkeypatch.setenv("PATH", str(untrusted_dir))
+    monkeypatch.setenv("LDD_MARKER", str(marker))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "must-not-reach-ldd")
+    monkeypatch.setattr(bw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bw.platform, "machine", lambda: "x86_64")
+
+    # The temporary PATH entry is not a trusted root-owned chain, so ldd is
+    # rejected before subprocess creation and the marker is never written.
+    assert bw._platform_asset_name() == (
+        f"bws-x86_64-unknown-linux-gnu-{bw._BWS_VERSION}.zip"
+    )
+    assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux ldd policy")
+def test_platform_asset_name_uses_trusted_ldd_probe(monkeypatch):
+    trusted_ldd = shutil.which("ldd")
+    if not trusted_ldd:
+        pytest.skip("ldd is unavailable")
+    calls = {}
+
+    def fake_probe(path, pattern, **kwargs):
+        calls.update(path=path, pattern=pattern, kwargs=kwargs)
+        return True
+
+    monkeypatch.setattr(bw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(bw.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        bw, "_resolve_executable", lambda path, **kwargs: Path(path).resolve()
+    )
+    monkeypatch.setattr(bw, "_probe_binary_version", fake_probe)
+
+    assert bw._platform_asset_name() == (
+        f"bws-x86_64-unknown-linux-musl-{bw._BWS_VERSION}.zip"
+    )
+    assert calls["path"] == Path(trusted_ldd).resolve()
+    assert calls["pattern"] == bw._LDD_MUSL_PATTERN
+    assert calls["kwargs"] == {"timeout": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +202,34 @@ def test_safe_extract_member_rejects_traversal(tmp_path, evil_name):
 
 
 
+def test_safe_extract_member_rejects_symlink_member(tmp_path):
+    info = zipfile.ZipInfo("bws")
+    info.create_system = 3  # Unix
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(info, "../escape")
+    buf.seek(0)
+
+    dest = tmp_path / "extract"
+    dest.mkdir()
+    with zipfile.ZipFile(buf) as zf:
+        with pytest.raises(RuntimeError, match="symbolic-link"):
+            bw._safe_extract_member(zf, "bws", dest)
+
+
+def test_find_bws_rejects_user_owned_path_binary(tmp_path, monkeypatch):
+    fake = tmp_path / "bws"
+    fake.write_bytes(b"not the Bitwarden CLI")
+    fake.chmod(0o755)
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    monkeypatch.setattr(bw, "_hermes_bin_dir", lambda: home / "bin")
+    monkeypatch.setattr(bw.shutil, "which", lambda _name: str(fake))
+
+    assert bw.find_bws() is None
+
+
 def test_install_bws_happy_path(hermes_home, monkeypatch):
     fake_binary = b"#!/bin/sh\necho 'bws fake 2.0.0'\n"
     zip_bytes = _make_fake_zip(fake_binary)
@@ -157,8 +252,150 @@ def test_install_bws_happy_path(hermes_home, monkeypatch):
     path = bw.install_bws()
     assert path.exists()
     assert path.read_bytes() == fake_binary
-    # Executable bit set
-    assert path.stat().st_mode & stat.S_IXUSR
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert bw._managed_bws_checksum_path(path).read_text().strip() == hashlib.sha256(
+        fake_binary
+    ).hexdigest()
+    assert bw.find_bws() == path
+
+
+def test_managed_bws_tamper_is_rejected(hermes_home, monkeypatch):
+    fake_binary = b"#!/bin/sh\necho 'bws fake 2.0.0'\n"
+    zip_bytes = _make_fake_zip(fake_binary)
+    asset_name = bw._platform_asset_name()
+    checksum_text = f"{hashlib.sha256(zip_bytes).hexdigest()}  {asset_name}\n"
+
+    def fake_download(url, dest):
+        if url.endswith(".zip"):
+            Path(dest).write_bytes(zip_bytes)
+        else:
+            Path(dest).write_text(checksum_text)
+
+    monkeypatch.setattr(bw, "_http_download", fake_download)
+    monkeypatch.setattr(bw.shutil, "which", lambda _name: None)
+    path = bw.install_bws()
+    path.write_bytes(b"tampered")
+
+    assert not bw._verify_managed_bws(path)
+    assert bw.find_bws() is None
+
+
+def _make_managed_bws_fixture(tmp_path, name="managed"):
+    bin_dir = tmp_path / name / "bin"
+    bin_dir.mkdir(parents=True)
+    bin_dir.chmod(0o700)
+    path = bin_dir / "bws"
+    payload = b"managed bws"
+    path.write_bytes(payload)
+    path.chmod(0o700)
+    checksum = bin_dir / ".bws.sha256"
+    checksum.write_text(hashlib.sha256(payload).hexdigest() + "\n")
+    checksum.chmod(0o600)
+    return path
+
+
+def _patch_managed_bws_owners(monkeypatch, path, *, binary_owner, directory_owner):
+    original_stat = bw.Path.stat
+    resolved_path = path.resolve()
+    resolved_parent = path.parent.resolve()
+
+    def fake_stat(self, *args, **kwargs):
+        result = original_stat(self, *args, **kwargs)
+        if self == resolved_path:
+            fields = list(result)
+            fields[4] = binary_owner
+            return os.stat_result(fields)
+        if self == resolved_parent:
+            fields = list(result)
+            fields[4] = directory_owner
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(bw.Path, "stat", fake_stat)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="ownership policy is POSIX-specific")
+@pytest.mark.parametrize("owner_kind", ["root", "current"])
+def test_managed_bws_accepts_root_and_current_user_owners(
+    monkeypatch, tmp_path, owner_kind
+):
+    path = _make_managed_bws_fixture(tmp_path, owner_kind)
+    current_uid = os.geteuid()
+    owner = 0 if owner_kind == "root" else current_uid
+    _patch_managed_bws_owners(
+        monkeypatch,
+        path,
+        binary_owner=owner,
+        directory_owner=owner,
+    )
+    monkeypatch.setattr(bw.os, "geteuid", lambda: current_uid)
+
+    assert bw._verify_managed_bws(path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="ownership policy is POSIX-specific")
+def test_managed_bws_rejects_foreign_binary_owner(monkeypatch, tmp_path):
+    path = _make_managed_bws_fixture(tmp_path, "foreign-binary")
+    current_uid = os.geteuid()
+    _patch_managed_bws_owners(
+        monkeypatch,
+        path,
+        binary_owner=424242,
+        directory_owner=current_uid,
+    )
+    monkeypatch.setattr(bw.os, "geteuid", lambda: current_uid)
+
+    assert not bw._verify_managed_bws(path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="ownership policy is POSIX-specific")
+def test_managed_bws_rejects_foreign_directory_owner(monkeypatch, tmp_path):
+    path = _make_managed_bws_fixture(tmp_path, "foreign-directory")
+    current_uid = os.geteuid()
+    _patch_managed_bws_owners(
+        monkeypatch,
+        path,
+        binary_owner=current_uid,
+        directory_owner=424242,
+    )
+    monkeypatch.setattr(bw.os, "geteuid", lambda: current_uid)
+
+    assert not bw._verify_managed_bws(path)
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="symlink creation and permission semantics are POSIX-specific",
+)
+def test_managed_bws_canonicalizes_symlinked_ancestors(tmp_path, monkeypatch):
+    real_home = tmp_path / "real-home"
+    real_bin = real_home / "bin"
+    real_bin.mkdir(parents=True)
+    real_bin.chmod(0o700)
+    path = real_bin / "bws"
+    payload = b"managed bws"
+    path.write_bytes(payload)
+    path.chmod(0o700)
+    checksum = real_bin / ".bws.sha256"
+    checksum.write_text(hashlib.sha256(payload).hexdigest() + "\n")
+    checksum.chmod(0o600)
+
+    aliased_home = tmp_path / "aliased-home"
+    aliased_home.symlink_to(real_home, target_is_directory=True)
+    aliased_path = aliased_home / "bin" / "bws"
+    monkeypatch.setattr(bw, "_hermes_bin_dir", lambda: aliased_home / "bin")
+
+    # The managed file remains valid when HERMES_HOME has a symlinked
+    # ancestor, and a canonical PATH result is still classified as managed.
+    assert bw._verify_managed_bws(aliased_path)
+    assert bw._is_managed_bws(path.resolve())
+
+    # Canonicalizing the parent must not turn a leaf symlink into an accepted
+    # managed binary.
+    leaf = real_bin / "bws-link"
+    leaf.symlink_to(path)
+    assert not bw._verify_managed_bws(leaf)
 
 
 
@@ -186,7 +423,7 @@ def _fake_bws_payload(items):
 
 
 
-def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
+def test_fetch_server_url_sets_env(monkeypatch, tmp_path, trusted_test_bws):
     """server_url must be plumbed into the subprocess as BWS_SERVER_URL."""
     fake_binary = tmp_path / "bws"
     fake_binary.write_text("")
@@ -208,6 +445,56 @@ def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
         server_url="https://vault.bitwarden.eu",
     )
     assert captured_env.get("BWS_SERVER_URL") == "https://vault.bitwarden.eu"
+
+
+def test_run_bws_list_rejects_unverified_binary_before_token_child(
+    monkeypatch, tmp_path
+):
+    """Every credential-bearing fetch must pass the use-time binary gate."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("#!/bin/sh\n")
+    run = mock.Mock()
+    monkeypatch.setattr(bw, "verify_bws_for_use", lambda _path: None)
+    monkeypatch.setattr(bw.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="use-time verification"):
+        bw._run_bws_list(fake_binary, "synthetic-token", "project-1")
+    run.assert_not_called()
+
+
+def test_run_bws_list_executes_canonical_verified_path(
+    monkeypatch, tmp_path
+):
+    """The child must use the exact canonical path returned by verification."""
+    requested = tmp_path / "path-spelling" / "bws"
+    canonical = tmp_path / "trusted" / "bws"
+    requested.parent.mkdir()
+    canonical.parent.mkdir()
+    requested.write_text("placeholder")
+    canonical.write_text("placeholder")
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return mock.Mock(
+            returncode=0,
+            stdout=_fake_bws_payload([{"key": "K", "value": "v"}]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(bw, "verify_bws_for_use", lambda _path: canonical)
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+
+    secrets, warnings = bw._run_bws_list(
+        requested, "synthetic-token", "project-1"
+    )
+
+    assert secrets == {"K": "v"}
+    assert warnings == []
+    assert captured["cmd"][0] == str(canonical)
+    assert captured["cmd"][0] != str(requested)
+    assert captured["env"]["BWS_ACCESS_TOKEN"] == "synthetic-token"
 
 
 
@@ -296,7 +583,9 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
 
 
 
-def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
+def test_disk_cache_key_mismatch_triggers_refetch(
+    monkeypatch, tmp_path, trusted_test_bws
+):
     """Disk cache entry written by a different token/project is ignored."""
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -334,7 +623,9 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
 
 
 
-def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
+def test_encrypted_cache_writes_without_plaintext(
+    monkeypatch, tmp_path, trusted_test_bws
+):
     """Encrypted cache stores last-good secrets without raw values on disk."""
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -384,7 +675,9 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
 
 
 
-def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
+def test_encrypted_cache_falls_back_on_network_error(
+    monkeypatch, tmp_path, trusted_test_bws
+):
     """A fresh-enough encrypted cache is used when BWS is unreachable."""
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -457,7 +750,9 @@ def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id="proj-1",
     }))
 
 
-def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
+def test_stale_disk_cache_returned_when_bws_fails(
+    monkeypatch, tmp_path, trusted_test_bws
+):
     """When bws fails and the disk cache is stale, return the stale secrets
     with a warning rather than raising."""
     home = tmp_path / ".hermes"
@@ -494,7 +789,9 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
 
 
 
-def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
+def test_stale_fallback_skipped_on_auth_failure(
+    monkeypatch, tmp_path, trusted_test_bws
+):
     """An AUTH_FAILED bws error must raise, not serve stale secrets — a bad
     access token indicates a real credential problem the caller needs to
     see, not a transient outage worth papering over."""
@@ -517,7 +814,3 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
-
-
-
-

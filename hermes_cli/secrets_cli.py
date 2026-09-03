@@ -598,12 +598,18 @@ def _yn(b: bool) -> str:
 
 
 def _bws_version(binary: Path) -> str:
+    bw = _load_bw()
+    verified = bw.verify_bws_for_use(binary)
+    if verified is None:
+        return "version unknown"
     try:
         res = subprocess.run(
-            [str(binary), "--version"],
+            [str(verified), "--version"],
+            env=bw._probe_environment(verified),
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
@@ -648,6 +654,11 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
+    bw = _load_bw()
+    verified = bw.verify_bws_for_use(binary)
+    if verified is None:
+        console.print("  [red]Refusing unverified bws binary.[/red]")
+        return None
     # Secret-manager CLI child: intentionally receives tokens — no scrub,
     # no HOME rewrite (bws stores state under the real user home).
     from tools.environments.local import build_subprocess_env
@@ -658,7 +669,7 @@ def _list_projects(
         env["BWS_SERVER_URL"] = server_url
     try:
         res = subprocess.run(
-            [str(binary), "project", "list", "--output", "json"],
+            [str(verified), "project", "list", "--output", "json"],
             env=env,
             capture_output=True,
             text=True, encoding='utf-8', errors='replace',

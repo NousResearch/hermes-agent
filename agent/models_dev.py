@@ -925,6 +925,12 @@ def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
     for hermes_id in _models_dev_to_hermes_ids(provider_key):
         if hermes_id != provider_key:
             candidates.append(hermes_id)
+    # Custom providers travel under both ids: config/model-switch surfaces
+    # pass ``custom:<name>`` while users key overrides by the bare name.
+    if provider_key.startswith("custom:"):
+        stripped = provider_key[len("custom:"):].strip()
+        if stripped:
+            candidates.append(stripped)
 
     for key in candidates:
         section = overrides.get(key)

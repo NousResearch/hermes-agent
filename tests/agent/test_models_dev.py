@@ -13,6 +13,7 @@ from agent.models_dev import (
     _explicit_model_override,
     _override_context_window,
     _override_for,
+    _provider_override_section,
     _NotModified,
     _validate_registry,
     fetch_models_dev,
@@ -889,6 +890,39 @@ class TestModelOverrides:
         assert result is not None
         assert result["context_window"] == 222222
 
+    def test_custom_provider_prefix_resolves_bare_key(self):
+        """``custom:<name>`` callers resolve overrides keyed by the bare name.
+
+        Config and dashboard surfaces pass the prefixed id, but users key
+        ``model_overrides`` by the bare custom provider name (#102425).
+        """
+        overrides = {
+            "jerrita": {
+                "_default": {"supports_reasoning": True},
+            },
+        }
+        with self._setup_overrides(overrides):
+            section = _provider_override_section("custom:jerrita")
+            assert section is not None
+            result = _default_model_override("custom:jerrita")
+        assert result is not None
+        assert result["supports_reasoning"] is True
+        # A ``custom:`` prefix with nothing behind it adds no empty candidate.
+        with self._setup_overrides({"": {"_default": {"context_window": 1}}}):
+            assert _provider_override_section("custom:") is None
+            assert _provider_override_section("custom:   ") is None
+
+    def test_custom_prefix_exact_key_still_wins(self):
+        """A config explicitly keyed ``custom:<name>`` keeps direct priority."""
+        overrides = {
+            "custom:jerrita": {"_default": {"context_window": 111111}},
+            "jerrita": {"_default": {"context_window": 222222}},
+        }
+        with self._setup_overrides(overrides):
+            result = _default_model_override("custom:jerrita")
+        assert result is not None
+        assert result["context_window"] == 111111
+
     def test_default_fills_gap_for_unknown_model(self):
         """_default applies to models the catalog does not know."""
         overrides = {
@@ -1089,6 +1123,23 @@ class TestModelOverrides:
             caps = get_model_capabilities("custom:my-vllm", "some-new-model")
         assert caps is not None
         assert caps.context_window == 32768
+        assert caps.supports_tools is True
+
+    def test_caps_custom_provider_bare_key_fills_gap(self):
+        """Bare-name override keys work for prefixed custom providers (#102425)."""
+        overrides = {
+            "my-vllm": {
+                "_default": {
+                    "supports_reasoning": True,
+                    "supports_tools": True,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("custom:my-vllm", "glm-5.3-flash")
+        assert caps is not None
+        assert caps.supports_reasoning is True
         assert caps.supports_tools is True
 
     # --- lookup_models_dev_context with overrides ---

@@ -2833,7 +2833,14 @@ class TestKeyRejectionSetsNonRetryableFatalError:
             assert adapter.has_fatal_error is True
             assert adapter.fatal_error_retryable is False
             assert adapter.fatal_error_code == "api_server_key_invalid"
-            assert "API_SERVER_KEY" in (adapter.fatal_error_message or "")
+            message = adapter.fatal_error_message or ""
+            assert "API_SERVER_KEY" in message
+            # Non-retryable fatals are never queued in _failed_platforms
+            # (gateway/run.py), so `/platform resume` always replies "not
+            # in the retry queue" for this error class (#101745). Only a
+            # gateway restart actually recovers it.
+            assert "/platform resume" not in message
+            assert "gateway restart" in message
         finally:
             await adapter.disconnect()
 

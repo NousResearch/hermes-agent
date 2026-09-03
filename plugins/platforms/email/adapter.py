@@ -657,7 +657,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        logger.info("[Email] Adapter initialized")
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -1027,7 +1027,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Skip automated/noreply senders before any processing
         msg_headers = dict(msg.items())
         if _is_automated_sender(sender_addr, msg_headers):
-            logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+            logger.debug("[Email] Skipping automated sender")
             return None
 
         # Verify the From: domain is authenticated (SPF/DKIM/DMARC)
@@ -1097,7 +1097,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Never reply to automated senders
         if _is_automated_sender(sender_addr, {}):
-            logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
+            logger.debug("[Email] Dropping automated sender at dispatch")
             return
 
         # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
@@ -1112,14 +1112,13 @@ class EmailAdapter(BasePlatformAdapter):
             ):
                 logger.debug(
                     "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "
-                    "and open access is not opted in: %s",
-                    sender_addr,
+                    "and open access is not opted in"
                 )
                 return
         else:
             allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
             if sender_addr.lower() not in allowed:
-                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+                logger.debug("[Email] Dropping non-allowlisted sender at dispatch")
                 return
 
         # Reject spoofed senders. The allowlist (and the gateway's own authz)
@@ -1139,12 +1138,10 @@ class EmailAdapter(BasePlatformAdapter):
             and not msg_data.get("sender_authenticated", False)
         ):
             logger.warning(
-                "[Email] Dropping sender with unauthenticated From: %s (%s). "
+                "[Email] Dropping sender with unauthenticated From. "
                 "If your mail server does not stamp Authentication-Results, set "
                 "platforms.email.require_authenticated_sender: false (or "
                 "EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
-                sender_addr,
-                msg_data.get("auth_reason", "no verdict"),
             )
             return
 
@@ -1199,7 +1196,7 @@ class EmailAdapter(BasePlatformAdapter):
             reply_to_message_id=msg_data["in_reply_to"] or None,
         )
 
-        logger.info("[Email] New message from %s: %s", sender_addr, subject)
+        logger.info("[Email] New message received (subject_chars=%d)", len(subject))
         await self.handle_message(event)
 
     async def send(
@@ -1217,7 +1214,7 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
-            logger.error("[Email] Send failed to %s: %s", chat_id, e)
+            logger.error("[Email] Send failed: %s", e)
             return SendResult(success=False, error=str(e))
 
     def _message_id_domain(self) -> str:
@@ -1270,7 +1267,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        logger.info("[Email] Sent reply (subject_chars=%d)", len(subject))
         return msg_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -1396,7 +1393,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        logger.info("[Email] Sent multi-attachment email (%d files)", len(file_paths))
         return msg_id
 
     async def send_document(

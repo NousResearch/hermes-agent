@@ -29,7 +29,7 @@ Examples:
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
     hermes debug share --local      Print report locally (no upload)
-    hermes debug share --no-redact  Disable upload-time secret redaction
+    hermes debug share --no-redact  Disable best-effort secret and privacy redaction
     hermes debug share --nous       Upload to Nous-internal storage (private)
     hermes debug delete <url>       Delete a previously uploaded paste
 """,
@@ -70,10 +70,10 @@ Examples:
         "--no-redact",
         action="store_true",
         help=(
-            "Disable upload-time secret redaction (default: redact). Logs "
-            "are normally run through agent.redact.redact_sensitive_text "
-            "with force=True before upload so credentials are not leaked "
-            "into the public paste service."
+            "Disable upload-time best-effort secret and privacy redaction "
+            "(default: redact). The normal pass removes known credentials, "
+            "common personal identifiers, message-like fields, and local "
+            "home paths; unrecognized personal data may remain."
         ),
     )
     share_parser.add_argument(
@@ -83,8 +83,9 @@ Examples:
             "Upload the debug bundle to Nous-internal storage (AWS S3) instead "
             "of a public paste service. The bundle is private — viewable only "
             "by Nous staff (and allowlisted Discord mods) via a Google-login-"
-            "gated viewer — and auto-deletes after 14 days. Still force-redacts "
-            "secrets unless --no-redact is also passed."
+            "gated viewer — and auto-deletes after 14 days. Still applies "
+            "best-effort secret and privacy redaction unless --no-redact is "
+            "also passed."
         ),
     )
     delete_parser = debug_sub.add_parser(

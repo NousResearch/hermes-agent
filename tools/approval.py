@@ -1986,6 +1986,12 @@ def _execution_flag_findings(command: str):
                 found, payload = _bash_exec_payload(tokens[1:])
                 if found:
                     yield ("shell command via -c/-lc flag", payload)
+            if executable_name == "eval" and len(tokens) > 1:
+                # eval hands its arguments to another shell/parser to
+                # EXECUTE, exactly like sh -c (#102317). Surface the payload
+                # as its own raw variant so the hardline floor inspects the
+                # command that will actually run — quoting is not a bypass.
+                yield ("shell command via eval", " ".join(tokens[1:]))
             tool = executable_name
             if tool in _READ_TOOL_EXEC_FLAGS:
                 finding = _read_tool_exec_flag(tool, tokens[1:])

@@ -343,6 +343,56 @@ class TestRealProfileCdpLaunch:
         assert not bt._cdp_on_data_dir("http://127.0.0.1:9999", str(tmp_path))
 
 
+class TestAgentBrowserCliCapture:
+    """#96731: agent-browser's resident daemon inherits the caller's stdio and
+    outlives the CLI, so pipe-based capture never sees EOF after the CLI
+    exits. Capture must go through temp files and wait only for the CLI."""
+
+    STUB_GRANDCHILD = (
+        "import subprocess, sys\n"
+        # A grandchild that inherits stdout and outlives the CLI — exactly
+        # what agent-browser's first-use daemon spawn does.
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        "sys.stdout.write('ws://127.0.0.1:41022/devtools/browser/stub\\n')\n"
+        "sys.stderr.write('daemon warm\\n')\n"
+    )
+
+    def test_get_cdp_returns_despite_grandchild_holding_stdio(self, tmp_path):
+        """The blocking frame from the #96731 py-spy capture: get cdp-url."""
+        import sys
+        import time
+        import tools.browser_tool as bt
+
+        stub = tmp_path / "agent_browser_daemon_stub.py"
+        stub.write_text(self.STUB_GRANDCHILD)
+        with patch.object(bt, "_find_agent_browser", return_value=str(stub)), \
+             patch.object(bt, "_agent_browser_argv", return_value=[sys.executable, str(stub)]):
+            start = time.monotonic()
+            cdp = bt._agent_browser_get_cdp("hermes-real-profile")
+            elapsed = time.monotonic() - start
+
+        assert cdp == "http://127.0.0.1:41022"
+        # Pipe capture would stall here for the full 15s timeout on POSIX and
+        # hang past the outer tool deadline on Windows.
+        assert elapsed < 10, f"get cdp-url stalled {elapsed:.1f}s behind a grandchild"
+
+    def test_run_cli_surfaces_stdout_stderr_and_exit_code(self, tmp_path, monkeypatch):
+        import sys
+        import tools.browser_tool as bt
+
+        stub = tmp_path / "agent_browser_echo_stub.py"
+        stub.write_text(
+            "import sys\n"
+            "sys.stdout.write('out-42\\n')\n"
+            "sys.stderr.write('err-7\\n')\n"
+            "sys.exit(3)\n"
+        )
+        proc = bt._run_agent_browser_cli([sys.executable, str(stub)], timeout=15)
+        assert proc.returncode == 3
+        assert proc.stdout == "out-42\n"
+        assert proc.stderr == "err-7\n"
+
+
 class TestConsentConfigRead:
     """Unmocked config read: _use_real_profile against a real config.yaml."""
 

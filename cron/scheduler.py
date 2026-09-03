@@ -4929,76 +4929,35 @@ def _build_job_prompt(
             user_prompt=user_prompt,
         )
 
-    from tools.skills_tool import skill_view
+    from cron.skill_refs import require_skill_references
     from tools.skill_usage import bump_use
-    from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
-    from agent.skill_utils import normalize_skill_lookup_name
 
     parts = []
-    skipped: list[str] = []
-    for skill_name in skill_names:
-        # Cron jobs historically accepted only skill names here, but the CLI/gateway
-        # slash-command path lets bundles shadow skills with the same slug. Mirror
-        # that behavior so `skills: ["my-bundle"]` expands bundle members instead
-        # of being treated as a missing skill.
-        bundle_key = resolve_bundle_command_key(skill_name.lstrip("/"))
-        if bundle_key:
-            bundle_payload = build_bundle_invocation_message(
-                bundle_key,
-                user_instruction="",
-                task_id=str(job.get("id") or "") or None,
-            )
-            if bundle_payload:
-                bundle_message, _loaded_bundle_skills, _missing_bundle_skills = bundle_payload
-                if parts:
-                    parts.append("")
-                parts.append(bundle_message)
-                continue
-            logger.warning(
-                "Cron job '%s': bundle '%s' could not load any skills, skipping",
-                job.get("name", job.get("id")),
-                skill_name,
-            )
-            skipped.append(skill_name)
-            continue
-
-        try:
-            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
-            skipped.append(skill_name)
-            continue
-        if not loaded.get("success"):
-            error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
-            logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
-            skipped.append(skill_name)
+    task_id = str(job.get("id") or "") or None
+    resolved_refs = require_skill_references(skill_names, task_id=task_id)
+    for resolved in resolved_refs:
+        if parts:
+            parts.append("")
+        if resolved.kind == "bundle":
+            parts.append(resolved.content)
             continue
 
         # Bump usage so the curator sees this skill as actively used.
         try:
-            bump_use(skill_name, task_id=str(job.get("id") or "") or None)
+            bump_use(resolved.name, task_id=task_id)
         except Exception:
-            logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
-
-        content = str(loaded.get("content") or "").strip()
-        if parts:
-            parts.append("")
+            logger.debug(
+                "Cron job: failed to bump skill usage for '%s'",
+                resolved.name,
+                exc_info=True,
+            )
         parts.extend(
             [
-                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                f'[IMPORTANT: The user has invoked the "{resolved.name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
                 "",
-                content,
+                resolved.content,
             ]
         )
-
-    if skipped:
-        notice = (
-            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
-            f"and were skipped: {', '.join(skipped)}. "
-            f"Start your response with a brief notice so the user is aware, e.g.: "
-            f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
-        )
-        parts.insert(0, notice)
 
     stable_prefix = None
     if prompt:
@@ -5525,15 +5484,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
 
 
 def _preflight_check_skills(job: dict) -> Optional[str]:
-    """Check attached skills report ready (no missing required env/commands).
-
-    Consults the same ``readiness_status`` payload ``skill_view`` computes
-    for interactive use. Skills that fail to load at all are left to the
-    existing skipped-skill handling in ``_build_job_prompt`` (fail-open):
-    this check only blocks on an affirmative "setup needed" verdict, i.e.
-    the skill exists but its required environment is missing — a run that
-    is guaranteed to misfire.
-    """
+    """Fail before spend when attached instruction dependencies cannot run."""
     skills = job.get("skills")
     if skills is None:
         legacy = job.get("skill")
@@ -5544,15 +5495,25 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     if not skill_names:
         return None
 
-    from tools.skills_tool import skill_view
+    from cron.skill_refs import resolve_skill_references
 
-    for skill_name in skill_names:
-        try:
-            payload = json.loads(skill_view(skill_name))
-        except Exception:
-            continue  # unreadable/missing skill → existing skip handling
-        if not isinstance(payload, dict) or not payload.get("success"):
-            continue
+    resolved, unresolved = resolve_skill_references(
+        skill_names,
+        task_id=str(job.get("id") or "") or None,
+    )
+    if unresolved:
+        details = "; ".join(
+            f"{item.name}: {item.reason}" for item in unresolved
+        )
+        return (
+            "attached skill reference(s) are unresolved or unadmitted: "
+            f"{details}. Install/admit the exact dependencies or detach them."
+        )
+
+    for resolved_ref in resolved:
+        payload = resolved_ref.payload
+        if not payload:
+            continue  # bundle members were already resolved as one unit
         if (
             payload.get("setup_needed")
             or payload.get("readiness_status") == "setup_needed"
@@ -5573,7 +5534,7 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
             ]
             detail = ", ".join(missing) or "required setup incomplete"
             return (
-                f"attached skill '{skill_name}' is not ready: missing "
+                f"attached skill '{resolved_ref.name}' is not ready: missing "
                 f"{detail}. Provide the missing prerequisites or detach the "
                 "skill from this job."
             )
@@ -5603,7 +5564,12 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     ):
         try:
             reason = check()
-        except Exception:
+        except Exception as exc:
+            if name == "skills":
+                return (
+                    "attached skill references could not be validated; "
+                    f"failing closed: {type(exc).__name__}: {exc}"
+                )
             logger.debug(
                 "preflight check %s raised — failing open", name, exc_info=True
             )

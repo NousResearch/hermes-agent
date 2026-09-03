@@ -206,6 +206,19 @@ def test_docker_run_as_host_user_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_RUN_AS_HOST_USER" in _terminal_tool_env_var_names()
 
 
+def test_snapshot_lifecycle_settings_are_bridged_everywhere():
+    required = {
+        "snapshot_ttl_seconds",
+        "snapshot_min_free_inode_ratio",
+        "snapshot_critical_free_inode_ratio",
+        "snapshot_min_free_inodes",
+        "snapshot_critical_free_inodes",
+    }
+    assert required <= _cli_env_map_keys()
+    assert required <= _gateway_env_map_keys()
+    assert required <= _save_config_env_sync_keys()
+
+
 def test_docker_mount_cwd_to_workspace_is_bridged_everywhere():
     """Same regression class — docker_mount_cwd_to_workspace was missing from
     gateway/run.py's _terminal_env_map until the docker_run_as_host_user

@@ -2504,6 +2504,14 @@ def create_job(
     from cron.lifecycle_guard import check_gateway_lifecycle
     check_gateway_lifecycle(prompt_text, normalized_script)
 
+    # A declared instruction dependency is part of the job contract. Reject
+    # unresolved skills/bundles before persisting the job; the scheduler repeats
+    # this check at fire time to catch later removal or admission drift.
+    if normalized_skills:
+        from cron.skill_refs import require_skill_references
+
+        require_skill_references(normalized_skills, task_id=job_id)
+
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
 
     provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
@@ -2768,6 +2776,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
                 updated["skills"] = normalized_skills
                 updated["skill"] = normalized_skills[0] if normalized_skills else None
+                if normalized_skills:
+                    from cron.skill_refs import require_skill_references
+
+                    require_skill_references(normalized_skills, task_id=job_id)
 
             if schedule_changed:
                 updated_schedule = updated["schedule"]

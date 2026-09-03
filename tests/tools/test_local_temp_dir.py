@@ -79,7 +79,7 @@ def test_tmpdir_still_beats_default(tmp_path, monkeypatch):
 
 
 def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
-    """Old artifacts are pruned; fresh ones and live bg groups survive."""
+    """Bulk prune skips owner-managed snapshots and preserves live bg groups."""
     import time
 
     from tools.environments import local as local_mod
@@ -91,7 +91,7 @@ def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
     old = time.time() - 100 * 3600
     fresh = time.time()
 
-    # Stale loose artifact — pruned.
+    # Stale snapshot lookalike — preserved for the exact marker lifecycle.
     stale = root / "hermes-snap-deadbeef.sh"
     stale.write_text("x")
     os.utime(stale, (old, old))
@@ -115,10 +115,10 @@ def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
         os.utime(f, (old, old))
 
     removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=72)
-    assert removed == 4  # stale snap + 3 dead-group files
+    assert removed == 3  # dead-group files only
     assert keep.exists()
     assert live_pid.exists() and live_log.exists()
-    assert not stale.exists()
+    assert stale.exists()
     assert not (root / "hermes_bg_dead1.log").exists()
 
 

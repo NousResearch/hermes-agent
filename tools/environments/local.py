@@ -17,6 +17,17 @@ from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.snapshot_lifecycle import (
+    DEFER,
+    FAIL_CLOSED,
+    RUN,
+    cleanup_owned_artifacts,
+    decide_inode_admission,
+    measure_inode_headroom,
+    prepare_owned_artifacts,
+    reap_stale_owned_artifacts,
+    settings_from_environment,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -43,6 +54,11 @@ _terminal_temp_prune_lock = threading.Lock()
 _terminal_temp_pruned_once = False
 
 _BG_GROUP_RE = re.compile(r"^(hermes_bg_[A-Za-z0-9_-]+)\.(log|pid|exit)$")
+_OWNED_SNAPSHOT_PREFIXES = (
+    "hermes-snap-",
+    "hermes-cwd-",
+    "hermes-session-",
+)
 
 
 def _default_terminal_temp_dir() -> "Path | None":
@@ -52,6 +68,23 @@ def _default_terminal_temp_dir() -> "Path | None":
         return get_hermes_home() / "cache" / "terminal"
     except Exception:
         return None
+
+
+def _resolve_real_temp_root(candidate: str) -> str | None:
+    """Return an accessible real directory, resolving safe directory aliases.
+
+    macOS commonly exposes ``/tmp`` as a symlink to ``/private/tmp``. Resolve
+    once before snapshot paths are created so ownership checks operate on one
+    stable path rather than on an alias that can change independently.
+    """
+    try:
+        root = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not root.is_dir() or not os.access(root, os.W_OK | os.X_OK):
+        return None
+    rendered = str(root)
+    return rendered.rstrip("/") or "/"
 
 
 def cleanup_terminal_temp_cache(
@@ -91,6 +124,11 @@ def cleanup_terminal_temp_cache(
             group_newest[key] = max(group_newest.get(key, 0.0), mt)
 
     for f in entries:
+        # Snapshot artifacts have their own exact owner-marker lifecycle.
+        # Never bulk-delete a name match: lookalikes, foreign markers and
+        # symlinks must survive for explicit inspection.
+        if f.name.startswith(_OWNED_SNAPSHOT_PREFIXES):
+            continue
         try:
             mt = f.stat().st_mtime
         except OSError:
@@ -236,6 +274,14 @@ def _quote_bash_path(path: str) -> str:
     import shlex
 
     return shlex.quote(_bash_safe_path(path))
+
+
+def _snapshot_paths_equal(left: str, right: str) -> bool:
+    """Compare snapshot paths without treating Windows separators as identity."""
+    path_module = ntpath if _IS_WINDOWS else os.path
+    return path_module.normcase(path_module.normpath(left)) == path_module.normcase(
+        path_module.normpath(right)
+    )
 
 
 def _cwd_usable(path: str) -> bool:
@@ -2006,6 +2052,44 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
+        self._owned_snapshot_artifacts = None
+        settings = settings_from_environment()
+        temp_root = Path(self._snapshot_path).parent
+        reaped = reap_stale_owned_artifacts(temp_root, settings)
+        if reaped:
+            logger.info("Reaped %d stale owned snapshot session(s)", len(reaped))
+
+        headroom = measure_inode_headroom(temp_root)
+        admission = decide_inode_admission(
+            headroom.free_inode_ratio,
+            settings,
+            free_inodes=headroom.free_inodes,
+        )
+        self._snapshot_inode_admission = admission
+        if admission.outcome == FAIL_CLOSED:
+            raise RuntimeError(
+                "Local terminal snapshot creation refused: "
+                f"{admission.reason} (free_inode_ratio={admission.free_inode_ratio!r}, "
+                f"free_inodes={admission.free_inodes!r})"
+            )
+        if admission.outcome == DEFER:
+            logger.warning(
+                "Local terminal snapshot deferred under inode pressure "
+                "(free_inode_ratio=%s, free_inodes=%s); using a login shell per command",
+                admission.free_inode_ratio,
+                admission.free_inodes,
+            )
+            return
+        if admission.outcome != RUN:
+            raise RuntimeError(f"Unknown snapshot admission outcome: {admission.outcome}")
+
+        owned = prepare_owned_artifacts(temp_root, self._session_id)
+        if (
+            not _snapshot_paths_equal(owned.snapshot_path, self._snapshot_path)
+            or not _snapshot_paths_equal(owned.cwd_path, self._cwd_file)
+        ):
+            raise RuntimeError("snapshot owner marker path mismatch")
+        self._owned_snapshot_artifacts = owned
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -2058,13 +2142,17 @@ class LocalEnvironment(BaseEnvironment):
         # Honored ahead of the generic TMPDIR so users can redirect Hermes' temp
         # root to real storage when /tmp is a small tmpfs.
         configured = self.env.get("TERMINAL_TEMP_DIR") or os.environ.get("TERMINAL_TEMP_DIR")
-        if configured and configured.startswith("/") and os.path.isdir(configured):
-            return configured.rstrip("/") or "/"
+        if configured and configured.startswith("/"):
+            resolved = _resolve_real_temp_root(configured)
+            if resolved:
+                return resolved
 
         for env_var in ("TMPDIR", "TMP", "TEMP"):
             candidate = self.env.get(env_var) or os.environ.get(env_var)
             if candidate and candidate.startswith("/"):
-                return candidate.rstrip("/") or "/"
+                resolved = _resolve_real_temp_root(candidate)
+                if resolved:
+                    return resolved
 
         # Default: HERMES_HOME/cache/terminal — real storage, mirroring the
         # Windows branch above. /tmp is only a last-resort fallback now
@@ -2073,19 +2161,22 @@ class LocalEnvironment(BaseEnvironment):
             from hermes_constants import get_hermes_home
             cache_dir = get_hermes_home() / "cache" / "terminal"
             cache_dir.mkdir(parents=True, exist_ok=True)
-            resolved = str(cache_dir)
-            if resolved.startswith("/") and os.access(resolved, os.W_OK | os.X_OK):
+            resolved = _resolve_real_temp_root(str(cache_dir))
+            if resolved:
                 _prune_terminal_temp_once()
-                return resolved.rstrip("/") or "/"
+                return resolved
         except Exception:
             pass
 
-        if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
-            return "/tmp"
+        resolved_tmp = _resolve_real_temp_root("/tmp")
+        if resolved_tmp:
+            return resolved_tmp
 
         candidate = tempfile.gettempdir()
         if candidate.startswith("/"):
-            return candidate.rstrip("/") or "/"
+            resolved = _resolve_real_temp_root(candidate)
+            if resolved:
+                return resolved
 
         return "/tmp"
 
@@ -2338,6 +2429,15 @@ class LocalEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Clean up temp files."""
+        owned = getattr(self, "_owned_snapshot_artifacts", None)
+        if owned is not None:
+            cleanup_owned_artifacts(owned)
+            if not Path(owned.marker_path).exists():
+                self._owned_snapshot_artifacts = None
+            return
+
+        # Backward-compatible cleanup for objects constructed without the
+        # owner-marker lifecycle (tests, older persisted processes).
         for f in (self._snapshot_path, self._cwd_file):
             try:
                 os.unlink(f)

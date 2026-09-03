@@ -27,6 +27,13 @@ def hermes_env(tmp_path, monkeypatch):
     home.mkdir()
     (home / "scripts").mkdir()
     (home / "cron").mkdir()
+    for name in ("daily-report", "agent-browser"):
+        skill_dir = home / "skills" / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test fixture\n---\n# {name}\n",
+            encoding="utf-8",
+        )
 
     monkeypatch.setenv("HERMES_HOME", str(home))
 

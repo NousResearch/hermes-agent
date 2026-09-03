@@ -1713,18 +1713,18 @@ class TestRunJobWakeGate:
 
 
 class TestBuildJobPromptMissingSkill:
-    """Verify that a missing skill logs a warning and does not crash the job."""
+    """Missing declared instruction dependencies fail closed."""
 
     def _missing_skill_view(self, name: str) -> str:
         return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
 
 
-    def test_missing_skill_injects_user_notice_into_prompt(self):
-        """A system notice about the missing skill is injected into the prompt."""
+    def test_missing_skill_refuses_prompt_assembly(self):
+        from cron.skill_refs import CronSkillReferenceError
+
         with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
-            result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
-        assert "ghost-skill" in result
-        assert "not found" in result.lower() or "skipped" in result.lower()
+            with pytest.raises(CronSkillReferenceError, match="ghost-skill"):
+                _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
 
 
 class TestBuildJobPromptAbsoluteSkillPath:

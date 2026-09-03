@@ -195,8 +195,18 @@ class TestCronJobSkills:
             json={"updates": {"skills": ["dashboard-skill", "worker-skill"]}},
             params={"profile": "default"},
         )
+        assert resp.status_code == 400
+        assert "worker-skill" in resp.json()["detail"]
+
+        # Updating with skills installed in the job's profile succeeds.
+        _write_skill(isolated_profiles["default"] / "skills", "dashboard-skill-two")
+        resp = client.put(
+            f"/api/cron/jobs/{job['id']}",
+            json={"updates": {"skills": ["dashboard-skill", "dashboard-skill-two"]}},
+            params={"profile": "default"},
+        )
         assert resp.status_code == 200
-        assert resp.json()["skills"] == ["dashboard-skill", "worker-skill"]
+        assert resp.json()["skills"] == ["dashboard-skill", "dashboard-skill-two"]
 
         # Clearing works too.
         resp = client.put(

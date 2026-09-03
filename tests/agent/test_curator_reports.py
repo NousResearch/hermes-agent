@@ -121,6 +121,12 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
 def curator_env_with_cron(curator_env, monkeypatch):
     """Extend curator_env with an initialized + repointed cron.jobs module."""
     home = curator_env["home"]
+    skill_dir = home / "skills" / "foo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: foo\ndescription: test fixture\n---\n# foo\n",
+        encoding="utf-8",
+    )
     (home / "cron").mkdir(exist_ok=True)
     (home / "cron" / "output").mkdir(exist_ok=True)
 

@@ -46,9 +46,26 @@ from tools.environments.local import (
     _quote_bash_path,
     _resolve_safe_cwd,
     _sanitize_subprocess_env,
+    _snapshot_paths_equal,
     _windows_to_msys_path,
     hermes_subprocess_env,
 )
+
+
+def test_snapshot_path_guard_normalizes_windows_separators(monkeypatch):
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    assert _snapshot_paths_equal(
+        "C:/Users/alice/.hermes/cache/terminal/hermes-snap-abcdef123456.sh",
+        r"C:\Users\alice\.hermes\cache\terminal\hermes-snap-abcdef123456.sh",
+    )
+
+
+def test_snapshot_path_guard_still_rejects_a_different_artifact(monkeypatch):
+    monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+    assert not _snapshot_paths_equal(
+        "C:/Users/alice/.hermes/cache/terminal/hermes-snap-abcdef123456.sh",
+        r"C:\Users\alice\.hermes\cache\terminal\hermes-snap-fedcba654321.sh",
+    )
 
 
 # ---------------------------------------------------------------------------

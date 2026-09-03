@@ -228,18 +228,17 @@ class TestBuildJobPromptScansSkillContent:
         with pytest.raises(scheduler.CronPromptInjectionBlocked):
             scheduler._build_job_prompt(job)
 
-    def test_missing_skill_does_not_crash(self, cron_env):
+    def test_missing_skill_fails_closed(self, cron_env):
         _, scheduler = cron_env
+        from cron.skill_refs import CronSkillReferenceError
         job = {
             "id": "job-missing",
             "name": "missing",
             "prompt": "run task",
             "skills": ["does-not-exist"],
         }
-        # Should not raise — missing skills are skipped with a notice.
-        prompt = scheduler._build_job_prompt(job)
-        assert prompt is not None
-        assert "could not be found" in prompt
+        with pytest.raises(CronSkillReferenceError, match="does-not-exist"):
+            scheduler._build_job_prompt(job)
 
 
     def test_bundle_name_shadows_skill_name_for_cron_jobs(self, cron_env):

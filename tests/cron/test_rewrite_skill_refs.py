@@ -26,6 +26,17 @@ def cron_env(tmp_path, monkeypatch):
     hermes_home.mkdir()
     (hermes_home / "cron").mkdir()
     (hermes_home / "cron" / "output").mkdir()
+    skills_root = hermes_home / "skills"
+    for name in (
+        "foo", "legacy-skill", "keep-a", "legacy", "keep-b", "umbrella",
+        "a", "b", "keep", "stale", "gone", "ambiguous", "untouched",
+    ):
+        skill_dir = skills_root / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test fixture\n---\n# {name}\n",
+            encoding="utf-8",
+        )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     import cron.jobs as jobs_mod

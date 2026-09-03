@@ -360,6 +360,13 @@ kanban:
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
+  # Local shell snapshot lifecycle. Relative pressure is combined with absolute
+  # headroom so quota/container filesystem ratios cannot disable the terminal.
+  snapshot_ttl_seconds: 86400
+  snapshot_min_free_inode_ratio: 0.15
+  snapshot_critical_free_inode_ratio: 0.10
+  snapshot_min_free_inodes: 10000
+  snapshot_critical_free_inodes: 1000
   # Desktop xterm font. Install the font locally; Nerd Fonts render Powerlevel10k glyphs.
   # font_family: "MesloLGS NF"  # Also accepts a CSS stack; blank uses bundled JetBrains Mono.
   timeout: 180

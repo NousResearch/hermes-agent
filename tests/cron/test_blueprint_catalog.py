@@ -143,6 +143,12 @@ class TestRenderers:
 def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    skill_dir = home / "skills" / "google-workspace"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: google-workspace\ndescription: test fixture\n---\n# Google Workspace\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_constants
     importlib.reload(hermes_constants)

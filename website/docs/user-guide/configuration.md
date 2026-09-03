@@ -177,6 +177,11 @@ terminal:
   backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
+  snapshot_ttl_seconds: 86400
+  snapshot_min_free_inode_ratio: 0.15
+  snapshot_critical_free_inode_ratio: 0.10
+  snapshot_min_free_inodes: 10000       # Low-ratio hosts still run with ample absolute headroom
+  snapshot_critical_free_inodes: 1000   # Refuse only when absolute headroom is critically low
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
   home_mode: auto   # auto | real | profile — subprocess HOME policy
@@ -196,7 +201,16 @@ is a small RAM-backed tmpfs that Hermes session artifacts can fill under
 load. The managed directory is auto-pruned: artifacts older than 72 hours are
 swept hourly by gateway housekeeping and once per process on CLI-only
 installs. Set `temp_dir` to an existing absolute path to redirect session
-temp anywhere else; user-set paths are never auto-pruned.
+temp anywhere else; user-set paths are never bulk-pruned.
+
+Local shell environment snapshots use exact per-session ownership markers and
+clean themselves on normal teardown. A new local session also removes only
+TTL-expired, dead, owner-marked snapshot sessions; arbitrary lookalike paths,
+foreign markers, and symlinks are never deleted. Inode admission is evaluated
+before a snapshot is created: above 15% free inodes it runs normally, from 10%
+through 15% it defers the snapshot and uses a login shell per command, and below
+10% it fails closed. Missing or invalid inode measurements also fail closed.
+The three `snapshot_*` settings above control the TTL and band edges.
 
 `terminal.font_family` controls the embedded terminal in Hermes Desktop. It accepts either one locally installed family name (for example, `MesloLGS NF`) or a CSS font stack. Hermes appends its bundled JetBrains Mono stack as a fallback, and an empty value keeps the default. You can edit the same profile-scoped setting in **Settings → Appearance → Terminal Font**; no Google Fonts download or system-font permission is required.
 

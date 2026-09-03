@@ -547,11 +547,33 @@ class TestConfigAllowlist:
         assert result == ["list_guilds", "list_channels", "fetch_messages"]
 
 
-    def test_config_load_failure_is_permissive(self, monkeypatch):
-        """If config can't be loaded at all, fall back to None (all allowed)."""
+    def test_config_load_failure_is_deny_all(self, monkeypatch):
+        """A config-read failure must not fail open as unrestricted."""
         def bad_load():
             raise RuntimeError("disk gone")
         monkeypatch.setattr("hermes_cli.config.load_config", bad_load)
+        assert _load_allowed_actions_config() == []
+
+    def test_unexpected_type_is_deny_all(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": {"unexpected": "dict"}}},
+        )
+        assert _load_allowed_actions_config() == []
+
+    def test_mixed_valid_invalid_is_deny_all(self, monkeypatch):
+        """Unknown names invalidate the whole policy, not a widened subset."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds,bogus_action"}},
+        )
+        assert _load_allowed_actions_config() == []
+
+    def test_missing_key_is_unrestricted(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {}},
+        )
         assert _load_allowed_actions_config() is None
 
 
@@ -645,6 +667,18 @@ class TestDynamicSchema:
         assert get_dynamic_schema_core() is None
         assert get_dynamic_schema_admin() is None
 
+    @patch("tools.discord_tool._discord_request")
+    def test_mixed_unknown_name_hides_tools(self, mock_req, monkeypatch):
+        """A typo next to a valid name must not keep the valid remainder."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": "list_guilds,bogus_action"}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        assert get_dynamic_schema_core() is None
+        assert get_dynamic_schema_admin() is None
+
 
 # ---------------------------------------------------------------------------
 # Runtime allowlist enforcement (defense in depth — schema already filtered)
@@ -673,6 +707,18 @@ class TestRuntimeAllowlistEnforcement:
         mock_req.return_value = []
         result = json.loads(discord_admin_handler(action="list_guilds"))
         assert "guilds" in result
+
+    @patch("tools.discord_tool._discord_request")
+    def test_malformed_config_blocks_runtime(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": {"unexpected": "dict"}}},
+        )
+        result = json.loads(discord_admin_handler(action="list_guilds"))
+        assert "error" in result
+        assert "disabled by config" in result["error"]
+        mock_req.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

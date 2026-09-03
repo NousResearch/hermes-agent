@@ -3463,6 +3463,31 @@ def compress_context(
     checkpoint_required = (
         getattr(agent, "compression_checkpoint_required", False) is True
     )
+    # Claude Code sessions: the `claude` CLI compacts its own context and
+    # exposes no compaction RPC, so there is nothing truthful Hermes can do
+    # here — a local summary would not shrink the real context. Equivalent
+    # to ``codex_app_server_auto: native`` with no other mode (#25267).
+    if getattr(agent, "api_mode", None) == "claude_code":
+        if checkpoint_required:
+            raise _checkpoint_blocked(
+                "claude_code owns the authoritative context and does not "
+                "expose a truthful pre-compaction transcript boundary"
+            )
+        logger.info(
+            "claude_code compaction skipped: the claude CLI compacts its own "
+            "context (session=%s messages=%d tokens=~%s)",
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        _restore_compressor_attempt_state(
+            agent.context_compressor, _compressor_attempt_snapshot,
+            attempt_generation=_attempt_generation,
+        )
+        existing_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not existing_prompt:
+            existing_prompt = agent._build_system_prompt(system_message)
+        return messages, existing_prompt
     if getattr(agent, "api_mode", None) == "codex_app_server":
         if checkpoint_required:
             raise _checkpoint_blocked(

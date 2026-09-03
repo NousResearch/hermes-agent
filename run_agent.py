@@ -3762,6 +3762,17 @@ class AIAgent:
                         "Failed to interrupt Codex app-server turn",
                         exc_info=True,
                     )
+        # Same for the Claude Code subprocess runtime (#25267).
+        if getattr(self, "api_mode", None) == "claude_code":
+            _cc_session = getattr(self, "_claude_code_session", None)
+            _cc_interrupt = getattr(_cc_session, "request_interrupt", None)
+            if callable(_cc_interrupt):
+                try:
+                    _cc_interrupt()
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt Claude Code turn", exc_info=True,
+                    )
 
         # A cron turn performs its API request on the conversation thread to
         # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
@@ -5165,6 +5176,14 @@ class AIAgent:
             if codex_session is not None:
                 self._codex_session = None
                 codex_session.close()
+        except Exception:
+            pass
+        # 6d. Same ownership rule for the Claude Code subprocess (#25267).
+        try:
+            claude_code_session = getattr(self, "_claude_code_session", None)
+            if claude_code_session is not None:
+                self._claude_code_session = None
+                claude_code_session.close()
         except Exception:
             pass
 
@@ -9944,6 +9963,19 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+    def _run_claude_code_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Forwarder — see ``agent.claude_code_runtime.run_claude_code_turn``."""
+        from agent.claude_code_runtime import run_claude_code_turn
+        return run_claude_code_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
 
 def main(
     query: str = None,

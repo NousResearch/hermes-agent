@@ -427,6 +427,12 @@ def _copilot_runtime_api_mode(
         return "chat_completions"
 
 
+# Canonical id + aliases of the Claude Code CLI provider (kept in sync with
+# plugins/model-providers/claude-code/__init__.py).
+CLAUDE_CODE_CLI_PROVIDER_NAMES = frozenset(
+    {"claude-code-cli", "claude-subscription", "claude_code_cli"}
+)
+
 _VALID_API_MODES = {
     "chat_completions",
     "codex_responses",
@@ -438,6 +444,9 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Claude subscription through the official `claude` CLI (provider
+    # `claude-code-cli`). Selected by provider, not by a runtime switch (#25267).
+    "claude_code",
 }
 
 
@@ -2026,6 +2035,22 @@ def resolve_runtime_provider(
             "base_url": "moa://local",
             "api_key": "moa-virtual-provider",
             "source": "moa-virtual-provider",
+            "requested_provider": requested_provider,
+        }
+
+    # Claude subscription via the Claude Code CLI (#25267). There is no HTTP
+    # endpoint and no key here: the `claude` subprocess authenticates with the
+    # setup-token in $CLAUDE_CODE_OAUTH_TOKEN. Placeholders keep downstream
+    # "has credentials" checks satisfied without ever touching a real token.
+    # Aliases mirror the ProviderProfile so `--provider claude-subscription`
+    # cannot fall through to the OpenRouter/custom resolvers.
+    if requested_provider in CLAUDE_CODE_CLI_PROVIDER_NAMES:
+        return {
+            "provider": "claude-code-cli",
+            "api_mode": "claude_code",
+            "base_url": "claude-code://local",
+            "api_key": "claude-code-subscription",
+            "source": "claude-code-cli",
             "requested_provider": requested_provider,
         }
 

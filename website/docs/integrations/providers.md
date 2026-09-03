@@ -181,6 +181,73 @@ model:
 `--provider claude` and `--provider claude-code` also work as shorthand for `--provider anthropic`.
 :::
 
+### Claude subscription via the Claude Code CLI (`claude-code-cli`)
+
+Use a Claude Pro/Max subscription **with real tool calls** by letting Hermes drive the
+official `claude` CLI as a subprocess (`api_mode: claude_code`). Claude Code's native
+tools (Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch) run inside the CLI, and
+Hermes' own tools (web search/extract, browser, vision, image generation, skills, TTS)
+are exposed to it over MCP. No API key and no token is ever read out of the CLI.
+
+```bash
+claude setup-token                     # once — prints a long-lived token
+echo 'CLAUDE_CODE_OAUTH_TOKEN=...' >> ~/.hermes/.env
+hermes chat --provider claude-code-cli --model sonnet
+```
+
+**Setup-token requirement.** The runtime refuses to start without
+`CLAUDE_CODE_OAUTH_TOKEN` (rename the variable with `claude_code.oauth_token_env`). It
+deliberately does *not* share your interactive `claude` login: several long-lived
+`claude` processes sharing one login rotate the OAuth refresh token underneath each
+other and log each other out. One token owned by Hermes ends that race.
+
+**Isolation guarantees.** The child is a Hermes-owned Claude Code, never yours:
+
+- `CLAUDE_CONFIG_DIR=$HERMES_HOME/claude-code` — its own settings, `.claude.json`,
+  transcripts and credential store; nothing under `~/.claude` is read or written.
+- `--setting-sources ""` — your user/project/local settings, hooks and plugins are not
+  loaded. `--strict-mcp-config` — only the `hermes-tools` MCP server.
+- `--settings $HERMES_HOME/claude-code/settings.json` — a deny list Hermes writes once
+  (`Bash(rm -rf *)`, `Bash(sudo *)`, `Bash(git push *)`, Messages/Gmail/Drive
+  send/trash/share tools). Edit the file freely; Hermes never overwrites it. Seed a
+  different list with `claude_code.deny` before the first run.
+- Working directory `$HERMES_HOME/claude-code/workspace` (or `claude_code.cwd`), and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` — Hermes owns memory.
+
+**Permission modes** (from `tools.terminal.security_mode`):
+
+| security_mode | `claude --permission-mode` | shell |
+|---|---|---|
+| `auto` (default) | `acceptEdits` + pre-approved Bash/file/web tools | runs, gated only by the deny list |
+| `approval-required` | `default` + read-only tools, `--permission-prompt-tool stdio` | **gated** — every Bash/Write/Edit call is sent to Hermes' approval prompt; with no interactive approver (gateway, cron) it is denied with a message the model sees, and Hermes tells you once per session |
+| `unrestricted` / `yolo` (or `--yolo`) | `bypassPermissions` | unrestricted |
+
+Unknown values fail closed to `approval-required`. Context compaction is done by the
+CLI itself (like `compression.codex_app_server_auto: native`); background memory/skill
+review is skipped on this runtime because the `memory` tool cannot be reached from a
+subprocess. A resumed Hermes session `--resume`s the same CLI transcript; if the CLI
+rejects the resume, Hermes rotates to a fresh session id and remembers it in
+`$HERMES_HOME/claude-code/hermes-sessions.json`.
+
+**Warm processes.** One `claude` process is kept per Hermes session and shared across
+requests (the gateway builds a fresh agent per request; the process outlives it), so
+every turn after the first hits the prompt cache. The system prompt — Hermes' prompt
+plus the request's `system` message — is baked in at spawn; if it changes, the process
+is restarted (resuming the same CLI transcript). Keep that prompt **stable across
+requests** (no timestamps or per-request content): more than 3 restarts in a minute
+logs a warning and defeats the cache.
+
+```yaml
+claude_code:
+  idle_timeout: 600      # seconds a warm process may sit idle before it is closed
+  silence_timeout: 300   # max silence between two CLI events inside a turn
+  max_sessions: 8        # warm processes kept at once; least-recently-used is closed beyond this
+  turn_timeout: 600      # whole-turn bound
+```
+
+`--provider claude-code` (without `-cli`) remains a shorthand for the `anthropic` API-key
+provider.
+
 ### GitHub Copilot
 
 Hermes supports GitHub Copilot as a first-class provider with two modes:

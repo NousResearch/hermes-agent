@@ -282,6 +282,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="oauth_external",
         inference_base_url=DEFAULT_QWEN_BASE_URL,
     ),
+    # Claude subscription driven through the `claude` CLI subprocess. No
+    # inference URL: the CLI owns the network and its own setup-token (#25267).
+    # NOTE: "claude-code" (no -cli) stays an alias of the anthropic API-key
+    # provider for backward compatibility.
+    "claude-code-cli": ProviderConfig(
+        id="claude-code-cli",
+        name="Claude Subscription (Claude Code CLI)",
+        auth_type="oauth_external",
+        inference_base_url="",
+    ),
     "lmstudio": ProviderConfig(
         id="lmstudio",
         name="LM Studio",

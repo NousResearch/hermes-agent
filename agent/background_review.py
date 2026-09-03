@@ -1413,6 +1413,21 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
+    # claude_code runtime: the fork would spawn a second `claude` process that
+    # cannot reach the `memory` / `skill_manage` tools (they are
+    # _AGENT_LOOP_TOOLS, not exposable over MCP), so the review could never
+    # save anything. Refuse here — every caller (automatic turn-boundary
+    # review, /refine, the CLI review command) converges on this thread
+    # target (#25267).
+    if getattr(agent, "api_mode", None) == "claude_code":
+        logger.info(
+            "background review skipped: api_mode=claude_code cannot write "
+            "memory/skills from the claude subprocess (session=%s)",
+            getattr(agent, "session_id", None),
+        )
+        if review_run is not None:
+            finish_background_review_run(agent, review_run)
+        return
 
     # Local import to avoid a hard circular dep at module load.
     from run_agent import AIAgent

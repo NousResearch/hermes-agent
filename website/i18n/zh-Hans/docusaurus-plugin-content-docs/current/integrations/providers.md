@@ -130,7 +130,33 @@ model:
 
 :::tip 别名
 `--provider claude` 和 `--provider claude-code` 也可作为 `--provider anthropic` 的简写。
+
+另外，`--provider claude-code-cli` 通过官方 `claude` CLI 子进程使用 Claude 订阅（需要 `claude setup-token` 生成的 `CLAUDE_CODE_OAUTH_TOKEN`，并在独立的 `$HERMES_HOME/claude-code` 配置目录中运行；`approval-required` 模式下 Bash/写文件等工具会经由 Hermes 审批提示放行或拒绝）。详见英文文档。
 :::
+
+### 通过 Claude Code CLI 使用 Claude 订阅（`claude-code-cli`）
+
+让 Hermes 以子进程方式驱动官方 `claude` CLI（`api_mode: claude_code`），从而用 Claude Pro/Max
+订阅进行**真正的工具调用**：Claude Code 的原生工具（Bash、Read、Write、Edit、Glob、Grep、WebSearch、
+WebFetch）在 CLI 内运行，Hermes 自己的工具（网页搜索/抽取、浏览器、视觉、图像生成、技能、TTS）通过 MCP
+暴露给它。不需要 API Key，也不会从 CLI 读取任何令牌。
+
+```bash
+claude setup-token                     # 仅需一次，输出长期令牌
+echo 'CLAUDE_CODE_OAUTH_TOKEN=...' >> ~/.hermes/.env
+hermes chat --provider claude-code-cli --model sonnet
+```
+
+- 必须提供 `CLAUDE_CODE_OAUTH_TOKEN`（可用 `claude_code.oauth_token_env` 改名）；不会共享你的交互式 `claude` 登录。
+- 子进程完全由 Hermes 拥有：`CLAUDE_CONFIG_DIR=$HERMES_HOME/claude-code`、`--setting-sources ""`（不加载你的 hooks/插件）、
+  `--strict-mcp-config`、Hermes 只写一次的拒绝列表 `settings.json`、独立工作目录、关闭自动记忆。
+- 权限模式来自 `tools.terminal.security_mode`：`auto` 预先放行 Bash/文件/网页工具（受拒绝列表约束）；
+  `approval-required` 通过 `--permission-prompt-tool stdio` 把每次 Bash/Write/Edit 交给 Hermes 审批，无审批者时拒绝；
+  未知值回退到 `approval-required`；只有 `unrestricted`/`yolo` 才会 `bypassPermissions`。
+- 每个 Hermes 会话保持一个热进程并跨请求复用；系统提示应在请求间保持稳定，否则会频繁重启。
+  相关配置：`claude_code.idle_timeout`（默认 600 秒）、`silence_timeout`（300）、`max_sessions`（8）、`turn_timeout`（600）。
+
+`--provider claude-code`（不带 `-cli`）仍是 `anthropic` API Key 提供商的简写。详见英文文档。
 
 ### GitHub Copilot
 

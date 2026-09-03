@@ -522,10 +522,12 @@ def _refuse_checkpoint_required_on_codex_app_server(
     compress_context() guard alone cannot cover native turns that bypass
     Hermes compression entirely.
     """
-    if checkpoint_required and api_mode == "codex_app_server":
+    # claude_code has the same shape: the `claude` CLI compacts its own
+    # context and Hermes never sees a pre-compaction boundary (#25267).
+    if checkpoint_required and api_mode in {"codex_app_server", "claude_code"}:
         raise RuntimeError(
             "BLOCKED_MISSING_PREREQUISITE: compression.checkpoint_required "
-            "is incompatible with the codex_app_server API mode: the codex "
+            f"is incompatible with the {api_mode} API mode: the codex "
             "agent compacts its own thread without a truthful pre-compaction "
             "transcript boundary, so a required pre-compress checkpoint "
             "cannot be guaranteed. Disable compression.checkpoint_required "
@@ -720,8 +722,10 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "claude_code"}:
         agent.api_mode = api_mode
+    elif agent.provider == "claude-code-cli":
+        agent.api_mode = "claude_code"
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
@@ -1288,6 +1292,16 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode == "claude_code":
+        # Claude Code subscription runtime — the `claude` CLI owns the network
+        # and authenticates with its setup-token. No HTTP client, no API key.
+        # See agent/claude_code_runtime.py (#25267).
+        agent.client = None
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "claude-code-subscription"
+        agent.base_url = base_url or "claude-code://local"
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Code subscription)")
     else:
         client_kwargs = {}
         if api_key and base_url:

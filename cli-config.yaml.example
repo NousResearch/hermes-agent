@@ -52,6 +52,8 @@ model:
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
+  #   "claude-code-cli" - Claude subscription via the Claude Code CLI (requires: `claude` installed
+  #                    and CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`; see claude_code: below)
   #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
   #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
   #   "zai"         - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
@@ -255,6 +257,34 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+
+# =============================================================================
+# Claude Code CLI runtime (provider: claude-code-cli)
+# =============================================================================
+# Runs each turn through a Hermes-owned `claude -p` subprocess so a Claude
+# subscription works with real tool calls (Hermes tools are exposed to it over
+# stdio MCP). The child is isolated from the user's own Claude Code state
+# (own CLAUDE_CONFIG_DIR, cwd, settings, no auto-memory) and authenticates
+# with a long-lived setup-token, never the interactive keychain login.
+#
+# claude_code:
+#   binary: claude                  # path or name of the Claude Code CLI
+#   cwd: ~/.hermes/claude-code/workspace
+#   oauth_token_env: CLAUDE_CODE_OAUTH_TOKEN   # env var holding `claude setup-token` output
+#   permission_mode: ""             # override: acceptEdits | default | bypassPermissions
+#                                   # (default derives from tools.terminal.security_mode:
+#                                   #  auto -> acceptEdits + deny list, approval-required -> default
+#                                   #  with the permission bridge, unrestricted -> bypassPermissions)
+#   allowed_tools: []               # extra --allowedTools entries
+#   deny: []                        # seeds ~/.hermes/claude-code/settings.json permissions.deny
+#                                   # on first start, e.g. ["Bash(git push *)", "Bash(sudo *)"]
+#   expose_hermes_tools: true       # expose Hermes tools to the child over MCP
+#   resume: true                    # --resume the child's transcript across Hermes sessions
+#   turn_timeout: 1800              # seconds per turn before the child is retired
+#   silence_timeout: 300            # seconds without CLI output inside a turn
+#   idle_timeout: 600               # seconds a warm child is kept between turns
+#   max_sessions: 8                 # warm children kept at once (LRU eviction)
+#   extra_args: []                  # appended to the `claude` argv verbatim
 
 # =============================================================================
 # Unified Timeouts (operation deadlines)

@@ -1094,7 +1094,8 @@ def build_turn_context(
         _preflight_deferred = _defer_preflight(_preflight_tokens)
         # Codex app-server threads are compacted by the codex agent itself;
         # Hermes only initiates compaction in "hermes" mode (#36801).
-        _codex_native_auto = (
+        # claude_code always compacts natively inside the CLI (#25267).
+        _codex_native_auto = getattr(agent, "api_mode", None) == "claude_code" or (
             getattr(agent, "api_mode", None) == "codex_app_server"
             and str(
                 getattr(
@@ -1151,9 +1152,12 @@ def build_turn_context(
                 _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
         elif _codex_native_auto:
             logger.info(
-                "Skipping Hermes preflight compression for codex app-server "
+                "Skipping Hermes preflight compression for %s "
                 "(mode=%s); Hermes will not start thread compaction here.",
-                getattr(agent, "codex_app_server_auto_compaction", "native"),
+                getattr(agent, "api_mode", None),
+                "native"
+                if getattr(agent, "api_mode", None) == "claude_code"
+                else getattr(agent, "codex_app_server_auto_compaction", "native"),
             )
         else:
             _should_compress_now = _compressor.should_compress(_preflight_tokens)

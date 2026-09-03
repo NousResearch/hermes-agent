@@ -203,8 +203,18 @@ class TavilyWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return True
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a Tavily search (keyed path or opt-in keyless)."""
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        categories: Optional[list[str]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Execute a Tavily search (keyed path or opt-in keyless).
+
+        When ``categories`` is provided, the first recognized value is
+        mapped to Tavily's ``topic`` parameter.
+        """
         try:
             from tools.interrupt import is_interrupted
 
@@ -226,13 +236,20 @@ class TavilyWebSearchProvider(WebSearchProvider):
                 query,
                 limit,
             )
+            params: Dict[str, Any] = {
+                "query": query,
+                "max_results": min(limit, 20),
+                **_SEARCH_PAYLOAD,
+            }
+            tavily_topic_map = {"general": "general", "news": "news", "finance": "finance"}
+            if categories:
+                for category in categories:
+                    if category in tavily_topic_map:
+                        params["topic"] = tavily_topic_map[category]
+                        break
             raw = _tavily_request(
                 "search",
-                {
-                    "query": query,
-                    "max_results": min(limit, 20),
-                    **_SEARCH_PAYLOAD,
-                },
+                params,
                 api_key="" if force_keyless else api_key,
             )
             return _normalize_tavily_search_results(raw)

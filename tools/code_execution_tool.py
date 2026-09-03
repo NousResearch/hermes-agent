@@ -384,9 +384,9 @@ def check_sandbox_requirements() -> bool:
 _TOOL_STUBS = {
     "web_search": (
         "web_search",
-        "query: str, limit: int = 5",
+        "query: str, limit: int = 5, categories: list = None",
         '"""Search the web. Returns dict with data.web list of {url, title, description}."""',
-        '{"query": query, "limit": limit}',
+        '{"query": query, "limit": limit, "categories": categories}',
     ),
     "web_extract": (
         "web_extract",

@@ -835,7 +835,11 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(
+    query: str,
+    limit: int = 5,
+    categories: Optional[list[str]] = None,
+) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -844,10 +848,25 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
-    
+
     Args:
         query (str): The search query to look up
         limit (int): Maximum number of results to return (default: 5)
+        categories (Optional[list[str]]): Server-side result category filter.
+            Supported values depend on the active backend:
+
+            - firecrawl: ``web``, ``news``, ``images`` (sources); ``research``,
+              ``github``, ``pdf`` (categories)
+            - searxng: Many categories depending on installed engines —
+              ``general``, ``news``, ``science``, ``it``, ``images``,
+              ``files``, ``social media``, ``map``, ``music``, ``videos``,
+              and others. Check ``GET /config`` on your instance.
+            - exa: ``company``, ``people``, ``news``, ``code``
+            - brave-free: ``web``, ``news``, ``images``, ``video``
+            - tavily: ``general``, ``news``, ``finance`` (via ``topic`` param)
+
+            Other backends (parallel, ddgs, xai) do not support category
+            filtering — the parameter is silently ignored.
     
     Returns:
         str: JSON string containing search results with the following structure:
@@ -863,6 +882,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                          },
                          ...
                      ]
+                 },
+                 "_metadata": {                          # included when categories requested
+                     "backend": str,                     # which backend handled the search
+                     "categories_requested": [str],       # what the agent asked for
+                     "categories_applied": [str],          # what was actually applied (empty list = ignored)
+                     "warning": str                       # present when backend ignores categories
                  }
              }
     
@@ -878,13 +903,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     debug_call_data = {
         "parameters": {
             "query": query,
-            "limit": limit
+            "limit": limit,
         },
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
         "final_response_size": 0
     }
+    if categories:
+        debug_call_data["parameters"]["categories"] = categories
     
     try:
         from tools.interrupt import is_interrupted
@@ -965,67 +992,82 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            # ── TTL memo + single-flight (tools/web_result_cache.py) ──
-            # Sits after every safety/config check and directly around the
-            # paid vendor call. Identical queries within the TTL (subagent
-            # fan-outs, repeat lookups) are served from memory; concurrent
-            # identical queries share one request via the flight lock. The
-            # provider is asked for the BUCKETED count (10/20/50/100) so
-            # near-identical limits share an entry; the caller's requested
-            # count is sliced out below. Only successful responses cache.
-            from tools.web_result_cache import (
-                bucket_limit as _bucket_limit,
-                search_memo as _search_memo,
-                slice_search_response as _slice_search_response,
-            )
+            if categories:
+                # Category filters change the provider request, so bypass the
+                # category-unaware search memo rather than serving an
+                # unfiltered cached response. Only pass the new keyword when
+                # requested so third-party providers with the old signature
+                # remain compatible on ordinary searches.
+                response_data = provider.search(query, limit, categories=categories)
+            else:
+                # ── TTL memo + single-flight (tools/web_result_cache.py) ──
+                # Sits after every safety/config check and directly around the
+                # paid vendor call. Identical queries within the TTL (subagent
+                # fan-outs, repeat lookups) are served from memory; concurrent
+                # identical queries share one request via the flight lock.
+                from tools.web_result_cache import (
+                    bucket_limit as _bucket_limit,
+                    search_memo as _search_memo,
+                    slice_search_response as _slice_search_response,
+                )
 
-            def _paid_search() -> tuple[dict, bool]:
-                _fetch_limit = _bucket_limit(limit)
-                _rescued = False
-                try:
-                    _resp = provider.search(query, _fetch_limit)
-                except Exception as exc:  # noqa: BLE001 — candidate for rescue
-                    if _rescue_eligible(provider):
-                        _rescued = True
-                        _resp = _rescue_search(
-                            provider.name, str(exc), query, _fetch_limit
-                        )
-                    else:
-                        raise
-                else:
-                    if not _resp.get("success") and _rescue_eligible(provider):
-                        # One-shot keyless rescue: THIS call rides the
-                        # free-tier ring; the next call attempts the chosen
-                        # backend again.
-                        _rescued = True
-                        _resp = _rescue_search(
-                            provider.name,
-                            str(_resp.get("error", "")),
-                            query,
-                            _fetch_limit,
-                        )
-                return _resp, _rescued
-
-            response_data = _search_memo.lookup(provider.name, query, limit)
-            if response_data is None:
-                with _search_memo.flight_lock(provider.name, query, limit):
-                    # Re-check inside the lock: a concurrent identical call
-                    # may have stored while this one waited.
-                    response_data = _search_memo.lookup(
-                        provider.name, query, limit
-                    )
-                    if response_data is None:
-                        response_data, _was_rescued = _paid_search()
-                        # Never cache a rescue-served response: it came from
-                        # a ring vendor, not the chosen backend (wrong key),
-                        # and caching it would make the one-shot rescue
-                        # sticky for this query for a whole TTL — the next
-                        # call must attempt the chosen backend again.
-                        if not _was_rescued:
-                            _search_memo.store(
-                                provider.name, query, limit, response_data
+                def _paid_search() -> tuple[dict, bool]:
+                    _fetch_limit = _bucket_limit(limit)
+                    _rescued = False
+                    try:
+                        _resp = provider.search(query, _fetch_limit)
+                    except Exception as exc:  # noqa: BLE001 — candidate for rescue
+                        if _rescue_eligible(provider):
+                            _rescued = True
+                            _resp = _rescue_search(
+                                provider.name, str(exc), query, _fetch_limit
                             )
-            response_data = _slice_search_response(response_data, limit)
+                        else:
+                            raise
+                    else:
+                        if not _resp.get("success") and _rescue_eligible(provider):
+                            _rescued = True
+                            _resp = _rescue_search(
+                                provider.name,
+                                str(_resp.get("error", "")),
+                                query,
+                                _fetch_limit,
+                            )
+                    return _resp, _rescued
+
+                response_data = _search_memo.lookup(provider.name, query, limit)
+                if response_data is None:
+                    with _search_memo.flight_lock(provider.name, query, limit):
+                        response_data = _search_memo.lookup(
+                            provider.name, query, limit
+                        )
+                        if response_data is None:
+                            response_data, _was_rescued = _paid_search()
+                            if not _was_rescued:
+                                _search_memo.store(
+                                    provider.name, query, limit, response_data
+                                )
+                response_data = _slice_search_response(response_data, limit)
+
+            # Report what filters were applied so agents can detect
+            # silent-ignore from non-supporting backends.
+            _CATEGORY_AWARE_BACKENDS = frozenset({
+                "searxng", "firecrawl", "exa", "brave-free", "tavily",
+            })
+            applied: dict[str, Any] = {"backend": provider.name}
+            if categories:
+                applied["categories_requested"] = list(categories)
+                if provider.name in _CATEGORY_AWARE_BACKENDS:
+                    applied["categories_applied"] = list(categories)
+                else:
+                    applied["categories_applied"] = []
+                    applied["warning"] = (
+                        f"Backend '{provider.name}' does not support category filtering. "
+                        "Results are unfiltered."
+                    )
+            if isinstance(response_data, dict):
+                response_data.setdefault("_metadata", {})
+                response_data["_metadata"].update(applied)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1668,6 +1710,11 @@ WEB_SEARCH_SCHEMA = {
                 "minimum": 1,
                 "maximum": 100,
                 "default": 5
+            },
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional category filter for server-side result scoping. Values depend on the configured search backend. For SearXNG: general, news, science, it, images, files, social media, map, music, videos. For Firecrawl: web, news, images, research, github, pdf. For Exa: company, people, news, code. For Brave: web, news, images, video. For Tavily: general, news, finance."
             }
         },
         "required": ["query"]
@@ -1700,7 +1747,9 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(
+        args.get("query", ""), limit=args.get("limit", 5), categories=args.get("categories")
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

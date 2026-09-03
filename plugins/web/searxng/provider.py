@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from agent.web_search_provider import WebSearchProvider
 
@@ -65,16 +65,33 @@ class SearXNGWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a search against the configured SearXNG instance."""
+    def search(self, query: str, limit: int = 5, categories: Optional[list[str]] = None, **kwargs: Any) -> Dict[str, Any]:
+        """Execute a search against the configured SearXNG instance.
+
+        When ``categories`` is provided, the values are comma-joined and
+        passed as the ``categories`` query parameter to SearXNG's JSON API.
+        SearXNG supports many categories depending on installed engines
+        (e.g. general, news, science, it, images, files, social media, map,
+        music, videos). Consult your SearXNG instance's ``GET /config``
+        endpoint for the authoritative list.
+
+        When ``categories`` is None (default), falls back to ``"general"``
+        for backward compatibility.
+        """
         import httpx
 
         base_url = _searxng_url().rstrip("/")
         if not base_url:
             return {"success": False, "error": "SEARXNG_URL is not set"}
 
+        if categories:
+            cat_str = ",".join(categories)
+        else:
+            cat_str = "general"
+
         params: Dict[str, Any] = {
             "q": query,
+            "categories": cat_str,
             "format": "json",
             "pageno": 1,
         }

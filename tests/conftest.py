@@ -763,13 +763,16 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
 @pytest.fixture(autouse=True)
 def _state_db_write_guard(request, monkeypatch):
     _hs = sys.modules.get("hermes_state")
-    if _hs is None or not hasattr(_hs, "_STATE_DB_GUARD_BYPASS"):
+    _cfg = sys.modules.get("hermes_cli.config")
+    bypass = request.node.get_closest_marker("live_system_guard_bypass") is not None
+    if bypass:
+        if _hs is not None and hasattr(_hs, "_STATE_DB_GUARD_BYPASS"):
+            monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
+        if _cfg is not None and hasattr(_cfg, "_CONFIG_GUARD_BYPASS"):
+            monkeypatch.setattr(_cfg, "_CONFIG_GUARD_BYPASS", True)
         yield
         return
-    if request.node.get_closest_marker("live_system_guard_bypass") is not None:
-        monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
-        yield
-        return
+
     extra_roots = []
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME
@@ -777,9 +780,14 @@ def _state_db_write_guard(request, monkeypatch):
         extra_roots.append(
             Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
         )
-    monkeypatch.setattr(
-        _hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
-    )
+    if _hs is not None and hasattr(_hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS"):
+        monkeypatch.setattr(
+            _hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
+        )
+    if _cfg is not None and hasattr(_cfg, "_CONFIG_GUARD_EXTRA_DENY_ROOTS"):
+        monkeypatch.setattr(
+            _cfg, "_CONFIG_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
+        )
     yield
 
 

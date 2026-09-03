@@ -3273,24 +3273,33 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Unified pathway: route through cached_provider_model_ids() so the
-        # /model picker sees the SAME list `hermes model` would build, with
-        # disk caching to keep the picker open snappy. Falls back to the
-        # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(hermes_id)
-        if not model_ids:
-            model_ids = curated.get(hermes_id, [])
-            if hermes_id in _MODELS_DEV_PREFERRED:
-                model_ids = _merge_with_models_dev(hermes_id, model_ids)
         # A providers.<built-in>.models block extends the provider's discovered
         # catalog. Section 3 cannot emit it later because this built-in row owns
         # the slug, so merge declarations here before applying max_models.
         configured_models: list[str] = []
+        configured: dict = {}
         if isinstance(user_providers, dict):
             configured = user_providers.get(hermes_id)
             if isinstance(configured, dict):
                 configured_models = _declared_model_ids(configured.get("models"))
-        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
+        # Honor ``providers.<built-in>.discover_models: false``: skip the live
+        # /v1/models merge and surface only the declared ``models:`` list.
+        discover = configured.get("discover_models", True) if isinstance(configured, dict) else True
+        if isinstance(discover, str):
+            discover = discover.lower() not in {"false", "no", "0"}
+        if discover:
+            # Unified pathway: route through cached_provider_model_ids() so the
+            # /model picker sees the SAME list `hermes model` would build, with
+            # disk caching to keep the picker open snappy. Falls back to the
+            # curated static list when the live fetcher returns nothing.
+            model_ids = cached_provider_model_ids(hermes_id)
+            if not model_ids:
+                model_ids = curated.get(hermes_id, [])
+                if hermes_id in _MODELS_DEV_PREFERRED:
+                    model_ids = _merge_with_models_dev(hermes_id, model_ids)
+            model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
+        else:
+            model_ids = list(configured_models)
         total = len(model_ids)
         if hermes_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
@@ -3437,7 +3446,20 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        # Honor ``providers.<slug>.discover_models: false``: skip the live
+        # /v1/models merge and surface only the declared ``models:`` list.
+        configured_models: list[str] = []
+        configured: dict = {}
+        if isinstance(user_providers, dict):
+            configured = user_providers.get(hermes_slug)
+            if isinstance(configured, dict):
+                configured_models = _declared_model_ids(configured.get("models"))
+        discover = configured.get("discover_models", True) if isinstance(configured, dict) else True
+        if isinstance(discover, str):
+            discover = discover.lower() not in {"false", "no", "0"}
+        if not discover:
+            model_ids = list(configured_models)
+        elif hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
             # Use live OAuth-backed discovery so the gateway /model picker
             # matches what the user's authenticated Codex/Copilot backend
             # actually serves — including ChatGPT-Pro-only Codex slugs
@@ -3591,9 +3613,22 @@ def list_authenticated_providers(
         if not _cp_has_creds:
             continue
 
+        # Honor ``providers.<slug>.discover_models: false``: skip the live
+        # /v1/models merge and surface only the declared ``models:`` list.
+        _cp_configured_models: list[str] = []
+        _cp_configured: dict = {}
+        if isinstance(user_providers, dict):
+            _cp_configured = user_providers.get(_cp.slug)
+            if isinstance(_cp_configured, dict):
+                _cp_configured_models = _declared_model_ids(_cp_configured.get("models"))
+        _cp_discover = _cp_configured.get("discover_models", True) if isinstance(_cp_configured, dict) else True
+        if isinstance(_cp_discover, str):
+            _cp_discover = _cp_discover.lower() not in {"false", "no", "0"}
         # For bedrock, use live discovery so the list reflects the active
         # region (eu.*, us.*, ap.*) instead of the hardcoded us.* static list.
-        if _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
+        if not _cp_discover:
+            _cp_model_ids = list(_cp_configured_models)
+        elif _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
             try:
                 _ids = cached_provider_model_ids(_cp.slug)
                 _cp_model_ids = _ids if _ids else curated.get(_cp.slug, [])

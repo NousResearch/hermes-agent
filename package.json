@@ -57,7 +57,8 @@
     "undici@^7": "7.29.0",
     "postcss": "8.5.23",
     "tar": "7.5.22",
-    "browserslist": "^4.28.8"
+    "browserslist": "^4.28.8",
+    "fast-uri": "^3.1.7"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",

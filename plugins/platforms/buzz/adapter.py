@@ -22,6 +22,7 @@ Configuration in config.yaml::
               - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
             home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
             poll_interval: 4           # seconds between poll sweeps
+            outbound_mention_pubkeys: {} # display name -> exact agent npub/hex
             cli_path: ""               # path to the buzz binary (default: PATH, then ~/bin/buzz)
             credentials_file: ""       # JSON file holding the nsec (fallback for BUZZ_PRIVATE_KEY)
             allowed_users: []          # empty = allow all; entries are hex pubkeys or npubs
@@ -49,6 +50,7 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -197,7 +199,11 @@ _UNRESOLVED_MENTION_ERROR_RE = re.compile(
 _BUZZ_PRESENTATION_MENTION_SEPARATOR = "\u200b"
 
 
-def _escape_unresolved_presentation_mention(content: str, error: str) -> Optional[str]:
+def _escape_unresolved_presentation_mention(
+    content: str,
+    error: str,
+    protected_names: Optional[set[str]] = None,
+) -> Optional[str]:
     """Make one CLI-rejected ``@name`` token presentation-only.
 
     Buzz resolves whitespace-prefixed ``@name`` tokens into notification
@@ -215,6 +221,10 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
     name = match.group("name")
     if not name:
         return None
+    if unicodedata.normalize("NFKC", name).casefold() in (
+        protected_names or set()
+    ):
+        return None
     token = re.compile(
         rf"(?<!\S)@{re.escape(name)}(?=$|[^A-Za-z0-9._-])",
         re.IGNORECASE,
@@ -224,6 +234,104 @@ def _escape_unresolved_presentation_mention(content: str, error: str) -> Optiona
         content,
     )
     return escaped if count else None
+
+
+def _parse_outbound_mention_pubkeys(value: Any) -> Dict[str, Tuple[str, str]]:
+    """Validate configured display-name to exact-pubkey outbound routing."""
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("Buzz outbound_mention_pubkeys must be a mapping")
+
+    parsed: Dict[str, Tuple[str, str]] = {}
+    for raw_name, raw_pubkey in value.items():
+        name = unicodedata.normalize(
+            "NFKC",
+            str(raw_name or "").strip().lstrip("@").strip(),
+        )
+        pubkey = _normalize_user_ref(str(raw_pubkey or "").strip())
+        if not name or not pubkey:
+            raise ValueError(
+                "Buzz outbound_mention_pubkeys entries require a display name "
+                "and a valid hex or npub identity"
+            )
+        key = name.casefold()
+        if key in parsed:
+            raise ValueError(
+                "Buzz outbound_mention_pubkeys contains a duplicate display name"
+            )
+        parsed[key] = (name, pubkey)
+    return parsed
+
+
+def _is_mention_continuation(char: str) -> bool:
+    return bool(
+        char
+        and (
+            char.isalnum()
+            or char == "_"
+            or char in ".-"
+            or unicodedata.category(char).startswith("M")
+        )
+    )
+
+
+def _complete_mention_spans(content: str, name: str) -> List[Tuple[int, int]]:
+    """Return complete marker spans in NFKC-normalized content."""
+    normalized_content = unicodedata.normalize("NFKC", content or "")
+    normalized_name = unicodedata.normalize("NFKC", name or "")
+    target = f"@{normalized_name}".casefold()
+    spans: List[Tuple[int, int]] = []
+    for start, char in enumerate(normalized_content):
+        if char != "@":
+            continue
+        if start and (
+            normalized_content[start - 1] == "@"
+            or _is_mention_continuation(normalized_content[start - 1])
+        ):
+            continue
+        for end in range(start + 2, len(normalized_content) + 1):
+            candidate = normalized_content[start:end].casefold()
+            if len(candidate) > len(target):
+                break
+            if candidate != target:
+                continue
+            if (
+                end < len(normalized_content)
+                and _is_mention_continuation(normalized_content[end])
+            ):
+                continue
+            spans.append((start, end))
+            break
+    return spans
+
+
+def _has_complete_mention(content: str, name: str) -> bool:
+    return bool(_complete_mention_spans(content, name))
+
+
+def _select_configured_handoffs(
+    configured: Dict[str, Tuple[str, str]],
+    content: str,
+) -> Tuple[set[str], List[str]]:
+    """Select one longest configured identity for each visible marker."""
+    by_start: Dict[int, Tuple[int, str, str]] = {}
+    matched_names: set[str] = set()
+    for key, (name, pubkey) in configured.items():
+        for start, end in _complete_mention_spans(content, name):
+            matched_names.add(key)
+            current = by_start.get(start)
+            if current is None or end > current[0]:
+                by_start[start] = (end, key, pubkey)
+
+    selected_pubkeys: List[str] = []
+    seen_pubkeys: set[str] = set()
+    for start in sorted(by_start):
+        _end, _key, pubkey = by_start[start]
+        if pubkey not in seen_pubkeys:
+            selected_pubkeys.append(pubkey)
+            seen_pubkeys.add(pubkey)
+    return matched_names, selected_pubkeys
 
 # How many events to request per poll / seed call.
 _FETCH_LIMIT = 50
@@ -818,6 +926,9 @@ class BuzzAdapter(BasePlatformAdapter):
 
         _home_raw = _scoped_platform_setting("BUZZ_HOME_CHANNEL", extra, "home_channel")
         self.home_channel = (_home_raw or str(extra.get("home_channel", "") or "")).strip()
+        self.outbound_mention_pubkeys = _parse_outbound_mention_pubkeys(
+            extra.get("outbound_mention_pubkeys")
+        )
 
         _pi_raw = _scoped_platform_setting("BUZZ_POLL_INTERVAL", extra, "poll_interval")
         try:
@@ -1226,7 +1337,12 @@ class BuzzAdapter(BasePlatformAdapter):
         cache[pubkey] = (time.monotonic(), name)
         return name
 
-    async def _mention_pubkeys_for(self, chat_id: str, content: str) -> List[str]:
+    async def _mention_pubkeys_for(
+        self,
+        chat_id: str,
+        content: str,
+        excluded_names: Optional[set[str]] = None,
+    ) -> List[str]:
         """Resolve ``@Name`` references in *content* to member pubkeys.
 
         The CLI hard-fails a publish when any @token fails to resolve to a
@@ -1253,12 +1369,15 @@ class BuzzAdapter(BasePlatformAdapter):
             return []
         by_name: Dict[str, List[str]] = {}
         display: Dict[str, str] = {}
+        exclusions = excluded_names or set()
         self_pk = getattr(self, "_self_pubkey", None)
         for pk in await self._channel_member_pubkeys(chat_id):
             if pk == self_pk:
                 continue
             name = await self._profile_display_name(pk)
             if not name:
+                continue
+            if unicodedata.normalize("NFKC", name).casefold() in exclusions:
                 continue
             key = name.lower()
             by_name.setdefault(key, [])
@@ -1288,6 +1407,8 @@ class BuzzAdapter(BasePlatformAdapter):
         args: List[str],
         content: str,
         mention_pubkeys: Optional[List[str]] = None,
+        protected_mention_pubkeys: Optional[List[str]] = None,
+        protected_mention_names: Optional[set[str]] = None,
     ):
         """Run one send with bounded mention-failure recovery.
 
@@ -1307,9 +1428,17 @@ class BuzzAdapter(BasePlatformAdapter):
            unresolvable @names to presentation-only text (#83414); the echo
            de-dupe already suppresses self-notification.
         """
+        protected_pubkeys = list(dict.fromkeys(protected_mention_pubkeys or []))
+        all_pubkeys = list(dict.fromkeys((mention_pubkeys or []) + protected_pubkeys))
+        # Keep configured identities first so a retry that drops stale dynamic
+        # member resolution is deterministic and easy to audit.
+        all_pubkeys = protected_pubkeys + [
+            pk for pk in all_pubkeys if pk not in protected_pubkeys
+        ]
         mention_args: List[str] = []
-        for pk in mention_pubkeys or []:
+        for pk in all_pubkeys:
             mention_args += ["--mention", pk]
+        active_mention_args = mention_args
         code, out, err = await self._run_cli(args + mention_args, input_text=content)
         if code == 0:
             return code, out, err
@@ -1317,26 +1446,62 @@ class BuzzAdapter(BasePlatformAdapter):
             # Membership drifted between resolution and publish (or the
             # fallback candidate source over-approximated): never let a
             # stale mention kill the message.
-            code, out, err = await self._run_cli(args, input_text=content)
-            if code == 0:
-                return code, out, err
-        escaped = _escape_unresolved_presentation_mention(content, err)
+            dynamic_pubkeys = [pk for pk in all_pubkeys if pk not in protected_pubkeys]
+            if dynamic_pubkeys or not protected_pubkeys:
+                active_mention_args = []
+                for pk in protected_pubkeys:
+                    active_mention_args += ["--mention", pk]
+                code, out, err = await self._run_cli(
+                    args + active_mention_args,
+                    input_text=content,
+                )
+                if code == 0:
+                    return code, out, err
+        escaped = _escape_unresolved_presentation_mention(
+            content,
+            err,
+            protected_mention_names,
+        )
         if escaped is not None:
             logger.info(
                 "Buzz: retrying message after unresolved presentation-mention preflight"
             )
-            code, out, err = await self._run_cli(args, input_text=escaped)
+            code, out, err = await self._run_cli(
+                args + active_mention_args,
+                input_text=escaped,
+            )
             if code == 0:
                 return code, out, err
         if (
             code != 0
             and "does not match a current channel member" in (err or "")
             and getattr(self, "_self_pubkey", None)
+            and not protected_pubkeys
         ):
             code, out, err = await self._run_cli(
                 args + ["--mention", self._self_pubkey], input_text=content
             )
         return code, out, err
+
+    def _configured_handoff_mentions(
+        self,
+        content: str,
+    ) -> Tuple[set[str], List[str]]:
+        """Return configured names/pubkeys whose complete marker is present."""
+        return _select_configured_handoffs(
+            self.outbound_mention_pubkeys,
+            content,
+        )
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Use a fresh structured send when a stream ends with a handoff."""
+        del metadata
+        _names, pubkeys = self._configured_handoff_mentions(content)
+        return bool(pubkeys)
 
     async def send(
         self,
@@ -1358,8 +1523,30 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        mention_pubkeys = await self._mention_pubkeys_for(chat_id, content)
-        code, out, err = await self._run_message_send(args, content, mention_pubkeys)
+        protected_names, protected_pubkeys = self._configured_handoff_mentions(
+            content
+        )
+        if protected_pubkeys and meta.get("expect_edits"):
+            return SendResult(
+                success=False,
+                error=(
+                    "Configured Buzz handoffs are deferred to the final message "
+                    "so structured mention metadata is preserved"
+                ),
+                raw_response={"configured_handoff_requires_final_send": True},
+            )
+        mention_pubkeys = await self._mention_pubkeys_for(
+            chat_id,
+            content,
+            protected_names,
+        )
+        code, out, err = await self._run_message_send(
+            args,
+            content,
+            mention_pubkeys,
+            protected_pubkeys,
+            protected_names,
+        )
         if code != 0:
             return SendResult(
                 success=False,
@@ -1439,6 +1626,18 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Buzz edit needs a message id")
         if not content:
             return SendResult(success=False, error="Empty message")
+        _protected_names, protected_pubkeys = self._configured_handoff_mentions(
+            content
+        )
+        if protected_pubkeys:
+            return SendResult(
+                success=False,
+                error=(
+                    "Configured Buzz handoffs require a fresh message with "
+                    "structured mentions"
+                ),
+                raw_response={"configured_handoff_requires_fresh_send": True},
+            )
         args = ["messages", "edit", "--event", str(message_id), "--content", "-"]
         code, out, err = await self._run_cli(args, input_text=content)
         if code != 0:
@@ -1576,7 +1775,16 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         if reply_target and self._reply_to_mode != "off":
             args += ["--reply-to", str(reply_target)]
-        code, out, err = await self._run_message_send(args, caption or "")
+        send_content = caption or ""
+        protected_names, protected_pubkeys = self._configured_handoff_mentions(
+            send_content
+        )
+        code, out, err = await self._run_message_send(
+            args,
+            send_content,
+            protected_mention_pubkeys=protected_pubkeys,
+            protected_mention_names=protected_names,
+        )
         if code != 0:
             return SendResult(
                 success=False,
@@ -3085,6 +3293,10 @@ def validate_config(config) -> bool:
         relay = relay if relay is not None else extra.get("relay_url", "")
     else:
         relay = _get_scoped_secret("BUZZ_RELAY_URL", "") or extra.get("relay_url", "")
+    try:
+        _parse_outbound_mention_pubkeys(extra.get("outbound_mention_pubkeys"))
+    except ValueError:
+        return False
     return bool(relay and _resolve_private_key(extra))
 
 
@@ -3234,6 +3446,18 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
+    try:
+        outbound_mention_pubkeys = _parse_outbound_mention_pubkeys(
+            extra.get("outbound_mention_pubkeys")
+        )
+    except ValueError:
+        return {"error": "Buzz standalone send: invalid outbound_mention_pubkeys"}
+    protected_names, protected_pubkeys = _select_configured_handoffs(
+        outbound_mention_pubkeys,
+        message,
+    )
+    for pubkey in protected_pubkeys:
+        args += ["--mention", pubkey]
     # Same reply_to_mode / reply_in_thread gate as the live adapter, so
     # out-of-process cron delivery (deliver=buzz) doesn't thread when the
     # operator asked for flat channel replies.
@@ -3260,7 +3484,11 @@ async def _standalone_send(
             input_text=message,
         )
         if code != 0:
-            escaped = _escape_unresolved_presentation_mention(message, err)
+            escaped = _escape_unresolved_presentation_mention(
+                message,
+                err,
+                protected_names,
+            )
             if escaped is not None:
                 logger.info(
                     "Buzz: retrying standalone message after unresolved "
@@ -3271,6 +3499,7 @@ async def _standalone_send(
                     args,
                     relay_url=relay,
                     private_key=private_key,
+                    auth_tag=auth_tag,
                     input_text=escaped,
                 )
     except asyncio.CancelledError:

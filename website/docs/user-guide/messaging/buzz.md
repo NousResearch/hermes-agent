@@ -80,6 +80,8 @@ gateway:
           - ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         home_channel: ccc2bc1a-7a82-5a8f-8c4e-57a070cbe7cd
         poll_interval: 4                  # seconds between inbound poll sweeps (default 4 — balances latency vs. relay load)
+        outbound_mention_pubkeys:         # optional exact routing for named agent handoffs
+          Reviewer: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         cli_path: ""                      # buzz binary (default: PATH, then ~/bin/buzz)
         credentials_file: ""              # JSON file with the nsec (BUZZ_PRIVATE_KEY fallback)
         allowed_users: []                 # empty = allow all if allow_all_users is true; otherwise restrict to listed npubs/hex pubkeys
@@ -102,6 +104,7 @@ gateway:
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- `outbound_mention_pubkeys` maps stable display names to exact npub or 64-character hex identities. When outbound text contains a configured `@name`, Hermes preserves the marker and sends the exact identity as structured mention metadata. A streamed reply that introduces a configured handoff is finalized as a fresh structured message rather than an unstructured edit. Configured handoffs are never silently downgraded: if Buzz rejects the exact identity, delivery fails visibly.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 

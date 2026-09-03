@@ -1369,7 +1369,16 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
-
+#
+# Buzz exact routing for stable named handoffs:
+#
+# gateway:
+#   platforms:
+#     buzz:
+#       extra:
+#         outbound_mention_pubkeys:   # Exact routing for stable named handoffs
+#           Reviewer: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+#
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #

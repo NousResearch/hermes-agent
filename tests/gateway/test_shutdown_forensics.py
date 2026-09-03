@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import builtins
+import io
 import json
 import os
 import signal
@@ -142,3 +144,127 @@ class TestCheckSystemdTimingAlignment:
         # for whatever unit pytest IS in.  Both are valid; we just ensure
         # the function doesn't raise.
         assert result is None or isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# check_systemd_timing_alignment — systemd manager scope
+# ---------------------------------------------------------------------------
+
+class _FakeCompleted:
+    """Minimal stand-in for subprocess.CompletedProcess."""
+
+    def __init__(self, stdout: str, returncode: int = 0):
+        self.stdout = stdout
+        self.returncode = returncode
+        self.stderr = ""
+
+
+def _show_output(load_state: str, timeout: str) -> str:
+    return f"LoadState={load_state}\nTimeoutStopUSec={timeout}\n"
+
+
+@pytest.fixture
+def systemd_unit(monkeypatch):
+    """Make the checker believe it runs under ``hermes-gateway.service``.
+
+    Fakes INVOCATION_ID and the ``/proc/self/cgroup`` read so these tests
+    are hermetic and stay valid on macOS and Windows, where /proc is absent.
+    """
+    monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+    real_open = builtins.open
+
+    def fake_open(path, *args, **kwargs):
+        if str(path) == "/proc/self/cgroup":
+            return io.StringIO("0::/system.slice/hermes-gateway.service\n")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fake_open)
+    return "hermes-gateway.service"
+
+
+def _patch_systemctl(monkeypatch, user, system):
+    """Serve canned ``systemctl show`` output and record the scopes probed.
+
+    Pass ``None`` for a manager that fails outright (exit 1), e.g. a server
+    with no user bus.
+    """
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        scope = "user" if "--user" in cmd else "system"
+        calls.append(scope)
+        payload = user if scope == "user" else system
+        if payload is None:
+            return _FakeCompleted("", returncode=1)
+        return _FakeCompleted(payload)
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+    return calls
+
+
+class TestCheckSystemdTimingAlignmentManagerScope:
+    """``systemctl --user`` answers for units it does not own.
+
+    ``systemctl --user show <unit>`` exits 0 and reports built-in defaults
+    (``TimeoutStopUSec=1min 30s``) even when the user manager has never
+    heard of the unit.  Trusting that value made a system-managed gateway
+    warn about a phantom 90s stop timeout on every startup, so the checker
+    gates on ``LoadState=loaded`` before believing a manager.
+    """
+
+    def test_ignores_phantom_default_from_unloaded_user_manager(
+        self, systemd_unit, monkeypatch
+    ):
+        calls = _patch_systemctl(
+            monkeypatch,
+            user=_show_output("not-found", "1min 30s"),  # phantom 90s default
+            system=_show_output("loaded", "300s"),       # the unit we actually run
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert calls == ["user", "system"]
+        assert result is not None
+        assert result["timeout_stop_sec"] == 300.0
+        # The phantom 90s sits below expected_min (210s) and would have been
+        # reported as a mismatch; the real unit's 300s clears it.
+        assert result["mismatch"] is False
+
+    def test_uses_user_manager_when_it_owns_the_unit(
+        self, systemd_unit, monkeypatch
+    ):
+        calls = _patch_systemctl(
+            monkeypatch,
+            user=_show_output("loaded", "300s"),
+            system=_show_output("loaded", "999s"),
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert calls == ["user"], "a loaded user unit must not fall through"
+        assert result is not None
+        assert result["timeout_stop_sec"] == 300.0
+
+    def test_returns_none_when_no_manager_has_the_unit(
+        self, systemd_unit, monkeypatch
+    ):
+        _patch_systemctl(
+            monkeypatch,
+            user=_show_output("not-found", "1min 30s"),
+            system=_show_output("not-found", "1min 30s"),
+        )
+
+        assert sf.check_systemd_timing_alignment(180.0) is None
+
+    def test_property_order_is_not_assumed(self, systemd_unit, monkeypatch):
+        # systemd does not guarantee the order of --property output.
+        _patch_systemctl(
+            monkeypatch,
+            user=None,  # no user bus at all
+            system="TimeoutStopUSec=300s\nLoadState=loaded\n",
+        )
+
+        result = sf.check_systemd_timing_alignment(180.0)
+
+        assert result is not None
+        assert result["timeout_stop_sec"] == 300.0

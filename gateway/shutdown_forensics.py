@@ -372,30 +372,47 @@ def check_systemd_timing_alignment(
     # Query systemctl for TimeoutStopUSec.  Use --user OR system depending
     # on which manager actually owns the unit.  Try user first since
     # that's the common case for hermes.
+    #
+    # `systemctl --user show <unit>` answers with built-in defaults (e.g.
+    # TimeoutStopUSec=1min 30s) and exit code 0 even when that manager has
+    # never heard of the unit, so the returned value alone cannot tell us
+    # who owns it.  Gate on LoadState=loaded before trusting the timeout:
+    # otherwise a system-managed unit is judged against the user manager's
+    # phantom 90s default and we warn about a mismatch that does not exist.
     timeout_us: Optional[int] = None
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                [
+                    "systemctl", *flag, "show", unit_name,
+                    "--property=LoadState",
+                    "--property=TimeoutStopUSec",
+                ],
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=2.0,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             continue
         if result.returncode != 0:
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
+        # Output: "LoadState=loaded" plus "TimeoutStopUSec=1min 30s" or
+        # "TimeoutStopUSec=90000000".  Property order is not guaranteed, so
+        # collect both before deciding whether to trust this manager.
+        load_state: Optional[str] = None
+        candidate_us: Optional[int] = None
         for line in result.stdout.splitlines():
-            if line.startswith("TimeoutStopUSec="):
+            if line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+            elif line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
                 # Try numeric microseconds first
                 if value.isdigit():
-                    timeout_us = int(value)
+                    candidate_us = int(value)
                 else:
-                    timeout_us = parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    break
-        if timeout_us is not None:
-            break
+                    candidate_us = parse_systemd_duration_to_us(value)
+        if load_state != "loaded" or candidate_us is None:
+            continue
+        timeout_us = candidate_us
+        break
 
     if timeout_us is None:
         return None

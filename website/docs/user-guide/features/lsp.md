@@ -93,6 +93,25 @@ manager makes sense for that language (rustup, ghcup, opam, brew,
 …). Hermes auto-detects the binary on PATH or in
 `<HERMES_HOME>/lsp/bin/`.
 
+### Project-local servers win over global ones
+
+Before falling back to PATH, Hermes probes the project's own bin
+directories, walking up from the resolved project root to the nearest
+`.git` boundary:
+
+| Ecosystem | Marker (must exist as sibling) | Bin directories probed |
+|-----------|-------------------------------|------------------------|
+| Node | `package.json`, any lockfile | `node_modules/.bin` |
+| Python | `pyproject.toml`, `requirements.txt`, `setup.py`/`.cfg`, `Pipfile`, `pyrightconfig.json`, `ruff.toml` | `.venv/bin`, `venv/bin` (`Scripts` on Windows) |
+| Ruby | `Gemfile`, `Gemfile.lock` | `vendor/bundle/bin`, `bin` |
+| Go | `go.mod`, `go.sum`, `go.work` | `bin` |
+
+So a repo that pins `typescript-language-server` or `pyright` as a
+dev dependency gets diagnostics from **its own pinned version**, not
+whatever happens to be installed globally. A bin directory is only
+trusted when the sibling marker file proves it belongs to a project of
+that ecosystem — a stray, unmarked `node_modules/.bin` is ignored.
+
 ### PowerShell
 
 PowerShellEditorServices isn't a single binary — it's a PowerShell

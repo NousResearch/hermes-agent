@@ -396,6 +396,35 @@ describe('relay-route socket retention (#93594)', () => {
 })
 
 describe('the roster loop pushes the OTHER connections’ agents', () => {
+  it('includes a registered gateway whose renderer route has not materialized yet', async () => {
+    hostMock.connections = vi.fn(async () => [
+      { id: 'a', kind: 'local' },
+      { id: 'b', kind: 'ssh' },
+      { id: 'm5', kind: 'ssh' }
+    ])
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
+
+    const calls = respondWith(call =>
+      call.method === 'profiles.list' ? { profiles: [{ name: 'default' }] } : {}
+    )
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(calls).toContainEqual(
+      expect.objectContaining({ connectionId: 'm5', method: 'profiles.list' })
+    )
+    const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
+
+    expect(pushedToA?.params.agents).toEqual(
+      expect.arrayContaining([expect.objectContaining({ connection_id: 'm5', profile: 'default' })])
+    )
+
+    stopBotRelay()
+  })
+
   it('gives each gateway a union roster that excludes its own agents', async () => {
     const calls = respondWith(call => {
       if (call.method === 'profiles.list') {

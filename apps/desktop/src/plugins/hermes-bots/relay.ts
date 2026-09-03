@@ -211,6 +211,50 @@ async function relayConnections(): Promise<RelayConnection[]> {
   }
 }
 
+/** Roster inventory is allowed to seed registered-but-not-yet-materialized
+ *  routes. Delivery keeps using relayConnections + waitForRelayConnection so
+ *  a seed can never bypass the warm/retention readiness gate. */
+async function relayRosterConnections(): Promise<RelayConnection[]> {
+  const live = await relayConnections()
+
+  if (typeof host.connections !== 'function') {
+    return live
+  }
+
+  try {
+    const registered = await host.connections()
+    const byConnection = new Map(live.map(connection => [connection.id, connection]))
+
+    for (const connection of Array.isArray(registered) ? registered : []) {
+      const id = String(connection?.id || '')
+
+      if (!id || byConnection.has(id)) {
+        continue
+      }
+
+      const kind = String(connection?.kind || '')
+      const targetProfile =
+        kind === 'ssh' && typeof connection?.remoteProfile === 'string' && connection.remoteProfile.trim()
+          ? connection.remoteProfile.trim()
+          : 'default'
+
+      byConnection.set(id, {
+        id,
+        route: {
+          connectionId: id,
+          mode: kind === 'local' ? 'local' : 'remote',
+          profile: 'default',
+          targetProfile
+        }
+      })
+    }
+
+    return [...byConnection.values()]
+  } catch {
+    return live
+  }
+}
+
 /** Re-acquire one route after a transient registry/tunnel restart.
  *
  * The caller has already claimed the envelope, so this waits in place and
@@ -398,7 +442,7 @@ async function syncRelayRosters() {
   relay.rosterBusy = true
 
   try {
-    const connections = await relayConnections()
+    const connections = await relayRosterConnections()
 
     if (connections.length < 2) {
       return

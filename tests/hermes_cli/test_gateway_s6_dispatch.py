@@ -152,5 +152,105 @@ def test_redirect_falls_back_when_sleep_missing(
     assert "`sleep` is unavailable" in err
 
 
+def _arm_for_redirect(monkeypatch: pytest.MonkeyPatch):
+    """Arm the real startup watchdog the way the argv fast-path does.
+
+    ``hermes_cli.main`` arms whenever argv carries the adjacent tokens
+    ``gateway run`` — which is exactly the invocation the s6 redirect
+    intercepts. A long timeout keeps the deadline out of the test's way:
+    what is under test is the handle's state at handoff, not the timer.
+    """
+    import hermes_startup_watchdog as sw
+
+    monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG, raising=False)
+    monkeypatch.delenv(sw.ENV_STARTUP_WATCHDOG_TIMEOUT_S, raising=False)
+    sw._reset_for_tests()
+    handle = sw.arm_startup_watchdog(timeout_s=3600)
+    assert handle is not None and handle.is_alive()
+    return sw, handle
+
+
+def test_redirect_disarms_startup_watchdog_before_parking(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The #36208 in-process heartbeat must not park under an armed
+    startup watchdog.
+
+    The CMD process arms the OOF-298 watchdog (its argv is ``gateway
+    run``) and then hands the gateway to s6 — it never reaches a
+    GatewayRunner, so nothing downstream disarms. Parked on
+    ``signal.pause()`` it burns ~zero CPU and holds no progress lease,
+    reading exactly like the wedged startup the watchdog exists to kill:
+    it would ``os._exit(75)`` the container's main process on schedule
+    while the supervised gateway is perfectly healthy.
+    """
+    from hermes_cli import gateway as gw
+
+    sw, handle = _arm_for_redirect(monkeypatch)
+    try:
+        _stub_s6(monkeypatch, on_s6=True)
+        monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+
+        def missing_sleep(file: str, args: list[str]) -> None:
+            raise FileNotFoundError(2, "No such file or directory", file)
+
+        monkeypatch.setattr("hermes_cli.gateway.os.execvp", missing_sleep)
+        disarmed_at_park: list[bool] = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway._block_until_terminated",
+            lambda: disarmed_at_park.append(handle.disarmed),
+        )
+
+        assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+
+        assert disarmed_at_park == [True], (
+            "the CMD process parked forever with the startup watchdog still "
+            "armed — it will be hard-exited with code 75"
+        )
+        # The singleton is cleared too, so a later arm site cannot revive
+        # this handle's deadline.
+        assert sw._handle is None
+        # And the timer thread actually stands down rather than lingering.
+        handle.join(timeout=5)
+        assert not handle.is_alive()
+    finally:
+        sw._reset_for_tests()
+    capsys.readouterr()
+
+
+def test_redirect_disarms_startup_watchdog_before_exec(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same handoff, the normal ``sleep infinity`` path.
+
+    The exec replaces the process image (watchdog thread included), so
+    this arm is not a live hazard — but the disarm belongs to the
+    handoff, not to one of its two heartbeats. Pinning it here keeps a
+    future third heartbeat from inheriting the parked-process bug.
+    """
+    from hermes_cli import gateway as gw
+
+    sw, handle = _arm_for_redirect(monkeypatch)
+    try:
+        _stub_s6(monkeypatch, on_s6=True)
+        monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+        monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_NO_SUPERVISE", raising=False)
+        disarmed_at_exec: list[bool] = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway.os.execvp",
+            lambda file, args: disarmed_at_exec.append(handle.disarmed),
+        )
+
+        assert gw._maybe_redirect_run_to_s6_supervision(_Args()) is True
+
+        assert disarmed_at_exec == [True]
+    finally:
+        sw._reset_for_tests()
+    capsys.readouterr()
+
+
 
 

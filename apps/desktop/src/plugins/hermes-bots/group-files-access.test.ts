@@ -11,6 +11,20 @@ import {
 import { FILE_ROOM } from './group-files-test-fixtures'
 
 describe('room-scoped observed-denial fence', () => {
+  it('a newer denial invalidates a recovery even when access was already blocked', () => {
+    const room = { ...FILE_ROOM, roomId: 'blocked-recovery-order' }
+    invalidateGroupFileAccess(captureGroupFileAccess(room))
+    const firstRecovery = captureGroupFileAccess(room)
+    const secondRecovery = captureGroupFileAccess(room)
+    invalidateGroupFileAccess(secondRecovery)
+    expect(() => confirmGroupFileCatalog(firstRecovery)).toThrow()
+    expect(() => beginGroupFileDelivery(room)).toThrow()
+    confirmGroupFileCatalog(captureGroupFileAccess(room))
+    const delivery = beginGroupFileDelivery(room)
+    expect(delivery.current()).toBe(true)
+    delivery.release()
+  })
+
   it('aborts all leases before notifying UI and does not clear on an old catalog receipt', () => {
     const room = { ...FILE_ROOM, roomId: 'fence-order' }
     const first = beginGroupFileDelivery(room)

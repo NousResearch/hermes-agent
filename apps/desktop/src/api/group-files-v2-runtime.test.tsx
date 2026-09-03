@@ -95,6 +95,62 @@ async function miss() {
 }
 
 describe('actual capability path: preserved counterexamples and C7 repair', () => {
+  it.each([
+    ['feature', false],
+    ['feature', true],
+    ['authority', false],
+    ['authority', true]
+  ] as const)('recovers usable downloads after %s loss with older=%s', async (fault, older) => {
+    let currentCapability: typeof capability = capability
+    const original = mocks.requestProfile.getMockImplementation()!
+    mocks.requestProfile.mockImplementation(async (...args) =>
+      args[1] === 'groups.capabilities' ? currentCapability : original(...args)
+    )
+    await open()
+    await screen.findByText('file-20.txt')
+
+    if (older) {
+      fireEvent.click(screen.getByRole('button', { name: 'Older' }))
+      await screen.findByText('file-19.txt')
+    }
+
+    currentCapability =
+      fault === 'feature' ? { ...capability, features: [] } : { ...capability, authority_gateway_id: 'install:other' }
+    await act(async () => {
+      await hostedRouteForRoom(FILE_ROOM, 'read')
+    })
+    expect(screen.queryByRole('listitem')).toBeNull()
+    currentCapability = capability
+    await act(async () => {
+      await hostedRouteForRoom(FILE_ROOM, 'read')
+    })
+    const name = older ? 'file-19.txt' : 'file-20.txt'
+    await screen.findByText(name)
+    await waitFor(() => expect(lists()).toHaveLength(older ? 3 : 2))
+    const response = { attachment: fileItem(older ? 19 : 20), content_base64: 'YQ==' }
+    const beforeRead = mocks.requestProfile.getMockImplementation()!
+    mocks.requestProfile.mockImplementation(async (...args) =>
+      args[1] === 'groups.attachment.read' ? response : beforeRead(...args)
+    )
+    fireEvent.click(screen.getByRole('button', { name: `Download ${name}` }))
+    await waitFor(() => expect(saved).toHaveLength(1))
+    expect(lists().at(-1)?.[2].cursor).toBe(older ? 'cursor-after-20' : undefined)
+  })
+
+  it('settled list timeout cancels late route work without requiring Escape', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<(typeof route)[]>()
+    mocks.profileRoutes.mockReturnValue(pending.promise)
+    await open()
+    await act(async () => vi.advanceTimersByTimeAsync(10_001))
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    await act(async () => {
+      pending.resolve([route])
+      await Promise.resolve()
+    })
+    expect(mocks.requestProfile).not.toHaveBeenCalled()
+  })
+
   it('one miss/recovery keeps an older page and focus without a fresh list request', async () => {
     await open()
     await screen.findByText('file-20.txt')

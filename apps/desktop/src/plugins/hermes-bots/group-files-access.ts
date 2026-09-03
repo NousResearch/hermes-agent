@@ -37,7 +37,7 @@ export function groupFileAccessCurrent(token: GroupFileAccessToken | null): bool
 }
 
 export function invalidateGroupFileAccess(token: GroupFileAccessToken | null): void {
-  if (!token || token.generation !== token.state.generation || token.state.blocked) {
+  if (!token || token.generation !== token.state.generation) {
     return
   }
 

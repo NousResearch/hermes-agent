@@ -224,6 +224,8 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
           cursorExpired: isGroupFilesCursorError(error),
           ...(failure === 'offline' || failure === 'timeout' ? { offline: true } : {})
         })
+      } finally {
+        controller.abort()
       }
     },
     [group, loadPage, publish, denied]
@@ -254,8 +256,12 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
       current.misses = 0
       publish({ offline: false, unavailable: false, reconnected: current.state.offline || current.state.reconnected })
 
-      if (previous !== 'available' && !current.state.pages.length && !current.state.loading) {
-        void fetchPage('latest')
+      if (previous !== 'available' && !current.state.loading) {
+        if (previous === 'unavailable') {
+          void fetchPage(current.state.pages.length ? 'retry' : 'latest')
+        } else if (!current.state.pages.length) {
+          void fetchPage('latest')
+        }
       }
     }
   }, [availability, observation, open, fetchPage, publish])

@@ -340,6 +340,58 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def _force_windows(monkeypatch):
+    monkeypatch.setattr(gateway_windows.sys, "platform", "win32")
+
+
+def test_task_vbs_launcher_is_utf16_so_non_ascii_home_parses(monkeypatch, tmp_path):
+    """wscript.exe decodes a BOM-less .vbs as the ANSI system code page, so a
+    non-ASCII HERMES_HOME mojibakes every path in the launcher and the launch
+    dies silently under //B. The launcher must be written UTF-16: the BOM flips
+    wscript into UTF-16 mode (same rule the Scheduled Task XML follows) and the
+    home survives a decode round-trip."""
+    hermes_home = tmp_path / "SergioBéjar" / "hermes"
+    _force_windows(monkeypatch)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(gateway, "get_python_path", lambda: r"C:\venv\Scripts\python.exe")
+    monkeypatch.setattr(gateway, "_profile_arg", lambda home: "")
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.setattr(
+        gateway_windows, "_resolve_detached_python", lambda exe: (exe, r"C:\venv", [])
+    )
+    script_path = tmp_path / "Hermes_Gateway.cmd"
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+
+    gateway_windows._write_task_script()
+
+    vbs_path = script_path.with_suffix(".vbs")
+    raw = vbs_path.read_bytes()
+    assert raw[:2] == b"\xff\xfe"  # UTF-16 LE BOM — what wscript keys on
+    decoded = vbs_path.read_text(encoding="utf-16")
+    assert "SergioBéjar" in decoded
+    assert "hermes_cli.main" in decoded
+
+
+def test_startup_entry_launcher_is_utf16_so_non_ascii_target_parses(monkeypatch, tmp_path):
+    """The Startup-folder fallback launcher is executed by wscript too, so the
+    same ANSI-vs-BOM rule applies: without the UTF-16 BOM a non-ASCII profile
+    path corrupts the chained target path at parse time."""
+    _force_windows(monkeypatch)
+    script_path = tmp_path / "SergioBéjar" / "Hermes_Gateway.cmd"
+    entry = tmp_path / "startup" / "Hermes_Gateway.vbs"
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
+    monkeypatch.setattr(
+        gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "startup" / "Hermes_Gateway.cmd"
+    )
+
+    gateway_windows._install_startup_entry(script_path)
+
+    raw = entry.read_bytes()
+    assert raw[:2] == b"\xff\xfe"
+    decoded = entry.read_text(encoding="utf-16")
+    assert str(script_path.with_suffix(".vbs")) in decoded
+
+
 
 
 

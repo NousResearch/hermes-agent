@@ -578,7 +578,11 @@ def _write_task_script() -> Path:
     vbs_content = _build_gateway_vbs_script(python_path, working_dir, hermes_home, profile_arg)
     vbs_path = script_path.with_suffix(".vbs")
     vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
-    vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
+    # wscript.exe decodes a BOM-less .vbs as the ANSI system code page, which
+    # mojibakes every non-ASCII path at parse time and kills the launch
+    # silently under //B. The UTF-16 BOM makes wscript parse the file as
+    # UTF-16 (same rule the Scheduled Task XML already follows).
+    vbs_tmp.write_text(vbs_content, encoding="utf-16", newline="")
     vbs_tmp.replace(vbs_path)
     return script_path
 
@@ -715,7 +719,9 @@ def _install_startup_entry(script_path: Path) -> Path:
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
     tmp = entry.with_suffix(".tmp")
-    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    # Same wscript ANSI-vs-BOM rule as the gateway launcher: without a UTF-16
+    # BOM a non-ASCII profile path corrupts this launcher at parse time.
+    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-16", newline="")
     tmp.replace(entry)
     legacy_entry = _legacy_startup_entry_path()
     try:

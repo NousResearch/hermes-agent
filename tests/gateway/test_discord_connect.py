@@ -329,6 +329,51 @@ async def test_disconnect_cancels_running_bot_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_start_post_connect_initialization_reuses_running_task(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _blocking_initialization():
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", _blocking_initialization)
+
+    adapter._start_post_connect_initialization()
+    first_task = adapter._post_connect_task
+    assert first_task is not None
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    adapter._start_post_connect_initialization()
+
+    assert adapter._post_connect_task is first_task
+    release.set()
+    await first_task
+
+
+@pytest.mark.asyncio
+async def test_cancel_post_connect_initialization_awaits_running_task(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    entered = asyncio.Event()
+
+    async def _blocking_initialization():
+        entered.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(adapter, "_run_post_connect_initialization", _blocking_initialization)
+    adapter._start_post_connect_initialization()
+    task = adapter._post_connect_task
+    assert task is not None
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    await adapter._cancel_post_connect_initialization()
+
+    assert task.cancelled()
+    assert adapter._post_connect_task is None
+
+
+@pytest.mark.asyncio
 async def test_safe_sync_slash_commands_only_mutates_diffs():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 
@@ -440,7 +485,9 @@ async def test_safe_sync_slash_commands_only_mutates_diffs():
 
 
 @pytest.mark.asyncio
-async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp_path, monkeypatch):
+async def test_post_connect_initialization_retries_timeout_in_same_connection(
+    tmp_path, monkeypatch
+):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
 
@@ -489,17 +536,15 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     }
     sync = AsyncMock(side_effect=[asyncio.TimeoutError(), summary])
     monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
-
-    await adapter._run_post_connect_initialization()
-
-    timed_out_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
-    assert timed_out_entry["fingerprint"] == desired_fingerprint
-    assert "last_success_at" not in timed_out_entry
-    assert "summary" not in timed_out_entry
+    sleep = AsyncMock()
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", sleep)
 
     await adapter._run_post_connect_initialization()
 
     assert sync.await_count == 2
+    sleep.assert_awaited_once_with(
+        discord_platform._DISCORD_COMMAND_SYNC_TIMEOUT_BACKOFF_SECONDS
+    )
     recovered_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
     assert recovered_entry["last_success_at"] >= recovered_entry["last_attempt_at"]
     assert recovered_entry["summary"] == summary
@@ -599,6 +644,277 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_not_awaited()
     fake_http.upsert_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_sync_ignores_expanded_defaults_but_preserves_explicit_restrictions():
+    """Server defaults are ignored only while the local policy is unspecified."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    desired = {
+        "name": "new",
+        "description": "Start a new conversation",
+        "type": 1,
+        "options": [],
+        "nsfw": False,
+        "dm_permission": True,
+        "default_member_permissions": None,
+        "contexts": None,
+        "integration_types": None,
+    }
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return dict(desired)
+
+    class _ExistingCommand:
+        id = 42
+        name = "new"
+        description = desired["description"]
+        type = SimpleNamespace(value=1)
+        nsfw = False
+        guild_only = False
+        default_member_permissions = None
+
+        def to_dict(self):
+            return {
+                "id": self.id,
+                "application_id": 999,
+                **desired,
+                "contexts": [0, 1, 2],
+                "integration_types": [0, 1],
+            }
+
+    fake_http = SimpleNamespace(
+        upsert_global_command=AsyncMock(),
+        edit_global_command=AsyncMock(),
+        delete_global_command=AsyncMock(),
+    )
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(
+            get_commands=lambda: [_DesiredCommand()],
+            fetch_commands=AsyncMock(return_value=[_ExistingCommand()]),
+        ),
+        http=fake_http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert summary == {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    fake_http.edit_global_command.assert_not_awaited()
+    fake_http.delete_global_command.assert_not_awaited()
+    fake_http.upsert_global_command.assert_not_awaited()
+
+    desired["contexts"] = [0]
+    restricted_summary = await adapter._safe_sync_slash_commands()
+
+    assert restricted_summary == {
+        "total": 1,
+        "unchanged": 0,
+        "updated": 0,
+        "recreated": 1,
+        "created": 0,
+        "deleted": 0,
+    }
+    fake_http.delete_global_command.assert_awaited_once_with(999, 42)
+    fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_retries_rate_limit_in_same_connection(
+    tmp_path, monkeypatch
+):
+    """A logged retry must happen without waiting for a reconnect."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "status",
+                "description": "Show Hermes status",
+                "type": 1,
+                "options": [],
+            }
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    class _DiscordRateLimit(RuntimeError):
+        retry_after = 2.0
+
+    summary = {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    sync = AsyncMock(side_effect=[_DiscordRateLimit("rate limited"), summary])
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+    sleep = AsyncMock()
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", sleep)
+
+    await adapter._run_post_connect_initialization()
+
+    assert sync.await_count == 2
+    sleep.assert_awaited_once_with(2.0)
+    entry = adapter._read_command_sync_state()["999"]
+    assert entry["last_success_at"] >= entry["last_attempt_at"]
+    assert "retry_after_until" not in entry
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_retry_cancels_cleanly(
+    tmp_path, monkeypatch
+):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "status",
+                "description": "Show Hermes status",
+                "type": 1,
+                "options": [],
+            }
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    class _DiscordRateLimit(RuntimeError):
+        retry_after = 2.0
+
+    sync = AsyncMock(side_effect=_DiscordRateLimit("rate limited"))
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+    entered_backoff = asyncio.Event()
+
+    async def _blocking_sleep(_seconds):
+        entered_backoff.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(adapter, "_sleep_for_command_sync_retry", _blocking_sleep)
+
+    task = asyncio.create_task(adapter._run_post_connect_initialization())
+    await asyncio.wait_for(entered_backoff.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sync.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_stops_after_three_rate_limits(
+    tmp_path, monkeypatch, caplog
+):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "status",
+                "description": "Show Hermes status",
+                "type": 1,
+                "options": [],
+            }
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+
+    class _DiscordRateLimit(RuntimeError):
+        retry_after = 2.0
+
+    sync = AsyncMock(
+        side_effect=[
+            _DiscordRateLimit("rate limited"),
+            _DiscordRateLimit("rate limited"),
+            _DiscordRateLimit("rate limited"),
+            AssertionError("slash command sync exceeded its retry budget"),
+        ]
+    )
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+    sleep = AsyncMock()
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", sleep)
+
+    await adapter._run_post_connect_initialization()
+
+    assert sync.await_count == 3
+    assert [call.args[0] for call in sleep.await_args_list] == [2.0, 2.0]
+    entry = adapter._read_command_sync_state()["999"]
+    assert entry["last_attempt_at"]
+    assert entry["retry_after_until"] > entry["last_attempt_at"]
+    assert "last_success_at" not in entry
+    assert sum("retrying after" in message for message in caplog.messages) == 2
+    assert sum("exhausted 3 attempts" in message for message in caplog.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_connect_initialization_waits_out_persisted_cooldown(
+    tmp_path, monkeypatch
+):
+    """A reconnect must wait out a prior 429 and then reconcile."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    class _DesiredCommand:
+        def to_dict(self, tree):
+            return {
+                "name": "status",
+                "description": "Show Hermes status",
+                "type": 1,
+                "options": [],
+            }
+
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: [_DesiredCommand()]),
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    fingerprint = adapter._desired_command_sync_fingerprint()
+    adapter._record_command_sync_rate_limit(999, fingerprint, 2.0)
+
+    summary = {
+        "total": 1,
+        "unchanged": 1,
+        "updated": 0,
+        "recreated": 0,
+        "created": 0,
+        "deleted": 0,
+    }
+    sync = AsyncMock(return_value=summary)
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+    sleep = AsyncMock()
+    monkeypatch.setattr(discord_platform.asyncio, "sleep", sleep)
+
+    await adapter._run_post_connect_initialization()
+
+    sync.assert_awaited_once()
+    sleep.assert_awaited_once()
+    assert sleep.await_args_list[0].args[0] > 0
+    entry = adapter._read_command_sync_state()["999"]
+    assert entry["last_success_at"] >= entry["last_attempt_at"]
 
 
 # ============================================================================

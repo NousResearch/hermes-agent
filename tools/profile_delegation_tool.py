@@ -32,8 +32,16 @@ def delegate_to_profile_tool(
     tool_name: Optional[str] = None,
     action_name: Optional[str] = None,
     operation: Optional[str] = None,
+    approval_id: Optional[str] = None,
     max_concurrency: Optional[int] = None,
 ) -> str:
+    """Delegate a bounded subtask to another Hermes profile.
+
+    For CONSEQUENTIAL_WRITE risk, an approval_id must be provided that is
+    bound to the exact requester + executor + capability + task being executed.
+    Use generate_approval_id() to create a valid approval when an approval
+    is granted by an authorized decision-maker.
+    """
     requester_profile = os.environ.get("HERMES_PROFILE") or "default"
     tool_action = None
     if tool_name or action_name or operation:
@@ -56,6 +64,7 @@ def delegate_to_profile_tool(
         max_runtime_seconds=int(max_runtime_seconds),
         board=board,
         tool_action=tool_action,
+        approval_id=approval_id,
         max_concurrency=max_concurrency,
     )
     result = delegate_to_profile(req)
@@ -71,7 +80,8 @@ registry.register(
             "Delegate a bounded subtask to another Hermes profile, executed under that "
             "profile's own HERMES_HOME/config/tools/credentials. If profile is omitted, "
             "the executor is selected automatically using capability and workload ranking. "
-            "Uses Kanban internally; credentials are never exposed to the requester."
+            "Uses Kanban internally; credentials are never exposed to the requester. "
+            "For CONSEQUENTIAL_WRITE risk, an approval_id bound to the exact task is required."
         ),
         "parameters": {
             "type": "object",
@@ -87,6 +97,7 @@ registry.register(
                 "tool_name": {"type": "string", "description": "Future policy atom: concrete tool name, if known."},
                 "action_name": {"type": "string", "description": "Future policy atom: concrete tool action, if known."},
                 "operation": {"type": "string", "description": "Future policy atom: read/write/delete/etc., if known."},
+                "approval_id": {"type": "string", "description": "Required for CONSEQUENTIAL_WRITE: HMAC-bound approval from an authorized decision-maker."},
                 "max_concurrency": {"type": "integer", "description": "Optional simple per-profile concurrency cap for ranking/dispatch."},
             },
             "required": ["task", "required_capability"],
@@ -104,6 +115,7 @@ registry.register(
         tool_name=args.get("tool_name"),
         action_name=args.get("action_name"),
         operation=args.get("operation"),
+        approval_id=args.get("approval_id"),
         max_concurrency=args.get("max_concurrency"),
     ),
     check_fn=executive_bus_enabled_for_current_context,

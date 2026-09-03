@@ -425,6 +425,9 @@ export function closeRightRailTab(tabId: string) {
   const next = current.filter(tab => tab.id !== tabId)
 
   $previewTabs.set(next)
+  // Drop the live page with the tab — a stale entry would outlive the tab
+  // and could match a later close query against a recycled address.
+  forgetBrowserPage(tabId)
 
   if ($rightRailActiveTabId.get() === tabId) {
     selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? null)
@@ -440,9 +443,36 @@ export function closePreviewForSource(source: string): boolean {
   return closePreviewMatching(source)
 }
 
-/** Close the first tab whose source, url, or label matches any candidate.
- *  Empty candidates are a no-op so a missed match cannot wipe the rail —
- *  closing the whole pane is `closeRightRail`. */
+/** Normalize an http(s) URL for close matching: lowercase host, drop the
+ *  fragment, strip trailing slashes. Returns null for anything else so file
+ *  paths and labels (case-sensitive on POSIX) only ever match exactly. */
+function normalizePreviewUrl(value: string): string | null {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    const parsed = new URL(trimmed)
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null
+    }
+
+    parsed.hostname = parsed.hostname.toLowerCase()
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/'
+    parsed.hash = ''
+
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
+/** Close the first tab whose source, url, label, or live page matches any
+ *  candidate. Empty candidates are a no-op so a missed match cannot wipe
+ *  the rail — closing the whole pane is `closeRightRail`. */
 export function closePreviewMatching(...candidates: string[]): boolean {
   const queries = [...new Set(candidates.map(value => value.trim()).filter(Boolean))]
 
@@ -451,9 +481,33 @@ export function closePreviewMatching(...candidates: string[]): boolean {
   }
 
   const tab = $previewTabs.get().find(item => {
+    // The webview's live address can differ from the open-time url after a
+    // redirect or rewrite — match it too, or close-by-original-URL silently
+    // misses and the tab can never be closed (#102166).
+    const liveUrl = $browserPages.get()[item.id]?.url
     const fields = [item.target.source, item.target.url, item.target.label]
 
-    return queries.some(query => fields.includes(query))
+    if (liveUrl) {
+      fields.push(liveUrl)
+    }
+
+    if (queries.some(query => fields.includes(query))) {
+      return true
+    }
+
+    const normalizedFields = fields
+      .map(normalizePreviewUrl)
+      .filter((url): url is string => url !== null)
+
+    if (normalizedFields.length === 0) {
+      return false
+    }
+
+    return queries.some(query => {
+      const normalizedQuery = normalizePreviewUrl(query)
+
+      return normalizedQuery !== null && normalizedFields.includes(normalizedQuery)
+    })
   })
 
   if (!tab) {

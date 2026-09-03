@@ -13,6 +13,7 @@ import {
   closeRightRailTab,
   commitBrowserTabLocation,
   newBrowserTab,
+  noteBrowserPage,
   openPreview,
   previewTabId,
   type PreviewTarget,
@@ -195,6 +196,23 @@ describe('preview store', () => {
     openPreview({ ...fileTarget('/work/demo.html'), label: 'Demo' }, 'tool-result')
 
     expect(closePreviewMatching('Demo')).toBe(true)
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('closes by the live page after a redirect, not just the open-time url', () => {
+    openPreview(urlTarget('https://dsh.cuicui.de:3080'), 'tool-result')
+    const id = $previewTabs.get()[0].id
+
+    noteBrowserPage(id, { url: 'https://dsh.cuicui.de:3080/app?session=1', title: 'App' })
+
+    expect(closePreviewMatching('https://dsh.cuicui.de:3080')).toBe(true)
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('closes on host-case and trailing-slash differences', () => {
+    openPreview(urlTarget('https://example.com/App'), 'tool-result')
+
+    expect(closePreviewMatching('https://EXAMPLE.com/app/')).toBe(true)
     expect($previewTabs.get()).toHaveLength(0)
   })
 

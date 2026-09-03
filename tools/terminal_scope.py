@@ -27,6 +27,7 @@ Two contracts distinguish this from a plain override dict:
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -172,7 +173,13 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
 
         env_var = TERMINAL_CONFIG_ENV_MAP.get(cfg_key)
         if env_var:
-            scope[env_var] = str(value)
+            # Mirror _terminal_env_value() (hermes_cli/config.py): list/dict
+            # values must be JSON text — downstream parses them with
+            # json.loads(), which chokes on str()'s Python repr (#101465).
+            if isinstance(value, (list, dict)):
+                scope[env_var] = json.dumps(value)
+            else:
+                scope[env_var] = str(value)
 
     # 1) Defined defaults — the total baseline.
     for cfg_key, value in defaults.items():

@@ -182,3 +182,38 @@ def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
     with install_and_reset_profile_terminal_scope(home):  # cron fire helper
         assert terminal_env("TERMINAL_ENV") == "local"
     assert get_terminal_scope() is None
+
+
+def test_config_yaml_lists_serialize_as_json_not_repr(tmp_path):
+    """#101465: list/dict terminal keys from config.yaml must be JSON text.
+
+    ``_apply()`` used ``str()`` (Python repr), so the ``json.loads()``
+    downstream in terminal_tool failed and docker-backend profiles served
+    through the multiplexed dashboard lost terminal execution entirely.
+    """
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    home = _profile(
+        tmp_path,
+        "dee",
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_forward_env:\n"
+        "    - EMAIL_HOME_ADDRESS\n"
+        "  docker_env:\n"
+        "    FOO: bar\n",
+    )
+    scope = build_profile_terminal_scope(home)
+    assert scope["TERMINAL_DOCKER_FORWARD_ENV"] == json.dumps(["EMAIL_HOME_ADDRESS"])
+    assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
+    assert scope["TERMINAL_DOCKER_ENV"] == json.dumps({"FOO": "bar"})
+    assert json.loads(scope["TERMINAL_DOCKER_ENV"]) == {"FOO": "bar"}
+
+
+def test_dotenv_json_strings_pass_through_untouched(tmp_path):
+    """`.env` TERMINAL_* selections are already JSON strings — `str()` stays."""
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    home = _profile(tmp_path, "eff", "", 'TERMINAL_DOCKER_VOLUMES=["/host:/data:rw"]\n')
+    scope = build_profile_terminal_scope(home)
+    assert scope["TERMINAL_DOCKER_VOLUMES"] == '["/host:/data:rw"]'

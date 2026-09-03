@@ -597,6 +597,25 @@ def _make_hermes_provider_class() -> Optional[type]:
 
                     with anyio.CancelScope(shield=True):
                         await self.context.lock.acquire()
+                # Close the SDK generator in THIS task. httpx closes the
+                # outer bridge deterministically; an abandoned ``inner`` is
+                # instead finalized later by asyncio's asyncgen hook in a
+                # NEW task, where the SDK's ``async with context.lock``
+                # release is task-affine and anyio raises before clearing
+                # the owner — leaving the lock poisoned for the process
+                # lifetime and every later OAuth flow for that server
+                # deadlocked before issuing any HTTP (#101756). After the
+                # re-acquire above the lock is held by this task again, so
+                # the SDK's teardown release inside aclose() is legal.
+                try:
+                    await inner.aclose()
+                except Exception:
+                    logger.debug(
+                        "MCP OAuth '%s': inner auth flow teardown error "
+                        "(suppressed)",
+                        self._hermes_server_name,
+                        exc_info=True,
+                    )
 
             if retry_after_concurrent_auth:
                 yield request

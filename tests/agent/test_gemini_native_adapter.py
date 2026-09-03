@@ -568,6 +568,30 @@ class TestGemini3ToolCallIds:
         tool_calls = result.choices[0].message.tool_calls
         assert tool_calls[0].id.startswith("call_")
 
+    def test_translate_stream_event_multiple_calls_same_name(self):
+        from agent.gemini_native_adapter import translate_stream_event
+
+        events = [
+            {"candidates": [{"content": {"parts": [{"functionCall": {"name": "skill_view", "args": {"name": "a"}, "id": "call_1"}, "thoughtSignature": "sig1"}]}}]},
+            {"candidates": [{"content": {"parts": [{"functionCall": {"name": "skill_view", "args": {"name": "b"}, "id": "call_2"}}]}}]},
+            {"candidates": [{"content": {"parts": [{"functionCall": {"name": "skill_view", "args": {"name": "c"}, "id": "call_3"}}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": ""}]}, "finishReason": "STOP"}]},
+        ]
+        tool_call_indices = {}
+        all_chunks = []
+        for ev in events:
+            all_chunks.extend(translate_stream_event(ev, "gemini-3.8-flash", tool_call_indices))
+
+        deltas = [
+            c.choices[0].delta.tool_calls[0]
+            for c in all_chunks
+            if c.choices[0].delta.tool_calls
+        ]
+        assert len(deltas) == 3
+        assert [d.index for d in deltas] == [0, 1, 2]
+        assert [d.id for d in deltas] == ["call_1", "call_2", "call_3"]
+        assert [json.loads(d.function.arguments) for d in deltas] == [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+
 
 # ---------------------------------------------------------------------------
 # Multimodal tool results: image embedding in functionResponse.parts

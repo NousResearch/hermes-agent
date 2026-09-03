@@ -398,9 +398,18 @@ def _cmd_adopt(args) -> int:
 
     dry_run = bool(getattr(args, "dry_run", False))
     if dry_run:
-        print(f"curator: would adopt {len(names)} skill(s) (dry run):")
-        for n in names:
-            print(f"  + {n}")
+        # Mirror the real run's per-name decision: skills already under
+        # curator management are reported as such (same message the real
+        # path prints) instead of being listed as adoption candidates, so
+        # the dry run answers "is this skill already adopted?".
+        already_managed = [n for n in names if skill_usage.is_curator_managed(n)]
+        pending = [n for n in names if not skill_usage.is_curator_managed(n)]
+        for n in already_managed:
+            print(f"curator: '{n}' is already curator-managed")
+        if pending:
+            print(f"curator: would adopt {len(pending)} skill(s) (dry run):")
+            for n in pending:
+                print(f"  + {n}")
         return 0
 
     # Bulk adoption is a real lifecycle change (adopted skills become

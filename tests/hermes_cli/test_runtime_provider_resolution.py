@@ -925,6 +925,30 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_mode", "expected_base_url"),
+    [
+        ("qwen3.8-flash", "anthropic_messages", "https://opencode.ai/zen/go"),
+        ("glm-5.3-flash", "chat_completions", "https://opencode.ai/zen/go/v1"),
+    ],
+)
+def test_opencode_go_explicit_key_preserves_model_endpoint(
+    monkeypatch, model, expected_mode, expected_base_url
+):
+    """Explicit CLI credentials must keep OpenCode's per-model route."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-go",
+        explicit_api_key="test-opencode-go-key",
+        target_model=model,
+    )
+
+    assert resolved["api_mode"] == expected_mode
+    assert resolved["base_url"] == expected_base_url
+
+
 # ------------------------------------------------------------------
 # fix #2562 — resolve_provider("custom") must not remap to "openrouter"
 # ------------------------------------------------------------------

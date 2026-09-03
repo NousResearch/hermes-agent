@@ -1937,6 +1937,18 @@ def _resolve_explicit_runtime(
                     provider, base_url, target_model or model_cfg.get("default", "")
                 )
 
+        from hermes_cli.models import opencode_provider_family
+
+        if opencode_provider_family(provider) is not None:
+            from hermes_cli.models import (
+                normalize_opencode_base_url,
+                opencode_model_api_mode,
+            )
+
+            effective_model = target_model or model_cfg.get("default", "")
+            api_mode = opencode_model_api_mode(provider, effective_model)
+            base_url = normalize_opencode_base_url(provider, api_mode, base_url)
+
         if provider == "actual" and not api_key and is_actual_local_base_url(base_url):
             api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
 

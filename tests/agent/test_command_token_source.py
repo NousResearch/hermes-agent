@@ -229,6 +229,110 @@ class TestCallableKeyGetsBearerAuth:
         assert seen.get("callable") is True
 
 
+class TestCallableKeySurvivesClientDerivation:
+    """A callable api_key must survive being copied to a derived client.
+
+    The OpenAI SDK stashes a callable api_key in ``_api_key_provider`` and
+    leaves the public ``client.api_key`` attribute as the EMPTY STRING until
+    the first request refreshes it. Every site that builds a sibling client
+    from a resolved one (``_to_async_client``, agent init, fallback swap) read
+    ``client.api_key`` — producing an unauthenticated client that 401s on
+    every request. That is the whole failure mode behind key_cmd providers
+    (CLIProxy et al.) working on the main turn but 401ing on vision.
+    """
+
+    def test_sync_client_credential_prefers_the_token_provider(self):
+        from agent.auxiliary_client import _sync_client_credential
+
+        class _FakeSDKClient:
+            api_key = ""  # what the SDK exposes for a callable credential
+
+            def __init__(self, provider):
+                self._api_key_provider = provider
+
+        provider = lambda: "minted-token"  # noqa: E731
+        assert _sync_client_credential(_FakeSDKClient(provider)) is provider
+
+    def test_sync_client_credential_passes_static_keys_through(self):
+        from agent.auxiliary_client import _sync_client_credential
+
+        class _FakeSDKClient:
+            api_key = "sk-static"
+            _api_key_provider = None
+
+        assert _sync_client_credential(_FakeSDKClient()) == "sk-static"
+
+    def test_async_credential_is_awaitable_for_a_sync_provider(self):
+        import asyncio
+
+        from agent.auxiliary_client import _as_async_credential
+
+        adapted = _as_async_credential(lambda: "minted-token")
+        assert asyncio.run(adapted()) == "minted-token"
+
+    def test_async_credential_passes_strings_through(self):
+        from agent.auxiliary_client import _as_async_credential
+
+        assert _as_async_credential("sk-static") == "sk-static"
+
+    def test_credential_as_text_resolves_a_callable(self):
+        from agent.auxiliary_client import _credential_as_text
+
+        assert _credential_as_text(lambda: "minted-token") == "minted-token"
+        assert _credential_as_text("sk-static") == "sk-static"
+
+    def test_explicit_custom_endpoint_preserves_callable_key(self, monkeypatch):
+        """Vision receives the main runtime's refreshable CLIProxy credential."""
+        import agent.auxiliary_client as ac
+
+        token_source = lambda: "minted-token"  # noqa: E731
+        seen = {}
+
+        def _spy(*, api_key, base_url, **kw):
+            seen["api_key"] = api_key
+            return SimpleNamespace(api_key=api_key, base_url=base_url)
+
+        monkeypatch.setattr(ac, "_create_openai_client", _spy)
+        client, model = ac.resolve_provider_client(
+            "custom",
+            model="claude-sonnet-5",
+            explicit_base_url="http://127.0.0.1:8317/v1",
+            explicit_api_key=token_source,
+            api_mode="chat_completions",
+            is_vision=True,
+        )
+
+        assert client is not None
+        assert model == "claude-sonnet-5"
+        assert seen["api_key"] is token_source
+
+    def test_main_runtime_preserves_callable_key(self, monkeypatch):
+        import agent.auxiliary_client as ac
+
+        token_source = lambda: "minted-token"  # noqa: E731
+        seen = {}
+
+        def _spy(*, api_key, base_url, **kw):
+            seen["api_key"] = api_key
+            return SimpleNamespace(api_key=api_key, base_url=base_url)
+
+        monkeypatch.setattr(ac, "_create_openai_client", _spy)
+        client, _ = ac.resolve_provider_client(
+            "custom",
+            model="claude-sonnet-5",
+            main_runtime={
+                "base_url": "http://127.0.0.1:8317/v1",
+                "api_key": token_source,
+                "model": "claude-sonnet-5",
+            },
+            api_mode="chat_completions",
+            is_vision=True,
+        )
+
+        assert client is not None
+        assert seen["api_key"] is token_source
+
+
 class TestAbsoluteExpiry:
     """Helpers that advertise a deadline instead of a lifetime.
 

@@ -333,7 +333,10 @@ def get_tool_definitions(
 
     Args:
         enabled_toolsets: Only include tools from these toolsets.
-        disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
+        disabled_toolsets: Exclude tools from these toolsets. Always applied
+            as a strict final subtraction — even when enabled_toolsets is
+            provided and an enabled composite toolset contains the tool
+            (#17309).
         quiet_mode: Suppress status prints.
         skip_tool_search_assembly: When True, return the pre-assembly tool list
             (raw schemas for every enabled tool). Used internally by the

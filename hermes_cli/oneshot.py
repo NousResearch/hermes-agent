@@ -50,6 +50,28 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _disabled_toolsets_from_config(cfg: object = None) -> list[str] | None:
+    """Read ``agent.disabled_toolsets`` for direct AIAgent construction.
+
+    Oneshot builds its AIAgent directly (bypassing HermesCLI), so the global
+    disable list must be forwarded explicitly — otherwise the strict
+    resolved-tool subtraction in model_tools (#17309) never runs for -z
+    sessions and only the name-level pre-subtraction in _get_platform_tools
+    applies (#61184). Parsed with parse_config_string_list so the
+    JSON-array-string form written by ``hermes config set`` keeps working
+    (#86661).
+    """
+    agent_cfg = (cfg or {}).get("agent") if isinstance(cfg, dict) else None
+    raw = (agent_cfg or {}).get("disabled_toolsets")
+    if not raw:
+        return None
+
+    from agent.skill_utils import parse_config_string_list
+
+    parsed = [name.strip() for name in parse_config_string_list(raw) if name.strip()]
+    return parsed or None
+
+
 def _normalize_skills(skills: object = None) -> list[str]:
     """Normalize repeated/comma-separated skill flags and preserve order."""
     normalized = _normalize_toolsets(skills) or []
@@ -461,6 +483,12 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # agent.disabled_toolsets must reach AIAgent so model_tools applies the
+    # strict resolved-tool subtraction (#17309) exactly as interactive and
+    # gateway sessions do (cli_agent_setup_mixin passes it; oneshot builds
+    # AIAgent directly and previously dropped it — #61184).
+    disabled_toolsets_list = _disabled_toolsets_from_config(cfg)
+
     # Ensure MCP tools are discovered before building the agent.  Oneshot
     # bypasses cli.py's _prepare_agent_startup MCP background path and
     # HermesCLI._init_agent's wait — it builds AIAgent directly here, so the
@@ -497,6 +525,7 @@ def _run_agent(
             api_mode=runtime.get("api_mode"),
             model=effective_model,
             enabled_toolsets=toolsets_list,
+            disabled_toolsets=disabled_toolsets_list,
             quiet_mode=True,
             platform="cli",
             session_db=session_db,

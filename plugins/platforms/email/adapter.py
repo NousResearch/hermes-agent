@@ -1211,6 +1211,13 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an email reply to the given address."""
         try:
+            from tools.approval import request_outbound_approval
+            approval = request_outbound_approval(
+                "email", chat_id, content,
+                approval_callback=(metadata or {}).get("approval_callback"),
+            )
+            if not approval.get("approved"):
+                return SendResult(success=False, error=approval.get("message") or "Email send requires approval")
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None, self._send_email, chat_id, content, reply_to
@@ -1515,6 +1522,10 @@ async def _standalone_send(
     from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
+    from tools.approval import request_outbound_approval
+    approval = request_outbound_approval("email", chat_id, message)
+    if not approval.get("approved"):
+        return {"error": approval.get("message") or "Email send requires explicit approval"}
     address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
     password = _get_secret("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")

@@ -815,7 +815,11 @@ class TestSendEmailStandalone(unittest.TestCase):
         async def _send_email(extra, chat_id, message):
             return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
 
-        with patch("smtplib.SMTP") as mock_smtp:
+        # Outbound mail needs one explicit human approval per send; this test
+        # is about the SMTP path, so stand in for the approver.
+        approved = {"approved": True, "message": ""}
+        with patch("tools.approval.request_outbound_approval", return_value=approved), \
+             patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
@@ -832,6 +836,29 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    })
+    def test_send_email_tool_blocked_without_human_approval(self):
+        """With no interactive approver present, nothing may leave the machine."""
+        import asyncio
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+
+        blocked = {"approved": False, "message": "BLOCKED: outbound email delivery requires explicit human approval. Nothing was sent."}
+        with patch("tools.approval.request_outbound_approval", return_value=blocked), \
+             patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(
+                _email_send(SimpleNamespace(token=None, api_key=None, extra={"address": "hermes@test.com", "smtp_host": "smtp.test.com"}), "user@test.com", "Hello")
+            )
+
+            self.assertIn("error", result)
+            self.assertIn("Nothing was sent", result["error"])
+            mock_smtp.assert_not_called()
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

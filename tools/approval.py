@@ -31,6 +31,7 @@ from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+
 # Freeze YOLO mode at module import time. Reading os.environ on every call
 # would allow any skill running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
@@ -183,7 +184,6 @@ def _observe_smart_approval_verdict(payload: dict | None, verdict: str) -> None:
         choice=f"smart_{verdict}",
         decided_by="aux_llm",
     )
-
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -1575,7 +1575,6 @@ _MAX_SEPARATOR_FREE_COMMAND_CHARS = 4_096
 _MAX_DETECTION_SEGMENTS = 25_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
-
 
 
 def _command_parser_limit_exceeded(command: str) -> bool:
@@ -3171,7 +3170,6 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
     return False
 
 
-
 # =========================================================================
 # Config persistence for permanent allowlist
 # =========================================================================
@@ -3769,6 +3767,9 @@ def _run_approval_gate(
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
+    honor_yolo: bool = True,
+    allow_session: bool = True,
+    allow_permanent: bool = True,
 ) -> dict:
     """Shared human-approval gate for a flagged action (command or tool).
 
@@ -3807,6 +3808,12 @@ def _run_approval_gate(
             plugin-flagged action never runs ungated without a human.
         no_human_block_message: Message returned when
             ``fail_closed_when_no_human`` blocks.
+        honor_yolo: Whether a yolo/session-yolo setting may bypass this gate.
+            Safety-critical outbound actions set this to ``False``.
+        allow_session: Whether the approval UI may grant a session-wide
+            approval. When false, the approval is one operation only.
+        allow_permanent: Whether the approval UI may grant a permanent
+            approval. When false, the approval is one operation only.
 
     Returns:
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
@@ -3815,7 +3822,7 @@ def _run_approval_gate(
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    if honor_yolo and (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()):
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
@@ -3930,8 +3937,8 @@ def _run_approval_gate(
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
-                "allow_permanent": True,
-                "allow_session": True,
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
@@ -3976,9 +3983,9 @@ def _run_approval_gate(
                     "deny_reason": deny_reason,
                 }
 
-            if choice == "session":
+            if choice == "session" and allow_session:
                 approve_session(session_key, pattern_key)
-            elif choice == "always":
+            elif choice == "always" and allow_permanent:
                 approve_session(session_key, pattern_key)
                 approve_permanent(pattern_key)
                 save_permanent_allowlist(_permanent_approved)
@@ -4020,8 +4027,13 @@ def _run_approval_gate(
         session_key=session_key,
         surface="cli",
     )
-    choice = prompt_dangerous_approval(display_target, description,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        display_target,
+        description,
+        approval_callback=approval_callback,
+        allow_permanent=allow_permanent,
+        allow_session=allow_session,
+    )
     _fire_approval_hook(
         "post_approval_response",
         command=display_target,
@@ -4062,9 +4074,9 @@ def _run_approval_gate(
             "user_consent": False,
         }
 
-    if choice == "session":
+    if choice == "session" and allow_session:
         approve_session(session_key, pattern_key)
-    elif choice == "always":
+    elif choice == "always" and allow_permanent:
         approve_session(session_key, pattern_key)
         approve_permanent(pattern_key)
         save_permanent_allowlist(_permanent_approved)
@@ -4254,6 +4266,97 @@ def request_tool_approval(
             "but no interactive user or gateway is present to approve it. "
             "A plugin flagged this action for human confirmation."
         ),
+    )
+
+
+def request_outbound_approval(
+    channel: str,
+    target: str,
+    content: str = "",
+    *,
+    approval_callback=None,
+) -> dict:
+    """Require one explicit human approval before an outbound delivery.
+
+    This is deliberately stricter than the normal dangerous-command gate:
+    outbound communication must never be unlocked by ``--yolo``, an
+    ``approvals.mode: off`` setting, or a previously-approved session/pattern.
+    The approval is one-operation-only, and unattended/cron/single-query
+    contexts fail closed because there is no human who can consent to the
+    exact recipient and content.
+
+    The caller should invoke this immediately before it performs the network
+    send and must stop when ``approved`` is false.
+    """
+    channel_name = str(channel or "message").strip().lower() or "message"
+    target_text = str(target or "").strip() or "(unspecified recipient)"
+    # Keep the approval card useful without dumping an arbitrarily large body
+    # into a chat or log. The actual message is still sent unchanged after a
+    # successful one-shot approval.
+    content_text = str(content or "")
+    preview = content_text[:2000]
+    display = f"{channel_name} to {target_text}\n\n{preview}"
+    description = (
+        f"send an outbound {channel_name} message to {target_text}; "
+        "the recipient and message must be reviewed by you"
+    )
+
+    # A fresh key prevents old session/permanent approvals from authorizing a
+    # new outbound message. No persistence options are offered below either.
+    pattern_key = f"outbound:{channel_name}:{uuid.uuid4().hex}"
+
+    # These execution modes have no user present to approve this exact send;
+    # even an operator-wide "approve" mode for ordinary command guards must
+    # not silently authorize outbound communication.
+    if (
+        _is_cron_approval_context()
+        or _is_single_query_approval_context()
+        or _is_unattended_platform_approval_context()
+    ):
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: outbound {channel_name} delivery to {target_text} "
+                "requires explicit human approval, but this session has no "
+                "interactive approver. Nothing was sent."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "no_human",
+            "user_consent": False,
+        }
+
+    return _run_approval_gate(
+        pattern_key=pattern_key,
+        description=description,
+        display_target=display,
+        approval_callback=approval_callback,
+        cron_deny_message=(
+            f"BLOCKED: outbound {channel_name} delivery requires explicit "
+            "human approval; cron jobs have no user present. Nothing was sent."
+        ),
+        single_query_deny_message=(
+            f"BLOCKED: outbound {channel_name} delivery requires explicit "
+            "human approval; single-query mode has no user present. Nothing "
+            "was sent."
+        ),
+        unattended_deny_message=(
+            f"BLOCKED: outbound {channel_name} delivery requires explicit "
+            "human approval; this unattended session has no user present. "
+            "Nothing was sent."
+        ),
+        autoapprove_log_prefix=(
+            f"outbound {channel_name} delivery approval"
+        ),
+        fail_closed_when_no_human=True,
+        no_human_block_message=(
+            f"BLOCKED: outbound {channel_name} delivery to {target_text} "
+            "requires explicit human approval, but no interactive user or "
+            "gateway is present. Nothing was sent."
+        ),
+        honor_yolo=False,
+        allow_session=False,
+        allow_permanent=False,
     )
 
 

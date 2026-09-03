@@ -168,7 +168,7 @@ class TestManualRunPromptConsumption:
             "manual_run_prompt": "focus on EU numbers",
         }
         with patch.object(scheduler, "_run_one_job_body", side_effect=fake_body), patch.object(
-            scheduler, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None)
+            scheduler, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None, None)
         ):
             assert scheduler.run_one_job(job) is True
         assert captured["extra_prompt"] == "focus on EU numbers"
@@ -188,7 +188,7 @@ class TestManualRunPromptConsumption:
             "manual_run_prompt": "stale stamp",
         }
         with patch.object(scheduler, "_run_one_job_body", side_effect=fake_body), patch.object(
-            scheduler, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None)
+            scheduler, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None, None)
         ):
             scheduler.run_one_job(job, extra_prompt="direct context")
         assert captured["extra_prompt"] == "direct context"
@@ -205,7 +205,7 @@ class TestManualRunPromptConsumption:
 
         job = {"id": "j1", "manual_run_prompt": "orphaned"}
         with patch.object(scheduler, "_run_one_job_body", side_effect=fake_body), patch.object(
-            scheduler, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None)
+            scheduler, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None, None)
         ):
             scheduler.run_one_job(job)
         assert captured["extra_prompt"] is None

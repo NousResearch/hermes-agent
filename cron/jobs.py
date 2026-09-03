@@ -375,6 +375,17 @@ def _jobs_lock():
             _jobs_lock_state.load_stamp = None
 
 
+class FireFenceUnavailableError(Exception):
+    """The per-job fire fence could not be acquired within its timeout.
+
+    Raised instead of returning a loss verdict: fence contention proves
+    nothing about claim ownership (takeovers serialize through the same
+    fence), so callers must treat this as uncertainty — bounded-grace
+    retry for heartbeats, skip-and-keep-outcome for terminal writes —
+    never as "the fire claim was lost".
+    """
+
+
 @contextlib.contextmanager
 def _fire_job_lock(job_id: str):
     """Serialize one job's owner mutations and external side effects.
@@ -3788,7 +3799,20 @@ def _sweep_completed_oneshots(
 def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
-            return False
+            # Fail loud, not as a loss: a busy fence cannot decide ownership.
+            # Every claim takeover and terminal revocation serializes through
+            # this same fence (claim_job_for_fire / mark_job_run), so "could
+            # not acquire within the timeout" must never be read as "the
+            # claim changed hands" — that conflation demoted delivered,
+            # successful runs to errors whenever a slow delivery held the
+            # fence past the lock timeout (t_0ce0b31e). Callers treat the
+            # raised error as uncertainty (bounded grace), never as a loss
+            # verdict. A same-thread caller already holding the fence
+            # re-enters transparently via the held-lock short-circuit above.
+            raise FireFenceUnavailableError(
+                f"Fire fence for job {job_id} is held by another worker; "
+                "fire-claim ownership could not be confirmed"
+            )
         return _heartbeat_fire_claim_locked(
             job_id,
             expected_owner=expected_owner,

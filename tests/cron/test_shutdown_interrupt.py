@@ -412,7 +412,7 @@ class TestCombinedCancelEvent:
         with patch.object(
             sched,
             "_run_with_fire_claim_heartbeat",
-            side_effect=lambda job_arg, run: run(threading.Event()),
+            side_effect=lambda job_arg, run: run(threading.Event(), threading.Event()),
         ), patch.object(sched, "_run_one_job_body", return_value=True) as body:
             assert sched.run_one_job(job, cancel_event=external) is True
 

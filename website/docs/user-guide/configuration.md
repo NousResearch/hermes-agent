@@ -1730,6 +1730,19 @@ agent:
 
 **Cost note:** both providers bill fast requests at a multiplier on standard rates (Anthropic: $10 / $50 per MTok in/out on Opus 4.8 and Opus 5), stacking with prompt-cache pricing. `auto`/`cold` bound that premium to the window only. Fast params are only sent to the first-party endpoint that supports them (`api.openai.com` / Codex subscription, `api.anthropic.com`, `api.x.ai`); OpenRouter, Nous Portal, Copilot, Azure, Bedrock, and custom `base_url` routes never receive them in any mode. Only the per-request parameter changes between requests — the system prompt, tools, and messages stay byte-identical, so the prompt cache survives the window boundary.
 
+## Text Verbosity (GPT-5+)
+
+Control the verbosity of text output from GPT-5 and later models. This injects the `text.verbosity` parameter into the OpenAI Responses API, which instructs the model to adjust its output length.
+
+```yaml
+agent:
+  text_verbosity: ""   # empty = no injection (default). Options: low, medium, high
+```
+
+When unset (default), no `text` parameter is sent and the model uses its own default verbosity. Setting `"low"` produces noticeably shorter responses - useful for agent workflows where concise output reduces token overhead.
+
+Only applies to GPT-5+ models on the `codex_responses` transport. Other models (Claude, Grok, Gemini) ignore this setting silently - no errors, no injection.
+
 ## Tool-Use Enforcement
 
 Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.

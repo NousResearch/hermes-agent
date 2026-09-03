@@ -968,6 +968,7 @@ def init_agent(
     # keep it in sync with the active provider.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.service_tier = service_tier
+    agent.text_verbosity = ""
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
@@ -2454,6 +2455,14 @@ def init_agent(
                     file=sys.stderr,
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
+
+    # Read OpenAI Responses API text verbosity from config.
+    # Empty/unset = no injection (provider default). Valid: "low", "medium", "high".
+    _config_text_verbosity = str(
+        _agent_section.get("text_verbosity", "") or ""
+    ).strip()
+    if _config_text_verbosity:
+        agent.text_verbosity = _config_text_verbosity
 
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):

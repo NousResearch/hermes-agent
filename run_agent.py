@@ -6399,6 +6399,13 @@ class AIAgent:
 
         self.api_key = api_key.strip()
         self.base_url = base_url.strip().rstrip("/")
+        # LM Studio's UI and setup flow persist the bare http://127.0.0.1:1234
+        # without the /v1 suffix.  The OpenAI SDK appends /chat/completions,
+        # producing http://127.0.0.1:1234/chat/completions — which LM Studio
+        # answers with HTTP 200 + JSON error body (EmptyStreamError).  Ensure
+        # /v1 is present so the SDK routes to the correct endpoint (#98678).
+        if (self.provider or "").strip().lower() == "lmstudio" and not self.base_url.endswith("/v1"):
+            self.base_url = self.base_url + "/v1"
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
 

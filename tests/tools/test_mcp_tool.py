@@ -1335,6 +1335,75 @@ class TestSanitizeError:
 class TestHTTPConfig:
     """Tests for HTTP transport detection and handling."""
 
+    def test_headers_from_env_resolve_without_storing_values(self, monkeypatch):
+        from tools.mcp_tool import _resolve_http_headers
+
+        monkeypatch.setenv("MIA_FEDERATION_SECRET", "federation-value")
+        monkeypatch.setenv("MIA_BROKER_PRINCIPAL_KEY", "principal-value")
+        config = {
+            "headers": {"X-Static": "static-value"},
+            "headers_from_env": {
+                "X-Mia-Federation-Secret": "MIA_FEDERATION_SECRET",
+                "X-Mia-Broker-Principal-Key": "MIA_BROKER_PRINCIPAL_KEY",
+            },
+        }
+
+        assert _resolve_http_headers("merovingian", config) == {
+            "X-Static": "static-value",
+            "X-Mia-Federation-Secret": "federation-value",
+            "X-Mia-Broker-Principal-Key": "principal-value",
+        }
+        assert "federation-value" not in repr(config)
+        assert "principal-value" not in repr(config)
+
+    def test_headers_from_env_fail_closed_when_secret_is_missing(self, monkeypatch):
+        from tools.mcp_tool import _resolve_http_headers
+
+        monkeypatch.delenv("MISSING_MCP_SECRET", raising=False)
+        with pytest.raises(ValueError, match="MISSING_MCP_SECRET.*not set"):
+            _resolve_http_headers(
+                "merovingian",
+                {"headers_from_env": {"Authorization": "MISSING_MCP_SECRET"}},
+            )
+
+    def test_headers_from_env_reject_case_insensitive_collision(self, monkeypatch):
+        from tools.mcp_tool import _resolve_http_headers
+
+        monkeypatch.setenv("MCP_AUTH", "secret")
+        with pytest.raises(ValueError, match="configured more than once"):
+            _resolve_http_headers(
+                "merovingian",
+                {
+                    "headers": {"Authorization": "literal"},
+                    "headers_from_env": {"authorization": "MCP_AUTH"},
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "mapping",
+        [
+            [],
+            {"Bad Header": "MCP_SECRET"},
+            {"Authorization": "bad-env-name"},
+        ],
+    )
+    def test_headers_from_env_reject_malformed_config(self, mapping, monkeypatch):
+        from tools.mcp_tool import _resolve_http_headers
+
+        monkeypatch.setenv("MCP_SECRET", "secret")
+        with pytest.raises(ValueError, match="headers_from_env"):
+            _resolve_http_headers("merovingian", {"headers_from_env": mapping})
+
+    def test_headers_from_env_reject_header_injection(self, monkeypatch):
+        from tools.mcp_tool import _resolve_http_headers
+
+        monkeypatch.setenv("MCP_SECRET", "secret\r\nX-Injected: true")
+        with pytest.raises(ValueError, match="unsafe characters"):
+            _resolve_http_headers(
+                "merovingian",
+                {"headers_from_env": {"Authorization": "MCP_SECRET"}},
+            )
+
     def test_is_http_with_url(self):
         from tools.mcp_tool import MCPServerTask
         server = MCPServerTask("remote")
@@ -1495,12 +1564,15 @@ class TestReconnection:
 
         asyncio.run(_test())
 
-    def test_preflight_probe_runs_on_initial_http_connect(self):
-        """The content-type preflight probe fires on the first HTTP connect."""
+    def test_preflight_probe_runs_with_environment_headers_on_initial_http_connect(
+        self, monkeypatch
+    ):
+        """Preflight uses the same environment-backed auth as the transport."""
         from tools.mcp_tool import MCPServerTask
 
         target_server = None
         probe = AsyncMock()
+        monkeypatch.setenv("MCP_PREFLIGHT_SECRET", "preflight-secret")
 
         original_run_http = MCPServerTask._run_http
 
@@ -1522,10 +1594,50 @@ class TestReconnection:
             with patch.object(MCPServerTask, "_run_http", patched_run_http), \
                  patch.object(MCPServerTask, "_preflight_content_type", probe), \
                  patch("asyncio.sleep", new_callable=AsyncMock):
-                await server.run({"url": "https://example.com/mcp"})
+                config = {
+                    "url": "https://example.com/mcp",
+                    "headers_from_env": {
+                        "Authorization": "MCP_PREFLIGHT_SECRET",
+                    },
+                }
+                await server.run(config)
 
             # Probe ran exactly once on the initial (pre-_ready) connect.
             assert probe.await_count == 1
+            assert probe.await_args.kwargs["headers"] == {
+                "Authorization": "preflight-secret",
+            }
+            assert "preflight-secret" not in repr(config)
+
+        asyncio.run(_test())
+
+    def test_missing_environment_header_stops_before_network(self, monkeypatch):
+        """A missing secret blocks both preflight and the real transport."""
+        from tools.mcp_tool import MCPServerTask
+
+        monkeypatch.delenv("MISSING_MCP_STARTUP_SECRET", raising=False)
+        probe = AsyncMock()
+        transport = AsyncMock()
+
+        async def _test():
+            server = MCPServerTask("http_srv")
+            config = {
+                "url": "https://example.com/mcp",
+                "headers_from_env": {
+                    "Authorization": "MISSING_MCP_STARTUP_SECRET",
+                },
+            }
+
+            with patch.object(MCPServerTask, "_preflight_content_type", probe), \
+                 patch.object(MCPServerTask, "_run_http", transport):
+                with pytest.raises(
+                    ValueError,
+                    match="MISSING_MCP_STARTUP_SECRET.*not set",
+                ):
+                    await server.run(config)
+
+            assert probe.await_count == 0
+            assert transport.await_count == 0
 
         asyncio.run(_test())
 

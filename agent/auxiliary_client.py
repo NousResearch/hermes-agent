@@ -8651,6 +8651,14 @@ def _get_cached_client(
         is_vision=is_vision,
         task=task,
     )
+    if isinstance(client, _AuxProbeClientStub):
+        # Probe stubs must never enter the cache here. _store_cached_client()
+        # already refuses them, but this function writes to _client_cache
+        # directly and so bypasses that guard. check_fns (tool gating) resolve
+        # through this path inside aux_probe_mode(), and the cache key does not
+        # distinguish probe from runtime -- so a stored stub is handed to the
+        # next real caller sharing the key, which dies on attribute access.
+        return client, model or default_model
     if client is not None:
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.

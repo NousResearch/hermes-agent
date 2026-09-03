@@ -188,6 +188,157 @@ class TestPrefetchProviderModelsParallel:
             _prefetch_provider_models_parallel([])
         fetch.assert_not_called()
 
+    def test_skips_ttl_expired_entries_the_serial_path_can_still_serve(self):
+        """A TTL-expired entry inside the stale-serve window is not prefetched.
+
+        ``cached_provider_model_ids`` returns such an entry from disk right
+        away and revalidates on a background thread, so blocking the picker
+        on a parallel fetch buys nothing. ``_PROVIDER_MODELS_STALE_SERVE_MAX``
+        is far longer than ``_PROVIDER_MODELS_CACHE_TTL``, so this is the
+        state every picker open a TTL after the previous one lands in.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        expired = time.time() - models_mod._PROVIDER_MODELS_CACHE_TTL - 60
+        cache = {"openrouter": {"fp": "fp", "at": expired, "models": ["m1"]}}
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids") as fetch:
+            _prefetch_provider_models_parallel(["openrouter"])
+
+        fetch.assert_not_called()
+
+    def test_fetches_entries_past_the_stale_serve_window(self):
+        """Past ``_PROVIDER_MODELS_STALE_SERVE_MAX`` the serial call blocks.
+
+        Nothing can be served from disk any more, so the parallel prefetch is
+        the cheaper place to pay for it.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        dead = time.time() - models_mod._PROVIDER_MODELS_STALE_SERVE_MAX - 60
+        cache = {"openrouter": {"fp": "fp", "at": dead, "models": ["m1"]}}
+        fetched = []
+
+        def mock_fetch(slug, force_refresh=False):
+            fetched.append(slug)
+            return ["m1"]
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
+             patch("hermes_cli.models.update_provider_cache_entry"):
+            _prefetch_provider_models_parallel(["openrouter"])
+
+        assert fetched == ["openrouter"]
+
+    def test_fetches_when_credentials_rotated_inside_the_window(self):
+        """A fingerprint mismatch is fetched however recent the entry is.
+
+        The cached catalog belongs to the previous credential; serving it
+        would show the old account's models after a key swap.
+        """
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        cache = {"openrouter": {"fp": "old_fp", "at": time.time(), "models": ["m1"]}}
+        fetched = []
+
+        def mock_fetch(slug, force_refresh=False):
+            fetched.append(slug)
+            return ["m2"]
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="new_fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
+             patch("hermes_cli.models.update_provider_cache_entry"):
+            _prefetch_provider_models_parallel(["openrouter"])
+
+        assert fetched == ["openrouter"]
+
+    def test_fetches_entries_cached_as_empty(self):
+        """An empty cached catalog is not servable — prefetch it."""
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        cache = {"openrouter": {"fp": "fp", "at": time.time(), "models": []}}
+        fetched = []
+
+        def mock_fetch(slug, force_refresh=False):
+            fetched.append(slug)
+            return ["m1"]
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
+             patch("hermes_cli.models.update_provider_cache_entry"):
+            _prefetch_provider_models_parallel(["openrouter"])
+
+        assert fetched == ["openrouter"]
+
+    def test_bare_ollama_reads_and_warms_its_own_cache_row(self):
+        """The gate must key on the row the serial call actually reads.
+
+        ``normalize_provider("ollama")`` is ``"custom"``, but
+        ``cached_provider_model_ids`` deliberately keeps a bare ``ollama`` as
+        its own key. Gating on ``custom`` answers about a different row, and
+        then warms that row instead of the one nobody looked at.
+        """
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        cache = {"ollama": {"fp": "fp", "at": time.time(), "models": ["llama3"]}}
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids") as fetch:
+            _prefetch_provider_models_parallel(["ollama"])
+
+        fetch.assert_not_called()
+
+    def test_empty_ollama_catalog_inside_its_native_ttl_is_not_prefetched(self):
+        """A reachable-but-empty local catalog is authoritative for that TTL.
+
+        ``cached_provider_model_ids`` returns the empty list with no round
+        trip, so prefetching it is redundant work the picker waits on.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        recent = time.time() - models_mod._OLLAMA_LOCAL_MODELS_CACHE_TTL / 2
+        cache = {"ollama": {"fp": "fp", "at": recent, "models": []}}
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids") as fetch:
+            _prefetch_provider_models_parallel(["ollama"])
+
+        fetch.assert_not_called()
+
+    def test_empty_ollama_catalog_past_its_native_ttl_is_prefetched(self):
+        """Past the native TTL an empty row gets no stale-serve window.
+
+        The serial call re-probes, so newly pulled models become visible —
+        and that re-probe blocks, which is exactly what prefetch is for.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.model_switch import _prefetch_provider_models_parallel
+
+        expired = time.time() - models_mod._OLLAMA_LOCAL_MODELS_CACHE_TTL - 60
+        cache = {"ollama": {"fp": "fp", "at": expired, "models": []}}
+        fetched = []
+
+        def mock_fetch(slug, force_refresh=False):
+            fetched.append(slug)
+            return ["llama3"]
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
+            _prefetch_provider_models_parallel(["ollama"])
+
+        assert fetched == ["ollama"]
+
 
 # ---------------------------------------------------------------------------
 # Integration: prefetch is called from list_authenticated_providers

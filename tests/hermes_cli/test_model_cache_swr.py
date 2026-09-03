@@ -147,6 +147,105 @@ class TestProviderModelsSWR:
         assert saved["openrouter"]["models"] == ["fresh1", "fresh2"]
         assert "openrouter" not in mod._swr_refresh_inflight  # cleared on completion
 
+    def test_swr_refresh_holds_the_cache_write_lock(self):
+        """The refresh's read-modify-write runs under ``_cache_write_lock``.
+
+        One refresh thread is spawned per stale key, and the entries a single
+        picker open wrote all expire together, so several run at once. Each
+        reads the whole cache, edits one key and writes the whole file back;
+        unlocked, the last writer drops every entry the others just
+        refreshed. Asserting the lock is held at both ends of that window is
+        deterministic, unlike racing threads.
+        """
+        import hermes_cli.models as mod
+
+        held = {}
+
+        def fake_load():
+            held["at_load"] = mod._cache_write_lock.locked()
+            return {}
+
+        def fake_save(data):
+            held["at_save"] = mod._cache_write_lock.locked()
+
+        class InlineThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        with patch.object(mod.threading, "Thread", InlineThread), \
+             patch.object(mod, "provider_model_ids", return_value=["m1"]), \
+             patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+             patch.object(mod, "_load_provider_models_cache", side_effect=fake_load), \
+             patch.object(mod, "_save_provider_models_cache", side_effect=fake_save):
+            mod._spawn_swr_refresh("openrouter")
+
+        assert held == {"at_load": True, "at_save": True}
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(
+                lambda mod: mod.cached_provider_model_ids("openrouter"),
+                id="blocking-provider-fetch",
+            ),
+            pytest.param(
+                lambda mod: mod.cached_fetch_api_models(
+                    "k", "https://example.invalid/v1"
+                ),
+                id="blocking-custom-endpoint-fetch",
+            ),
+        ],
+    )
+    def test_blocking_live_fetch_persists_under_the_lock(self, call):
+        """The serial path's own persist must take the lock too.
+
+        These load the whole cache at function entry, spend seconds in a
+        /v1/models round-trip, then write it back. An SWR thread's locked
+        save can land inside that window, so saving the entry-time copy
+        unlocked resurrects what the thread had just replaced — undoing the
+        guarantee the lock above exists to provide.
+        """
+        import hermes_cli.models as mod
+
+        held = []
+
+        def fake_save(data):
+            held.append(mod._cache_write_lock.locked())
+
+        with patch.object(mod, "_load_provider_models_cache", return_value={}), \
+             patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+             patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
+             patch.object(mod, "provider_model_ids", return_value=["m1"]), \
+             patch.object(mod, "fetch_api_models", return_value=["m1"]), \
+             patch.object(mod, "_save_provider_models_cache", side_effect=fake_save):
+            call(mod)
+
+        assert held == [True]
+
+    def test_targeted_clear_deletes_under_the_lock(self):
+        """``clear_provider_models_cache(provider)`` writes too.
+
+        An unlocked delete saves a copy read before a concurrent refresh
+        landed, resurrecting the entry it just removed.
+        """
+        import hermes_cli.models as mod
+
+        held = []
+
+        def fake_save(data):
+            held.append(mod._cache_write_lock.locked())
+
+        cached = {"openrouter": {"fp": "fp", "at": time.time(), "models": ["m1"]}}
+
+        with patch.object(mod, "_load_provider_models_cache", return_value=cached), \
+             patch.object(mod, "_save_provider_models_cache", side_effect=fake_save):
+            mod.clear_provider_models_cache("openrouter")
+
+        assert held == [True]
+
 
 class TestCatalogSWR:
     def test_stale_disk_catalog_served_with_background_refresh(self, tmp_path, monkeypatch):

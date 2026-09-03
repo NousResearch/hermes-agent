@@ -4840,9 +4840,7 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
         try:
             entry = (refresh_fn or _default_refresh)()
             if entry:
-                cache = _load_provider_models_cache()
-                cache[cache_key] = entry
-                _save_provider_models_cache(cache)
+                _persist_cache_entry(cache_key, entry)
         except Exception:
             logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
@@ -4998,6 +4996,27 @@ def _save_provider_models_cache(data: dict) -> None:
         pass
 
 
+def _persist_cache_entry(cache_key: str, entry: dict) -> None:
+    """Write one entry into the shared cache file under ``_cache_write_lock``.
+
+    Every writer here does a read-modify-write on one JSON file, and the
+    interesting writers are concurrent: the parallel prefetch pool, one
+    stale-while-revalidate thread per expired key, and the blocking live
+    fetch on the serial picker path. They also load the cache *before* a
+    multi-second ``/v1/models`` round-trip, so a caller's in-memory copy is
+    routinely stale by the time it would be written back — saving it whole
+    would drop every entry that landed in between.
+
+    Re-reading inside the lock is what makes the write safe: the copy that
+    gets saved is always the one observed under the lock, so a writer can
+    only ever add its own key.
+    """
+    with _cache_write_lock:
+        cache = _load_provider_models_cache()
+        cache[cache_key] = entry
+        _save_provider_models_cache(cache)
+
+
 def update_provider_cache_entry(provider: str, models: list[str]) -> None:
     """Thread-safe single-entry update of the provider-models disk cache.
 
@@ -5011,14 +5030,10 @@ def update_provider_cache_entry(provider: str, models: list[str]) -> None:
         if not normalized or not models:
             return
         fp = _credential_fingerprint(normalized)
-        with _cache_write_lock:
-            cache = _load_provider_models_cache()
-            cache[normalized] = {
-                "fp": fp,
-                "at": time.time(),
-                "models": list(models),
-            }
-            _save_provider_models_cache(cache)
+        _persist_cache_entry(
+            normalized,
+            {"fp": fp, "at": time.time(), "models": list(models)},
+        )
     except Exception:
         pass
 
@@ -5064,12 +5079,9 @@ def cached_provider_model_ids(
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        cache[normalized] = {
-            "fp": fp,
-            "at": now,
-            "models": list(live),
-        }
-        _save_provider_models_cache(cache)
+        _persist_cache_entry(
+            normalized, {"fp": fp, "at": now, "models": list(live)}
+        )
         return list(live)
 
     if normalized == "ollama":
@@ -5081,8 +5093,7 @@ def cached_provider_model_ids(
         if _OLLAMA_LOCAL_PROBE_REACHABLE.get(probe_key) is True:
             # A reachable empty native catalog is authoritative for the short
             # native TTL; do not resurrect a stale disk catalog.
-            cache[normalized] = {"fp": fp, "at": now, "models": []}
-            _save_provider_models_cache(cache)
+            _persist_cache_entry(normalized, {"fp": fp, "at": now, "models": []})
             return []
 
         # A failed/non-native probe is not authoritative. Preserve a stale
@@ -5124,15 +5135,16 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
             if path.exists():
                 path.unlink()
             return
-        cache = _load_provider_models_cache()
         requested = str(provider or "").strip().lower()
         normalized = requested if requested == "ollama" else (normalize_provider(provider) or provider or "")
-        changed = False
-        if normalized in cache:
-            del cache[normalized]
-            changed = True
-        if changed:
-            _save_provider_models_cache(cache)
+        # Same lock as the writers: an unlocked delete would save a copy read
+        # before a concurrent refresh landed, resurrecting the entry it just
+        # removed and dropping the refreshed ones.
+        with _cache_write_lock:
+            cache = _load_provider_models_cache()
+            if normalized in cache:
+                del cache[normalized]
+                _save_provider_models_cache(cache)
     except Exception:
         pass
 
@@ -6891,8 +6903,9 @@ def cached_fetch_api_models(
         api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
     )
     if live:
-        cache[cache_key] = {"fp": fp, "at": now, "models": list(live)}
-        _save_provider_models_cache(cache)
+        _persist_cache_entry(
+            cache_key, {"fp": fp, "at": now, "models": list(live)}
+        )
         return list(live)
 
     # Live fetch returned nothing (offline endpoint, timeout, auth hiccup).

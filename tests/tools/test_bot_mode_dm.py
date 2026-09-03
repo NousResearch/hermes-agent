@@ -86,6 +86,30 @@ def test_injects_only_into_bot_chat_on_managed_install(tmp_path):
     assert len(agent.tools) == 1
 
 
+def test_restores_allowlist_when_schema_survives_surface_refresh(tmp_path):
+    """#96105: success must restore the executor allowlist on the
+    schema-present branch.
+
+    A long-lived Bot Chat whose tool surface is reconstructed can keep the
+    schema while the executor's allowlist is rebuilt empty. The injector then
+    returned True while dispatch would reject every ``message_agent`` call —
+    advertised but non-dispatchable. Restore-on-success contract: whenever
+    ``ensure_message_agent_tool()`` returns True, ``MESSAGE_AGENT_TOOL_NAME``
+    is in ``valid_tool_names`` whenever that attribute is a set.
+    """
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert len(agent.tools) == 1
+
+    # capability refresh: schema survives, executor allowlist rebuilt empty
+    agent.valid_tool_names = set()
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME in agent.valid_tool_names
+    # byte-stable: no duplicate schema was appended
+    assert len(agent.tools) == 1
+
+
 @pytest.mark.parametrize(
     "title",
     ["", "My research chat", "Group: room-abc123", "handoff-12ab34cd"],

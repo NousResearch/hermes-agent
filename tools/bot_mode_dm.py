@@ -146,6 +146,16 @@ def ensure_message_agent_tool(agent: Any) -> bool:
                     isinstance(tool, dict)
                     and tool.get("function", {}).get("name") == MESSAGE_AGENT_TOOL_NAME
                 ):
+                    # Restore-on-success contract: a successful injection
+                    # must leave the executor allowlist consistent even when
+                    # the schema already exists — a long-lived Bot Chat whose
+                    # tool surface was reconstructed can keep the schema while
+                    # valid_tool_names was rebuilt without it, and returning
+                    # True then would advertise a non-dispatchable tool
+                    # (#96105).
+                    valid = getattr(agent, "valid_tool_names", None)
+                    if isinstance(valid, set):
+                        valid.add(MESSAGE_AGENT_TOOL_NAME)
                     return True
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 

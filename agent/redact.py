@@ -461,9 +461,23 @@ _JWT_RE = re.compile(
     r"(?:\.[A-Za-z0-9_=-]{4,}){0,2}"   # Optional payload and/or signature
 )
 
-# E.164 phone numbers: +<country><number>, 7-15 digits
-# Negative lookahead prevents matching hex strings or identifiers
+# E.164 phone numbers: +<country><number>, 7-15 digits.
+# Negative lookahead prevents matching hex strings or identifiers.
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+
+# WhatsApp Cloud wa_id values are bare 10-15 digit E.164-like sequences.
+# Keep this separate from the established +E.164 matcher so code-shaped
+# advisory text can retain ordinary IDs, epochs, and numeric examples.
+_WHATSAPP_BARE_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"([1-9]\d{9,14})"
+    r"(?![A-Za-z0-9])"
+)
+
+# Web/transport URLs whose path/query digits must stay intact. The bare
+# wa_id matcher otherwise rewrites numeric OAuth, magic-link, and
+# pre-signed URL values (issue #80076 review).
+_WEB_URL_SPAN_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s<>\"']+")
 
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
@@ -828,6 +842,20 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
+def _redact_bare_wa_id_outside_urls(text: str, repl) -> str:
+    """Mask bare Cloud wa_id values, leaving navigable URL bytes unchanged."""
+    if "://" not in text:
+        return _WHATSAPP_BARE_PHONE_RE.sub(repl, text)
+    parts = []
+    last = 0
+    for match in _WEB_URL_SPAN_RE.finditer(text):
+        parts.append(_WHATSAPP_BARE_PHONE_RE.sub(repl, text[last:match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(_WHATSAPP_BARE_PHONE_RE.sub(repl, text[last:]))
+    return "".join(parts)
+
+
 def redact_sensitive_text(
     text: str,
     *,
@@ -1060,14 +1088,21 @@ def redact_sensitive_text(
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    # E.164 phone numbers (Signal, WhatsApp)
-    if "+" in text:
-        def _redact_phone(m):
-            phone = m.group(1)
-            if len(phone) <= 8:
-                return phone[:2] + "****" + phone[-2:]
-            return phone[:4] + "****" + phone[-4:]
-        text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+    # E.164 phone numbers (Signal and WhatsApp). These are unambiguous even in
+    # source-shaped text because the explicit '+' is part of the identifier.
+    def _redact_phone(m):
+        phone = m.group(1)
+        if len(phone) <= 8:
+            return phone[:2] + "****" + phone[-2:]
+        return phone[:4] + "****" + phone[-4:]
+    text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    # Bare Cloud wa_id values are intentionally excluded from source-shaped
+    # advisory text: a 10-15 digit run can be a line number, epoch, fixture ID,
+    # or other code-review evidence. File content still needs PII redaction;
+    # ``file_read=True`` is therefore an explicit exception to code_file=True.
+    if not code_file or file_read:
+        text = _redact_bare_wa_id_outside_urls(text, _redact_phone)
 
     return text
 

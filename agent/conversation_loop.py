@@ -8275,9 +8275,19 @@ def run_conversation(
                     _info = getattr(_compressor, "should_compress_info", None)
                     if _info is not None:
                         try:
-                            _block_reason = _info(_real_tokens)[1]
+                            _should_now, _block_reason = _info(_real_tokens)
                         except Exception:
-                            _block_reason = None
+                            _should_now, _block_reason = False, None
+                        if _should_now and not _block_reason:
+                            # The engine says compression SHOULD run, yet this
+                            # branch was taken — the per-turn attempt budget is
+                            # spent. Over threshold with no reclamation left is
+                            # exactly the silent-lockout case, so name it
+                            # instead of dropping the (True, None) on the floor
+                            # (#101889).
+                            _block_reason = (
+                                f"attempts_exhausted:{compression_attempts}"
+                            )
                     if _block_reason:
                         agent._warn_context_overflow_blocked(
                             _block_reason,

@@ -43,6 +43,7 @@ def _make_fake_mautrix():
 
     class EventType:
         ROOM_MESSAGE = "m.room.message"
+        ROOM_KEY = "m.room_key"
         REACTION = "m.reaction"
         ROOM_ENCRYPTED = "m.room.encrypted"
         ROOM_NAME = "m.room.name"
@@ -73,6 +74,7 @@ def _make_fake_mautrix():
         UNAVAILABLE = "unavailable"
 
     class TrustState:
+        BLACKLISTED = -1
         UNVERIFIED = 0
         VERIFIED = 1
 
@@ -300,6 +302,46 @@ class TestMatrixConfigLoading:
         assert home.chat_id == "!room123:example.org"
         assert home.name == "Bot Room"
 
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            (
+                ["@alice:example.org", " @bob:example.org ", 42],
+                {"@alice:example.org", "@bob:example.org"},
+            ),
+            ("@alice:example.org", set()),
+            (None, set()),
+        ],
+    )
+    def test_matrix_e2ee_key_delivery_retry_users_are_explicit(
+        self, configured, expected
+    ):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        extra = {
+            "homeserver": "https://matrix.example.org",
+            "user_id": "@bot:example.org",
+        }
+        if configured is not None:
+            extra["e2ee_key_delivery_retry_users"] = configured
+        adapter = MatrixAdapter(
+            PlatformConfig(enabled=True, token="syt_test_token", extra=extra)
+        )
+
+        assert adapter._e2ee_key_delivery_retry_user_ids == expected
+
+    def test_yaml_bridge_retains_structured_key_delivery_retry_users(self):
+        from plugins.platforms.matrix.adapter import _apply_yaml_config
+
+        retry_users = ["@alice:example.org"]
+
+        assert _apply_yaml_config(
+            {},
+            {"e2ee_key_delivery_retry_users": retry_users},
+        ) == {
+            "e2ee_key_delivery_retry_users": retry_users,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Adapter helpers
@@ -318,6 +360,271 @@ def _make_adapter():
     )
     adapter = MatrixAdapter(config)
     return adapter
+
+
+class TestMatrixE2EEKeyDeliveryRetry:
+    def setup_method(self):
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        self.adapter = MatrixAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="syt_test_token",
+                extra={
+                    "homeserver": "https://matrix.example.org",
+                    "user_id": "@bot:example.org",
+                    "e2ee_key_delivery_retry_users": ["@alice:example.org"],
+                },
+            )
+        )
+        self.adapter._encryption = True
+        self.adapter._joined_rooms = {"!room:example.org"}
+        self.client = MagicMock(
+            spec_set=[
+                "mxid",
+                "device_id",
+                "get_joined_members",
+                "send_message_event",
+                "crypto",
+            ]
+        )
+        self.client.mxid = "@bot:example.org"
+        self.client.device_id = "BOTDEVICE"
+        self.client.get_joined_members = AsyncMock(
+            return_value={
+                "@bot:example.org": MagicMock(),
+                "@alice:example.org": MagicMock(),
+            }
+        )
+        self.client.send_message_event = AsyncMock(return_value="$event123")
+        self.adapter._client = self.client
+        self.crypto_state = MagicMock(spec_set=["is_encrypted"])
+        self.crypto_state.is_encrypted = AsyncMock(return_value=True)
+        self.olm = MagicMock(
+            spec_set=[
+                "client",
+                "state_store",
+                "send_keys_min_trust",
+                "resolve_trust",
+                "send_encrypted_to_device",
+                "crypto_store",
+            ]
+        )
+        self.olm.client = self.client
+        self.olm.state_store = self.crypto_state
+        self.olm.send_keys_min_trust = 0
+        self.olm.resolve_trust = AsyncMock(return_value=0)
+        self.olm.send_encrypted_to_device = AsyncMock()
+        self.olm.crypto_store = MagicMock(
+            spec_set=["get_devices", "get_outbound_group_session"]
+        )
+        self.client.crypto = self.olm
+        self.device = MagicMock(
+            spec_set=[
+                "user_id",
+                "device_id",
+                "identity_key",
+                "signing_key",
+                "trust",
+                "deleted",
+            ]
+        )
+        self.device.user_id = "@alice:example.org"
+        self.device.device_id = "ALICEDEVICE"
+        self.device.identity_key = "alice-identity-key"
+        self.device.signing_key = "alice-signing-key"
+        self.device.trust = 0
+        self.device.deleted = False
+        self.olm.crypto_store.get_devices = AsyncMock(
+            return_value={"ALICEDEVICE": self.device}
+        )
+        self.session = MagicMock(
+            spec_set=["id", "shared", "expired", "share_content"]
+        )
+        self.session.id = "current-session"
+        self.session.shared = True
+        self.session.expired = False
+        self.session.share_content = object()
+        self.olm.crypto_store.get_outbound_group_session = AsyncMock(
+            return_value=self.session
+        )
+
+    @pytest.mark.asyncio
+    async def test_current_key_is_retried_once_before_the_room_message(self):
+        from plugins.platforms.matrix.adapter import EventType
+
+        timeline = []
+
+        async def send_key(*_args):
+            timeline.append("room-key")
+
+        async def send_event(*_args):
+            timeline.append("room-message")
+            return "$event123"
+
+        self.olm.send_encrypted_to_device.side_effect = send_key
+        self.client.send_message_event.side_effect = send_event
+
+        first = await self.adapter.send("!room:example.org", "hello")
+        second = await self.adapter.send("!room:example.org", "again")
+
+        assert first.success is True
+        assert second.success is True
+        assert timeline == ["room-key", "room-message", "room-message"]
+        self.olm.send_encrypted_to_device.assert_awaited_once_with(
+            self.device,
+            EventType.ROOM_KEY,
+            self.session.share_content,
+        )
+        self.olm.resolve_trust.assert_awaited_once_with(self.device)
+        self.client.get_joined_members.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unavailable_target_retries_after_cooldown(self, monkeypatch):
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        monkeypatch.setattr(
+            matrix_mod,
+            "_MATRIX_KEY_DELIVERY_RETRY_COOLDOWN_SECONDS",
+            0,
+        )
+        self.olm.send_encrypted_to_device.side_effect = [
+            RuntimeError("no one-time key"),
+            None,
+        ]
+
+        first = await self.adapter._prepare_current_room_key_delivery("!room:example.org")
+        second = await self.adapter._prepare_current_room_key_delivery("!room:example.org")
+
+        assert first == 0
+        assert second == 1
+        assert self.olm.send_encrypted_to_device.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_unavailable_target_is_not_retried_on_every_message(self):
+        self.olm.send_encrypted_to_device.side_effect = RuntimeError(
+            "no one-time key"
+        )
+
+        first = await self.adapter._prepare_current_room_key_delivery("!room:example.org")
+        second = await self.adapter._prepare_current_room_key_delivery("!room:example.org")
+
+        assert first == 0
+        assert second == 0
+        self.olm.send_encrypted_to_device.assert_awaited_once()
+        self.client.get_joined_members.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_new_session_and_replaced_device_identity_are_retried(self):
+        assert await self.adapter._prepare_current_room_key_delivery("!room:example.org") == 1
+        assert await self.adapter._prepare_current_room_key_delivery("!room:example.org") == 0
+
+        self.device.identity_key = "replacement-identity-key"
+        assert await self.adapter._prepare_current_room_key_delivery("!room:example.org") == 1
+
+        self.session.id = "rotated-session"
+        assert await self.adapter._prepare_current_room_key_delivery("!room:example.org") == 1
+        assert self.olm.send_encrypted_to_device.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_unjoined_retry_user_does_not_receive_a_key(self):
+        self.client.get_joined_members.return_value = {
+            "@bot:example.org": MagicMock()
+        }
+
+        assert await self.adapter._prepare_current_room_key_delivery("!room:example.org") == 0
+        self.client.get_joined_members.assert_awaited_once()
+        self.olm.send_encrypted_to_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blacklisted_device_does_not_receive_a_key(self):
+        from plugins.platforms.matrix.adapter import TrustState
+
+        self.olm.resolve_trust.return_value = TrustState.BLACKLISTED
+
+        assert await self.adapter._prepare_current_room_key_delivery("!room:example.org") == 0
+        self.olm.send_encrypted_to_device.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_current_session_leaves_normal_send_to_mautrix(self):
+        self.olm.crypto_store.get_outbound_group_session.return_value = None
+
+        result = await self.adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        self.client.get_joined_members.assert_not_awaited()
+        self.olm.send_encrypted_to_device.assert_not_awaited()
+        self.client.send_message_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_preflight_failure_does_not_change_message_send_success(self):
+        self.crypto_state.is_encrypted.side_effect = RuntimeError(
+            "homeserver unavailable"
+        )
+
+        result = await self.adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        assert result.message_id == "$event123"
+        self.client.send_message_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_preflight_timeout_does_not_change_message_send_success(
+        self, monkeypatch
+    ):
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        never_release = asyncio.Event()
+
+        async def hang(*_args):
+            await never_release.wait()
+
+        self.olm.send_encrypted_to_device.side_effect = hang
+        monkeypatch.setattr(
+            matrix_mod,
+            "_MATRIX_KEY_DELIVERY_RETRY_TIMEOUT_SECONDS",
+            0.001,
+        )
+
+        result = await self.adapter.send("!room:example.org", "hello")
+
+        assert result.success is True
+        self.client.send_message_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_room_lock_binds_preflight_to_wrapped_send(self):
+        first_send_started = asyncio.Event()
+        release_first_send = asyncio.Event()
+        send_count = 0
+
+        async def send_event(*_args):
+            nonlocal send_count
+            send_count += 1
+            if send_count == 1:
+                first_send_started.set()
+                await release_first_send.wait()
+            return f"$event{send_count}"
+
+        self.adapter._prepare_current_room_key_delivery = AsyncMock(return_value=0)
+        self.client.send_message_event.side_effect = send_event
+
+        first = asyncio.create_task(
+            self.adapter.send("!room:example.org", "first")
+        )
+        await first_send_started.wait()
+        second = asyncio.create_task(
+            self.adapter.send("!room:example.org", "second")
+        )
+        await asyncio.sleep(0)
+
+        assert self.adapter._prepare_current_room_key_delivery.await_count == 1
+
+        release_first_send.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        assert first_result.success is True
+        assert second_result.success is True
+        assert self.adapter._prepare_current_room_key_delivery.await_count == 2
 
 
 # ---------------------------------------------------------------------------

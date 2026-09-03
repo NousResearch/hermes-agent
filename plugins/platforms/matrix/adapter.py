@@ -94,6 +94,7 @@ except ImportError:
 
     class _EventTypeStub:  # type: ignore[no-redef]
         ROOM_MESSAGE = "m.room.message"
+        ROOM_KEY = "m.room_key"
         REACTION = "m.reaction"
         ROOM_ENCRYPTED = "m.room.encrypted"
         ROOM_NAME = "m.room.name"
@@ -121,6 +122,7 @@ except ImportError:
     RoomCreatePreset = _RoomCreatePresetStub  # type: ignore[misc,assignment]
 
     class _TrustStateStub:  # type: ignore[no-redef]
+        BLACKLISTED = -1
         UNVERIFIED = 0
         VERIFIED = 1
 
@@ -143,6 +145,9 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
+_MATRIX_KEY_DELIVERY_RETRY_TIMEOUT_SECONDS = 5
+_MATRIX_KEY_DELIVERY_RETRY_COOLDOWN_SECONDS = 60
+_MatrixKeyTarget = tuple[str, str, str, str, str]
 
 
 def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
@@ -1387,6 +1392,19 @@ class MatrixAdapter(BasePlatformAdapter):
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
+        key_retry_users = config.extra.get("e2ee_key_delivery_retry_users", [])
+        self._e2ee_key_delivery_retry_user_ids: Set[str] = (
+            {
+                user_id.strip()
+                for user_id in key_retry_users
+                if isinstance(user_id, str) and user_id.strip()
+            }
+            if isinstance(key_retry_users, list)
+            else set()
+        )
+        self._e2ee_key_delivery_retry_locks: Dict[str, asyncio.Lock] = {}
+        # Infinity means this target needs no further retry for the session.
+        self._e2ee_key_delivery_retry_at: Dict[_MatrixKeyTarget, float] = {}
         self._allowed_room_ids: Set[str] = set(self._allowed_rooms)
         ignore_patterns_raw = os.getenv("MATRIX_IGNORE_USER_PATTERNS", "")
         self._ignored_user_patterns: list[re.Pattern[str]] = []
@@ -1399,6 +1417,134 @@ class MatrixAdapter(BasePlatformAdapter):
                     pattern,
                     exc,
                 )
+
+    async def _prepare_current_room_key_delivery(self, room_id: str) -> int:
+        """Retry the current Megolm key before the next encrypted room message.
+
+        mautrix 0.21 can mark the session shared after omitting a device with no
+        usable Olm session. This compatibility shim retries that same current
+        key for configured, joined users; it cannot recover earlier events.
+        """
+        if not self._e2ee_key_delivery_retry_user_ids or not self._encryption:
+            return 0
+        client = self._client
+        olm = getattr(client, "crypto", None) if client is not None else None
+        if olm is None or room_id not in self._joined_rooms:
+            return 0
+
+        typed_room_id = RoomID(room_id)
+        if not await olm.state_store.is_encrypted(typed_room_id):
+            return 0
+        session = await olm.crypto_store.get_outbound_group_session(typed_room_id)
+        if session is None or not session.shared or session.expired:
+            return 0
+
+        session_id = str(session.id)
+        self._e2ee_key_delivery_retry_at = {
+            target: retry_at
+            for target, retry_at in self._e2ee_key_delivery_retry_at.items()
+            if target[0] != room_id or target[1] == session_id
+        }
+
+        now = time.monotonic()
+        candidates: list[tuple[_MatrixKeyTarget, Any]] = []
+        for user_id in sorted(self._e2ee_key_delivery_retry_user_ids):
+            try:
+                devices = await olm.crypto_store.get_devices(UserID(user_id))
+            except Exception:
+                logger.debug(
+                    "Matrix: could not inspect room-key devices in %s",
+                    room_id,
+                    exc_info=True,
+                )
+                continue
+            for device_id, device in (devices or {}).items():
+                target = (
+                    room_id,
+                    session_id,
+                    user_id,
+                    str(device_id),
+                    str(getattr(device, "identity_key", "")),
+                )
+                if self._e2ee_key_delivery_retry_at.get(target, 0) > now:
+                    continue
+                if (
+                    user_id == str(getattr(client, "mxid", ""))
+                    and str(device_id) == str(getattr(client, "device_id", ""))
+                ) or getattr(device, "deleted", False):
+                    self._e2ee_key_delivery_retry_at[target] = float("inf")
+                    continue
+                self._e2ee_key_delivery_retry_at[target] = (
+                    now + _MATRIX_KEY_DELIVERY_RETRY_COOLDOWN_SECONDS
+                )
+                candidates.append((target, device))
+
+        if not candidates:
+            return 0
+
+        joined_user_ids = {
+            str(user_id) for user_id in await client.get_joined_members(typed_room_id)
+        }
+        if str(getattr(client, "mxid", "")) not in joined_user_ids:
+            return 0
+        delivered = 0
+        for target, device in candidates:
+            user_id = target[2]
+            if user_id not in joined_user_ids:
+                continue
+            trust = await olm.resolve_trust(device)
+            if trust == TrustState.BLACKLISTED or trust < olm.send_keys_min_trust:
+                continue
+            try:
+                await olm.send_encrypted_to_device(
+                    device,
+                    EventType.ROOM_KEY,
+                    session.share_content,
+                )
+            except Exception:
+                logger.debug(
+                    "Matrix: current room-key delivery remains pending in %s",
+                    room_id,
+                    exc_info=True,
+                )
+                continue
+            self._e2ee_key_delivery_retry_at[target] = float("inf")
+            delivered += 1
+
+        if delivered:
+            logger.info(
+                "Matrix: retried current room key in %s to %d configured device(s)",
+                room_id,
+                delivered,
+            )
+        return delivered
+
+    async def _send_room_message_event(
+        self,
+        room_id: str,
+        content: Dict[str, Any],
+    ) -> Any:
+        """Bind the current-key retry to the room-message send it precedes."""
+        if not self._e2ee_key_delivery_retry_user_ids or not self._encryption:
+            return await self._client.send_message_event(
+                RoomID(room_id), EventType.ROOM_MESSAGE, content
+            )
+        lock = self._e2ee_key_delivery_retry_locks.setdefault(room_id, asyncio.Lock())
+        async with lock:
+            try:
+                await asyncio.wait_for(
+                    self._prepare_current_room_key_delivery(room_id),
+                    timeout=_MATRIX_KEY_DELIVERY_RETRY_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.debug(
+                    "Matrix: room-key delivery retry failed in %s; continuing",
+                    room_id,
+                    exc_info=True,
+                )
+            return await self._client.send_message_event(
+                RoomID(room_id), EventType.ROOM_MESSAGE, content
+            )
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -2193,6 +2339,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if redaction_tasks:
             await asyncio.gather(*redaction_tasks, return_exceptions=True)
         self._reaction_redaction_tasks.clear()
+        self._e2ee_key_delivery_retry_at.clear()
 
         # Close the SQLite crypto store database.
         if hasattr(self, "_crypto_db") and self._crypto_db:
@@ -2233,11 +2380,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
             try:
                 event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
-                        msg_content,
-                    ),
+                    self._send_room_message_event(chat_id, msg_content),
                     timeout=45,
                 )
                 last_event_id = str(event_id)
@@ -2248,11 +2391,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     try:
                         await self._client.crypto.share_keys()
                         event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
-                                msg_content,
-                            ),
+                            self._send_room_message_event(chat_id, msg_content),
                             timeout=45,
                         )
                         last_event_id = str(event_id)
@@ -2311,6 +2450,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 "crypto_store_path": str(self._crypto_db_path),
                 "recovery_key_configured": bool(
                     _scoped_recovery_key().strip()
+                ),
+                "key_delivery_retry_user_count": len(
+                    self._e2ee_key_delivery_retry_user_ids
                 ),
             },
             "policy": {
@@ -2375,11 +2517,7 @@ class MatrixAdapter(BasePlatformAdapter):
         }
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
-                msg_content,
-            )
+            event_id = await self._send_room_message_event(chat_id, msg_content)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -2973,11 +3111,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(room_id),
-                EventType.ROOM_MESSAGE,
-                msg_content,
-            )
+            event_id = await self._send_room_message_event(room_id, msg_content)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -4576,11 +4710,7 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_content = self._build_text_message_content(text, msgtype=msgtype)
 
         try:
-            event_id = await self._client.send_message_event(
-                RoomID(chat_id),
-                EventType.ROOM_MESSAGE,
-                msg_content,
-            )
+            event_id = await self._send_room_message_event(chat_id, msg_content)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -5399,7 +5529,9 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    take precedence over YAML. The structured room-key retry user list cannot
+    flow through a scalar environment variable, so return it for the registry
+    bridge to retain in ``PlatformConfig.extra``.
     """
     if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
         os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
@@ -5433,6 +5565,12 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
         os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
     if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
         os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
+    if "e2ee_key_delivery_retry_users" in matrix_cfg:
+        return {
+            "e2ee_key_delivery_retry_users": matrix_cfg[
+                "e2ee_key_delivery_retry_users"
+            ]
+        }
     return None
 
 

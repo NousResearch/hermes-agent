@@ -86,6 +86,8 @@ matrix:
   require_mention: true           # Require @mention in rooms (default: true)
   allowed_users:                  # Matrix users allowed to trigger agent turns
     - "@alice:matrix.org"
+  e2ee_key_delivery_retry_users:  # Retry current keys to these joined users
+    - "@alice:matrix.org"
   allowed_rooms:                  # Matrix rooms allowed to trigger agent turns
     - "!abc123:matrix.org"
   free_response_rooms:            # Rooms exempt from mention requirement
@@ -122,6 +124,18 @@ MATRIX_ALLOW_ROOM_MENTIONS=false
 
 :::tip Room-wide mentions
 Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
+:::
+
+:::note E2EE room-key delivery retry
+`e2ee_key_delivery_retry_users` is intentionally separate from `allowed_users`
+and defaults to an empty list. Before sending encrypted text, edits, or media,
+Hermes retries the current Megolm key to eligible devices of listed users who
+are still joined to the room. Failed devices are tried again after one minute;
+normal message delivery continues if the retry fails.
+
+This mautrix compatibility option only helps later messages in the current
+session. It does not recover earlier events, handle key requests, send forwarded
+room keys, or apply to reactions.
 :::
 
 :::note

@@ -902,6 +902,62 @@ def build_anthropic_bedrock_client(region: str):
 
 
 
+def model_rejects_assistant_prefill(model: str | None) -> bool:
+    """True when the Claude model rejects a trailing assistant message.
+
+    Claude Sonnet/Opus 4.6+ (and the Fable family) return a non-retryable
+    HTTP 400 — "This model does not support assistant message prefill. The
+    conversation must end with a user message." — when ``messages[-1]`` has
+    ``role=assistant``. Older Claude models treat that shape as intentional
+    prefill, so only the rejecting families are matched here.
+    """
+    m = str(model or "").lower()
+    if "claude" not in m:
+        return False
+    if "fable" in m:
+        return True
+    match = re.search(r"(?:sonnet|opus|haiku)[.-](\d{1,2})(?!\d)(?:[.-](\d{1,2})(?!\d))?", m)
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= (4, 6)
+
+
+def ensure_user_tail_for_no_prefill(anthropic_messages: List[Dict]) -> None:
+    """Append a synthetic user turn when the wire tail is a plain assistant turn.
+
+    Mutates *anthropic_messages* in place. Hermes never intentionally prefills
+    the tail on the agent loop — a trailing assistant message is leftover
+    streamed preamble/status text (e.g. persisted before an interrupt or
+    gateway restart). For models that reject prefill, the request would
+    otherwise hard-400 before the model can recover. Assistant turns ending in
+    ``tool_use`` are left alone: those need real tool results, not a fake user
+    continuation.
+    """
+    if not anthropic_messages:
+        return
+    last = anthropic_messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "assistant":
+        return
+    content = last.get("content")
+    if isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+    ):
+        return
+    anthropic_messages.append(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Continue from the previous assistant message.",
+                }
+            ],
+        }
+    )
+
+
 def build_anthropic_kwargs(
     model: str,
     messages: List[Dict],
@@ -957,6 +1013,10 @@ def build_anthropic_kwargs(
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
     )
+    # Claude 4.6+ / Fable reject trailing assistant prefill with a
+    # non-retryable 400. Repair the tail before the request is built.
+    if model_rejects_assistant_prefill(model):
+        ensure_user_tail_for_no_prefill(anthropic_messages)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``);

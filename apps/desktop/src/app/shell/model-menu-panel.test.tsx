@@ -465,6 +465,65 @@ describe('ModelMenuPanel provider collapse', () => {
     })
     expect(onSelectModel).not.toHaveBeenCalled()
   })
+
+  it('does not rewrite the provider when Refresh Models lists the same model id elsewhere', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+
+    const catalog = {
+      model: 'glm-4.5-air',
+      provider: 'zhipu',
+      providers: [
+        { models: ['glm-4.5-air', 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' },
+        { models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' },
+        MOA_PROVIDER
+      ]
+    }
+
+    getGlobalModelOptions.mockResolvedValue(catalog)
+
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findAllByText(/Glm 4\.5 Air/i)
+    fireEvent.click(await content.findByText('Refresh models'))
+
+    await vi.waitFor(() => {
+      expect(getGlobalModelOptions).toHaveBeenCalledTimes(2)
+    })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('marks only the matching provider row current when two providers share a model id', async () => {
+    $currentProvider.set('zhipu')
+    $currentModel.set('glm-4.5-air')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'glm-4.5-air',
+      provider: 'zhipu',
+      providers: [
+        { models: ['glm-4.5-air', 'gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' },
+        { models: ['glm-4.5-air', 'glm-5-turbo'], name: '智谱2', slug: 'zhipu' },
+        MOA_PROVIDER
+      ]
+    })
+
+    const { content, onSelectModel } = renderPanel()
+
+    const rows = await content.findAllByText(/Glm 4\.5 Air/i)
+    const items = [...new Set(rows.map(row => row.closest('[role="menuitem"]')))]
+
+    expect(items).toHaveLength(2)
+
+    const checked = items.filter(item => item?.querySelector('.codicon-check'))
+    expect(checked).toHaveLength(1)
+    expect(checked[0]?.closest('[role="group"]')?.textContent).toContain('智谱2')
+    expect(
+      items.find(item => !item?.querySelector('.codicon-check'))?.closest('[role="group"]')?.textContent
+    ).toContain('OpenRouter')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
 })
 
 describe('ModelMenuPanel refresh reconcile × guarded-switch confirm handshake', () => {

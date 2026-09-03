@@ -2101,10 +2101,70 @@ from gateway.media_repair import (  # noqa: E402
 )
 
 
+def _media_path_aliases(
+    path: str, profile_name: Optional[str] = None
+) -> set[str]:
+    """Return literal and profile-scoped identities for a cached media path.
+
+    The gateway and Docker worker can name the same cache entry with different
+    absolute roots. Keep the profile in the canonical identity: a basename or
+    an unqualified ``cache/images/...`` alias would make two profiles suppress
+    each other's files.
+    """
+    normalized = os.path.normpath(str(path).strip())
+    aliases = {normalized}
+    slash_path = normalized.replace("\\", "/")
+    lower_path = slash_path.lower()
+    cache_relative = None
+    for marker in (
+        "cache/images/",
+        "cache/audio/",
+        "cache/videos/",
+        "cache/documents/",
+        "cache/screenshots/",
+    ):
+        marker_index = lower_path.find(f"/{marker}")
+        if marker_index >= 0:
+            cache_relative = slash_path[marker_index + 1 :]
+            break
+        if lower_path.startswith(marker):
+            cache_relative = slash_path
+            break
+    if cache_relative is None:
+        return aliases
+
+    path_profile = None
+    profiles_marker = "/profiles/"
+    profiles_index = lower_path.find(profiles_marker)
+    if profiles_index >= 0:
+        after_profiles = slash_path[profiles_index + len(profiles_marker) :]
+        cache_index = after_profiles.lower().find("/cache/")
+        if cache_index > 0:
+            path_profile = after_profiles[:cache_index]
+    scoped_profile = path_profile or str(profile_name or "").strip()
+    if scoped_profile:
+        aliases.add(f"profile:{scoped_profile}/{cache_relative}")
+    return aliases
+
+
+def _media_path_seen(
+    path: str,
+    history_media_paths: set[str],
+    profile_name: Optional[str] = None,
+) -> bool:
+    """Whether ``path`` identifies an artifact already present in history."""
+    candidate = _media_path_aliases(path, profile_name)
+    return any(
+        candidate.intersection(_media_path_aliases(old, profile_name))
+        for old in history_media_paths
+    )
+
+
 def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
     history_media_paths: Optional[set] = None,
+    profile_name: Optional[str] = None,
 ) -> tuple[List[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
@@ -2157,7 +2217,9 @@ def _collect_auto_append_media_tags(
                     path = payload.get(field)
                     if (isinstance(path, str)
                             and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
+                            and not _media_path_seen(
+                                path, history_media_paths, profile_name
+                            )):
                         media_tags.append(f"MEDIA:{path}")
                         break
             continue
@@ -2165,7 +2227,9 @@ def _collect_auto_append_media_tags(
             continue
         for match in _TOOL_MEDIA_RE.finditer(content):
             path = match.group(1).strip().rstrip('",}')
-            if path and path not in history_media_paths:
+            if path and not _media_path_seen(
+                path, history_media_paths, profile_name
+            ):
                 media_tags.append(f"MEDIA:{path}")
         if "[[audio_as_voice]]" in content:
             has_voice_directive = True
@@ -6787,6 +6851,12 @@ class TurnRunner:
         # Collect MEDIA paths already in history so we can exclude them
         # from the current turn's extraction. This is compression-safe:
         # even if the message list shrinks, we know which paths are old.
+        _profile_name = (
+            getattr(ctx.source, "profile", None)
+            or self._runner._profile_name_for_source(ctx.source)
+            or self._runner._active_profile_name()
+            or "default"
+        )
         _history_media_paths: set = _collect_history_media_paths(agent_history)
         
         # Register per-session gateway approval callback so dangerous
@@ -7373,6 +7443,7 @@ class TurnRunner:
                 result.get("messages", []),
                 history_offset=len(agent_history),
                 history_media_paths=_history_media_paths,
+                profile_name=_profile_name,
             )
 
             if media_tags:

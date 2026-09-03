@@ -389,6 +389,7 @@ import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
   observeUpdaterHandoff,
+  openUpdaterOutputTarget,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
@@ -3314,6 +3315,29 @@ function resolveUpdaterBinary() {
   return resolveStagedUpdaterBinary(HERMES_HOME, { fileExists, isWindows: IS_WINDOWS })
 }
 
+// Path the detached updater appends its stdout+stderr to. `stdio: 'ignore'`
+// used to discard both, so an updater that died on exec left no evidence
+// anywhere and the failure read as "the button did nothing".
+function updaterHandoffLogPath() {
+  return path.join(HERMES_HOME, 'logs', 'updater-handoff.log')
+}
+
+// `.update_exit_code` is written by `hermes update` in gateway mode and is
+// never cleared on the desktop hand-off path, so it survives from run to run.
+// A leftover "0" from a previous SUCCESSFUL update then reads as proof that
+// the latest attempt worked. Clear it before every hand-off so its presence
+// always describes THIS run. Best-effort: an unremovable marker must not
+// block the update.
+function clearStaleUpdateExitCode() {
+  const marker = path.join(HERMES_HOME, '.update_exit_code')
+
+  try {
+    fs.rmSync(marker, { force: true })
+  } catch (err) {
+    rememberLog(`[updates] could not clear stale .update_exit_code: ${err.message}`)
+  }
+}
+
 function repairMacUpdaterHelper(updater) {
   if (!IS_MAC || !updater) {
     return
@@ -4103,6 +4127,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         process.execPath
       ])
 
+      clearStaleUpdateExitCode()
+
+      const wrapperOutput = openUpdaterOutputTarget(updaterHandoffLogPath())
+
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: HERMES_HOME,
         env: {
@@ -4112,8 +4140,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           PATH: pathWithHermesManagedNode(venvBin)
         },
         detached: true,
-        stdio: 'ignore'
+        stdio: wrapperOutput.stdio
       })
+
+      // The child inherited the fd; drop the parent's copy.
+      wrapperOutput.close()
 
       // Bridge marker: child.pid is the short-lived cmd.exe WRAPPER, not the
       // script (see wrapHandoffForDetachedConsole). Write it anyway to cover
@@ -4130,6 +4161,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
       )
     } else {
+      clearStaleUpdateExitCode()
+
+      const stagedOutput = openUpdaterOutputTarget(updaterHandoffLogPath())
+
       child = spawnUpdaterProcess(updater, updaterArgs, {
         cwd: HERMES_HOME,
         env: {
@@ -4138,8 +4173,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
           PATH: pathWithHermesManagedNode(venvBin)
         },
         detached: true,
-        stdio: 'ignore'
+        stdio: stagedOutput.stdio
       })
+
+      // The child inherited the fd; drop the parent's copy.
+      stagedOutput.close()
 
       // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
       // quit dwell. The Tauri updater won't write its own marker for several
@@ -4182,7 +4220,12 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // surface the error instead. The pre-written marker names the dead child
     // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
     const dwellStartedAt = Date.now()
-    const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+    const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS, {
+      // Only the cmd.exe wrapper is meant to exit at once. A directly spawned
+      // staged updater that returns 0 inside the window did nothing.
+      immediateCleanExitIsSuccess: Boolean(scriptHandoff)
+    })
 
     if (!handoffOutcome.ok) {
       const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
@@ -4198,6 +4241,8 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
       return { ok: false, error: 'updater-spawn-failed', message }
     }
+
+    rememberLog(`[updates] hand-off settled ok; updater output → ${updaterHandoffLogPath()}`)
 
     isQuittingForHandoff = true
     setTimeout(
@@ -4270,6 +4315,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   await releaseBackendLockForUpdate(updateRoot)
 
+  clearStaleUpdateExitCode()
+
+  const recoveryOutput = openUpdaterOutputTarget(updaterHandoffLogPath())
+
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: HERMES_HOME,
     env: {
@@ -4278,8 +4327,11 @@ async function handOffWindowsBootstrapRecovery(reason) {
       PATH: pathWithHermesManagedNode(venvBin)
     },
     detached: true,
-    stdio: 'ignore'
+    stdio: recoveryOutput.stdio
   })
+
+  // The child inherited the fd; drop the parent's copy.
+  recoveryOutput.close()
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend
@@ -4304,13 +4356,20 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // returns false so the caller falls through to its next recovery path
   // instead of quitting into nothing.
   const dwellStartedAt = Date.now()
-  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS, {
+    // Spawned directly, with no wrapper to hand off to: an immediate exit 0
+    // means the updater returned without doing any work.
+    immediateCleanExitIsSuccess: false
+  })
 
   if (!handoffOutcome.ok) {
     rememberLog(`[bootstrap] recovery hand-off not viable, staying alive: ${handoffOutcome.message}`)
 
     return false
   }
+
+  rememberLog(`[bootstrap] recovery hand-off settled ok; updater output → ${updaterHandoffLogPath()}`)
 
   isQuittingForHandoff = true
   setTimeout(
@@ -4499,6 +4558,10 @@ async function applyUpdatesPosixHandoff(opts: any) {
     }
   }
 
+  clearStaleUpdateExitCode()
+
+  const posixOutput = openUpdaterOutputTarget(updaterHandoffLogPath())
+
   const child = spawnUpdaterProcess(handoff.command, args, {
     cwd: HERMES_HOME,
     env: {
@@ -4508,8 +4571,11 @@ async function applyUpdatesPosixHandoff(opts: any) {
       PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
     },
     detached: true,
-    stdio: 'ignore'
+    stdio: posixOutput.stdio
   })
+
+  // The child inherited the fd; drop the parent's copy.
+  posixOutput.close()
 
   // Bridge marker (same contract as the Windows hand-off): cover the gap
   // until the script claims the marker with its own pid as step 0. If the
@@ -4532,7 +4598,12 @@ async function applyUpdatesPosixHandoff(opts: any) {
   // child through the dwell; on spawn error or early death, stay alive and
   // surface the failure instead of quitting into nothing.
   const dwellStartedAt = Date.now()
-  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+
+  const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS, {
+    // Spawned directly, with no wrapper to hand off to: an immediate exit 0
+    // means the updater returned without doing any work.
+    immediateCleanExitIsSuccess: false
+  })
 
   if (!handoffOutcome.ok) {
     const message = `Update failed to start: ${handoffOutcome.message}. Hermes will keep running — try again, or run \`hermes update\` from a terminal.`
@@ -4542,6 +4613,8 @@ async function applyUpdatesPosixHandoff(opts: any) {
 
     return { ok: false, error: 'updater-spawn-failed', message }
   }
+
+  rememberLog(`[updates] posix hand-off settled ok; updater output → ${updaterHandoffLogPath()}`)
 
   isQuittingForHandoff = true
   setTimeout(

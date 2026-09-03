@@ -1537,7 +1537,67 @@ def _use_real_profile() -> bool:
 _REAL_PROFILE_SESSION = "hermes-real-profile"
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
-_real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
+_real_profile_chrome_procs: list = []  # owned real-profile browser entries
+
+
+def _terminate_real_profile_popen(proc: Any) -> None:
+    """Best-effort fallback for a process without persistent lifecycle state."""
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+    except Exception as e:
+        logger.debug("real-profile chrome terminate failed: %s", e)
+
+
+def _terminate_real_profile_entry(entry: dict[str, Any]) -> None:
+    """Release one real-profile owner without killing a shared browser."""
+    # Keep compatibility with pre-persistence in-process callers/tests that
+    # may still have placed a bare Popen handle in this list.
+    if not isinstance(entry, dict):
+        _terminate_real_profile_popen(entry)
+        return
+    proc = entry.get("proc")
+    browser = entry.get("browser")
+    profile_dir = entry.get("profile_dir")
+    binary = entry.get("binary")
+    pid = entry.get("pid")
+
+    if browser and profile_dir and binary and pid:
+        try:
+            from tools.real_profile_lifecycle import retire_real_profile_chrome
+
+            lifecycle_result = retire_real_profile_chrome(
+                browser, profile_dir, binary, pid
+            )
+            if lifecycle_result is not None:
+                # False means another live Hermes process adopted this
+                # browser.  Its Popen handle may belong to the old launcher,
+                # but it must not terminate the shared target.
+                if lifecycle_result is False:
+                    try:
+                        from tools.real_profile_lifecycle import has_live_real_profile_owner
+
+                        if has_live_real_profile_owner(browser):
+                            return
+                    except Exception:
+                        # If ownership cannot be checked, fail closed and
+                        # leave a shared browser alive for the other owner.
+                        return
+                if lifecycle_result is True:
+                    return
+        except Exception as e:
+            logger.debug("real-profile lifecycle release failed: %s", e)
+
+    # Test doubles and legacy/partially-started processes may have no
+    # persistent identity.  Only the process handle that this Hermes process
+    # received is eligible for this fallback; cross-process cleanup is always
+    # identity-checked by tools.real_profile_lifecycle.
+    if proc is not None:
+        _terminate_real_profile_popen(proc)
 
 
 def _terminate_real_profile_chrome() -> None:
@@ -1549,16 +1609,8 @@ def _terminate_real_profile_chrome() -> None:
     own session cleanup never kills them. Idempotent; safe from atexit.
     """
     while _real_profile_chrome_procs:
-        proc = _real_profile_chrome_procs.pop()
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except Exception:
-                    proc.kill()
-        except Exception as e:
-            logger.debug("real-profile chrome terminate failed: %s", e)
+        entry = _real_profile_chrome_procs.pop()
+        _terminate_real_profile_entry(entry)
 
 
 def _agent_browser_argv(browser_cmd: str) -> list:
@@ -1661,6 +1713,7 @@ def _real_profile_cdp() -> tuple:
         # still on disk, it holds copies of the user's cookies/logins — delete
         # it so revoking consent actually removes the credential copies. Cheap
         # (one isdir check) and idempotent.
+        _terminate_real_profile_chrome()
         try:
             from hermes_cli.browser_connect import cleanup_real_profile_snapshots
 
@@ -1730,8 +1783,42 @@ def _real_profile_cdp() -> tuple:
         # snapshot/overlay happens solely on the relaunch path below, when no
         # live browser owns the dir.
         copy_dir = real_profile_copy_dir(browser)
+        from hermes_cli.browser_connect import chromium_executable
+
+        real_binary = chromium_executable(browser)
+        if real_binary is None:
+            return None, (
+                "browser.use_real_profile is on, but the real browser binary for "
+                f"'{browser}' could not be found. Reinstall it or turn the toggle off."
+            )
         existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+            try:
+                from tools.real_profile_lifecycle import claim_real_profile_chrome
+
+                claimed = claim_real_profile_chrome(browser, copy_dir, real_binary)
+            except Exception as e:
+                logger.debug("real-profile ownership claim failed: %s", e)
+                claimed = None
+            if not claimed:
+                return None, (
+                    "browser.use_real_profile is on, but an existing real-profile "
+                    "browser could not be safely claimed. Close the stale Hermes "
+                    "browser session and retry."
+                )
+            claim_entry = {
+                "proc": None,
+                "browser": browser,
+                "profile_dir": copy_dir,
+                "binary": real_binary,
+                "pid": claimed.get("pid"),
+            }
+            if not any(
+                entry.get("pid") == claim_entry["pid"]
+                and entry.get("profile_dir") == copy_dir
+                for entry in _real_profile_chrome_procs
+            ):
+                _real_profile_chrome_procs.append(claim_entry)
             _real_profile_cdp_cache["cdp"] = existing
             return existing, None
         if existing:
@@ -1767,15 +1854,6 @@ def _real_profile_cdp() -> tuple:
         # NO mock-keychain switches keeps the OS keychain path intact, exactly
         # as the snapshot design intends; agent-browser attaches to it after
         # via --auto-connect (--cdp <port>).
-        from hermes_cli.browser_connect import chromium_executable
-
-        real_binary = chromium_executable(browser)
-        if real_binary is None:
-            return None, (
-                "browser.use_real_profile is on, but the real browser binary for "
-                f"'{browser}' could not be found. Reinstall it or turn the toggle off."
-            )
-
         port_file = os.path.join(copy_dir, "DevToolsActivePort")
         try:
             os.unlink(port_file)  # stale port from a previous launch confuses reuse probes
@@ -1830,7 +1908,33 @@ def _real_profile_cdp() -> tuple:
             )
         except (subprocess.SubprocessError, OSError) as e:
             return None, f"browser.use_real_profile is on, but the launch failed: {e}"
-        _real_profile_chrome_procs.append(chrome_proc)
+        chrome_entry = {
+            "proc": chrome_proc,
+            "browser": browser,
+            "profile_dir": copy_dir,
+            "binary": real_binary,
+            "pid": getattr(chrome_proc, "pid", None),
+        }
+        _real_profile_chrome_procs.append(chrome_entry)
+        chrome_pid = chrome_entry["pid"]
+        if chrome_pid:
+            try:
+                from tools.real_profile_lifecycle import register_real_profile_chrome
+
+                registered = register_real_profile_chrome(
+                    browser, copy_dir, real_binary, chrome_pid
+                )
+            except Exception as e:
+                logger.debug("real-profile ownership registration failed: %s", e)
+                registered = None
+            if not registered:
+                _real_profile_chrome_procs.remove(chrome_entry)
+                _terminate_real_profile_entry(chrome_entry)
+                return None, (
+                    "browser.use_real_profile is on, but Hermes could not persist "
+                    "ownership of the real-profile browser. The process was stopped; "
+                    "retry after checking the Hermes home is writable."
+                )
 
         # Wait for DevToolsActivePort to appear (Chrome picks a free port).
         import time as _time
@@ -1847,14 +1951,18 @@ def _real_profile_cdp() -> tuple:
             except OSError:
                 pass
             if chrome_proc.poll() is not None:
-                _terminate_real_profile_chrome()
+                if chrome_entry in _real_profile_chrome_procs:
+                    _real_profile_chrome_procs.remove(chrome_entry)
+                _terminate_real_profile_entry(chrome_entry)
                 return None, (
                     "browser.use_real_profile is on, but Chrome exited during "
                     "startup (another instance may hold the profile copy)."
                 )
             _time.sleep(0.25)
         if port is None:
-            _terminate_real_profile_chrome()
+            if chrome_entry in _real_profile_chrome_procs:
+                _real_profile_chrome_procs.remove(chrome_entry)
+            _terminate_real_profile_entry(chrome_entry)
             return None, (
                 "browser.use_real_profile is on, but the real-profile browser "
                 "did not expose a debug port in time. Retry, or turn the toggle off."
@@ -1865,6 +1973,9 @@ def _real_profile_cdp() -> tuple:
         try:
             browser_cmd = _find_agent_browser()
         except FileNotFoundError as e:
+            if chrome_entry in _real_profile_chrome_procs:
+                _real_profile_chrome_procs.remove(chrome_entry)
+            _terminate_real_profile_entry(chrome_entry)
             return None, (
                 "browser.use_real_profile is on, but the local browser engine "
                 f"(agent-browser) is not installed: {e}"
@@ -1882,13 +1993,22 @@ def _real_profile_cdp() -> tuple:
                 env=_build_browser_env(),
             )
         except subprocess.TimeoutExpired:
+            if chrome_entry in _real_profile_chrome_procs:
+                _real_profile_chrome_procs.remove(chrome_entry)
+            _terminate_real_profile_entry(chrome_entry)
             return None, (
                 "browser.use_real_profile is on, but the real-profile browser "
                 "took too long to start. Retry, or turn the toggle off."
             )
         except (subprocess.SubprocessError, OSError) as e:
+            if chrome_entry in _real_profile_chrome_procs:
+                _real_profile_chrome_procs.remove(chrome_entry)
+            _terminate_real_profile_entry(chrome_entry)
             return None, f"browser.use_real_profile is on, but the launch failed: {e}"
         if proc.returncode != 0:
+            if chrome_entry in _real_profile_chrome_procs:
+                _real_profile_chrome_procs.remove(chrome_entry)
+            _terminate_real_profile_entry(chrome_entry)
             tail = (proc.stderr or proc.stdout or "").strip().splitlines()
             reason = tail[-1] if tail else f"exit {proc.returncode}"
             return None, (
@@ -1911,6 +2031,9 @@ def _real_profile_cdp() -> tuple:
         except (OSError, ValueError):
             pass
         if not cdp:
+            if chrome_entry in _real_profile_chrome_procs:
+                _real_profile_chrome_procs.remove(chrome_entry)
+            _terminate_real_profile_entry(chrome_entry)
             return None, (
                 "browser.use_real_profile is on, but the real-profile browser "
                 "started without exposing a devtools endpoint. Retry, or turn "
@@ -2645,6 +2768,18 @@ def _reap_orphaned_browser_sessions():
         reap_orphaned_lightpanda()
     except Exception as e:
         logger.debug("Lightpanda orphan reap failed: %s", e)
+
+    # Real-profile browsing launches the signed browser binary directly on a
+    # Hermes-owned profile copy, so there is no agent-browser socket directory
+    # for the generic daemon sweep below to discover.  Its persistent records
+    # carry an exact PID/start-time/executable/profile identity and are
+    # reaped before the early ``no socket dirs`` return.
+    try:
+        from tools.real_profile_lifecycle import reap_orphaned_real_profile_chrome
+
+        reap_orphaned_real_profile_chrome()
+    except Exception as e:
+        logger.debug("Real-profile Chrome orphan reap failed: %s", e)
 
     tmpdir = _socket_safe_tmpdir()
     pattern = os.path.join(tmpdir, "agent-browser-h_*")

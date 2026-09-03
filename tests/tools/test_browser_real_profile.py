@@ -193,6 +193,7 @@ class TestRealProfileCdpLaunch:
     def _reset(self):
         import tools.browser_tool as bt
         bt._real_profile_cdp_cache.clear()
+        bt._real_profile_chrome_procs.clear()
 
     def test_consent_off_is_noop(self):
         import tools.browser_tool as bt
@@ -215,6 +216,7 @@ class TestRealProfileCdpLaunch:
         self._reset()
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")):
             cdp, err = bt._real_profile_cdp()
         assert cdp is None
@@ -950,9 +952,12 @@ class TestReviewRound3:
              patch.object(bt, "_using_lightpanda_engine", return_value=False), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch.object(bt, "_agent_browser_get_cdp", return_value="http://127.0.0.1:9251"), \
              patch.object(bt, "_cdp_http_ready", return_value=True), \
              patch.object(bt, "_cdp_on_data_dir", return_value=True), \
+             patch("tools.real_profile_lifecycle.claim_real_profile_chrome",
+                   return_value={"pid": 4321}), \
              patch("hermes_cli.browser_connect.snapshot_real_profile") as snap:
             cdp, err = bt._real_profile_cdp()
         assert cdp == "http://127.0.0.1:9251" and err is None
@@ -964,21 +969,64 @@ class TestReviewRound3:
         import tools.browser_tool as bt
         bt._real_profile_cdp_cache.clear()
         proc = Mock(returncode=0, stdout="", stderr="")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/x\n")
+            return FakeChrome()
+
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch.object(bt, "_using_lightpanda_engine", return_value=False), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile",
                    return_value=(str(tmp_path), None)) as snap, \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:9251"]), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt, "_is_headed_mode", return_value=False):
             cdp, err = bt._real_profile_cdp()
         assert err is None
         snap.assert_called_once()
         bt._real_profile_cdp_cache.clear()
+
+    def test_attach_failure_terminates_direct_chrome(self, tmp_path):
+        """A failed agent-browser attach must not leave Chrome behind."""
+        import tools.browser_tool as bt
+
+        chrome = Mock()
+        chrome.pid = None
+        chrome.poll.return_value = None
+        proc = Mock(returncode=1, stdout="", stderr="attach failed")
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/x\n")
+            return chrome
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch.object(bt, "_using_lightpanda_engine", return_value=False), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=False):
+            cdp, err = bt._real_profile_cdp()
+
+        assert cdp is None
+        assert err and "failed to start" in err
+        chrome.terminate.assert_called_once_with()
+        bt._real_profile_chrome_procs.clear()
 
 
 class TestWindowsLockedProfileCopy:

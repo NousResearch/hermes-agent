@@ -12900,6 +12900,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_focus_command(cmd_original)
         elif canonical == "footer":
             self._handle_footer_command(cmd_original)
+        elif canonical == "prefix":
+            self._handle_prefix_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "approvals":

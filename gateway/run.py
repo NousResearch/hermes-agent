@@ -6046,6 +6046,22 @@ class TurnRunner:
                             on_missing_cursor="raise",
                         )
                     )
+                    # Opt-in response prefix on the FIRST streamed message
+                    # (display.response_prefix, off by default).  Streaming
+                    # can't retro-edit the tag in later, so the consumer folds
+                    # it into the first delta itself.
+                    _stream_prefix = ""
+                    try:
+                        from gateway.response_prefix import build_prefix_line as _bpl
+                        _stream_prefix = _bpl(
+                            user_config=ctx.user_config,
+                            platform_key=platform_key,
+                            model=model,
+                            provider=runtime_kwargs.get("provider"),
+                        )
+                    except Exception as _prefix_err:
+                        logger.debug("response_prefix build failed: %s", _prefix_err)
+                        _stream_prefix = ""
                     _stream_consumer = GatewayStreamConsumer(
                         adapter=_adapter,
                         chat_id=ctx.source.chat_id,
@@ -6059,6 +6075,7 @@ class TurnRunner:
                         on_before_finalize=_pause_typing_before_finalize,
                         initial_reply_to_id=ctx.event_message_id,
                         run_still_current=ctx._run_still_current,
+                        prefix=_stream_prefix or None,
                     )
                     if _want_stream_deltas:
                         def _stream_delta_cb(text: str) -> None:
@@ -18536,6 +18553,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "yolo": self._handle_yolo_command,
             "verbose": self._handle_verbose_command,
             "footer": self._handle_footer_command,
+            "prefix": self._handle_prefix_command,
             "help": self._handle_help_command,
             "commands": self._handle_commands_command,
             "profile": self._handle_profile_command,
@@ -23427,6 +23445,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+
+            # Response prefix — only on the FIRST message of the turn.
+            # Off by default (display.response_prefix.enabled=false).  When
+            # streaming already delivered the body, the stream consumer
+            # folded the tag into its first delta (see GatewayStreamConsumer
+            # ``prefix``), so only the non-streamed send is decorated here.
+            if response and not agent_result.get("already_sent") and not _intentional_silence:
+                try:
+                    from gateway.response_prefix import apply_prefix as _apply_prefix
+                    from gateway.response_prefix import build_prefix_line as _bpl
+                    _prefix_line = _bpl(
+                        user_config=_load_gateway_config(),
+                        platform_key=_platform_config_key(source.platform),
+                        model=agent_result.get("model"),
+                        provider=agent_result.get("provider"),
+                    )
+                    if _prefix_line:
+                        response = _apply_prefix(_prefix_line, response)
+                except Exception as _prefix_err:
+                    logger.debug("response_prefix build failed: %s", _prefix_err)
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {

@@ -4478,6 +4478,108 @@ class GatewaySlashCommandsMixin:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
+    async def _handle_prefix_command(self, event: MessageEvent) -> str:
+        """Handle /prefix command — toggle the response prefix.
+
+        Usage:
+            /prefix           → toggle on/off (for this platform's effective state)
+            /prefix on        → enable
+            /prefix off       → disable
+            /prefix status    → show effective state + template
+
+        Override-aware: the global switch lives at
+        ``display.response_prefix.enabled``.  When the current platform has
+        its own ``display.platforms.<platform>.response_prefix`` override,
+        that override is what resolution honours, so on/off write BOTH the
+        global flag and the platform override — otherwise ``/prefix off``
+        could report OFF while the platform kept emitting prefixes.  The
+        reply always describes the effective state after the write.
+        """
+        from gateway.run import _hermes_home, _load_gateway_config, _platform_config_key, _resolve_gateway_model
+        from gateway.response_prefix import (
+            build_prefix_line,
+            platform_has_prefix_override,
+            resolve_prefix_config,
+        )
+
+        config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+
+        arg = ""
+        try:
+            text = (getattr(event, "text", None) or getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+
+        effective = resolve_prefix_config(user_config, platform_key)
+
+        def _status_line(cfg: dict) -> str:
+            state = "ON" if cfg["enabled"] else "OFF"
+            template = cfg.get("template") or "(no template set)"
+            scope = " (platform override)" if platform_has_prefix_override(user_config, platform_key) else ""
+            line = f"🏷️ Response prefix: **{state}**{scope}\nTemplate: `{template}`"
+            if cfg["enabled"]:
+                preview = build_prefix_line(
+                    user_config=user_config,
+                    platform_key=platform_key,
+                    model=_resolve_gateway_model(user_config) or None,
+                )
+                if preview:
+                    line += f"\nExample: `{preview} Hello!`"
+            return line
+
+        if arg in {"status", "?"}:
+            return _status_line(effective)
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not effective["enabled"]
+        else:
+            return "Usage: `/prefix [on|off|status]`"
+
+        try:
+            if not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            display = user_config["display"]
+            raw = display.get("response_prefix")
+            if isinstance(raw, str):
+                # Promote the string shorthand so the flag has a home.
+                display["response_prefix"] = {"enabled": new_state, "template": raw}
+            else:
+                if not isinstance(raw, dict):
+                    display["response_prefix"] = raw = {}
+                raw["enabled"] = new_state
+                if new_state and not (raw.get("template") or "").strip():
+                    raw["template"] = "[{provider}/{model}]"
+            # Keep a platform override in step, otherwise it silently wins.
+            if platform_has_prefix_override(user_config, platform_key):
+                plat = display["platforms"][platform_key]
+                plat_raw = plat.get("response_prefix")
+                if isinstance(plat_raw, str):
+                    plat["response_prefix"] = {"enabled": new_state, "template": plat_raw}
+                elif isinstance(plat_raw, dict):
+                    plat_raw["enabled"] = new_state
+                else:
+                    plat["response_prefix"] = {"enabled": new_state}
+            atomic_config_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save display.response_prefix: %s", e)
+            return t("gateway.config_save_failed", error=e)
+
+        return _status_line(resolve_prefix_config(user_config, platform_key))
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Profile-scoping wrapper around manual /compress.
 

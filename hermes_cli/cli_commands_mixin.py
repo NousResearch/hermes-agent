@@ -3735,6 +3735,68 @@ class CLICommandsMixin:
         else:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
+    def _handle_prefix_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.response_prefix`` from the CLI.
+
+        The prefix only renders on gateway replies (the terminal already
+        shows the model in its status bar); this handler edits the shared
+        config so users can flip it without leaving the CLI.
+
+        Usage:
+            /prefix           → toggle
+            /prefix on|off    → explicit
+            /prefix status    → show current state + template
+        """
+        from cli import _cprint, save_config_value
+        from hermes_cli.config import load_config
+        from hermes_cli.colors import Colors as _Colors
+        from gateway.response_prefix import resolve_prefix_config
+
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        cfg = load_config() or {}
+        effective = resolve_prefix_config(cfg, None)
+        current = bool(effective["enabled"])
+        template = effective.get("template") or "[{provider}/{model}]"
+
+        if arg in {"status", "?"}:
+            state = "ON" if current else "OFF"
+            _cprint(
+                f"  {_Colors.BOLD}Response prefix:{_Colors.RESET} {state} (gateway replies)\n"
+                f"  Template: {template}"
+            )
+            return
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            _cprint("  Usage: /prefix [on|off|status]")
+            return
+
+        raw = (cfg.get("display") or {}).get("response_prefix")
+        ok = save_config_value("display.response_prefix.enabled", new_state)
+        if ok and (isinstance(raw, str) or not isinstance(raw, dict) or not (raw.get("template") or "").strip()):
+            # Promote the string shorthand / seed a template so ``on`` renders.
+            ok = save_config_value("display.response_prefix.template", template)
+        if ok:
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Response prefix: {state} (gateway replies; template {template})")
+        else:
+            _cprint("  Failed to save response_prefix setting to config.yaml")
+
     def _handle_timestamps_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.timestamps`` from the CLI.
 

@@ -288,6 +288,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Configuration", args_hint="[on|off|status]",
                subcommands=("on", "off", "status"), busy_policy="dispatch",
                desktop="terminal"),
+    CommandDef("prefix", "Toggle gateway model/provider prefix on the first reply of a turn",
+               "Configuration", args_hint="[on|off|status]",
+               subcommands=("on", "off", "status"), busy_policy="dispatch",
+               desktop="terminal"),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration", busy_policy="dispatch"),
     CommandDef("approvals", "Show or set the persistent dangerous-command approval mode",
@@ -1478,7 +1482,10 @@ _SLACK_PRIORITY_ALIASES: tuple[str, ...] = ()
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights"})
+#   - prefix: rare display toggle (model/provider tag on the first reply);
+#     reached via /hermes prefix [on|off|status] on Slack. Added at the
+#     50-cap — a native slot would clamp /usage, breaking Telegram parity.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "review", "pause", "whoami", "platform", "insights", "prefix"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

@@ -243,11 +243,23 @@ class GatewayStreamConsumer:
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
+        prefix: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        # Opt-in response prefix (gateway/response_prefix.py).  Folded into
+        # the FIRST visible text of the turn exactly once — see
+        # ``_append_accumulated`` — so every preview edit, the final seal and
+        # the delivered-payload reconciliation carry it.  ``_prefix_applied``
+        # is turn-wide (never re-armed on a segment break: later segments are
+        # not the first message); ``_prefix_in_segment`` tracks whether the
+        # LIVE buffer currently starts with it, so an adopted authoritative
+        # final only gets it re-added while the prefixed segment is still open.
+        self._prefix = (prefix or "").strip()
+        self._prefix_applied = False
+        self._prefix_in_segment = False
         # Fired whenever a fresh content bubble is created on the platform
         # (first-send of a new message, commentary, overflow chunk, or
         # fallback continuation). The gateway uses this to linearize the
@@ -587,6 +599,13 @@ class GatewayStreamConsumer:
         if self._tool_progress_lines:
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        if getattr(self, "_prefix", "") and not getattr(self, "_prefix_applied", False) and not self._accumulated:
+            # First visible text of the turn: this runs AFTER think-block
+            # filtering, so a leading <think> never hides behind the tag.
+            from gateway.response_prefix import apply_prefix
+            text = apply_prefix(self._prefix, text)
+            self._prefix_applied = True
+            self._prefix_in_segment = True
         self._accumulated += text
         self._stream_ledger += text
 
@@ -657,6 +676,7 @@ class GatewayStreamConsumer:
         ).strip()
         if not target:
             return None
+        target = self._without_prefix(target)
         if self._delivered_final_text is None:
             if self._turn_split_delivery:
                 # #78541: refuse legacy trust for payload-less split delivery.
@@ -681,7 +701,7 @@ class GatewayStreamConsumer:
             if self._delivery_ambiguous:
                 return None
             return False
-        if self._delivered_final_text.strip() == target:
+        if self._without_prefix(self._delivered_final_text.strip()) == target:
             return True
         # A segment break / commentary may have delivered the final text
         # earlier in the turn under a different record.
@@ -691,16 +711,25 @@ class GatewayStreamConsumer:
 
     def has_delivered_text(self, text: str) -> bool:
         """Return True if *text* was already delivered as visible chat content."""
-        target = self._clean_for_display(text or "").strip()
+        target = self._without_prefix(self._clean_for_display(text or "").strip())
         if not target:
             return False
-        visible_prefix = self._visible_prefix().strip()
+        visible_prefix = self._without_prefix(self._visible_prefix().strip())
         if visible_prefix == target:
             return True
         return any(
-            sent.strip() == target
+            self._without_prefix(sent.strip()) == target
             for sent in (*self._delivered_commentary_texts, *self._delivered_segment_texts)
         )
+
+    def _without_prefix(self, text: str) -> str:
+        """Drop the applied response prefix so delivered text reconciles
+        against the gateway's un-prefixed ``final_response`` (#71643 path)."""
+        # Tests build consumers via __new__ without __init__: default off.
+        if not getattr(self, "_prefix_applied", False) or not text:
+            return text
+        from gateway.response_prefix import strip_prefix
+        return strip_prefix(getattr(self, "_prefix", ""), text)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -878,6 +907,7 @@ class GatewayStreamConsumer:
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids = set()
+        self._prefix_in_segment = False
         # Tool-progress overlay: clear on segment reset so a new segment
         # starts clean.
         self._tool_progress_lines = []
@@ -1348,11 +1378,17 @@ class GatewayStreamConsumer:
                                 or self._last_sent_text
                             )
                             if _streamed_something and not self._turn_split_delivery:
-                                _final_payload = self._clean_for_display(item[1])
+                                _final_text = item[1]
+                                if getattr(self, "_prefix_in_segment", False):
+                                    # The prefixed first message is still the
+                                    # live buffer: keep the tag on the seal.
+                                    from gateway.response_prefix import apply_prefix
+                                    _final_text = apply_prefix(self._prefix, _final_text)
+                                _final_payload = self._clean_for_display(_final_text)
                                 _visible = self._clean_for_display(self._accumulated)
                                 if _final_payload and _final_payload != _visible:
-                                    self._accumulated = item[1]
-                                    self._stream_ledger = item[1]
+                                    self._accumulated = _final_text
+                                    self._stream_ledger = _final_text
                             elif _streamed_something and self._turn_split_delivery:
                                 # Split delivery + authoritative final (review
                                 # r2, finding 3): wholesale adoption would

@@ -1609,7 +1609,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _codex_watchdog_enabled = agent.api_mode == "codex_responses"
     _openai_codex_backend = _is_openai_codex_backend(agent)
     _est_tokens_for_codex_watchdog = estimate_request_context_tokens(api_kwargs)
-    if _codex_watchdog_enabled and _openai_codex_backend:
+    if _codex_watchdog_enabled:
         _codex_floor = openai_codex_stale_timeout_floor(_est_tokens_for_codex_watchdog)
         if _codex_floor:
             _stale_timeout = max(_stale_timeout, _codex_floor)
@@ -1632,7 +1632,6 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
     if (
         _codex_watchdog_enabled
-        and _openai_codex_backend
         and _codex_hard_timeout > 0
     ):
         _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
@@ -1657,7 +1656,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     _ttfb_timeout = _env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if _ttfb_timeout <= 0:
         _ttfb_enabled = False
-    elif _openai_codex_backend:
+    elif _codex_watchdog_enabled:
         _ttfb_disable_above = _env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         _ttfb_strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {
             "1", "true", "yes", "on"
@@ -1670,7 +1669,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             _large_request_ttfb_timeout = _codex_idle_timeout_default
             if _ttfb_timeout < _large_request_ttfb_timeout:
                 logger.info(
-                    "Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
+                    "Scaling codex-responses no-byte TTFB watchdog from %.0fs to %.0fs "
                     "for large request (context=~%s tokens >= %.0f). "
                     "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.",
                     _ttfb_timeout,
@@ -1682,7 +1681,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
         _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
         if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
             logger.info(
-                "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
+                "Capping codex-responses no-byte TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
                 _ttfb_timeout,
                 _ttfb_cap,

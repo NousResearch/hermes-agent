@@ -2161,6 +2161,130 @@ class TestCapabilityDiscovery:
         # Unknown tool → False (instead of KeyError).
         assert session.supports_capability("anything", tool="never_registered") is False
 
+    @staticmethod
+    def _run(coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_strict_sdk_discovers_vendor_capabilities(self, monkeypatch):
+        """MCP 2.x drops undeclared fields at validation (#89527): cua-driver's
+        per-tool ``capabilities[]`` and the top-level ``capability_version``
+        never reach ``model_extra``. Discovery must re-issue tools/list with
+        extra-allowing mirror types so the vendor fields survive."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import mcp.types as mt
+
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+
+        # Simulate the 2.x SDK: no extra='allow' on the protocol models.
+        # (Runtime validation on an already-compiled 1.x install keeps
+        # extras regardless; the patch governs the helper's branch decision,
+        # and the mirror classes below declare their own extra='allow'.)
+        monkeypatch.setattr(
+            mt.Tool, "model_config",
+            dict(mt.Tool.model_config, extra="ignore"),
+        )
+
+        raw = {
+            "tools": [{
+                "name": "click", "description": "d",
+                "inputSchema": {"type": "object"},
+                "capabilities": [
+                    "accessibility.element_tokens", "input.pointer.click",
+                ],
+            }],
+            "capability_version": "0.20.0",
+        }
+        mcp_session = MagicMock()
+        mcp_session.send_request = AsyncMock(
+            side_effect=lambda request, result_type, **kw: (
+                result_type.model_validate(raw)
+            )
+        )
+        mcp_session.list_tools = AsyncMock(
+            side_effect=AssertionError("strict SDK must use the mirror path")
+        )
+
+        session = _CuaDriverSession(_AsyncBridge())
+        self._run(session._populate_capabilities(mcp_session))
+
+        assert session._capabilities["click"] == {
+            "accessibility.element_tokens", "input.pointer.click",
+        }
+        assert session._capability_version == "0.20.0"
+        assert session._tool_schemas["click"] == {"type": "object"}
+        assert session.supports_capability("accessibility.element_tokens")
+
+    @staticmethod
+    def _native_listing():
+        """A tools/list result whose tool already exposes vendor fields as
+        attributes — the shape a loose SDK (or a future spec-native field)
+        hands back. Built as plain namespaces so the test does not depend
+        on which mcp generation is installed: a strict install would drop
+        the fields during model validation, a loose one keeps them, and
+        _populate_capabilities only reads attributes off the result."""
+        from types import SimpleNamespace
+
+        tool = SimpleNamespace(
+            name="click",
+            capabilities=["input.pointer.click"],
+            model_extra=None,
+        )
+        return SimpleNamespace(
+            tools=[tool],
+            capability_version=None,
+            model_extra=None,
+        )
+
+    def test_extra_preserving_sdk_uses_native_listing(self, monkeypatch):
+        """SDKs that already keep extras (1.x) go straight to list_tools —
+        no mirror request, no behavior change."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import mcp.types as mt
+
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+
+        monkeypatch.setattr(
+            mt.Tool, "model_config",
+            dict(mt.Tool.model_config, extra="allow"),
+        )
+        mcp_session = MagicMock()
+        mcp_session.list_tools = AsyncMock(return_value=self._native_listing())
+        mcp_session.send_request = AsyncMock(
+            side_effect=AssertionError("loose SDK must not re-issue tools/list")
+        )
+
+        session = _CuaDriverSession(_AsyncBridge())
+        self._run(session._populate_capabilities(mcp_session))
+
+        assert session._capabilities["click"] == {"input.pointer.click"}
+        mcp_session.list_tools.assert_awaited_once()
+
+    def test_mirror_failure_falls_back_to_native_listing(self, monkeypatch):
+        """Any mirror mismatch (request shape, transport error) falls back to
+        the SDK's own listing — the original best-effort behavior."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import mcp.types as mt
+
+        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+
+        monkeypatch.setattr(
+            mt.Tool, "model_config",
+            dict(mt.Tool.model_config, extra="ignore"),
+        )
+        mcp_session = MagicMock()
+        mcp_session.send_request = AsyncMock(side_effect=RuntimeError("boom"))
+        mcp_session.list_tools = AsyncMock(return_value=self._native_listing())
+
+        session = _CuaDriverSession(_AsyncBridge())
+        self._run(session._populate_capabilities(mcp_session))
+
+        assert session._capabilities["click"] == {"input.pointer.click"}
+        mcp_session.list_tools.assert_awaited_once()
+
 
 class TestElementTokenAttachment:
     """Surface 6 (NousResearch/hermes-agent#47072): trycua/cua#1961 added
@@ -2196,6 +2320,9 @@ class TestElementTokenAttachment:
                 return cap in capabilities.get(tool, set())
             return any(cap in caps for caps in capabilities.values())
         backend._session.supports_capability = _supports
+        # MagicMock auto-attributes are truthy — pin the schema gate
+        # closed unless a test overrides it.
+        backend._session.supports_input_property = lambda tool, prop: False
         backend._active_pid = 111
         backend._active_window_id = 222
         return backend
@@ -2211,6 +2338,36 @@ class TestElementTokenAttachment:
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+
+    def test_token_attached_via_input_schema_when_capability_missing(self):
+        """Defensive second path (Windows repro on #89527): a driver whose
+        live click inputSchema declares ``element_token`` but whose
+        capability vocabulary no longer advertises the token still gets
+        the attach — inputSchema is a core MCP field no strict client
+        model can drop."""
+        backend = self._backend_with_session({
+            "click": {"input.pointer.click"},  # capability token absent
+        })
+        backend._session.supports_input_property = (
+            lambda tool, prop: tool == "click" and prop == "element_token"
+        )
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s0001:5"
+
+    def test_token_not_attached_when_neither_gate_qualifies(self):
+        """Fail-closed pin: no capability claim AND no inputSchema property
+        means the field must not ride along (older drivers reject unknown
+        args via additionalProperties=false)."""
+        backend = self._backend_with_session({
+            "click": {"input.pointer.click"},
+        })
+        backend._session.supports_input_property = lambda tool, prop: False
+        backend._snapshot_tokens = {5: "s0001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert "element_token" not in args
 
 
     def test_capture_refreshes_snapshot_tokens(self):

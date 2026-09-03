@@ -4943,6 +4943,23 @@ def run_conversation(
                         agent.provider or "unknown",
                         api_duration,
                     )
+                    if agent._session_db and agent.session_id:
+                        try:
+                            if not agent._session_db_created:
+                                agent._ensure_db_session()
+                            agent._session_db.queue_token_counts(
+                                agent.session_id,
+                                model=agent.model,
+                                billing_provider=agent.provider,
+                                billing_base_url=agent.base_url,
+                                api_call_count=1,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "API-call persistence failed (session=%s): %s",
+                                agent.session_id,
+                                e,
+                            )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call

@@ -3595,6 +3595,9 @@ class TestRunConversation:
         the provider omits usage; both attempts remain observable."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._session_db = MagicMock()
+        agent._session_db_created = True
+        agent.session_id = "usage-less-empty"
         empty_resp = _mock_response(content=None, finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [empty_resp] * 4
         with (
@@ -3612,6 +3615,9 @@ class TestRunConversation:
         assert agent.session_api_calls == 2
         assert result["final_response"].startswith("⚠️ No reply:")
         assert caplog.text.count("usage=unavailable") == 2
+        queued_calls = agent._session_db.queue_token_counts.call_args_list
+        assert sum(call.kwargs["api_call_count"] for call in queued_calls) == 2
+        assert all("billing_mode" not in call.kwargs for call in queued_calls)
 
     def test_truly_empty_response_succeeds_on_nudge(self, agent):
         """Model produces content after being nudged for empty response."""

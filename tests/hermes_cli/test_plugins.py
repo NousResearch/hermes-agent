@@ -81,7 +81,7 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     if manifest_extra:
         manifest.update(manifest_extra)
 
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
     (plugin_dir / "__init__.py").write_text(
         f"def register(ctx):\n    {register_body}\n"
     )
@@ -104,14 +104,14 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
         cfg: dict = {}
         if cfg_path.exists():
             try:
-                cfg = yaml.safe_load(cfg_path.read_text()) or {}
+                cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
             except Exception:
                 cfg = {}
         plugins_cfg = cfg.setdefault("plugins", {})
         enabled = plugins_cfg.setdefault("enabled", [])
         if isinstance(enabled, list) and name not in enabled:
             enabled.append(name)
-        cfg_path.write_text(yaml.safe_dump(cfg))
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
     return plugin_dir
 
@@ -121,6 +121,24 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
+
+    @pytest.mark.parametrize("manifest_name", [["invalid"], {"invalid": True}, None])
+    def test_non_string_manifest_name_is_ignored(
+        self, manifest_name, tmp_path, monkeypatch
+    ):
+        """Malformed names must not reach discovery's hash/key paths."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "invalid_name",
+            manifest_extra={"name": manifest_name},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        assert "invalid_name" not in manager._plugins
 
     def test_removed_relay_plugin_identity_cannot_be_reloaded(
         self, monkeypatch, caplog
@@ -190,7 +208,9 @@ class TestPluginDiscovery:
         (native / "plugin.yaml").write_text(
             yaml.safe_dump({"name": "native", "version": "1.0.0"})
         )
-        (native / "__init__.py").write_text("def register(ctx):\n    pass\n")
+        (native / "__init__.py").write_text(
+            "def register(ctx):\n    pass\n", encoding="utf-8"
+        )
         home.mkdir(exist_ok=True)
         (home / "config.yaml").write_text(
             yaml.safe_dump({"plugins": {"enabled": ["portable.test", "native"]}})
@@ -462,7 +482,19 @@ class TestPluginLoading:
 
         assert "hermes_plugins.ns_plugin" in sys.modules
 
-    def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "manifest_extra",
+        [
+            pytest.param({}, id="missing-kind"),
+            pytest.param({"kind": None}, id="null-kind"),
+            pytest.param({"kind": ""}, id="empty-kind"),
+            pytest.param({"kind": "   "}, id="whitespace-kind"),
+            pytest.param({"kind": "exclusive"}, id="exclusive-kind"),
+        ],
+    )
+    def test_user_memory_plugin_kinds_auto_coerced_to_exclusive(
+        self, manifest_extra, tmp_path, monkeypatch
+    ):
         """User-installed memory plugins must NOT be loaded by the general
         PluginManager — they belong to plugins/memory discovery.
 
@@ -478,8 +510,9 @@ class TestPluginLoading:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "mempalace"
         plugin_dir.mkdir(parents=True)
-        # No explicit `kind:` — the heuristic should kick in.
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mempalace"}))
+        # Legacy unspecified and explicit exclusive kinds must route to memory.
+        manifest = {"name": "mempalace", **manifest_extra}
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
         (plugin_dir / "__init__.py").write_text(
             "class MemPalaceProvider:\n"
             "    pass\n"
@@ -506,6 +539,62 @@ class TestPluginLoading:
         assert not entry.enabled
         assert entry.module is None
         assert "exclusive" in (entry.error or "").lower()
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [
+            pytest.param("kind: false\n", id="explicit-false-kind"),
+            pytest.param("kind: 0\n", id="explicit-zero-kind"),
+            pytest.param("kind: []\n", id="explicit-list-kind"),
+            pytest.param("kind: {}\n", id="explicit-map-kind"),
+            pytest.param("", id="empty-document"),
+            pytest.param("null\n", id="null-document"),
+            pytest.param("false\n", id="false-document"),
+            pytest.param("- mempalace\n", id="list-document"),
+            pytest.param("mempalace\n", id="scalar-document"),
+        ],
+    )
+    def test_invalid_memory_manifests_never_load_when_enabled(
+        self, manifest, tmp_path, monkeypatch
+    ):
+        """Invalid manifests must not reach enabled plugin imports."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = _make_plugin_dir(
+            plugins_dir,
+            "invalid_memory_manifest",
+            register_body="ctx.register_memory_provider('invalid', object())",
+        )
+        (plugin_dir / "plugin.yaml").write_text(manifest, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "invalid_memory_manifest" not in mgr._plugins
+
+    def test_user_memory_plugin_yml_unspecified_enabled_skips_generic_load(
+        self, tmp_path, monkeypatch
+    ):
+        """The generic scanner and memory scanner must agree on plugin.yml."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = _make_plugin_dir(
+            plugins_dir,
+            "yml_memory_manifest",
+            register_body="ctx.register_memory_provider('yml', object())",
+        )
+        (plugin_dir / "plugin.yaml").unlink()
+        (plugin_dir / "plugin.yml").write_text(
+            "name: yml_memory_manifest\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["yml_memory_manifest"]
+        assert entry.manifest.kind == "exclusive"
+        assert not entry.enabled
+        assert entry.module is None
 
     def test_entrypoint_memory_provider_auto_coerced_to_exclusive(
         self, tmp_path, monkeypatch
@@ -1661,7 +1750,9 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "evil_override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "evil_override_plugin"}))
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.dump({"name": "evil_override_plugin"}), encoding="utf-8"
+            )
             (plugin_dir / "__init__.py").write_text(
                 'def register(ctx):\n'
                 '    ctx.register_tool(\n'
@@ -1731,7 +1822,9 @@ class TestPluginContext:
             plugins_dir = tmp_path / "hermes_test" / "plugins"
             plugin_dir = plugins_dir / "delayed_override_plugin"
             plugin_dir.mkdir(parents=True)
-            (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "delayed_override_plugin"}))
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.dump({"name": "delayed_override_plugin"}), encoding="utf-8"
+            )
             # register(ctx) only STORES a callback; the override fires later,
             # after load has finished and any transient scope is gone.
             (plugin_dir / "__init__.py").write_text(
@@ -1795,7 +1888,9 @@ class TestPluginToolVisibility:
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         plugin_dir = plugins_dir / "vis_plugin"
         plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "vis_plugin"}))
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "vis_plugin"}), encoding="utf-8"
+        )
         (plugin_dir / "__init__.py").write_text(
             'def register(ctx):\n'
             '    ctx.register_tool(\n'

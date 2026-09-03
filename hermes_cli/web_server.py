@@ -6468,6 +6468,8 @@ def _memory_provider_manifest(name: str) -> Dict[str, Any]:
             return {}
         manifest_path = provider_dir / "plugin.yaml"
         if not manifest_path.exists():
+            manifest_path = provider_dir / "plugin.yml"
+        if not manifest_path.exists():
             return {}
         with manifest_path.open(encoding="utf-8-sig") as handle:
             manifest = yaml.safe_load(handle) or {}

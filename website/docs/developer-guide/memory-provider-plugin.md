@@ -9,7 +9,7 @@ description: "How to build a memory provider plugin for Hermes Agent"
 Memory provider plugins give Hermes Agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. This guide covers how to build one.
 
 :::tip
-Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
+Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select and config-driven. Memory providers are managed via `hermes memory setup`; general plugins use `hermes plugins`.
 :::
 
 ## Installation Layouts
@@ -42,11 +42,14 @@ Hermes, in `$HERMES_HOME/plugins/<name>/` when installed by a user, or in
 `./.hermes/plugins/<name>/` for a project-local one:
 
 ```
-plugins/memory/my-provider/
+~/.hermes/plugins/my-provider/
 ├── __init__.py      # MemoryProvider implementation + register() entry point
-├── plugin.yaml      # Metadata (name, description, hooks)
+├── plugin.yaml      # Metadata (name, kind: exclusive, description, hooks)
 └── README.md        # Setup instructions, config reference, tools
 ```
+
+After installing a standalone provider, run `hermes memory setup` and select
+it. Do not copy new providers into Hermes' `plugins/memory/` tree.
 
 ### Packaged Provider
 
@@ -281,6 +284,7 @@ With the `my-provider` entry point active, the skill is available as
 name: my-provider
 version: 1.0.0
 description: "Short description of what this provider does."
+kind: exclusive
 hooks:
   - on_session_end    # list hooks you implement
 ```
@@ -362,7 +366,7 @@ Memory provider plugins can register their own CLI subcommand tree (e.g. `hermes
 ### Example
 
 ```python
-# plugins/memory/my-provider/cli.py
+# ~/.hermes/plugins/my-provider/cli.py
 
 def my_command(args):
     """Handler dispatched by argparse."""
@@ -392,9 +396,9 @@ See `plugins/memory/honcho/cli.py` for a full example with 13 subcommands, cross
 ### Directory structure with CLI
 
 ```
-plugins/memory/my-provider/
+~/.hermes/plugins/my-provider/
 ├── __init__.py      # MemoryProvider implementation + register()
-├── plugin.yaml      # Metadata
+├── plugin.yaml      # Metadata (kind: exclusive)
 ├── cli.py           # register_cli(subparser) — CLI commands
 └── README.md        # Setup instructions
 ```

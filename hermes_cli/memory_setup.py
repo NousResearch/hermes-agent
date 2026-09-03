@@ -104,7 +104,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # ---------------------------------------------------------------------------
 
 def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
-    """Install pip dependencies declared in ``plugin.yaml``.
+    """Install pip dependencies declared in ``plugin.yaml`` or ``plugin.yml``.
 
     When ``force`` is true, every declared dependency is handed to the
     installer even if its import currently succeeds — the resolver then
@@ -121,7 +121,9 @@ def _install_dependencies(provider_name: str, *, force: bool = False) -> None:
         return
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
-        return
+        yaml_path = plugin_dir / "plugin.yml"
+        if not yaml_path.exists():
+            return
 
     try:
         import yaml

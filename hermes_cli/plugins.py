@@ -4786,13 +4786,34 @@ class PluginManager:
             if yaml is None:
                 logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                 return None
-            data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+            data = fast_safe_load(manifest_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Plugin manifest %s is not a mapping; ignoring",
+                    manifest_file,
+                )
+                return None
 
             name = data.get("name", plugin_dir.name)
+            if not isinstance(name, str):
+                logger.warning(
+                    "Plugin manifest %s has non-string name; ignoring",
+                    manifest_file,
+                )
+                return None
             key = f"{prefix}/{plugin_dir.name}" if prefix else name
 
-            raw_kind = data.get("kind", "standalone")
-            if not isinstance(raw_kind, str):
+            raw_kind = data.get("kind")
+            if raw_kind is not None and not isinstance(raw_kind, str):
+                logger.warning(
+                    "Plugin %s has non-string kind; ignoring manifest",
+                    key,
+                )
+                return None
+            kind_is_unspecified = raw_kind is None or (
+                not raw_kind.strip()
+            )
+            if not isinstance(raw_kind, str) or kind_is_unspecified:
                 raw_kind = "standalone"
             kind = raw_kind.strip().lower()
             if kind not in _VALID_PLUGIN_KINDS:
@@ -4809,7 +4830,7 @@ class PluginManager:
             # activation path). Mirrors the heuristic in
             # plugins/memory/__init__.py:_is_memory_provider_dir.
             # Bundled memory providers are already skipped via skip_names.
-            if kind == "standalone" and "kind" not in data:
+            if kind == "standalone" and kind_is_unspecified:
                 init_file = plugin_dir / "__init__.py"
                 if init_file.exists():
                     try:

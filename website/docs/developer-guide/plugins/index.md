@@ -624,7 +624,7 @@ Common reasons a plugin doesn't appear:
 - **Not enabled in config** — plugins are opt-in. Run `hermes plugins enable <name>` (the name comes from the `plugins list` output, which can be `<category>/<plugin>` for nested layouts).
 - **Wrong directory layout:** Native packages use `~/.hermes/plugins/<plugin-name>/plugin.yaml` (flat) or one category level. Portable packages use root `plugin.json` in the same locations. Anything deeper is ignored.
 - **Missing `__init__.py`:** Native packages need both `plugin.yaml` and `__init__.py` with a `register(ctx)` function. Portable packages do not import Python and do not require `__init__.py`.
-- **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers are auto-detected as `kind: exclusive` and routed through the `memory.provider` config instead of `plugins.enabled`.
+- **Wrong `kind`** — gateway adapters need `kind: platform` in their manifest. Memory providers should declare `kind: exclusive` and are routed through the `memory.provider` config instead of `plugins.enabled`. Providers that omit `kind` still work through the legacy source-text fallback, but `kind: exclusive` is the recommended explicit form.
 
 ## Your plugin's final structure
 
@@ -1462,10 +1462,12 @@ optional_env:
 
 ### Memory provider plugins — add a cross-session knowledge backend
 
-Drop an implementation of `MemoryProvider` into `plugins/memory/<name>/`:
+New third-party memory providers ship as standalone plugins under
+`$HERMES_HOME/plugins/<name>/` (normally `~/.hermes/plugins/<name>/`). Existing
+bundled providers remain under `plugins/memory/<name>/`:
 
 ```python
-# plugins/memory/my-memory/__init__.py
+# ~/.hermes/plugins/my-memory/__init__.py
 from agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):
@@ -1493,6 +1495,10 @@ class MyMemoryProvider(MemoryProvider):
 def register(ctx):
     ctx.register_memory_provider(MyMemoryProvider())
 ```
+
+Declare `kind: exclusive` in `plugin.yaml`, install the standalone plugin,
+then select it with `hermes memory setup`. New third-party providers must not
+be added to Hermes' `plugins/memory/` tree.
 
 Memory providers are single-select — only one is active at a time, chosen via `memory.provider` in `config.yaml`.
 

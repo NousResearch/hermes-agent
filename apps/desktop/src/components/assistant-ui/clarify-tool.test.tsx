@@ -733,15 +733,21 @@ describe('ClarifyTool batch card', () => {
     })
   })
 
-  it('Enter on a focused choice emits nothing while the batch is incomplete', () => {
-    const request = renderAllChoiceBatch()
-    const firstChoice = screen.getByRole('button', { name: /red/ })
+  it('Enter on a focused multi-select choice is suppressed while another batch question is incomplete', () => {
+    const request = renderLiveBatch(undefined, true)
+    const red = screen.getByRole('button', { name: /red/ })
+    const blue = screen.getByRole('button', { name: /blue/ })
 
-    fireEvent.click(firstChoice)
-    firstChoice.focus()
+    fireEvent.click(red)
+    fireEvent.click(blue)
+    blue.focus()
 
-    fireEvent.keyDown(firstChoice, { key: 'Enter' })
+    expect(blue.ownerDocument.activeElement).toBe(blue)
+    expect(fireEvent.keyDown(blue, { key: 'Enter' })).toBe(false)
 
+    expect(red.getAttribute('aria-pressed')).toBe('true')
+    expect(blue.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
     expect(request).not.toHaveBeenCalled()
   })
 

@@ -720,6 +720,41 @@ describe('the drain loop wires drain → deliver → reply', () => {
     stopBotRelay()
   })
 
+  it('recovers a target from union source identity while registry reconciliation lags', async () => {
+    hostMock.connections = vi.fn(async () => [{ id: 'a', kind: 'local' }])
+    hostMock.agents = vi.fn(async () => ({
+      agents: [],
+      sources: [{ connectionId: 'b', kind: 'ssh', label: 'M5', reachable: true }]
+    }))
+    hostMock.profileRoutes = vi.fn(async () => [route('a'), route('c')])
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [envelope] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return { reply: 'union identity dial complete' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    calls.length = 0
+    await pushAndSettle()
+
+    expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
+      connectionId: 'b',
+      params: { message: 'status?', profile: 'ops' }
+    })
+
+    stopBotRelay()
+  })
+
   it('waits for the registered target warm dial before using its synthesized route', async () => {
     let finishWarm!: () => void
 

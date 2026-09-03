@@ -318,9 +318,32 @@ async function waitForRelayConnection(
     try {
       const registered = await host.connections()
 
-      const source = (Array.isArray(registered) ? registered : []).find(
+      let source = (Array.isArray(registered) ? registered : []).find(
         connection => String(connection?.id || '') === connectionId
       )
+
+      // The registry bridge and the union-roster bridge are independent IPC
+      // reads. During connection reconciliation one can briefly return an old
+      // snapshot while the other already knows the source. The union source
+      // contains no endpoint or credential material, but it is enough to
+      // prove the exact id is still registered and choose local vs remote.
+      if (!source && typeof host.agents === 'function') {
+        try {
+          const union = await host.agents()
+          const unionSource = (Array.isArray(union?.sources) ? union.sources : []).find(
+            candidate => String(candidate?.connectionId || '') === connectionId
+          )
+
+          if (unionSource) {
+            source = {
+              id: connectionId,
+              kind: String(unionSource.kind || '')
+            }
+          }
+        } catch {
+          // The bounded profile-route poll below remains the final fallback.
+        }
+      }
 
       if (source) {
         const kind = String(source.kind || '')

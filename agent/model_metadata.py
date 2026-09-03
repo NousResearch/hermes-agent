@@ -543,7 +543,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-chat": 1_000_000,
     "deepseek-reasoner": 1_000_000,
     "deepseek": 128000,
-    # Meta
+    # Meta — Muse Spark family ships with a 1M context window
+    # (1,048,576 tokens, Standard and Contributor tiers alike).
+    # Source: https://dev.meta.ai/docs/overview/ (verified 2026-09-03).
+    # models.dev has no muse-spark entry under any provider id and the
+    # opencode /models endpoint omits context metadata entirely, so without
+    # this the family falls through to the 256K fallback on every provider.
+    "muse-spark": 1_048_576,
     "llama": 131072,
     # Thinking Machines — Inkling family ships with a 1M context window
     # (max output 256K).  Verified against OpenRouter live metadata
@@ -3463,6 +3469,15 @@ def get_model_context_length(
     if effective_provider == "gmi" and base_url:
         # GMI exposes authoritative context_length via /models, but it is not
         # in models.dev yet. Preserve that higher-fidelity endpoint lookup.
+        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
+    if effective_provider in {"commandcode", "commandcode-anthropic"} and base_url:
+        # commandcode (api.commandcode.ai) exposes authoritative
+        # context_length via /models (e.g. muse-spark 1M) but is a
+        # known provider so step 2's custom-endpoint probe is skipped
+        # and models.dev has no muse-spark entry — without this the
+        # model fell through to the 256K fallback.
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx

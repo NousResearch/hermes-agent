@@ -188,6 +188,10 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "ai-gateway": "vercel",
     "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
+    # opencode-free is the free-tier transport for the same opencode-go
+    # catalog — without this alias the models.dev lookup misses for every
+    # model on opencode-free and falls through to the 256K default.
+    "opencode-free": "opencode-go",
     "kilocode": "kilo",
     "fireworks": "fireworks-ai",
     "huggingface": "huggingface",

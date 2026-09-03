@@ -101,6 +101,16 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
+# Langfuse trace id of the CURRENT turn, published by the bundled
+# observability/langfuse plugin as it opens the turn's root trace. Carried here
+# rather than in a bare os.environ write so a subprocess spawned mid-turn (the
+# terminal tool's claude shim, execute_code) can stamp its own telemetry with
+# the exact spawning turn: HERMES_SESSION_ID says which conversation, this says
+# which turn inside it. Task-local like the identity vars above — concurrent
+# turns (MoA fan-out, gateway message tasks) each publish their own id, and the
+# process-global mirror is only a CLI/cron fallback.
+_SESSION_TURN_TRACE_ID: ContextVar = ContextVar("HERMES_LANGFUSE_TRACE_ID", default=_UNSET)
+
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 _BROWSER_CONTROL_PRINCIPAL: ContextVar = ContextVar(
     "HERMES_BROWSER_CONTROL_PRINCIPAL", default=_UNSET
@@ -156,6 +166,7 @@ _VAR_MAP = {
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_UI_SESSION_ID": _SESSION_UI_SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
+    "HERMES_LANGFUSE_TRACE_ID": _SESSION_TURN_TRACE_ID,
     "HERMES_SESSION_PROFILE": _SESSION_PROFILE,
     "HERMES_BROWSER_CONTROL_PRINCIPAL": _BROWSER_CONTROL_PRINCIPAL,
     "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY": _BROWSER_CONTROL_TRANSPORT_FAMILY,
@@ -202,6 +213,54 @@ def set_current_session_id(session_id: str) -> None:
         pass
 
     os.environ["HERMES_SESSION_ID"] = session_id
+
+
+def set_current_turn_trace_id(trace_id: str) -> None:
+    """Publish the current turn's Langfuse trace id for spawned subprocesses.
+
+    Called by the bundled observability/langfuse plugin when it opens a turn's
+    root trace, and again with ``""`` when that trace finishes.  The subprocess
+    env bridge (``tools/environments/local._inject_session_context_env``) reads
+    the ContextVar, so a child process started during the turn — the terminal
+    tool's claude shim, execute_code — can stamp its own spans with the trace
+    that spawned it.  The ``os.environ`` mirror keeps the single-process CLI /
+    cron path working, where the bridge's fallback is the process env.
+
+    Delegated subagent children skip the mirror for the same reason
+    :func:`set_current_session_id` does: they run inside the parent process
+    under ``delegated_child_context()``, so a process-global write would replace
+    the parent turn's id for every later parent subprocess.  The ContextVar
+    write is task-local and stays correct for the child's own tools.
+
+    Clearing writes ``""`` to the ContextVar rather than restoring ``_UNSET``,
+    so the var has two "absent" spellings: ``_UNSET`` (never published in this
+    context — the bridge strips the var, or falls back to ``os.environ`` when no
+    host is engaged) and ``""`` (published and finished — the bridge exports it
+    empty, masking any stale mirror).  Both read as "no active turn trace"; they
+    differ only in whether the ``os.environ`` fallback still applies.
+
+    A trace id is a hex identifier, not a secret — it carries no content and
+    needs no redaction.
+    """
+    import os
+
+    value = str(trace_id or "")
+    _SESSION_TURN_TRACE_ID.set(value)
+
+    try:
+        from agent.delegation_context import is_delegated_child_context
+
+        if is_delegated_child_context():
+            return
+    except Exception:
+        pass
+
+    if value:
+        os.environ["HERMES_LANGFUSE_TRACE_ID"] = value
+    else:
+        # Drop rather than blank the mirror: a finished turn must leave nothing
+        # behind for a CLI/cron process whose bridge falls back to os.environ.
+        os.environ.pop("HERMES_LANGFUSE_TRACE_ID", None)
 
 
 @contextmanager
@@ -282,6 +341,11 @@ def set_session_vars(
         _SESSION_ID.set(session_id),
         _SESSION_UI_SESSION_ID.set(ui_session_id),
         _SESSION_MESSAGE_ID.set(message_id),
+        # A freshly bound session has not started a turn trace yet. Binding it
+        # explicitly empty (rather than leaving it inherited) keeps a sibling
+        # task's published id out of the pre-trace window; the langfuse plugin
+        # fills it in via set_current_turn_trace_id once the root trace opens.
+        _SESSION_TURN_TRACE_ID.set(""),
         _SESSION_PROFILE.set(profile),
         _BROWSER_CONTROL_PRINCIPAL.set(browser_control_principal),
         _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
@@ -323,6 +387,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_ID,
         _SESSION_UI_SESSION_ID,
         _SESSION_MESSAGE_ID,
+        _SESSION_TURN_TRACE_ID,
         _SESSION_PROFILE,
         _BROWSER_CONTROL_PRINCIPAL,
         _BROWSER_CONTROL_TRANSPORT_FAMILY,

@@ -2387,3 +2387,225 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+
+
+# ---------------------------------------------------------------------------
+# Turn trace id published to the session-context layer
+# ---------------------------------------------------------------------------
+
+class TestTurnTraceIdPublishing:
+    """The current turn's trace id must reach subprocesses spawned by the turn.
+
+    ``_start_root_trace`` hands the id to
+    ``gateway.session_context.set_current_turn_trace_id``, whose ContextVar the
+    subprocess-env bridge exports as ``HERMES_LANGFUSE_TRACE_ID``. That lets a
+    child run (the terminal tool's claude shim, execute_code) stamp its own
+    telemetry and join back to the exact spawning turn. See
+    tests/gateway/test_turn_trace_id_env.py for the bridge half.
+    """
+
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @pytest.fixture(autouse=True)
+    def _isolate_turn_trace_id(self):
+        import os
+
+        import gateway.session_context as sc
+
+        var = sc._VAR_MAP["HERMES_LANGFUSE_TRACE_ID"]
+        saved_ctx = var.get()
+        saved_env = os.environ.get("HERMES_LANGFUSE_TRACE_ID")
+        var.set(sc._UNSET)
+        os.environ.pop("HERMES_LANGFUSE_TRACE_ID", None)
+        try:
+            yield
+        finally:
+            var.set(saved_ctx)
+            if saved_env is None:
+                os.environ.pop("HERMES_LANGFUSE_TRACE_ID", None)
+            else:
+                os.environ["HERMES_LANGFUSE_TRACE_ID"] = saved_env
+
+    @staticmethod
+    def _client():
+        class _Span:
+            def update(self, **kw): pass
+            def end(self, **kw): pass
+            def update_trace(self, **kw): pass
+            def start_observation(self, **kw): return _Span()
+
+        class _RootCM:
+            def __enter__(self): return _Span()
+            def __exit__(self, *exc): return False
+
+        class _Client:
+            def create_trace_id(self, seed=None):
+                return "abc123deadbeef"
+
+            def start_as_current_observation(self, **kw):
+                return _RootCM()
+
+            def flush(self):
+                pass
+
+        return _Client()
+
+    def _start(self, mod, client):
+        return mod._start_root_trace(
+            "task-key", task_id="t1", session_id="s1", platform="cli",
+            provider="p", model="m", api_mode="chat",
+            messages=[{"role": "user", "content": "hi"}], client=client,
+            turn_id="turn-1",
+        )
+
+    def test_root_trace_publishes_id_to_session_context(self, monkeypatch):
+        from gateway.session_context import get_session_env
+
+        mod = self._fresh_plugin()
+        state = self._start(mod, self._client())
+
+        assert state.trace_id == "abc123deadbeef"
+        assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == "abc123deadbeef"
+
+    def test_finish_trace_withdraws_the_id(self, monkeypatch):
+        from gateway.session_context import get_session_env
+
+        mod = self._fresh_plugin()
+        client = self._client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        state = self._start(mod, client)
+        mod._TRACE_STATE["task-key"] = state
+        assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == "abc123deadbeef"
+
+        mod._finish_trace("task-key", output="done")
+
+        assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == "", (
+            "a finished turn's trace id must not stay published for the next turn"
+        )
+
+    def test_finish_trace_leaves_a_live_turns_id_alone(self, monkeypatch):
+        """Reaping a dangling trace must not unpublish the live turn's id.
+
+        ``on_session_end`` finishes every lingering key, including turns that
+        never finalized. Clearing unconditionally there would strip the id that
+        a still-running turn is handing to its subprocesses.
+        """
+        from gateway.session_context import get_session_env, set_current_turn_trace_id
+
+        mod = self._fresh_plugin()
+        client = self._client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        stale = self._start(mod, client)
+        mod._TRACE_STATE["stale-key"] = stale
+        # A newer turn publishes its own id over the stale one.
+        set_current_turn_trace_id("live-turn-trace")
+
+        mod._finish_trace("stale-key")
+
+        assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == "live-turn-trace"
+
+    def test_finish_trace_leaves_a_live_turns_id_alone_when_the_mirror_lags(self, monkeypatch):
+        """A stale reap must not blank a live turn whose env mirror lags behind.
+
+        A delegate_task child publishes its trace to the ContextVar only — the
+        process-global mirror deliberately keeps the parent's id (see
+        ``set_current_turn_trace_id``).  Reaping the parent's dangling trace from
+        inside the child's context therefore matches on the mirror, and clearing
+        on that match alone would blank the child's live ContextVar: the very
+        store the subprocess-env bridge treats as authoritative.  Withdraw the
+        mirror, leave the ContextVar.
+        """
+        import os
+
+        from agent.delegation_context import delegated_child_context
+        from gateway.session_context import get_session_env, set_current_turn_trace_id
+
+        mod = self._fresh_plugin()
+        client = self._client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        stale = self._start(mod, client)
+        mod._TRACE_STATE["stale-key"] = stale
+
+        with delegated_child_context():
+            # ContextVar-only publish: the mirror still holds the stale id.
+            set_current_turn_trace_id("live-child-trace")
+            assert os.environ.get("HERMES_LANGFUSE_TRACE_ID") == "abc123deadbeef"
+
+            mod._finish_trace("stale-key")
+
+            assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == "live-child-trace", (
+                "withdrawing a stale id must not blank the live turn's ContextVar"
+            )
+            assert os.environ.get("HERMES_LANGFUSE_TRACE_ID") is None, (
+                "the stale id must still be withdrawn from the process-global mirror"
+            )
+
+    def test_finish_trace_withdraws_id_published_in_another_context(self, monkeypatch):
+        """A cross-task finish must still withdraw the finished turn's id.
+
+        ``_finish_trace`` can run in a different async task than the one that
+        opened the trace (``on_session_finalize`` / ``on_session_end`` reaping a
+        turn that never finalized). The finishing task's ContextVar is ``""``
+        (a fresh session bind), so the task-local read alone would miss the id;
+        the guard must fall back to the process-global ``os.environ`` mirror and
+        withdraw it there instead of leaving a stale id for the next turn.
+        """
+        import os
+
+        import gateway.session_context as sc
+        from gateway.session_context import get_session_env, set_session_vars
+
+        mod = self._fresh_plugin()
+        client = self._client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+        monkeypatch.setattr(mod, "_end_observation", lambda *a, **k: None)
+        mod._TRACE_STATE.clear()
+
+        state = self._start(mod, client)
+        mod._TRACE_STATE["task-key"] = state
+        assert os.environ.get("HERMES_LANGFUSE_TRACE_ID") == "abc123deadbeef"
+
+        # The finishing task bound a fresh session (ContextVar -> "") without
+        # touching the process-global mirror, which still holds the finished id.
+        # set_session_vars latches the process-wide "engaged" flag, which
+        # switches the subprocess-env bridge's leak policy for every later test
+        # in this process — restore it.
+        saved_engaged = sc._session_context_engaged
+        try:
+            set_session_vars(session_key="k:other", session_id="sess-other", source="cli")
+            assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == ""
+
+            mod._finish_trace("task-key")
+        finally:
+            sc._session_context_engaged = saved_engaged
+
+        assert os.environ.get("HERMES_LANGFUSE_TRACE_ID") is None, (
+            "a cross-task finish must withdraw the id from the env mirror, not "
+            "leave a stale trace id to leak to the next turn's subprocesses"
+        )
+        assert get_session_env("HERMES_LANGFUSE_TRACE_ID", "") == "", (
+            "the finishing task's own ContextVar must be left as it bound it"
+        )
+
+    def test_publishing_failure_never_breaks_tracing(self, monkeypatch):
+        """A Hermes build without the setter must still open the root trace."""
+        import gateway.session_context as sc
+
+        mod = self._fresh_plugin()
+        monkeypatch.delattr(sc, "set_current_turn_trace_id")
+
+        state = self._start(mod, self._client())
+
+        assert state is not None
+        assert state.trace_id == "abc123deadbeef"

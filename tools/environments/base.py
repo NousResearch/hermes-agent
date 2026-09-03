@@ -539,12 +539,15 @@ def _cwd_marker(session_id: str) -> str:
 # set), not Hermes' per-turn session identity.
 #
 # Kept in sync with gateway.session_context._VAR_MAP: every bridged name starts
-# with one of these prefixes (or is HERMES_UI_SESSION_ID). Used by unit tests
-# as the Python-side contract for the exclusion set; the dump path unsets by
-# name/prefix instead of grepping declare lines (see below / issue #71296).
+# with one of these prefixes (or is HERMES_UI_SESSION_ID / HERMES_LANGFUSE_TRACE_ID).
+# Used by unit tests as the Python-side contract for the exclusion set; the dump
+# path unsets by name/prefix instead of grepping declare lines (see below /
+# issue #71296). HERMES_LANGFUSE_TRACE_ID is matched by full name, not by a
+# HERMES_LANGFUSE_ prefix, so the plugin's credential vars keep their existing
+# handling.
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
-    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)"
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|HERMES_LANGFUSE_TRACE_ID)"
 )
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -596,7 +599,11 @@ def _export_dump_excluding_session_vars(
         # harness value arriving via the process env, exactly like the
         # session-var leak this dump already guards against.
         "AI_AGENT HERMES_AGENT "
-        f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
+        # Per-turn Langfuse trace id: bridged fresh onto every command like the
+        # session vars, so persisting the first turn's id would make every later
+        # turn's subprocess ``source`` a stale trace and mis-join its telemetry.
+        "HERMES_UI_SESSION_ID HERMES_LANGFUSE_TRACE_ID"
+        f"{extra_unset} 2>/dev/null; "
         "export -p; "
         ") || true; } "
         f"> {tmp_path}"

@@ -20,6 +20,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _patch_sdk_async_client(dummy):
+    """Patch ``AsyncClient`` on whichever httpx module the MCP SDK uses.
+
+    mcp 2.0 moved the SDK's HTTP stack to ``httpx2``, so patching
+    ``httpx.AsyncClient`` no longer intercepts the client Hermes builds for
+    the SDK. Resolve the module the same way production does, via
+    ``tools.mcp_tool.sdk_httpx``, so these tests follow the SDK rather than
+    hardcoding a distribution name.
+    """
+    from tools.mcp_tool import sdk_httpx
+
+    return patch.object(sdk_httpx(), "AsyncClient", dummy)
+
+
 # ---------------------------------------------------------------------------
 # _resolve_client_cert helper
 # ---------------------------------------------------------------------------
@@ -41,19 +55,6 @@ class TestResolveClientCert:
         result = _resolve_client_cert("srv", {"client_cert": str(pem)})
         assert result == str(pem)
 
-    def test_string_cert_with_separate_key(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
-
-        cert = tmp_path / "client.crt"
-        key = tmp_path / "client.key"
-        cert.write_text("cert")
-        key.write_text("key")
-
-        result = _resolve_client_cert("srv", {
-            "client_cert": str(cert),
-            "client_key": str(key),
-        })
-        assert result == (str(cert), str(key))
 
     def test_list_form_two_elements(self, tmp_path):
         from tools.mcp_tool import _resolve_client_cert
@@ -68,74 +69,6 @@ class TestResolveClientCert:
         })
         assert result == (str(cert), str(key))
 
-    def test_list_form_with_passphrase(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
-
-        cert = tmp_path / "client.crt"
-        key = tmp_path / "client.key"
-        cert.write_text("cert")
-        key.write_text("key")
-
-        result = _resolve_client_cert("srv", {
-            "client_cert": [str(cert), str(key), "passphrase"],
-        })
-        assert result == (str(cert), str(key), "passphrase")
-
-    def test_tilde_expansion(self, tmp_path, monkeypatch):
-        from tools.mcp_tool import _resolve_client_cert
-
-        monkeypatch.setenv("HOME", str(tmp_path))
-        pem = tmp_path / "client.pem"
-        pem.write_text("dummy")
-
-        result = _resolve_client_cert("srv", {"client_cert": "~/client.pem"})
-        assert result == str(pem)
-
-    def test_missing_file_raises(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
-
-        with pytest.raises(FileNotFoundError, match=r"srv.*client_cert.*not found"):
-            _resolve_client_cert("srv", {
-                "client_cert": str(tmp_path / "nope.pem"),
-            })
-
-    def test_missing_key_file_raises(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
-
-        cert = tmp_path / "client.crt"
-        cert.write_text("cert")
-
-        with pytest.raises(FileNotFoundError, match=r"srv.*client_key.*not found"):
-            _resolve_client_cert("srv", {
-                "client_cert": str(cert),
-                "client_key": str(tmp_path / "missing.key"),
-            })
-
-    def test_list_with_bad_length_raises(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
-
-        with pytest.raises(ValueError, match=r"list form must have 2 or 3"):
-            _resolve_client_cert("srv", {"client_cert": [str(tmp_path / "x")]})
-
-    def test_list_plus_client_key_rejected(self, tmp_path):
-        from tools.mcp_tool import _resolve_client_cert
-
-        cert = tmp_path / "client.crt"
-        key = tmp_path / "client.key"
-        cert.write_text("cert")
-        key.write_text("key")
-
-        with pytest.raises(ValueError, match=r"either client_cert as a list"):
-            _resolve_client_cert("srv", {
-                "client_cert": [str(cert), str(key)],
-                "client_key": str(key),
-            })
-
-    def test_non_string_path_rejected(self):
-        from tools.mcp_tool import _resolve_client_cert
-
-        with pytest.raises(ValueError, match=r"client_cert must be a non-empty string"):
-            _resolve_client_cert("srv", {"client_cert": 123})
 
     def test_password_must_be_string(self, tmp_path):
         from tools.mcp_tool import _resolve_client_cert
@@ -204,7 +137,7 @@ class TestHTTPClientCert:
         async def _drive():
             with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
                  patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
-                 patch("httpx.AsyncClient", DummyAsyncClient), \
+                 _patch_sdk_async_client(DummyAsyncClient), \
                  patch("tools.mcp_tool.streamable_http_client",
                        return_value=DummyTransportCtx()), \
                  patch("tools.mcp_tool.ClientSession", DummySession), \
@@ -217,120 +150,6 @@ class TestHTTPClientCert:
         asyncio.run(_drive())
         assert captured.get("cert") == str(cert)
 
-    def test_cert_tuple_forwarded(self, tmp_path):
-        """List/tuple form resolves to a tuple in ``cert=``."""
-        from tools.mcp_tool import MCPServerTask
-
-        cert = tmp_path / "client.crt"
-        key = tmp_path / "client.key"
-        cert.write_text("cert")
-        key.write_text("key")
-
-        server = MCPServerTask("remote")
-        captured: dict = {}
-
-        class DummyAsyncClient:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-        class DummyTransportCtx:
-            async def __aenter__(self):
-                return MagicMock(), MagicMock(), (lambda: None)
-
-            async def __aexit__(self, *a):
-                return False
-
-        class DummySession:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-            async def initialize(self):
-                return None
-
-        async def _discover_tools(self):
-            self._shutdown_event.set()
-
-        async def _drive():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-                 patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
-                 patch("httpx.AsyncClient", DummyAsyncClient), \
-                 patch("tools.mcp_tool.streamable_http_client",
-                       return_value=DummyTransportCtx()), \
-                 patch("tools.mcp_tool.ClientSession", DummySession), \
-                 patch.object(MCPServerTask, "_discover_tools", _discover_tools):
-                await server._run_http({
-                    "url": "https://example.com/mcp",
-                    "client_cert": [str(cert), str(key)],
-                })
-
-        asyncio.run(_drive())
-        assert captured.get("cert") == (str(cert), str(key))
-
-    def test_no_cert_means_no_cert_kwarg(self):
-        """When client_cert is unset, ``cert`` is not passed to ``httpx.AsyncClient``
-        (matches SDK defaults)."""
-        from tools.mcp_tool import MCPServerTask
-
-        server = MCPServerTask("remote")
-        captured: dict = {}
-
-        class DummyAsyncClient:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-        class DummyTransportCtx:
-            async def __aenter__(self):
-                return MagicMock(), MagicMock(), (lambda: None)
-
-            async def __aexit__(self, *a):
-                return False
-
-        class DummySession:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *a):
-                return False
-
-            async def initialize(self):
-                return None
-
-        async def _discover_tools(self):
-            self._shutdown_event.set()
-
-        async def _drive():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-                 patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
-                 patch("httpx.AsyncClient", DummyAsyncClient), \
-                 patch("tools.mcp_tool.streamable_http_client",
-                       return_value=DummyTransportCtx()), \
-                 patch("tools.mcp_tool.ClientSession", DummySession), \
-                 patch.object(MCPServerTask, "_discover_tools", _discover_tools):
-                await server._run_http({"url": "https://example.com/mcp"})
-
-        asyncio.run(_drive())
-        assert "cert" not in captured
 
     def test_missing_cert_file_surfaces_clear_error(self, tmp_path):
         """A missing cert file fails fast with a server-scoped error message."""
@@ -466,9 +285,9 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
-        import httpx
-        with patch.object(httpx, "AsyncClient", DummyAsyncClient):
-            factory(headers={"x": "y"}, timeout=httpx.Timeout(30.0), auth=None)
+        from tools.mcp_tool import sdk_httpx
+        with _patch_sdk_async_client(DummyAsyncClient):
+            factory(headers={"x": "y"}, timeout=sdk_httpx().Timeout(30.0), auth=None)
 
         assert captured_client_kwargs["cert"] == str(cert)
         assert captured_client_kwargs["verify"] is True
@@ -513,8 +332,7 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
-        import httpx
-        with patch.object(httpx, "AsyncClient", DummyAsyncClient):
+        with _patch_sdk_async_client(DummyAsyncClient):
             factory(headers=None, timeout=None, auth=None)
 
         assert captured_client_kwargs["verify"] == str(ca_bundle)

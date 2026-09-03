@@ -11,6 +11,7 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -23,7 +24,6 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
-from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
@@ -68,6 +68,13 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         return exact[0].identifier
 
     if len(exact) > 1:
+        # Official catalog entries outrank community mirrors of the same
+        # skill: `hermes skills install impeccable` should resolve to the
+        # curated official/... entry, not stall on skills.sh duplicates.
+        official = [r for r in exact if r.source == "official"]
+        if len(official) == 1:
+            c.print(f"[dim]Resolved to: {official[0].identifier} (official catalog)[/]")
+            return official[0].identifier
         c.print(f"\n[yellow]Multiple skills named '{name}' found:[/]")
         table = Table()
         table.add_column("Source", style="dim")
@@ -93,6 +100,41 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
 
     c.print(f"[bold red]Error:[/] No skill named '{name}' found in any source.\n")
     return ""
+
+
+def _print_tier1_advisory(skill_dir, console) -> None:
+    """Print the advisory SkillEvaluator Tier 1 report, if available.
+
+    Never raises and never blocks the install: scanner missing, disabled
+    via ``skills.tier1_advisory: false``, or erroring all degrade to
+    silence. Secrets-class findings render red, the rest yellow.
+    """
+    try:
+        from tools.skillevaluator_scan import (
+            format_tier1_report, run_tier1_scan, tier1_advisory_enabled,
+        )
+        if not tier1_advisory_enabled():
+            return
+        report = run_tier1_scan(Path(skill_dir))
+        if not report.available:
+            return
+        text = format_tier1_report(report)
+        if not report.findings:
+            console.print(f"[dim]{text}[/]")
+            return
+        style = "red" if report.secrets_findings else "yellow"
+        console.print(Panel(
+            text,
+            title="SkillEvaluator Tier 1 (advisory)",
+            border_style=style,
+        ))
+        if report.secrets_findings:
+            console.print(
+                "[bold red]Possible credentials detected above.[/] "
+                "Review the flagged lines before using this skill.\n"
+            )
+    except Exception as exc:  # advisory only — never break an install
+        logging.getLogger(__name__).debug("Tier 1 advisory scan skipped: %s", exc)
 
 
 def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
@@ -124,33 +166,39 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
 
 
 def _resolve_source_meta_and_bundle(identifier: str, sources):
-    """Resolve metadata and bundle for a specific identifier."""
-    meta = None
-    bundle = None
-    matched_source = None
+    """Resolve metadata and bundle from a single source adapter.
+
+    Meta and bundle must come from the same adapter. Keeping catalog
+    metadata from skills.sh while taking a ClawHub zip of a same-named
+    skill is how ``hermes skills inspect owner/repo/skills/foo`` showed
+    the requested identifier and the wrong SKILL.md.
+    """
+    first_meta = None
+    first_meta_source = None
 
     for src in sources:
-        if meta is None:
-            try:
-                meta = src.inspect(identifier)
-                if meta:
-                    matched_source = src
-            except Exception:
-                meta = None
+        meta = None
+        bundle = None
+        try:
+            meta = src.inspect(identifier)
+        except Exception:
+            meta = None
         try:
             bundle = src.fetch(identifier)
         except Exception:
             bundle = None
         if bundle:
-            matched_source = src
             if meta is None:
                 try:
                     meta = src.inspect(identifier)
                 except Exception:
                     meta = None
-            break
+            return meta, bundle, src
+        if first_meta is None and meta:
+            first_meta = meta
+            first_meta_source = src
 
-    return meta, bundle, matched_source
+    return first_meta, None, first_meta_source
 
 
 def _derive_category_from_install_path(install_path: str) -> str:
@@ -184,29 +232,18 @@ def _existing_categories() -> List[str]:
     Used to suggest reusable categories when interactively installing from a
     URL. Hidden dirs (``.hub``, ``.trash``) are skipped.
     """
-    from tools.skills_hub import SKILLS_DIR
-    out: List[str] = []
+    from tools.skills_hub import SKILLS_DIR, _category_skill_dirs
     try:
-        for entry in SKILLS_DIR.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            # Only count as a category if it contains skills, not if it IS a skill.
-            # Heuristic: if ``<entry>/SKILL.md`` exists, it's a skill at the
-            # top level (no category); otherwise treat as a category bucket.
-            if (entry / "SKILL.md").exists():
-                continue
-            # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
-            try:
-                if any(
-                    not is_excluded_skill_path(p)
-                    for p in entry.rglob("SKILL.md")
-                ):
-                    out.append(entry.name)
-            except OSError:
-                continue
+        # _category_skill_dirs returns children containing any active
+        # SKILL.md — including top-level skills themselves. Only children
+        # WITHOUT their own SKILL.md are category buckets.
+        return sorted(
+            name
+            for name in set(_category_skill_dirs(SKILLS_DIR))
+            if not (SKILLS_DIR / name / "SKILL.md").exists()
+        )
     except (FileNotFoundError, OSError):
         return []
-    return sorted(set(out))
 
 
 def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[str]:
@@ -222,8 +259,10 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
         f"[bold]Enter a skill name{default_hint}:[/] "
         f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
     )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Name: ").strip()
+        answer = line_input("Name: ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
     if not answer and default:
@@ -247,8 +286,10 @@ def _prompt_for_category(c: Console, existing: List[str]) -> str:
         c.print(
             "[bold]Category[/] [dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]"
         )
+    from hermes_cli.cli_output import line_input
+
     try:
-        answer = input("Category: ").strip()
+        answer = line_input("Category: ").strip()
     except (EOFError, KeyboardInterrupt):
         return ""
     if not answer:
@@ -361,7 +402,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     _PER_SOURCE_LIMIT = {
         "hermes-index": 1000000,
         "official": 200, "skills-sh": 200, "well-known": 50,
-        "github": 200, "clawhub": 500, "claude-marketplace": 100,
+        "github": 200, "clawhub": 500,
         "lobehub": 500, "browse-sh": 500,
     }
 
@@ -502,7 +543,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "",
+               source_id: Optional[str] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -511,10 +553,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    ``source_id`` pins resolution to a single source adapter (e.g. ``clawhub``).
+    Callers that already know a skill's provenance -- notably ``do_update``,
+    which reads it from the lockfile -- should pass it so a bare, slash-less
+    identifier cannot be fuzzy-resolved to a same-named skill in a different
+    registry. Skill names are not namespaced across registries, so an
+    unconstrained resolve can silently change a skill's provenance.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
+        _source_matches,
     )
     from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
@@ -524,6 +574,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Resolve which source adapter handles this identifier
     auth = GitHubAuth()
     sources = create_source_router(auth)
+
+    if source_id:
+        pinned = [src for src in sources if _source_matches(src, source_id)]
+        if pinned:
+            sources = pinned
+        else:
+            c.print(
+                f"[bold red]Error:[/] no source adapter for '{source_id}'. "
+                f"Refusing to resolve '{identifier}' against other registries "
+                f"(that would change the skill's provenance).\n"
+            )
+            return
 
     # If identifier looks like a short name (no slashes), resolve it via search
     if "/" not in identifier:
@@ -679,6 +741,12 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          f"{len(result.findings)}_findings")
         return
 
+    # Advisory SkillEvaluator Tier 1 scan (optional second opinion).
+    # Warn-and-continue by design: PII-class findings are informational
+    # (known false-positive classes upstream), and the existing install
+    # confirmation below is where the user decides. Never blocks.
+    _print_tier1_advisory(q_path, c)
+
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
         if metadata_lines:
@@ -728,7 +796,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                          bundle.trust_level, "invalid_path", str(exc))
         return
     from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
+    c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
     # Blueprint detection: if the installed skill declares a
@@ -850,7 +918,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     # low cap here silently truncates the whole hub (see do_browse note).
     _PER_SOURCE_LIMIT = {"hermes-index": 5000, "official": 100, "skills-sh": 100,
                          "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
+                         "lobehub": 50, "browse-sh": 500}
     auth = GitHubAuth()
     sources = create_source_router(auth)
     # Delegate to the shared parallel walker so this inherits the index-aware
@@ -1043,9 +1111,21 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
 
 
-def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Update hub-installed skills with upstream changes."""
-    from tools.skills_hub import HubLockFile, check_for_skill_updates
+def do_update(name: Optional[str] = None, console: Optional[Console] = None,
+              force: bool = False) -> None:
+    """Update hub-installed skills with upstream changes.
+
+    Skills whose on-disk content no longer matches the hash recorded at
+    install time have been edited locally; updating them would silently
+    destroy the user's work (``do_install(force=True)`` rmtree-replaces the
+    directory). Those are skipped by default and only overwritten when
+    ``force=True``. Mirrors the user-modified protection bundled skills
+    already get from ``hermes update`` (ported from
+    paperclipai/paperclip#10978's explicit-merge-mode rule: destructive
+    replacement must be an explicit caller choice, never a rerun default).
+    """
+    from tools.skills_hub import SKILLS_DIR, HubLockFile, check_for_skill_updates
+    from tools.skills_guard import content_hash
 
     c = console or _console
     lock = HubLockFile()
@@ -1054,13 +1134,50 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         c.print("[dim]No updates available.[/]\n")
         return
 
+    skipped_local: list[str] = []
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
+        if installed and not force:
+            recorded_hash = installed.get("content_hash", "")
+            skill_path = SKILLS_DIR / installed.get("install_path", "")
+            if recorded_hash and skill_path.is_dir():
+                try:
+                    disk_hash = content_hash(skill_path)
+                except OSError:
+                    disk_hash = recorded_hash
+                if disk_hash != recorded_hash:
+                    skipped_local.append(entry["name"])
+                    c.print(
+                        f"[yellow]Skipping:[/] {entry['name']} — you have local edits "
+                        "(update would overwrite them)."
+                    )
+                    continue
         c.print(f"[bold]Updating:[/] {entry['name']}")
-        do_install(entry["identifier"], category=category, force=True, console=c)
+        # Pin the update to the source registry recorded in the lockfile.
+        # Without this, a bare (slash-less) identifier such as "reddit" falls
+        # through to _resolve_short_name()'s fuzzy catalog search inside
+        # do_install, which can match a same-named skill in a DIFFERENT
+        # registry and install that instead -- overwriting the user's files
+        # and rewriting the lock's `source`. An update must never change a
+        # skill's provenance.
+        do_install(
+            entry["identifier"],
+            category=category,
+            force=True,
+            console=c,
+            source_id=entry.get("source", "") or None,
+        )
 
-    c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
+    updated_count = len(updates) - len(skipped_local)
+    if updated_count:
+        c.print(f"[bold green]Updated {updated_count} skill(s).[/]\n")
+    if skipped_local:
+        c.print(
+            f"[dim]{len(skipped_local)} skill(s) kept your local edits: "
+            f"{', '.join(sorted(skipped_local))}.[/]"
+        )
+        c.print("[dim]Overwrite with: hermes skills update <name> --force[/]\n")
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
@@ -1723,12 +1840,13 @@ def skills_command(args) -> None:
     elif action == "check":
         do_check(name=getattr(args, "name", None))
     elif action == "update":
-        do_update(name=getattr(args, "name", None))
+        do_update(name=getattr(args, "name", None),
+                  force=getattr(args, "force", False))
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
     elif action == "uninstall":
-        do_uninstall(args.name)
+        do_uninstall(args.name, skip_confirm=getattr(args, "yes", False))
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
@@ -1907,8 +2025,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_check(name=name, console=c)
 
     elif action == "update":
-        name = args[0] if args else None
-        do_update(name=name, console=c)
+        force = "--force" in args
+        pos = [a for a in args if not a.startswith("--")]
+        name = pos[0] if pos else None
+        do_update(name=name, console=c, force=force)
 
     elif action == "audit":
         name = args[0] if args and not args[0].startswith("--") else None

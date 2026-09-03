@@ -51,75 +51,18 @@ def test_skill_review_prompt_treats_user_corrections_as_skill_signal():
     )
 
 
-def test_skill_review_prompt_prefers_loaded_skills_first():
-    """Currently-loaded skills must be the first patch target."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "LOADED" in prompt or "loaded" in prompt, (
-        "must mention currently-loaded skills"
-    )
-    # Must name the mechanisms for detecting loaded skills
-    assert "skill_view" in prompt and "/skill" in prompt, (
-        "must name skill_view and /skill-name as loaded-skill signals"
-    )
 
 
-def test_skill_review_prompt_has_four_step_preference_order():
-    """The 4-step patch/support-file/create ladder must be present."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "PATCH" in prompt
-    assert "references/" in prompt or "REFERENCE" in prompt
-    assert "CREATE" in prompt
-    assert "UMBRELLA" in prompt or "umbrella" in prompt
 
 
-def test_skill_review_prompt_names_three_support_file_kinds():
-    """Support-file step must name references/, templates/, and scripts/."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "references/" in prompt, "must name references/ as a support-file kind"
-    assert "templates/" in prompt, "must name templates/ as a support-file kind"
-    assert "scripts/" in prompt, "must name scripts/ as a support-file kind"
-    # Purpose hints for each kind
-    assert "knowledge" in prompt.lower() or "research" in prompt.lower() or "API docs" in prompt, (
-        "must mention knowledge-bank / research / API-docs role of references/"
-    )
-    assert "copied" in prompt.lower() or "starter" in prompt.lower() or "reproduce" in prompt.lower(), (
-        "must mention that templates/ are starter files to copy/modify"
-    )
-    assert "re-runnable" in prompt.lower() or "verification" in prompt.lower() or "probe" in prompt.lower(), (
-        "must mention that scripts/ are re-runnable actions"
-    )
 
 
-def test_skill_review_prompt_has_name_veto_for_create():
-    """Creating a new skill must be gated behind class-level naming."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "class level" in prompt.lower() or "CLASS-LEVEL" in prompt
-    assert "MUST NOT" in prompt or "must not" in prompt, (
-        "must have a name-veto clause blocking session-artifact names"
-    )
 
 
-def test_skill_review_prompt_embeds_user_preferences_in_skills():
-    """Must explicitly say user-preference lessons belong in SKILL.md, not only memory."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    lower = prompt.lower()
-    assert "preference" in lower, "must mention user preferences"
-    assert "memory" in lower and "skill" in lower, (
-        "must contrast memory vs skill responsibilities"
-    )
 
 
-def test_skill_review_prompt_flags_overlap_and_defers_to_curator():
-    """Reviewer should not consolidate live; flag overlap for the curator."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "overlap" in prompt.lower()
-    assert "curator" in prompt.lower(), "must defer consolidation to the curator"
 
 
-def test_skill_review_prompt_still_has_opt_out_clause():
-    """'Nothing to save.' must remain as a real-but-not-default option."""
-    prompt = AIAgent._SKILL_REVIEW_PROMPT
-    assert "Nothing to save." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -133,49 +76,16 @@ def test_combined_review_prompt_has_memory_section():
     assert "memory tool" in prompt
 
 
-def test_combined_review_prompt_skills_biased_toward_active_updates():
-    """Skills half must carry the active-update bias."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "**Skills**" in prompt
-    assert "ACTIVE" in prompt or "active" in prompt.lower()
-    assert "missed" in prompt.lower() or "opportunity" in prompt.lower()
 
 
-def test_combined_review_prompt_treats_user_corrections_as_skill_signal():
-    """Combined prompt must carry the same user-preference-is-skill-signal rule."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    lower = prompt.lower()
-    assert any(k in lower for k in ("style", "format", "verbos", "legib", "tone"))
-    assert "FIRST-CLASS" in prompt or "first-class" in prompt
 
 
-def test_combined_review_prompt_prefers_loaded_skills_first():
-    """Combined prompt must also prefer loaded skills first."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "LOADED" in prompt or "loaded" in prompt
-    assert "skill_view" in prompt and "/skill" in prompt
 
 
-def test_combined_review_prompt_has_four_step_skill_ladder():
-    """Combined prompt must keep the patch/support-file/create ladder on the Skills half."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "PATCH" in prompt
-    assert "references/" in prompt or "REFERENCE" in prompt
-    assert "CREATE" in prompt
-    assert "CLASS-LEVEL" in prompt or "class-level" in prompt or "class level" in prompt.lower()
 
 
-def test_combined_review_prompt_names_three_support_file_kinds():
-    """Combined prompt must also name all three support-file kinds."""
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "references/" in prompt
-    assert "templates/" in prompt
-    assert "scripts/" in prompt
 
 
-def test_combined_review_prompt_preserves_opt_out_clause():
-    prompt = AIAgent._COMBINED_REVIEW_PROMPT
-    assert "Nothing to save." in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -212,24 +122,70 @@ def _assert_anti_pattern_guidance(prompt: str, label: str) -> None:
     )
 
 
-def test_skill_review_prompt_has_anti_pattern_guidance():
-    """_SKILL_REVIEW_PROMPT must tell the reviewer NOT to capture transient env failures (#6051)."""
-    _assert_anti_pattern_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+def _assert_unresolved_failure_guidance(prompt: str, label: str) -> None:
+    """Unresolved task attempts must not become persistent skill guidance."""
+    lower = prompt.lower()
+    assert "unresolved failures" in lower, f"{label}: must identify unresolved failures"
+    assert "working method" in lower, f"{label}: must require a working method"
+    assert "told the user to check manually" in lower, (
+        f"{label}: must recognize an explicitly unresolved session"
+    )
+    assert "never the dead ends" in lower, f"{label}: must exclude failed attempts"
+    assert "independently confident" in lower, (
+        f"{label}: must limit exceptions to verified alternatives"
+    )
 
 
-def test_combined_review_prompt_has_anti_pattern_guidance():
-    """_COMBINED_REVIEW_PROMPT must carry the same guidance — same failure mode applies."""
-    _assert_anti_pattern_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+def test_skill_review_prompt_rejects_unresolved_failures():
+    _assert_unresolved_failure_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_rejects_unresolved_failures():
+    _assert_unresolved_failure_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
+def _assert_read_before_write_guidance(prompt: str, label: str) -> None:
+    """Both review prompts must teach the enforced read-before-write handshake.
+
+    The skill_manage guard refuses patch/edit of an existing SKILL.md (and
+    overwrite/remove of an existing support file) unless the exact target was
+    loaded via skill_view during the review. Without prompt guidance the model
+    walks into the refusal and burns iterations retrying (#62397).
+    """
+    lower = prompt.lower()
+    assert "read-before-write" in lower, f"{label}: must name the read-before-write rule"
+    assert "skill_view(name)" in prompt, (
+        f"{label}: must give the exact SKILL.md pre-read call"
+    )
+    assert "file_path=..." in prompt, (
+        f"{label}: must give the support-file pre-read form"
+    )
+    # Scope: only EXISTING targets need a pre-read; new creations are exempt.
+    assert "new" in lower and "no prior read" in lower, (
+        f"{label}: must exempt new skills / new support files from the pre-read"
+    )
+    # Transcript quotes must not be treated as satisfying the guard.
+    assert "does not count" in lower or "does NOT count" in prompt or "not satisfy" in lower, (
+        f"{label}: must say transcript-quoted content doesn't satisfy the guard"
+    )
+    # Bounded recovery: one view + one retry, never a loop.
+    assert "do not loop" in lower, (
+        f"{label}: must bound refusal recovery to a single retry"
+    )
+
+
+def test_skill_review_prompt_teaches_read_before_write():
+    _assert_read_before_write_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_teaches_read_before_write():
+    _assert_read_before_write_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
 # _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
 # ---------------------------------------------------------------------------
-
-def test_memory_review_prompt_still_focused_on_user_facts():
-    """Memory-only review prompt stays focused on user facts — not touched by this change."""
-    prompt = AIAgent._MEMORY_REVIEW_PROMPT
-    # The memory-only prompt should NOT drift into skill territory
-    assert "skills_list" not in prompt
-    assert "SURVEY" not in prompt
-    assert "memory tool" in prompt

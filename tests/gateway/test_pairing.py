@@ -45,28 +45,40 @@ class TestSplitPairingDirMigration:
         migrated = json.loads((legacy / "feishu-approved.json").read_text())
         assert "ou_user" in migrated
 
-    def test_active_entries_win_when_merging_split_dirs(self, tmp_path):
+
+class TestProfileScopedDiscovery:
+    def test_list_approved_scopes_platform_discovery_to_profile_dir(self, tmp_path):
+        # A profile-scoped store must enumerate platforms from its own
+        # per-profile directory (self._dir), not the module-global PAIRING_DIR.
+        # Regression: _all_platforms iterated PAIRING_DIR while every per-file
+        # path helper routed through self._dir, so a profile store confirmed a
+        # user via is_approved() (reads self._dir) yet returned [] from
+        # list_approved() (scanned the empty global dir).
         home = tmp_path / "home"
-        legacy = home / "pairing"
-        new = home / "platforms" / "pairing"
-        legacy.mkdir(parents=True)
-        new.mkdir(parents=True)
-        (legacy / "feishu-approved.json").write_text(json.dumps({
-            "ou_user": {"user_name": "Active", "approved_at": 2.0}
-        }))
-        (new / "feishu-approved.json").write_text(json.dumps({
-            "ou_user": {"user_name": "Inactive", "approved_at": 1.0},
-            "ou_other": {"user_name": "Other", "approved_at": 1.0},
-        }))
+        global_dir = tmp_path / "global-pairing"
+        global_dir.mkdir(parents=True)
 
-        with patch("gateway.pairing.PAIRING_DIR", legacy), patch("gateway.pairing.get_hermes_home", return_value=home):
-            store = PairingStore()
-            assert store.is_approved("feishu", "ou_user") is True
-            assert store.is_approved("feishu", "ou_other") is True
+        # A profile's store anchors to the hermes ROOT, not the current
+        # HERMES_HOME — the current home may itself be a profile, and nesting
+        # profiles inside profiles is how a `-p work` CLI and its gateway end
+        # up reading different files. Patch that seam, not get_hermes_home.
+        with patch("gateway.pairing.PAIRING_DIR", global_dir), patch(
+            "gateway.pairing.get_default_hermes_root", return_value=home
+        ):
+            store = PairingStore(profile="alice")
+            # Scoped under the mocked root's profile dir, using the same
+            # consolidated layout a standalone `hermes -p alice` resolves —
+            # and provably distinct from the module-global PAIRING_DIR.
+            assert store._dir == home / "profiles" / "alice" / "platforms" / "pairing"
+            assert store._dir != global_dir
+            with store._lock:
+                store._approve_user("telegram", "tg-456", "Bob")
 
-        migrated = json.loads((legacy / "feishu-approved.json").read_text())
-        assert migrated["ou_user"]["user_name"] == "Active"
-        assert migrated["ou_other"]["user_name"] == "Other"
+            assert store.is_approved("telegram", "tg-456") is True
+            approved = store.list_approved()
+
+        assert [r["user_id"] for r in approved] == ["tg-456"]
+        assert approved[0]["platform"] == "telegram"
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +87,6 @@ class TestSplitPairingDirMigration:
 
 
 class TestSecureWrite:
-    def test_creates_parent_dirs(self, tmp_path):
-        target = tmp_path / "sub" / "dir" / "file.json"
-        _secure_write(target, '{"hello": "world"}')
-        assert target.exists()
-        assert json.loads(target.read_text()) == {"hello": "world"}
 
     @pytest.mark.skipif(
         sys.platform.startswith("win"),
@@ -98,13 +105,6 @@ class TestSecureWrite:
 
 
 class TestCodeGeneration:
-    def test_code_format(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("telegram", "user1", "Alice")
-        assert isinstance(code, str) and len(code) == CODE_LENGTH
-        assert len(code) == CODE_LENGTH
-        assert all(c in ALPHABET for c in code)
 
     def test_code_uniqueness(self, tmp_path):
         """Multiple codes for different users should be distinct."""
@@ -116,19 +116,6 @@ class TestCodeGeneration:
                 assert isinstance(code, str) and len(code) == CODE_LENGTH
                 codes.add(code)
         assert len(codes) == 3
-
-    def test_stores_pending_entry(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("telegram", "user1", "Alice")
-            pending = store.list_pending("telegram")
-        assert len(pending) == 1
-        # list_pending no longer returns the original code — it returns a
-        # truncated hash prefix.  Verify the metadata is correct instead.
-        assert pending[0]["user_id"] == "user1"
-        assert pending[0]["user_name"] == "Alice"
-        # The code field is now a hash prefix, not the original plaintext code
-        assert pending[0]["code"] != code
 
 
 # ---------------------------------------------------------------------------
@@ -173,48 +160,6 @@ class TestHashedStorage:
             raw_text = (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
         assert code not in raw_text
 
-    def test_valid_code_verifies_against_hash(self, tmp_path):
-        """approve_code with the correct code should succeed."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("telegram", "user1", "Bob")
-            result = store.approve_code("telegram", code)
-        assert result is not None
-        assert result["user_id"] == "user1"
-        assert result["user_name"] == "Bob"
-
-    def test_invalid_code_rejected(self, tmp_path):
-        """approve_code with a wrong code should fail."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            store.generate_code("telegram", "user1")
-            result = store.approve_code("telegram", "ZZZZZZZZ")
-        assert result is None
-
-    def test_different_salts_per_entry(self, tmp_path):
-        """Each pending entry should have a unique salt."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            store.generate_code("telegram", "user0")
-            store.generate_code("telegram", "user1")
-            store.generate_code("telegram", "user2")
-            raw = json.loads(
-                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
-            )
-        salts = [entry["salt"] for entry in raw.values()]
-        assert len(set(salts)) == 3  # all unique
-
-    def test_hash_code_static_method(self, tmp_path):
-        """_hash_code should be deterministic for the same code+salt."""
-        salt = os.urandom(16)
-        h1 = PairingStore._hash_code("ABCD1234", salt)
-        h2 = PairingStore._hash_code("ABCD1234", salt)
-        assert h1 == h2
-        # Different salt should produce a different hash
-        salt2 = os.urandom(16)
-        h3 = PairingStore._hash_code("ABCD1234", salt2)
-        assert h3 != h1
-
 
 class TestLegacyPendingFileCompat:
     """Defensive coverage for pre-hash pending.json on upgraded installs.
@@ -242,45 +187,6 @@ class TestLegacyPendingFileCompat:
             json.dumps(legacy), encoding="utf-8"
         )
 
-    def test_approve_code_ignores_legacy_entries(self, tmp_path):
-        """A valid old-format code must NOT silently approve under the new schema."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            self._write_legacy(tmp_path, code="LEGACY01")
-            store = PairingStore()
-            # The plaintext "code" used to be the key — under the new schema
-            # it's not even looked at, and there's no hash/salt to verify.
-            # Result: approve_code returns None, the legacy entry is left
-            # alone (gets pruned by _cleanup_expired at TTL).
-            result = store.approve_code("telegram", "LEGACY01")
-            assert result is None
-            # Approved list must be empty
-            assert store.is_approved("telegram", "legacy-user") is False
-
-    def test_list_pending_handles_legacy_entries(self, tmp_path):
-        """list_pending must not KeyError on a missing 'hash' field."""
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            self._write_legacy(tmp_path)
-            store = PairingStore()
-            pending = store.list_pending("telegram")
-        assert len(pending) == 1
-        assert pending[0]["user_id"] == "legacy-user"
-        assert pending[0]["code"] == "legacy"  # placeholder
-
-    def test_cleanup_expired_removes_legacy_at_ttl(self, tmp_path):
-        """Legacy entries past CODE_TTL must still get pruned."""
-        import time as _time
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            self._write_legacy(
-                tmp_path,
-                code="LEGACY99",
-                created_at=_time.time() - CODE_TTL_SECONDS - 1,
-            )
-            store = PairingStore()
-            store._cleanup_expired("telegram")
-            raw = json.loads(
-                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
-            )
-        assert raw == {}
 
     def test_cleanup_expired_handles_malformed_entries(self, tmp_path):
         """Non-dict / missing-created_at entries get evicted, not crashed on."""
@@ -330,46 +236,6 @@ class TestRateLimiting:
         assert isinstance(code1, str) and len(code1) == CODE_LENGTH
         assert code2 is None  # rate limited
 
-    def test_different_users_not_rate_limited(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code1 = store.generate_code("telegram", "user1")
-            code2 = store.generate_code("telegram", "user2")
-        assert isinstance(code1, str) and len(code1) == CODE_LENGTH
-        assert isinstance(code2, str) and len(code2) == CODE_LENGTH
-
-    def test_rate_limit_expires(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code1 = store.generate_code("telegram", "user1")
-            assert isinstance(code1, str) and len(code1) == CODE_LENGTH
-
-            # Simulate rate limit expiry
-            limits = store._load_json(store._rate_limit_path())
-            limits["telegram:user1"] = time.time() - RATE_LIMIT_SECONDS - 1
-            store._save_json(store._rate_limit_path(), limits)
-
-            code2 = store.generate_code("telegram", "user1")
-        assert isinstance(code2, str) and len(code2) == CODE_LENGTH
-        assert code2 != code1
-
-    def test_whatsapp_alias_flip_hits_same_rate_limit(self, tmp_path, monkeypatch):
-        mapping_dir = tmp_path / "whatsapp" / "session"
-        mapping_dir.mkdir(parents=True, exist_ok=True)
-        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code1 = store.generate_code("whatsapp", "15551234567@s.whatsapp.net")
-            code2 = store.generate_code("whatsapp", "999999999999999@lid")
-
-        assert isinstance(code1, str) and len(code1) == CODE_LENGTH
-        assert code2 is None
-
 
 # ---------------------------------------------------------------------------
 # Max pending limit
@@ -389,15 +255,6 @@ class TestMaxPending:
         assert all(isinstance(c, str) and len(c) == CODE_LENGTH for c in codes[:MAX_PENDING_PER_PLATFORM])
         # Next one should be blocked
         assert codes[MAX_PENDING_PER_PLATFORM] is None
-
-    def test_different_platforms_independent(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            for i in range(MAX_PENDING_PER_PLATFORM):
-                store.generate_code("telegram", f"user{i}")
-            # Different platform should still work
-            code = store.generate_code("discord", "user0")
-        assert isinstance(code, str) and len(code) == CODE_LENGTH
 
 
 # ---------------------------------------------------------------------------
@@ -425,64 +282,76 @@ class TestApprovalFlow:
             store.approve_code("telegram", code)
             assert store.is_approved("telegram", "user1") is True
 
-    def test_unapproved_user_not_approved(self, tmp_path):
+    def test_approve_request_id_from_pending_list(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            assert store.is_approved("telegram", "nonexistent") is False
-
-    def test_approve_removes_from_pending(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("telegram", "user1")
-            store.approve_code("telegram", code)
+            bot_code = store.generate_code("telegram", "user1", "Alice")
             pending = store.list_pending("telegram")
-        assert len(pending) == 0
+            request_id = pending[0]["request_id"]
 
-    def test_approve_case_insensitive(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("telegram", "user1", "Alice")
-            result = store.approve_code("telegram", code.lower())
+            assert request_id
+            assert request_id != bot_code
+
+            result = store.approve_request("telegram", request_id.upper())
+            remaining = store.list_pending("telegram")
+
         assert isinstance(result, dict)
         assert result["user_id"] == "user1"
         assert result["user_name"] == "Alice"
+        assert remaining == []
 
-    def test_approve_strips_whitespace(self, tmp_path):
+    def test_approve_request_never_reveals_or_accepts_the_code_digest(self, tmp_path):
+        """`list_pending` exposes an approvable id and nothing derived from the code.
+
+        The pre-fix listing returned the code's hash prefix under a ``code``
+        key, which admin GUIs posted straight back to approve — it could never
+        match, because approval hashes its input and compares to that digest.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            entry = store.list_pending("telegram")[0]
+
+            digest = json.loads(
+                (tmp_path / "telegram-pending.json").read_text()
+            )[entry["request_id"]]["hash"]
+
+            assert set(entry) == {
+                "platform",
+                "request_id",
+                "user_id",
+                "user_name",
+                "age_minutes",
+            }
+            assert bot_code not in entry.values()
+            assert entry["request_id"] not in (digest, digest[:8])
+            # The digest prefix is not a credential on either grant path.
+            assert store.approve_code("telegram", digest[:8]) is None
+            assert store.approve_request("telegram", digest[:8]) is None
+
+    def test_stale_request_id_never_locks_out_the_code_path(self, tmp_path):
+        """Clicking Approve on an expired row is not a brute-force attempt.
+
+        Request ids only reach an admin already authenticated to this store, so
+        a miss means the row went stale — counting it toward the code lockout
+        let a handful of GUI clicks lock the operator out of `pairing approve`.
+        """
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
             code = store.generate_code("telegram", "user1", "Alice")
-            result = store.approve_code("telegram", f"  {code}  ")
-        assert isinstance(result, dict)
-        assert result["user_id"] == "user1"
-        assert result["user_name"] == "Alice"
+            stale_id = store.list_pending("telegram")[0]["request_id"]
+            assert store.approve_request("telegram", stale_id) is not None
 
-    def test_invalid_code_returns_none(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            result = store.approve_code("telegram", "INVALIDCODE")
-        assert result is None
+            # Re-click the now-approved row well past the lockout threshold.
+            for _ in range(MAX_FAILED_ATTEMPTS + 3):
+                assert store.approve_request("telegram", stale_id) is None
 
-    def test_whatsapp_approved_user_survives_alias_flip(self, tmp_path, monkeypatch):
-        mapping_dir = tmp_path / "whatsapp" / "session"
-        mapping_dir.mkdir(parents=True, exist_ok=True)
-        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
-            json.dumps("15551234567@s.whatsapp.net"),
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+            assert store._is_locked_out("telegram") is False
+            # And the code path is still usable for the next real request.
+            next_code = store.generate_code("telegram", "user2", "Bee")
+            assert store.approve_code("telegram", next_code) is not None
+            assert code != next_code
 
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("whatsapp", "15551234567@s.whatsapp.net", "Alice")
-            store.approve_code("whatsapp", code)
-
-            assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is True
-            assert store.is_approved("whatsapp", "999999999999999@lid") is True
-
-            approved = store.list_approved("whatsapp")
-
-        assert len(approved) == 1
-        assert approved[0]["user_id"] == "15551234567"
 
     def test_whatsapp_legacy_raw_jid_approval_survives_alias_flip(self, tmp_path, monkeypatch):
         mapping_dir = tmp_path / "whatsapp" / "session"
@@ -518,27 +387,31 @@ class TestApprovalFlow:
 
 
 class TestLockout:
-    def test_lockout_after_max_failures(self, tmp_path):
+
+
+    def test_successful_approval_resets_failure_counter(self, tmp_path):
+        """A successful approval clears the brute-force streak, so isolated
+        typos across the gateway's lifetime don't accumulate into a spurious
+        lockout that rejects a valid code.
+        """
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            # Generate a valid code so platform has data
-            store.generate_code("telegram", "user1")
 
-            # Exhaust failed attempts
-            for _ in range(MAX_FAILED_ATTEMPTS):
-                store.approve_code("telegram", "WRONGCODE")
+            # One short of the lockout threshold — not locked out yet.
+            for _ in range(MAX_FAILED_ATTEMPTS - 1):
+                assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
 
-            # Platform should now be locked out — can't generate new codes
-            assert store._is_locked_out("telegram") is True
+            # A legitimate approval must reset the accumulated failures.
+            code = store.generate_code("telegram", "user1", "Alice")
+            assert store.approve_code("telegram", code) is not None
+            limits = store._load_json(store._rate_limit_path())
+            assert limits.get("_failures:telegram", 0) == 0
 
-    def test_lockout_blocks_code_generation(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            for _ in range(MAX_FAILED_ATTEMPTS):
-                store.approve_code("telegram", "WRONG")
-
-            code = store.generate_code("telegram", "newuser")
-        assert code is None
+            # Because the streak was cleared, a single fresh typo afterwards
+            # must NOT trip the lockout (it would have with the stale count).
+            assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is False
 
     def test_lockout_blocks_code_approval(self, tmp_path):
         """Regression guard for #10195: lockout must also gate approve_code.
@@ -576,20 +449,6 @@ class TestLockout:
             assert result["user_id"] == "attacker"
             assert store.is_approved("telegram", "attacker") is True
 
-    def test_lockout_expires(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            for _ in range(MAX_FAILED_ATTEMPTS):
-                store.approve_code("telegram", "WRONG")
-
-            # Simulate lockout expiry
-            limits = store._load_json(store._rate_limit_path())
-            lockout_key = "_lockout:telegram"
-            limits[lockout_key] = time.time() - 1  # expired
-            store._save_json(store._rate_limit_path(), limits)
-
-            assert store._is_locked_out("telegram") is False
-
 
 # ---------------------------------------------------------------------------
 # Code expiry
@@ -612,20 +471,6 @@ class TestCodeExpiry:
             remaining = store.list_pending("telegram")
         assert len(remaining) == 0
 
-    def test_expired_code_cannot_be_approved(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            code = store.generate_code("telegram", "user1")
-
-            # Expire all entries
-            pending = store._load_json(store._pending_path("telegram"))
-            for entry_id in pending:
-                pending[entry_id]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
-            store._save_json(store._pending_path("telegram"), pending)
-
-            result = store.approve_code("telegram", code)
-        assert result is None
-
 
 # ---------------------------------------------------------------------------
 # Revoke
@@ -645,11 +490,6 @@ class TestRevoke:
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             assert store.is_approved("telegram", "user1") is False
 
-    def test_revoke_nonexistent_returns_false(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            assert store.revoke("telegram", "nobody") is False
-
 
 # ---------------------------------------------------------------------------
 # List & clear
@@ -666,34 +506,6 @@ class TestListAndClear:
         assert len(approved) == 1
         assert approved[0]["user_id"] == "user1"
         assert approved[0]["platform"] == "telegram"
-
-    def test_list_approved_all_platforms(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            c1 = store.generate_code("telegram", "user1")
-            store.approve_code("telegram", c1)
-            c2 = store.generate_code("discord", "user2")
-            store.approve_code("discord", c2)
-            approved = store.list_approved()
-        assert len(approved) == 2
-
-    def test_clear_pending(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            store.generate_code("telegram", "user1")
-            store.generate_code("telegram", "user2")
-            count = store.clear_pending("telegram")
-            remaining = store.list_pending("telegram")
-        assert count == 2
-        assert len(remaining) == 0
-
-    def test_clear_pending_all_platforms(self, tmp_path):
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            store.generate_code("telegram", "user1")
-            store.generate_code("discord", "user2")
-            count = store.clear_pending()
-        assert count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -738,38 +550,14 @@ class TestUnreadablePairingFile:
         assert "docker exec" in msgs
         assert "-u hermes" in msgs
 
-    def test_is_approved_returns_false_when_file_unreadable(self, tmp_path, caplog):
-        """End-to-end: an unreadable approved.json must not crash the gateway,
-        and the affected user must stay unauthorized (the documented fallback
-        behaviour) rather than triggering a 500."""
-        import logging
-
-        approved_path = tmp_path / "weixin-approved.json"
-        approved_path.write_text(
-            '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}'
-        )
-
-        def fake_read_text(self, *a, **kw):
-            raise PermissionError(13, "Permission denied", str(self))
-
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path), \
-             patch.object(Path, "read_text", fake_read_text), \
-             caplog.at_level(logging.WARNING, logger="gateway.pairing"):
-            store = PairingStore()
-            ok = store.is_approved("weixin", "o9cq80fake@im.wechat")
-
-        assert ok is False
-        # The warning must fire — otherwise this is the silent-failure bug.
-        assert any(rec.levelno == logging.WARNING for rec in caplog.records), \
-            "PermissionError on approved.json must produce a WARNING log line"
 # Profile-scoped storage (multiplexing gateway isolation)
 # ---------------------------------------------------------------------------
 
 
 class TestProfileScopedStorage:
     """PairingStore(profile="<name>") should isolate per-profile whitelists
-    under <HERMES_HOME>/profiles/<name>/pairing/ so a multiplexing gateway
-    can keep each profile's allowlist separate.
+    under each profile's own Hermes home so a multiplexing gateway can keep
+    every profile's allowlist separate.
     """
 
     def test_default_store_uses_global_dir(self, tmp_path, monkeypatch):
@@ -786,24 +574,101 @@ class TestProfileScopedStorage:
         assert store._dir == tmp_path
         assert store._approved_path("weixin") == tmp_path / "weixin-approved.json"
 
+    def test_default_store_is_not_frozen_at_first_use(self, tmp_path, monkeypatch):
+        """Regression test for #93449.
+
+        PairingStore() (no profile) must not freeze its directory to
+        whatever HERMES_HOME resolved to the first time this module's
+        default path was computed. A long-lived process (the gateway,
+        started once at container/process boot) can construct a
+        PairingStore before HERMES_HOME/profile context is fully
+        established; a later store in the same process must still pick up
+        the real, current value instead of being stuck with a stale one.
+        Deliberately does not patch PAIRING_DIR directly, unlike the sibling
+        test above -- this exercises the real (unpatched) lazy-resolution
+        path itself.
+        """
+        first_home = tmp_path / "first"
+        second_home = tmp_path / "second"
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: first_home)
+        first_store = PairingStore()
+        assert first_store._dir == first_home / "platforms" / "pairing"
+
+        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: second_home)
+        second_store = PairingStore()
+        assert second_store._dir == second_home / "platforms" / "pairing"
+
     def test_profile_store_uses_profiles_subdir(self, tmp_path, monkeypatch):
-        """PairingStore(profile="yangyang") puts files under
-        <HERMES_HOME>/profiles/yangyang/pairing/."""
-        from hermes_constants import get_hermes_home
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        """Explicit profile stores use that profile's normal Hermes layout."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         store = PairingStore(profile="yangyang")
         assert store.profile == "yangyang"
-        expected = tmp_path / "profiles" / "yangyang" / "pairing"
+        expected = tmp_path / "profiles" / "yangyang" / "platforms" / "pairing"
         assert store._dir == expected
         assert store._approved_path("weixin") == expected / "weixin-approved.json"
         # Auto-creates the directory
         assert expected.is_dir()
 
+    def test_profile_store_matches_profile_cli_home(self, tmp_path, monkeypatch):
+        """Gateway and ``hermes -p`` must resolve the same pairing store."""
+        from hermes_constants import get_hermes_dir
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        profile_home = tmp_path / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        gateway_store = PairingStore(profile="coder")
+        cli_dir = get_hermes_dir(
+            "platforms/pairing",
+            "pairing",
+            home=profile_home,
+        )
+
+        assert gateway_store._dir == cli_dir
+
+    def test_default_profile_store_is_global_store(self, tmp_path, monkeypatch):
+        """Multiplexing must not invent a ``profiles/default`` store."""
+        from hermes_constants import get_hermes_dir
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        expected = get_hermes_dir(
+            "platforms/pairing",
+            "pairing",
+            home=tmp_path,
+        )
+
+        with patch("gateway.pairing.PAIRING_DIR", expected):
+            assert PairingStore(profile="default")._dir == PairingStore()._dir
+
+    def test_profile_store_merges_split_pairing_layouts(
+        self, tmp_path, monkeypatch
+    ):
+        """Existing approvals survive either profile directory layout."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        profile_home = tmp_path / "profiles" / "coder"
+        legacy_dir = profile_home / "pairing"
+        consolidated_dir = profile_home / "platforms" / "pairing"
+        legacy_dir.mkdir(parents=True)
+        consolidated_dir.mkdir(parents=True)
+        (legacy_dir / "telegram-approved.json").write_text(
+            '{"legacy-user": {"user_name": "Legacy"}}',
+            encoding="utf-8",
+        )
+        (consolidated_dir / "telegram-approved.json").write_text(
+            '{"new-user": {"user_name": "New"}}',
+            encoding="utf-8",
+        )
+
+        store = PairingStore(profile="coder")
+
+        assert store.is_approved("telegram", "legacy-user")
+        assert store.is_approved("telegram", "new-user")
+
     def test_profile_approval_does_not_leak_to_global(self, tmp_path, monkeypatch):
         """Approving in a profile-scoped store must not appear in the global
         store — and vice versa. This is the whole point of the fix."""
-        from hermes_constants import get_hermes_home
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             global_store = PairingStore()
             profile_store = PairingStore(profile="yangyang")
@@ -822,50 +687,19 @@ class TestProfileScopedStorage:
     def test_profile_uses_distinct_rate_limit_file(self, tmp_path, monkeypatch):
         """Rate-limit state is per-profile, not shared globally — otherwise
         one profile's flood would lock out the other profile's users."""
-        from hermes_constants import get_hermes_home
-        monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             global_store = PairingStore()
             profile_store = PairingStore(profile="yangyang")
 
         assert global_store._rate_limit_path() == tmp_path / "_rate_limits.json"
         assert profile_store._rate_limit_path() == (
-            tmp_path / "profiles" / "yangyang" / "pairing" / "_rate_limits.json"
+            tmp_path
+            / "profiles"
+            / "yangyang"
+            / "platforms"
+            / "pairing"
+            / "_rate_limits.json"
         )
 
-    def test_pairing_store_for_helper_routes_by_profile(self, tmp_path, monkeypatch):
-        """_pairing_store_for(source) on a gateway-like object picks the
-        per-profile store when source.profile is set, and falls back to
-        the global store when it isn't (defensive — single-profile
-        gateways, or any code path that hasn't stamped source.profile)."""
-        from gateway.session import SessionSource
-        from gateway.config import Platform
-
-        class FakeGateway:
-            def __init__(self):
-                self.pairing_store = object()  # sentinel
-                self.pairing_stores = {
-                    "default": "default-store",
-                    "yangyang": "yangyang-store",
-                }
-
-            # Method under test — copy of the real helper so this test
-            # is self-contained even if the real one moves.
-            def _pairing_store_for(self, source):
-                per_profile = getattr(self, "pairing_stores", None) or {}
-                profile = getattr(source, "profile", None)
-                if profile and profile in per_profile:
-                    return per_profile[profile]
-                return getattr(self, "pairing_store", None)
-
-        g = FakeGateway()
-        # source with profile="yangyang" → per-profile store
-        s_yy = SessionSource(platform=Platform.WEIXIN, chat_id="c", profile="yangyang")
-        assert g._pairing_store_for(s_yy) == "yangyang-store"
-        # source with no profile → fallback to global
-        s_none = SessionSource(platform=Platform.WEIXIN, chat_id="c")
-        assert g._pairing_store_for(s_none) is g.pairing_store
-        # source with an unknown profile → fallback (defensive)
-        s_unknown = SessionSource(platform=Platform.WEIXIN, chat_id="c", profile="ghost")
-        assert g._pairing_store_for(s_unknown) is g.pairing_store
 

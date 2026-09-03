@@ -1,21 +1,21 @@
 ---
-title: "Stable Diffusion Image Generation"
-sidebar_label: "Stable Diffusion Image Generation"
-description: "State-of-the-art text-to-image generation with Stable Diffusion models via HuggingFace Diffusers"
+title: "Stable Diffusion — Text-to-image generation, inpainting, and img2img"
+sidebar_label: "Stable Diffusion"
+description: "Text-to-image generation, inpainting, and img2img"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Stable Diffusion Image Generation
+# Stable Diffusion
 
-State-of-the-art text-to-image generation with Stable Diffusion models via HuggingFace Diffusers. Use when generating images from text prompts, performing image-to-image translation, inpainting, or building custom diffusion pipelines.
+Text-to-image generation, inpainting, and img2img.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/stable-diffusion` |
-| Path | `optional-skills/mlops/stable-diffusion` |
+| Path | `optional-skills/mlops\stable-diffusion` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Stable Diffusion Image Generation
 
-Comprehensive guide to generating images with Stable Diffusion using the HuggingFace Diffusers library.
+Guide to generating images with Stable Diffusion using the HuggingFace Diffusers library.
 
 ## When to use Stable Diffusion
 
@@ -531,8 +531,8 @@ image = pipe(prompt, num_inference_steps=20).images[0]
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/stable-diffusion/references/advanced-usage.md)** - Custom pipelines, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/stable-diffusion/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\stable-diffusion/references/advanced-usage.md)** - Custom pipelines, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\stable-diffusion/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

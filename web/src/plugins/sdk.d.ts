@@ -105,6 +105,30 @@ export interface HermesPluginSDK {
     useRef: typeof import("react").useRef;
     useContext: typeof import("react").useContext;
     createContext: typeof import("react").createContext;
+    /**
+     * Toast feedback. Returns ``{ showToast, toast }`` where ``toast`` is the
+     * current visible toast (or null) and ``showToast(message, 'success' | 'error')``
+     * replaces it. Mount the ``Toast`` component (also on ``components``) somewhere
+     * in your plugin's tree to render the visible toast.
+     */
+    useToast: () => {
+      showToast: (message: string, type: "success" | "error") => void;
+      toast: { message: string; type: "success" | "error" } | null;
+    };
+    /**
+     * Single-id delete-confirm state machine. Pass ``onDelete(id)`` (an async
+     * function). Returns ``{ requestDelete, confirm, cancel, isOpen, isDeleting,
+     * pendingId }``. Pair with the ``ConfirmDialog`` primitive (passed as
+     * ``open={isOpen}`` etc.) or any custom dialog.
+     */
+    useConfirmDelete: <TId,>(opts: { onDelete: (id: TId) => Promise<void> }) => {
+      requestDelete: (id: TId) => void;
+      confirm: () => Promise<void>;
+      cancel: () => void;
+      isOpen: boolean;
+      isDeleting: boolean;
+      pendingId: TId | null;
+    };
   };
 
   /**

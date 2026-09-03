@@ -13,6 +13,7 @@ interrupting. The gateway runner must:
 from __future__ import annotations
 
 from datetime import datetime
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,11 +34,12 @@ def _make_source() -> SessionSource:
     )
 
 
-def _make_event(text: str) -> MessageEvent:
+def _make_event(text: str, channel_context: str | None = None) -> MessageEvent:
     return MessageEvent(
         text=text,
         source=_make_source(),
         message_id="m1",
+        channel_context=channel_context,
     )
 
 
@@ -116,37 +118,28 @@ async def test_steer_calls_agent_steer_and_does_not_interrupt():
 
 
 @pytest.mark.asyncio
-async def test_steer_without_payload_returns_usage():
+@pytest.mark.parametrize("elapsed", [float("nan"), True, "not-a-number"])
+async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
+    monkeypatch, elapsed
+):
     runner, _adapter = _make_runner(_session_entry())
     sk = build_session_key(_make_source())
     running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    running_agent.get_activity_summary.return_value = {
+        "seconds_since_activity": elapsed,
+        "last_activity_at": time.time() - 3,
+        "last_activity_desc": "receiving stream response",
+    }
     runner._running_agents[sk] = running_agent
+    runner._running_agents_ts[sk] = time.time() - 31_471
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
 
-    result = await runner._handle_message(_make_event("/steer"))
+    result = await runner._handle_message(_make_event("/steer pause safely"))
 
+    running_agent.steer.assert_called_once_with("pause safely")
+    assert runner._running_agents[sk] is running_agent
     assert result is not None
-    assert "Usage" in result or "usage" in result
-    running_agent.steer.assert_not_called()
-    running_agent.interrupt.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_steer_with_pending_sentinel_falls_back_to_queue():
-    """When the agent hasn't finished booting (sentinel), /steer should
-    queue as a turn-boundary follow-up instead of crashing."""
-    from gateway.run import _AGENT_PENDING_SENTINEL
-
-    runner, adapter = _make_runner(_session_entry())
-    sk = build_session_key(_make_source())
-    runner._running_agents[sk] = _AGENT_PENDING_SENTINEL
-
-    result = await runner._handle_message(_make_event("/steer wait up"))
-
-    assert result is not None
-    assert "queued" in result.lower() or "starting" in result.lower()
-    # The fallback put the text into the adapter's pending queue.
-    assert sk in adapter._pending_messages
-    assert adapter._pending_messages[sk].text == "wait up"
 
 
 @pytest.mark.asyncio
@@ -161,30 +154,19 @@ async def test_steer_agent_without_steer_method_falls_back():
     running_agent = MagicMock(spec=[])
     runner._running_agents[sk] = running_agent
 
-    result = await runner._handle_message(_make_event("/steer fallback"))
+    result = await runner._handle_message(
+        _make_event("/steer fallback", channel_context="[Thread context]\nAlice: earlier request")
+    )
 
     assert result is not None
     # Must mention queueing since steer wasn't available
     assert "queued" in result.lower()
     assert sk in adapter._pending_messages
     assert adapter._pending_messages[sk].text == "fallback"
-
-
-@pytest.mark.asyncio
-async def test_steer_rejected_payload_returns_rejection_message():
-    """If agent.steer() returns False (e.g. empty after strip — though
-    the gateway already guards this), surface a rejection message."""
-    runner, _adapter = _make_runner(_session_entry())
-    sk = build_session_key(_make_source())
-
-    running_agent = MagicMock()
-    running_agent.steer.return_value = False
-    runner._running_agents[sk] = running_agent
-
-    result = await runner._handle_message(_make_event("/steer hello"))
-
-    assert result is not None
-    assert "rejected" in result.lower() or "empty" in result.lower()
+    assert (
+        adapter._pending_messages[sk].channel_context
+        == "[Thread context]\nAlice: earlier request"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

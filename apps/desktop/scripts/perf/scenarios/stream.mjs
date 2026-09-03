@@ -70,7 +70,7 @@ const COLLECT = `
   })()
 `
 
-function analyze(data, warmupMs) {
+function analyze(data, warmupMs, extra = {}) {
   // Drop warm-up frames (recorder installs before the stream starts).
   const frames = []
   let acc = 0
@@ -102,6 +102,7 @@ function analyze(data, warmupMs) {
       intermut_p95_ms: Math.round(percentile(interMut, 0.95) * 10) / 10
     },
     detail: {
+      ...extra,
       windowS: Math.round(windowS * 10) / 10,
       avgFps: windowS ? Math.round((frames.length / windowS) * 10) / 10 : 0,
       frameHistogram: frameHistogram(frames),
@@ -128,13 +129,36 @@ export default {
     // noise unrelated to render cost).
     const chunk = opts.chunk ?? 'A streamed sentence with **bold**, `code`, and ordinary prose like a normal reply.\n\n'
     const real = Boolean(opts.real)
+    const historyTurns = Number(opts.historyTurns ?? 0)
+    const historySettleMs = Number(opts.historySettleMs ?? 1500)
 
     await cdp.send('Runtime.enable')
+
+    // Mount the settled history BEFORE the recorders start, so the measurement
+    // window contains only streaming work — not the one-off mount cost.
+    if (historyTurns > 0) {
+      if (real) {
+        throw new Error('--historyTurns is only supported by the synthetic stream path')
+      }
+
+      await cdp.eval(`window.__PERF_DRIVE__.loadTranscript(${historyTurns})`)
+      await sleep(historySettleMs)
+
+      const mounted = Number(await cdp.eval('window.__PERF_DRIVE__.snapshotMsgs()'))
+      const expected = historyTurns * 2
+
+      if (mounted !== expected) {
+        throw new Error(`expected ${expected} preloaded history messages, got ${mounted}`)
+      }
+    }
+
     await cdp.eval(RECORDERS)
 
     if (real) {
       // Backend path: fire a real prompt and wait for the stream to appear.
-      const baseCount = await cdp.eval(`document.querySelectorAll(${JSON.stringify(SELECTORS.assistantMessage)}).length`)
+      const baseCount = await cdp.eval(
+        `document.querySelectorAll(${JSON.stringify(SELECTORS.assistantMessage)}).length`
+      )
       await typeIntoComposer(cdp, opts.prompt ?? 'count from 1 to 80, one number per line', { cps: 40 })
       await cdp.eval(`(() => {
         const el = document.querySelector(${JSON.stringify(SELECTORS.composer)})
@@ -186,6 +210,6 @@ export default {
       await cdp.eval('window.__PERF_DRIVE__.reset()')
     }
 
-    return analyze(data, real ? 0 : 500)
+    return analyze(data, real ? 0 : 500, { historyTurns })
   }
 }

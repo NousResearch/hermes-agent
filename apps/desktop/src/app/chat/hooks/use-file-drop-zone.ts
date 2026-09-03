@@ -44,6 +44,7 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
   // DnD can't be cancelled at the OS level, so we drop the overlay and arm a
   // guard that swallows the trailing drop instead. Top escape layer + capture
   // stop so it doesn't also fire a handler behind the drag (see drag-session).
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (dragKind === null) {
       return

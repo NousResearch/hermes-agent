@@ -10,21 +10,69 @@ export const sessionScopedModelArg = (value: string) => {
 
 export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)
 
-export const parseSlashCommand = (cmd: string) => {
-  const [name = '', ...rest] = cmd.slice(1).split(/\s+/)
+// A `/` means two different things depending on where it sits:
+//
+//  - At position 0 it's a COMMAND invocation the TUI executes
+//    (`looksLikeSlashCommand`, and the backend's dispatch, are both
+//    `^`-anchored). Completion stays live past the command name so arg
+//    completion works (`/cron ad` → `add`).
+//  - After whitespace it's an inline SKILL reference the user is dropping into
+//    prose ("clean this up with /clean"). The text submits as an ordinary
+//    message, so there are no args to complete — the token ends at the caret.
+//
+// The inline shape is what makes skills reachable anywhere in a prompt. The
+// trailing `$` matters for both: completion runs against the text the user has
+// typed so far, so the match has to end where they're typing.
+//
+// Requiring a single bare segment (no second `/`) keeps real paths out:
+// `look at /usr/local/bin` and `check src/foo/bar` never match. A bare `/us` is
+// genuinely ambiguous with an absolute path, and resolves as a skill reference
+// — typing the next `/` flips it straight back to path completion.
+const INLINE_SLASH_RE = /\s\/([a-zA-Z][\w-]*)?$/
 
-  return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
+/**
+ * Locate an inline `/skill` reference at the end of `text`, or null when the
+ * text isn't one. `start` is the index of the `/` itself, so a completion
+ * replaces the typed token and leaves the prose in front of it untouched.
+ */
+export const inlineSlashTrigger = (text: string): { query: string; start: number } | null => {
+  const match = INLINE_SLASH_RE.exec(text)
+
+  if (!match) {
+    return null
+  }
+
+  const query = match[1] ?? ''
+
+  return { query, start: text.length - query.length - 1 }
+}
+
+// Only the separator between the command name and its argument is whitespace
+// the parser owns. Everything after it is the user's text and survives
+// verbatim: splitting the whole line on `\s+` and rejoining with a space
+// flattened every pasted diff, log, or PR thread into one run-on line before
+// the command ever saw it.
+const SLASH_PARTS_RE = /^(\S*)\s*([\s\S]*)$/
+
+export const parseSlashCommand = (cmd: string) => {
+  const [, name = '', arg = ''] = SLASH_PARTS_RE.exec(cmd.slice(1)) ?? []
+
+  return { arg, cmd, name: name.toLowerCase() }
 }
 
 /**
  * Apply a completion row to the current input, mirroring the editor's
  * replace semantics: replace from `compReplace` with the row text, dropping
- * the leading slash when both the input and the row carry one (the gateway's
- * slash completer returns bare command names whose replace span begins after
- * the leading `/`).
+ * the row's leading slash when the input already has one immediately before
+ * the replace point (the gateway's slash completer returns bare command names
+ * whose replace span begins after the leading `/`).
+ *
+ * Keyed off the character before `compReplace` rather than the start of the
+ * input so a `/token` anywhere in the message behaves the same as one at
+ * position 0 — an inline `run /cle` replaces from after its own slash.
  */
 export const applyCompletion = (value: string, rowText: string, compReplace: number): string => {
-  const text = value.startsWith('/') && rowText.startsWith('/') ? rowText.slice(1) : rowText
+  const text = value[compReplace - 1] === '/' && rowText.startsWith('/') ? rowText.slice(1) : rowText
 
   return value.slice(0, compReplace) + text
 }

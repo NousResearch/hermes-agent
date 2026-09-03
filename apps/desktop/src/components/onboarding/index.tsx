@@ -4,12 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Check, ChevronDown, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
+import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
   clearPendingProviderOAuth,
@@ -31,6 +33,7 @@ import { DocsLink, FlowPanel, Status } from './flow'
 import {
   FeaturedProviderRow,
   FireworksProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   sortProviders
@@ -40,6 +43,7 @@ export {
   FeaturedProviderRow,
   FireworksProviderRow,
   KeyProviderRow,
+  LocalModelsProviderRow,
   OpenRouterProviderRow,
   ProviderRow,
   providerTitle,
@@ -49,6 +53,7 @@ export {
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
   onCompleted?: () => void
+  profile: string
   requestGateway: OnboardingContext['requestGateway']
 }
 
@@ -177,17 +182,25 @@ function useApiKeyCatalog(): ApiKeyOption[] {
 // → surface-out (520ms, held back by [transition-delay:660ms]). Finalize after.
 const ONBOARDING_EXIT_MS = 1180
 
-export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+export function DesktopOnboardingOverlay({
+  enabled,
+  onCompleted,
+  profile,
+  requestGateway
+}: DesktopOnboardingOverlayProps) {
   const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
-  const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
-  ctxRef.current = { requestGateway, onCompleted }
+  const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted, profile })
+  ctxRef.current = { requestGateway, onCompleted, profile }
 
   const ctx = useMemo<OnboardingContext>(
     () => ({
       requestGateway: (...args) => ctxRef.current.requestGateway(...args),
-      onCompleted: () => ctxRef.current.onCompleted?.()
+      onCompleted: () => ctxRef.current.onCompleted?.(),
+      get profile() {
+        return ctxRef.current.profile
+      }
     }),
     []
   )
@@ -292,12 +305,16 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   return (
     <div
       className={cn(
-        'fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
+        'fixed inset-0 z-(--z-onboarding) flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
         // On the bare confirm screen, hold the surface (text-out + hold) so the
         // per-element exit plays before it dissolves.
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app until onboarding finishes — must stay filled under
+      // window glass or the shell shows through. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
     >
       <div
         className={cn(
@@ -363,15 +380,12 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
       <p className="text-sm text-muted-foreground">
         {installing ? t.onboarding.preparingInstall : t.onboarding.starting}
       </p>
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            hasError && 'bg-destructive'
-          )}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
+      <Progress
+        aria-label={installing ? t.onboarding.preparingInstall : t.onboarding.starting}
+        destructive={hasError}
+        size="lg"
+        value={progress / 100}
+      />
       <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span className="truncate">{boot.message}</span>
         <span>{progress}%</span>
@@ -460,19 +474,41 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
   const featured = ordered.find(p => p.id === FEATURED_ID) ?? null
   const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered
-  // Collapse the secondary providers behind a disclosure only when Nous
-  // Portal is present to anchor the choice — otherwise show the full list.
-  const collapsible = Boolean(featured) && rest.length > 0
+  // Collapse the secondary providers behind a disclosure whenever Nous Portal
+  // is present to anchor the choice — otherwise show the full list. The
+  // Fireworks/OpenRouter key rows always live behind the disclosure, so the
+  // toggle is warranted even when there are no other OAuth providers.
+  const collapsible = Boolean(featured)
   const showRest = !collapsible || showAll
+
+  // "Run models locally" leaves the picker for Settings -> Providers ->
+  // Local Models, where install/download live. First-run: persist the skip
+  // (same contract as ChooseLaterLink) so the blocking overlay never
+  // re-nags; manual mode just closes. window.location keeps this picker
+  // router-independent (it renders outside the route tree on first run).
+  const openLocalModels = () => {
+    if (manual) {
+      closeManualOnboarding()
+    } else {
+      dismissFirstRunOnboarding()
+    }
+
+    window.location.hash = '#/settings?tab=providers&pview=local'
+  }
 
   return (
     <div className="grid gap-2">
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
         {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
-        {/* Slot #2 — always visible, matching CANONICAL_PROVIDERS (Nous → Fireworks). */}
-        <FireworksProviderRow onClick={() => openKeyForm('FIREWORKS_API_KEY')} />
+        {/* The no-account path: everything runs on this machine. Shipped
+            behind the --local launch flag. (Fireworks moved into the
+            expanded list on main.) */}
+        {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
         {showRest ? (
           <>
+            {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS
+                (Nous → Fireworks), but stays hidden until the user opens it. */}
+            <FireworksProviderRow onClick={() => openKeyForm('FIREWORKS_API_KEY')} />
             {rest.map(p => (
               <ProviderRow key={p.id} onSelect={select} provider={p} />
             ))}
@@ -652,7 +688,7 @@ export function ApiKeyForm({
           autoFocus
           className="font-mono"
           onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submit()}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
           placeholder={
             currentRedacted ??
             (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
@@ -665,7 +701,7 @@ export function ApiKeyForm({
             autoComplete="off"
             className="font-mono"
             onChange={e => setLocalKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void submit()}
+            onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submit()}
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}

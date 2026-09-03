@@ -322,6 +322,29 @@ def _probe_single_server(
                     desc = desc[:77] + "..."
                 tools_found.append((t.name, desc))
             if details is not None:
+                # Per-tool registry-schema sizes so the desktop can estimate the
+                # per-call token cost a server adds. Uses the SAME converted
+                # schema the agent registers (name + description + normalized
+                # parameters) — i.e. what actually rides on every model call.
+                # Additive-optional wire field: best-effort, absent on failure.
+                try:
+                    import json as _json
+
+                    from tools.mcp_tool import _convert_mcp_schema
+
+                    details["schema_chars"] = {
+                        t.name: len(
+                            _json.dumps(
+                                _convert_mcp_schema(name, t),
+                                separators=(",", ":"),
+                                default=str,
+                            )
+                        )
+                        for t in server._tools
+                    }
+                except Exception:  # pragma: no cover — display-only extra
+                    pass
+            if details is not None:
                 # Gate the capability probes exactly like runtime utility-tool
                 # registration (tools.mcp_tool._select_utility_schemas):
                 #   1. honour the user's tools.prompts / tools.resources config
@@ -490,7 +513,9 @@ def cmd_mcp_add(args):
         oauth_ok = False
         try:
             from tools.mcp_oauth_manager import get_manager
-            oauth_auth = get_manager().get_or_build_provider(name, url, None)
+            oauth_auth = get_manager().get_or_build_provider(
+                name, url, server_config.get("oauth")
+            )
             if oauth_auth:
                 server_config["auth"] = "oauth"
                 _success("OAuth configured (tokens will be acquired on first connection)")
@@ -816,16 +841,24 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
     # an interactive OAuth round-trip. Floor at 315s — the OAuth callback
     # window (300s in mcp_oauth) plus headroom — matching the GUI re-auth
     # path in web_server.py so CLI and dashboard behave identically.
+    #
+    # force_interactive_oauth: `hermes mcp login` is *explicitly* user-
+    # initiated even when stdin isn't a TTY (Hermes desktop / agent-
+    # spawned terminals). Without this, OAuth refuses before opening a
+    # browser because _is_interactive() only checks sys.stdin.isatty().
     try:
+        from tools.mcp_oauth import force_interactive_oauth
+
         _login_connect_timeout = server_config.get("connect_timeout")
         try:
             _login_connect_timeout = float(_login_connect_timeout)
         except (TypeError, ValueError):
             _login_connect_timeout = 0.0
         _login_connect_timeout = max(_login_connect_timeout, 315.0)
-        tools = _probe_single_server(
-            name, server_config, connect_timeout=_login_connect_timeout
-        )
+        with force_interactive_oauth():
+            tools = _probe_single_server(
+                name, server_config, connect_timeout=_login_connect_timeout
+            )
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the
@@ -862,7 +895,15 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
             _success("Authenticated (server reported no tools)")
         return True
     except Exception as exc:
-        _error(f"Authentication failed: {exc}")
+        try:
+            from tools.mcp_oauth import humanize_oauth_registration_error
+
+            humanized = humanize_oauth_registration_error(
+                name, exc, server_url=url
+            )
+        except Exception:
+            humanized = None
+        _error(f"Authentication failed: {humanized or exc}")
         return False
 
 
@@ -986,15 +1027,25 @@ def cmd_mcp_configure(args):
 
     tool_names = [t[0] for t in all_tools]
 
+    # Same matching semantics as runtime registration (tools/mcp_tool.py):
+    # exact names or fnmatch globs.
+    try:
+        from tools.mcp_tool import matches_name_filter
+    except ImportError:  # pragma: no cover — defensive fallback
+        def matches_name_filter(tool_name, patterns):
+            return tool_name in patterns
+
     if include and isinstance(include, list):
-        include_set = set(include)
+        include_set = {str(p) for p in include}
         pre_selected = {
-            i for i, tn in enumerate(tool_names) if tn in include_set
+            i for i, tn in enumerate(tool_names)
+            if matches_name_filter(tn, include_set)
         }
     elif exclude and isinstance(exclude, list):
-        exclude_set = set(exclude)
+        exclude_set = {str(p) for p in exclude}
         pre_selected = {
-            i for i, tn in enumerate(tool_names) if tn not in exclude_set
+            i for i, tn in enumerate(tool_names)
+            if not matches_name_filter(tn, exclude_set)
         }
     else:
         pre_selected = set(range(len(all_tools)))
@@ -1023,9 +1074,55 @@ def cmd_mcp_configure(args):
     config = load_config()
     server_entry = cfg_get(config, "mcp_servers", name, default={})
 
-    if len(chosen) == total:
+    exclude_mode = bool(exclude) and isinstance(exclude, list) and not include
+
+    if len(chosen) == total and not exclude_mode:
         # All selected → remove include/exclude (register all)
         server_entry.pop("tools", None)
+    elif exclude_mode:
+        # Exclude-mode entry (catalog default_excluded or hand-written
+        # tools.exclude): stay in exclude mode instead of demoting the
+        # user's dynamic filter to a frozen include list. Newly-unchecked
+        # tools are appended as literal excludes; re-checked tools have
+        # their literal entries dropped. Glob patterns are preserved —
+        # they keep excluding future vendor tools by design.
+        old_exclude = [str(p) for p in (exclude or [])]
+        glob_entries = [p for p in old_exclude
+                        if "*" in p or "?" in p or "[" in p]
+        literal_entries = {p for p in old_exclude if p not in glob_entries}
+        unchecked = {tool_names[i] for i in range(total) if i not in chosen}
+        checked = {tool_names[i] for i in chosen}
+
+        # Literal excludes: drop re-checked, add newly-unchecked.
+        new_literals = (literal_entries - checked) | {
+            tn for tn in unchecked
+            if not matches_name_filter(tn, set(old_exclude))
+        }
+        new_exclude = glob_entries + sorted(new_literals)
+
+        # A re-checked tool still matched by a kept glob can't be enabled
+        # without dropping the glob — surface that instead of silently
+        # ignoring the click or silently freezing the config.
+        glob_shadowed = sorted(
+            tn for tn in checked
+            if glob_entries and matches_name_filter(tn, set(glob_entries))
+        )
+        if glob_shadowed:
+            _warning(
+                f"{len(glob_shadowed)} re-enabled tool(s) still match glob "
+                f"exclude pattern(s) {glob_entries} and stay excluded: "
+                f"{', '.join(glob_shadowed[:5])}"
+                f"{' ...' if len(glob_shadowed) > 5 else ''}. Remove the "
+                f"pattern from mcp_servers.{name}.tools.exclude in "
+                "config.yaml to enable them."
+            )
+
+        if not new_exclude:
+            server_entry.pop("tools", None)
+        else:
+            server_entry.setdefault("tools", {})
+            server_entry["tools"]["exclude"] = new_exclude
+            server_entry["tools"].pop("include", None)
     else:
         chosen_names = [tool_names[i] for i in sorted(chosen)]
         server_entry.setdefault("tools", {})

@@ -23,6 +23,7 @@ gmi = ProviderProfile(
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",
         "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-sonnet-4.6",
         "openai/gpt-5.4",
     ),

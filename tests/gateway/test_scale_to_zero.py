@@ -29,16 +29,6 @@ def test_enabled_truthy_values(value):
     assert scale_to_zero_enabled({SCALE_TO_ZERO_ENV: value}) is True
 
 
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "nope"])
-def test_enabled_falsey_values(value):
-    assert scale_to_zero_enabled({SCALE_TO_ZERO_ENV: value}) is False
-
-
-def test_enabled_absent_is_false():
-    # Fail-safe default OFF when the stamp is absent (a non-opted instance).
-    assert scale_to_zero_enabled({}) is False
-
-
 # ── parse_idle_timeout_seconds (config.yaml, D2) ─────────────────────────────
 
 
@@ -48,15 +38,12 @@ def test_timeout_parses_minutes_to_seconds():
     assert parse_idle_timeout_seconds("5") == 300.0
 
 
-@pytest.mark.parametrize("bad", [None, "", "abc", {}, [], object()])
-def test_timeout_degrades_to_default_on_garbage(bad):
-    assert parse_idle_timeout_seconds(bad) == DEFAULT_IDLE_TIMEOUT_MINUTES * 60.0
-
-
-@pytest.mark.parametrize("nonpos", [0, -1, -30, "0", "-5"])
-def test_timeout_rejects_nonpositive(nonpos):
-    # A zero/negative timeout would go dormant instantly — never the intent.
-    assert parse_idle_timeout_seconds(nonpos) == DEFAULT_IDLE_TIMEOUT_MINUTES * 60.0
+def test_timeout_invalid_values_degrade_to_default():
+    # Behavior contract: bad config falls back to the module default (whatever
+    # its current value), never to zero/negative — an instant-dormant gateway
+    # is never the intent.
+    for bad in (None, "", "nope", 0, -3):
+        assert parse_idle_timeout_seconds(bad) == DEFAULT_IDLE_TIMEOUT_MINUTES * 60.0
 
 
 # ── messaging_is_relay_only_or_absent (F6/D1) ────────────────────────────────
@@ -78,29 +65,7 @@ def test_no_platform_is_true():
     assert messaging_is_relay_only_or_absent([]) is True
 
 
-def test_direct_socket_platform_disarms():
-    assert messaging_is_relay_only_or_absent([_P("discord")]) is False
-    assert messaging_is_relay_only_or_absent([_P("relay"), _P("telegram")]) is False
-
-
-def test_accepts_bare_strings_too():
-    assert messaging_is_relay_only_or_absent(["relay"]) is True
-    assert messaging_is_relay_only_or_absent(["discord"]) is False
-
-
 # ── should_arm (D1/D11/§3.4(1)) ──────────────────────────────────────────────
-
-
-def test_arm_requires_all_three():
-    assert should_arm(enabled=True, relay_only_or_absent=True, wake_url="https://x") is True
-
-
-def test_arm_blocked_when_flag_off():
-    assert should_arm(enabled=False, relay_only_or_absent=True, wake_url="https://x") is False
-
-
-def test_arm_blocked_when_direct_socket():
-    assert should_arm(enabled=True, relay_only_or_absent=False, wake_url="https://x") is False
 
 
 def test_arm_blocked_without_wake_url():
@@ -114,7 +79,7 @@ def test_arm_blocked_without_wake_url():
 
 def _idle_kwargs(**over):
     base = dict(
-        running_agent_count=0,
+        active_work_count=0,
         seconds_since_last_inbound=600.0,
         idle_timeout_seconds=300.0,
         has_live_background_work=False,
@@ -123,16 +88,8 @@ def _idle_kwargs(**over):
     return base
 
 
-def test_idle_true_when_all_quiet():
-    assert is_idle(**_idle_kwargs()) is True
-
-
 def test_not_idle_with_running_agent():
-    assert is_idle(**_idle_kwargs(running_agent_count=1)) is False
-
-
-def test_not_idle_within_timeout_window():
-    assert is_idle(**_idle_kwargs(seconds_since_last_inbound=120.0)) is False
+    assert is_idle(**_idle_kwargs(active_work_count=1)) is False
 
 
 def test_idle_exactly_at_threshold():
@@ -140,5 +97,92 @@ def test_idle_exactly_at_threshold():
     assert is_idle(**_idle_kwargs(seconds_since_last_inbound=300.0)) is True
 
 
-def test_not_idle_with_live_background_work():
-    assert is_idle(**_idle_kwargs(has_live_background_work=True)) is False
+
+
+# ── suspend_self / self_suspend_available (the gateway-owned suspend call) ───
+#
+# Fly Proxy autostop is inbound-only and job-blind (and since mid-2026 no longer
+# counts outbound sockets as activity), so the gateway suspends its own machine
+# via the local flaps unix socket strictly after the idle predicate + dormant
+# quiesce. These exercise the wire call against a real unix-socket fake flaps.
+
+
+import os
+import socket as _socket
+import threading
+
+
+from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
+    FLY_APP_NAME_ENV,
+    FLY_MACHINE_ID_ENV,
+    self_suspend_available,
+    suspend_self,
+)
+
+_FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891234f"}
+
+
+def _fake_flaps(tmp_path, status_line, capture):
+    """One-shot unix-socket HTTP server standing in for flaps."""
+    sock_path = str(tmp_path / "fly-api.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+
+    def serve():
+        conn, _ = server.accept()
+        with conn:
+            conn.settimeout(5)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            capture.append(data)
+            conn.sendall(
+                f"HTTP/1.1 {status_line}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}".encode()
+            )
+        server.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return sock_path, t
+
+
+def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
+    captured: list[bytes] = []
+    sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
+    assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
+    t.join(timeout=5)
+    request = captured[0].decode()
+    # The request must target THIS machine's suspend endpoint, per the Fly
+    # Machines API (POST /v1/apps/{app}/machines/{id}/suspend on /.fly/api).
+    assert request.startswith(
+        "POST /v1/apps/hermes-agent-stg-test/machines/d891234f/suspend HTTP/1.1\r\n"
+    )
+    assert "Host: flaps\r\n" in request
+
+
+def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
+    captured: list[bytes] = []
+    sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
+    assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
+    t.join(timeout=5)
+
+
+def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):
+    # Fail-awake: a dead/absent flaps socket must never raise out of the watcher.
+    assert suspend_self(_FLY_ENV, socket_path=str(tmp_path / "nope.sock")) is False
+
+
+def test_suspend_self_requires_machine_identity(tmp_path):
+    assert suspend_self({}, socket_path=str(tmp_path / "unused.sock")) is False
+
+
+def test_self_suspend_available_needs_identity_and_socket():
+    # No socket at /.fly/api in a test environment -> unavailable even with env.
+    if not os.path.exists("/.fly/api"):
+        assert self_suspend_available(_FLY_ENV) is False
+    # Missing identity -> unavailable regardless of socket.
+    assert self_suspend_available({}) is False

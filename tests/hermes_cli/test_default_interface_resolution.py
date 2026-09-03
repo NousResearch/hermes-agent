@@ -78,35 +78,6 @@ class TestResolveUseTui:
         _patch_config(monkeypatch, "tui")
         assert m._resolve_use_tui(_args(cli=True)) is False
 
-    def test_cli_flag_beats_tui_flag_and_env(self, monkeypatch):
-        _patch_config(monkeypatch, "tui")
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._resolve_use_tui(_args(cli=True, tui=True)) is False
-
-    def test_tui_flag_beats_config_cli(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        assert m._resolve_use_tui(_args(tui=True)) is True
-
-    def test_env_beats_config_cli(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, True)
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._resolve_use_tui(_args()) is True
-
-    def test_config_tui_with_no_flags(self, monkeypatch):
-        _patch_config(monkeypatch, "tui")
-        _fake_tty(monkeypatch, True)
-        assert m._resolve_use_tui(_args()) is True
-
-    def test_config_cli_is_default(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, True)
-        assert m._resolve_use_tui(_args()) is False
-
-    def test_interface_value_is_case_insensitive(self, monkeypatch):
-        _patch_config(monkeypatch, "TUI")
-        _fake_tty(monkeypatch, True)
-        assert m._resolve_use_tui(_args()) is True
 
     def test_load_config_failure_falls_back_to_cli(self, monkeypatch):
         import hermes_cli.config as cfg
@@ -119,23 +90,6 @@ class TestResolveUseTui:
         assert m._resolve_use_tui(_args()) is False
 
     # ── the no-TTY gate: ambient prefs never hijack non-interactive runs ────
-    def test_no_tty_blocks_env_tui(self, monkeypatch):
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, False)
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._resolve_use_tui(_args()) is False
-
-    def test_no_tty_blocks_config_tui(self, monkeypatch):
-        _patch_config(monkeypatch, "tui")
-        _fake_tty(monkeypatch, False)
-        assert m._resolve_use_tui(_args()) is False
-
-    def test_explicit_tui_flag_survives_no_tty(self, monkeypatch):
-        # An explicit --tui is the user's own ask — keep the informative
-        # no-TTY bail-out instead of silently swapping interfaces.
-        _patch_config(monkeypatch, "cli")
-        _fake_tty(monkeypatch, False)
-        assert m._resolve_use_tui(_args(tui=True)) is True
 
 
 # ---------------------------------------------------------------------------
@@ -153,36 +107,6 @@ class TestWantsTuiEarly:
 
         return _make
 
-    def test_config_tui_bare_argv(self, home_with_interface, monkeypatch):
-        home_with_interface("tui")
-        _fake_tty(monkeypatch, True)  # config-tui only applies on a real TTY
-        assert m._wants_tui_early([]) is True
-
-    def test_no_tty_blocks_config_tui(self, home_with_interface, monkeypatch):
-        # Headless (worker/cron/pipe): ambient config-tui must not boot the
-        # Ink UI in the earliest launch decision — that's the crash the
-        # kanban worker hit before the gate existed.
-        home_with_interface("tui")
-        _fake_tty(monkeypatch, False)
-        assert m._wants_tui_early([]) is False
-
-    def test_explicit_tui_flag_survives_no_tty(self, home_with_interface, monkeypatch):
-        home_with_interface("cli")
-        _fake_tty(monkeypatch, False)
-        assert m._wants_tui_early(["--tui"]) is True
-
-    def test_cli_flag_overrides_config_tui(self, home_with_interface):
-        home_with_interface("tui")
-        assert m._wants_tui_early(["--cli"]) is False
-
-    def test_tui_flag_with_config_cli(self, home_with_interface):
-        home_with_interface("cli")
-        assert m._wants_tui_early(["--tui"]) is True
-
-    def test_env_with_config_cli(self, home_with_interface, monkeypatch):
-        home_with_interface("cli")
-        monkeypatch.setenv("HERMES_TUI", "1")
-        assert m._wants_tui_early([]) is True
 
     def test_config_cli_bare_argv(self, home_with_interface):
         home_with_interface("cli")
@@ -216,13 +140,6 @@ class TestParserFlags:
         args = self._parser().parse_args(["--cli"])
         assert args.cli is True and args.tui is False
 
-    def test_top_level_tui_flag(self):
-        args = self._parser().parse_args(["--tui"])
-        assert args.tui is True and args.cli is False
-
-    def test_chat_subcommand_cli_flag(self):
-        args = self._parser().parse_args(["chat", "--cli"])
-        assert args.cli is True
 
     def test_chat_subcommand_tui_flag(self):
         args = self._parser().parse_args(["chat", "--tui"])

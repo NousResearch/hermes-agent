@@ -95,13 +95,37 @@ except Exception:
     tea_util_models = None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
 )
+
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
 
 logger = logging.getLogger(__name__)
 
@@ -116,36 +140,89 @@ DINGTALK_TYPE_MAPPING = {
     "voice": "audio",
 }
 
+# File extension → MIME type mapping for DingTalk file/image messages.
+# Image MIME types (image/*) are used below in _extract_media to classify
+# incoming msgtype='image' payloads as MessageType.PHOTO (not DOCUMENT).
+EXT_MAP = {
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "md": "text/markdown",
+    "txt": "text/plain",
+    "csv": "text/csv",
+    "zip": "application/zip",
+    "mp4": "video/mp4",
+}
+
+
+def dingtalk_deps_present() -> bool:
+    """PASSIVE probe: are dingtalk-stream/httpx importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_dingtalk_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    Credentials are gated separately via ``is_connected``/``validate_config``.
+    """
+    return DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE
+
+
+def ensure_dingtalk_deps() -> bool:
+    """ACTIVE deps-only installer (registry ``ensure_deps_fn``).
+
+    Lazy-installs dingtalk-stream/httpx and rebinds module globals.
+    Deliberately does NOT check credentials — ``ensure_deps_fn``'s contract
+    is deps-only ("Returns True once deps are importable"); credentials are
+    gated by ``is_connected``/``validate_config``.  Otherwise a platform
+    configured via ``PlatformConfig.extra`` (which ``_is_connected``
+    accepts) would pass enablement, reach ``create_adapter()``, and have
+    the installer veto on env-var grounds before ever installing —
+    re-creating the #79812 deadlock for extra-configured setups.
+    """
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global HTTPX_AVAILABLE, httpx
+    if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
+        return True
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+        _lazy_ensure("platform.dingtalk", prompt=False)
+    except Exception:
+        return False
+    try:
+        import dingtalk_stream as _ds
+        from dingtalk_stream import ChatbotMessage as _CM
+        from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+        import httpx as _httpx
+    except Exception:
+        return False
+    dingtalk_stream = _ds
+    ChatbotMessage = _CM
+    CallbackMessage = _CBM
+    AckMessage = _AM
+    httpx = _httpx
+    DINGTALK_STREAM_AVAILABLE = True
+    HTTPX_AVAILABLE = True
+    return True
+
 
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured.
 
-    Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
-    on first call if not present.
+    Lazy-installs dingtalk-stream via :func:`ensure_dingtalk_deps`, then
+    additionally requires credentials.  Kept for setup/status callers that
+    want the combined deps+credentials answer; the registry uses the
+    deps-only :func:`ensure_dingtalk_deps` as ``ensure_deps_fn``.
     """
-    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
-    global HTTPX_AVAILABLE, httpx
-    if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("platform.dingtalk", prompt=False)
-        except Exception:
-            return False
-        try:
-            import dingtalk_stream as _ds
-            from dingtalk_stream import ChatbotMessage as _CM
-            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
-            import httpx as _httpx
-        except Exception:
-            return False
-        dingtalk_stream = _ds
-        ChatbotMessage = _CM
-        CallbackMessage = _CBM
-        AckMessage = _AM
-        httpx = _httpx
-        DINGTALK_STREAM_AVAILABLE = True
-        HTTPX_AVAILABLE = True
-    if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
+    if not ensure_dingtalk_deps():
+        return False
+    if not os.getenv("DINGTALK_CLIENT_ID") or not _get_scoped_secret("DINGTALK_CLIENT_SECRET"):
         return False
     return True
 
@@ -192,7 +269,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._client_id: str = extra.get("client_id") or os.getenv(
             "DINGTALK_CLIENT_ID", ""
         )
-        self._client_secret: str = extra.get("client_secret") or os.getenv(
+        self._client_secret: str = extra.get("client_secret") or _get_scoped_secret(
             "DINGTALK_CLIENT_SECRET", ""
         )
 
@@ -300,6 +377,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             self._stream_task = asyncio.create_task(self._run_stream())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
+            # Plugin-registered native handlers (DingTalkStreamClient — register_callback_handler()).
+            self._wire_plugin_handlers(self._stream_client)
             return True
         except Exception as e:
             logger.error("[%s] Failed to connect: %s", self.name, e)
@@ -438,28 +517,18 @@ class DingTalkAdapter(BasePlatformAdapter):
                 patterns = loaded
 
         if patterns is None:
-            return []
-        if isinstance(patterns, str):
-            patterns = [patterns]
-        if not isinstance(patterns, list):
-            logger.warning(
-                "[%s] dingtalk mention_patterns must be a list or string; got %s",
-                self.name,
-                type(patterns).__name__,
-            )
+            # Parity with the historical inline implementation: return before
+            # evaluating ``self.name`` (avoids touching adapter attributes on
+            # the no-patterns path).
             return []
 
-        compiled: List[re.Pattern] = []
-        for pattern in patterns:
-            if not isinstance(pattern, str) or not pattern.strip():
-                continue
-            try:
-                compiled.append(re.compile(pattern, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[%s] Invalid DingTalk mention pattern %r: %s", self.name, pattern, exc)
-        if compiled:
-            logger.info("[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled))
-        return compiled
+        return compile_mention_patterns(
+            patterns,
+            log_prefix=self.name,
+            platform_label="dingtalk",
+            display_label="DingTalk",
+            logger_=logger,
+        )
 
     def _load_allowed_users(self) -> Set[str]:
         """Load allowed-users list from config.extra or env var.
@@ -748,6 +817,90 @@ class DingTalkAdapter(BasePlatformAdapter):
                             parts.append(item.text)
                     content = " ".join(parts).strip()
 
+        # Fallback: audio message → use recognition text
+        if not content:
+            msg_type = getattr(message, "message_type", "")
+            if msg_type == "audio":
+                extensions = getattr(message, "extensions", {}) or {}
+                audio_content = extensions.get("content", {})
+                if isinstance(audio_content, dict):
+                    recognition = audio_content.get("recognition", "")
+                    if recognition:
+                        content = recognition.strip()
+
+        # Fallback: file message → use fileName as text
+        if not content:
+            msg_type = getattr(message, "message_type", "")
+            if msg_type == "file":
+                extensions = getattr(message, "extensions", {}) or {}
+                file_content = extensions.get("content", {})
+                if isinstance(file_content, dict):
+                    fname = file_content.get("fileName", "")
+                    if fname:
+                        content = f"[文件] {fname}"
+
+        # Fallback: card message (钉钉文档分享卡片 / link card)
+        # When a user shares a DingTalk Doc to the bot, the msgtype is "card"
+        # and the card data lives in extensions['card'] (SDK's from_dict maps
+        # unhandled fields to extensions).  Extract title + doc URL so the
+        # message isn't silently dropped as "empty".
+        if not content:
+            msg_type = getattr(message, "message_type", "")
+            # Handle card-type messages (文档分享卡片 / link card)
+            if msg_type == "card":
+                extensions = getattr(message, "extensions", {}) or {}
+                card = extensions.get("card", {})
+                if isinstance(card, dict):
+                    title = card.get("title", "")
+                    raw_content = card.get("content", "")
+                    doc_url = ""
+                    if raw_content is None:
+                        doc_url = ""
+                    elif isinstance(raw_content, dict):
+                        doc_url = raw_content.get("url", "") or raw_content.get("docUrl", "")
+                    elif isinstance(raw_content, str):
+                        stripped = raw_content.strip()
+                        if not stripped:
+                            doc_url = ""
+                        else:
+                            try:
+                                parsed = json.loads(stripped)
+                                if isinstance(parsed, dict):
+                                    doc_url = parsed.get("url", "") or parsed.get("docUrl", "")
+                            except (ValueError, TypeError):
+                                doc_url = raw_content
+                    parts = []
+                    if title:
+                        parts.append(f"[文档] {title}")
+                    if doc_url:
+                        parts.append(doc_url)
+                    if parts:
+                        content = " ".join(parts)
+                # Last-resort: raw text field from extensions (if present)
+                if not content:
+                    ext_text = extensions.get("text", {})
+                    if isinstance(ext_text, dict):
+                        content = (ext_text.get("content", "") or "").strip()
+
+            # Handle interactiveCard messages (钉钉文档分享卡片 / doc link card)
+            # structure: extensions["content"]["biz_custom_action_url"] and
+            # extensions["content"]["title"] for the card title
+            if msg_type == "interactiveCard" and not content:
+                extensions = getattr(message, "extensions", {}) or {}
+                ext_content = extensions.get("content", {})
+                if isinstance(ext_content, dict):
+                    doc_url = ext_content.get("biz_custom_action_url", "")
+                    title = ext_content.get("title", "")
+                    if doc_url or title:
+                        parts = []
+                        if title:
+                            parts.append(f"[文档卡片] {title}")
+                        else:
+                            parts.append("[文档卡片]")
+                        if doc_url:
+                            parts.append(doc_url)
+                        content = " ".join(parts)
+
         # Do NOT strip "@bot" from the text.  The mention is a routing
         # signal (delivered structurally via callback `isInAtList`), and
         # regex-stripping @handles would collateral-damage e-mails
@@ -815,11 +968,49 @@ class DingTalkAdapter(BasePlatformAdapter):
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
         elif msg_type_str == "richText":
-            msg_type = (
-                MessageType.PHOTO
-                if any("image" in t for t in media_types)
-                else MessageType.TEXT
-            )
+            # Only re-derive the type when the rich-text scan above left it
+            # at TEXT. The scan may already have promoted it to VOICE/AUDIO/
+            # VIDEO/DOCUMENT for embedded media items — resetting those here
+            # dropped native voice notes back to TEXT and skipped STT
+            # (#38211, #38219; analysis from #38276).
+            if msg_type == MessageType.TEXT and any(
+                "image" in t for t in media_types
+            ):
+                msg_type = MessageType.PHOTO
+        elif msg_type_str == "audio":
+            # Voice message — DingTalk already provides recognition text.
+            # Do NOT add media_urls here: if audio_paths is non-empty,
+            # run.py's _enrich_message_with_transcription will overwrite
+            # the recognition text with a failed STT attempt (whisper not installed).
+            # The recognition text from extensions['content']['recognition']
+            # is sufficient and already extracted by _extract_text.
+            if msg_type == MessageType.TEXT:
+                msg_type = MessageType.VOICE
+        elif msg_type_str in ("file", "image"):
+            extensions = getattr(message, "extensions", {}) or {}
+            ext_content = extensions.get("content", {})
+            if isinstance(ext_content, dict):
+                dl_code = ext_content.get("downloadCode") or ""
+                fname = ext_content.get("fileName", "")
+                if dl_code:
+                    media_urls.append(dl_code)
+                    mime = "application/octet-stream"
+                    # Map common extensions
+                    if fname:
+                        ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+                        mime = EXT_MAP.get(ext, mime)
+                    media_types.append(mime)
+                    if msg_type == MessageType.TEXT:
+                        # Image messages → PHOTO (distinct busy-session handling
+                        # in gateway/platforms/base.py).
+                        # File messages with image MIME types (e.g. a .png sent
+                        # as a file attachment) are also classified as PHOTO —
+                        # the user's intent is to share an image regardless of
+                        # how DingTalk delivers it.
+                        if msg_type_str == "image" or mime.startswith("image/"):
+                            msg_type = MessageType.PHOTO
+                        else:
+                            msg_type = MessageType.DOCUMENT
 
         return msg_type, media_urls, media_types
 
@@ -1323,6 +1514,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                         if item.get(key):
                             codes_to_resolve.append((item, key))
 
+        # 3. File/image message (msgtype='file' or 'image', codes in extensions)
+        msg_type_str = getattr(message, "message_type", "") or ""
+        if msg_type_str in ("file", "image"):
+            extensions = getattr(message, "extensions", {}) or {}
+            ext_content = extensions.get("content", {})
+            if isinstance(ext_content, dict) and ext_content.get("downloadCode"):
+                codes_to_resolve.append((ext_content, "downloadCode"))
+
         if not codes_to_resolve:
             return
 
@@ -1660,6 +1859,31 @@ def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
             ac = ",".join(str(v) for v in ac)
         os.environ["DINGTALK_ALLOWED_CHATS"] = str(ac)
     allowed = dingtalk_cfg.get("allowed_users")
+    if allowed is None:
+        # Fall back to the documented nested paths (#44928). The docs
+        # (website/docs/user-guide/messaging/dingtalk.md) configure the
+        # allowlist at gateway.platforms.dingtalk.extra.allowed_users; the
+        # adapter reads it from PlatformConfig.extra, but gateway
+        # authorization (_is_user_authorized in gateway/authz_mixin.py)
+        # only consults DINGTALK_ALLOWED_USERS — without this bridge a
+        # nested-only allowlist passes the adapter and is then denied at
+        # the gateway. Check this block's own extra first (the dispatch
+        # loop passes the platforms block here when no top-level
+        # ``dingtalk:`` section exists), then both nested containers.
+        _extra = dingtalk_cfg.get("extra")
+        if isinstance(_extra, dict):
+            allowed = _extra.get("allowed_users")
+        if allowed is None:
+            _gw = yaml_cfg.get("gateway")
+            _gw_platforms = _gw.get("platforms") if isinstance(_gw, dict) else None
+            for _container in (_gw_platforms, yaml_cfg.get("platforms")):
+                if not isinstance(_container, dict):
+                    continue
+                _dt = _container.get("dingtalk")
+                _dt_extra = _dt.get("extra") if isinstance(_dt, dict) else None
+                if isinstance(_dt_extra, dict) and _dt_extra.get("allowed_users") is not None:
+                    allowed = _dt_extra.get("allowed_users")
+                    break
     if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
         if isinstance(allowed, list):
             allowed = ",".join(str(v) for v in allowed)
@@ -1676,7 +1900,7 @@ def _is_connected(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
     return bool(
         (extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
-        and (extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
+        and (extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET"))
     )
 
 
@@ -1691,7 +1915,8 @@ def register(ctx) -> None:
         name="dingtalk",
         label="DingTalk",
         adapter_factory=_build_adapter,
-        check_fn=check_dingtalk_requirements,
+        check_fn=dingtalk_deps_present,
+        ensure_deps_fn=ensure_dingtalk_deps,
         is_connected=_is_connected,
         validate_config=_is_connected,
         required_env=["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"],

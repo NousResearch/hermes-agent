@@ -132,6 +132,75 @@ moa:
 
 Leave it unset (or `0`/blank) to keep the prior uncapped behavior.
 
+### Advisor cadence with `fanout`
+
+By default the advisors run **once per user turn** (`fanout: user_turn`) —
+they synthesize plan-level advice on the first message of the turn, then the
+acting aggregator works through the rest of the tool loop alone. This is the
+cheapest cadence: advisor cost does not multiply with the number of tool
+calls in a turn. Two alternative cadences trade cost for advice freshness:
+
+- `fanout: per_iteration` — advisors re-run on **every tool iteration**, so
+  their advice always tracks the latest tool results — at the cost of
+  multiplying advisor latency and spend by the number of tool calls in a
+  turn.
+- `fanout: every_n:3` — the middle ground: advisors run on the **first**
+  iteration of each user turn and then every **3rd** tool iteration (any
+  `N >= 2` works). Iterations in between reuse the cached guidance from the
+  last advisor run, so the aggregator still gets advice on every step — it is
+  just refreshed every N steps instead of every step. The counter resets on
+  each new user message, so every turn starts with fresh advice. The mapping
+  form `fanout: {mode: every_n, n: 3}` is also accepted and normalized to
+  the string form.
+
+```yaml
+moa:
+  presets:
+    fresh:
+      reference_models:
+        - provider: openrouter
+          model: anthropic/claude-opus-4.8
+      aggregator:
+        provider: openrouter
+        model: openai/gpt-5.5
+      fanout: per_iteration   # advisors refresh on every tool iteration
+```
+
+Unknown or malformed values fall back to `user_turn`.
+
+:::note Default change
+Prior to July 2026 the default cadence was `per_iteration`. The default is
+now `user_turn` — the cheapest, lowest-impact cadence — until per-mode
+benchmarks justify a costlier default. Presets that want per-step advising
+back set `fanout: per_iteration` explicitly.
+:::
+
+### Privacy filter for advisor outputs
+
+Advisor outputs can echo sensitive data from the conversation — emails,
+formatted phone numbers, API keys, JWTs — into the reference blocks shown in
+the UI, saved MoA traces, and the aggregator prompt. `moa.privacy_filter`
+(off by default) redacts those surfaces:
+
+```yaml
+moa:
+  privacy_filter: display   # or: full
+```
+
+- `display` — redacts **user-visible surfaces only**: the labelled reference
+  blocks rendered in the UI and the records written by `save_traces`. The
+  aggregator still receives the raw advisor text, so answer quality is
+  unaffected.
+- `full` — additionally redacts the advisor text injected into the
+  aggregator prompt (and the one-shot `/moa` synthesis input).
+
+Credential shapes (API-key prefixes, JWTs, private keys, DB connection
+strings) are masked by Hermes' central secret redactor; the MoA filter adds
+email and clearly formatted phone-number redaction on top. Patterns are
+deliberately conservative for code-review-style advice: bare digit runs, line
+numbers, timestamps, git SHAs, and IP addresses are never touched — only
+delimited phone formats like `(555) 123-4567` or `555-123-4567` match.
+
 ### Per-slot reasoning effort
 
 Reference and aggregator slots may also set `reasoning_effort`. Use this when

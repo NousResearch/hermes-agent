@@ -81,78 +81,8 @@ class FakeAgent:
         pass
 
 
-def test_finalizer_restores_clean_api_local_text_before_return(monkeypatch):
-    """One-shot CLI notes do not replay through same-process history."""
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
-    agent = FakeAgent()
-    messages = [
-        {"role": "user", "content": "[MODEL SWITCH NOTE]\n\nclean prompt"},
-        {"role": "assistant", "content": "Done."},
-    ]
-    agent._persist_user_message_idx = 0
-    agent._persist_user_message_override = "clean prompt"
-    agent._persist_user_message_timestamp = None
-
-    result = finalize_turn(
-        agent,
-        final_response="Done.",
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
-        messages=messages,
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn",
-        user_message="[MODEL SWITCH NOTE]\n\nclean prompt",
-        original_user_message="clean prompt",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
-    )
-
-    assert agent.persisted_messages is not None
-    assert agent.persisted_messages[0]["content"] == "clean prompt"
-    assert result["messages"][0]["content"] == "clean prompt"
 
 
-def test_finalizer_restores_clean_api_local_multimodal_before_return(monkeypatch):
-    """A queued note does not remain in the next-turn native image payload."""
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
-    agent = FakeAgent()
-    clean_content = [
-        {"type": "text", "text": "Describe the image"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-    ]
-    api_content = [
-        {"type": "text", "text": "[MODEL SWITCH NOTE]\n\nDescribe the image"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-    ]
-    messages = [
-        {"role": "user", "content": api_content},
-        {"role": "assistant", "content": "Done."},
-    ]
-    agent._persist_user_message_idx = 0
-    agent._persist_user_message_override = clean_content
-    agent._persist_user_message_timestamp = None
-
-    result = finalize_turn(
-        agent,
-        final_response="Done.",
-        api_call_count=1,
-        interrupted=False,
-        failed=False,
-        messages=messages,
-        conversation_history=[],
-        effective_task_id="task",
-        turn_id="turn",
-        user_message=api_content,
-        original_user_message=clean_content,
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(finish_reason=stop)",
-    )
-
-    assert agent.persisted_messages is not None
-    assert agent.persisted_messages[0]["content"] == clean_content
-    assert result["messages"][0]["content"] == clean_content
 
 
 def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
@@ -193,9 +123,57 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
         _turn_exit_reason="fallback_prior_turn_content",
     )
 
-    assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "Done."
+    assert isinstance(result["messages"][-1]["timestamp"], float)
     assert agent.persisted_messages is not None
-    assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+    assert agent.persisted_messages[-1] == result["messages"][-1]
+
+
+def test_fallback_timestamp_survives_delayed_sqlite_persistence(
+    monkeypatch, tmp_path
+):
+    """The durable row records message creation, not the later DB flush."""
+    from hermes_state import SessionDB
+
+    created_at = 1_781_976_577.25
+    persisted_at = created_at + 600
+    monkeypatch.setattr("agent.message_metadata.wall_time", lambda: created_at)
+    monkeypatch.setattr("hermes_state.time.time", lambda: persisted_at)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-test", source="cli")
+    agent = FakeAgent()
+
+    def persist_to_sqlite(messages, _conversation_history):
+        db.replace_messages(agent.session_id, messages)
+        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+
+    agent._persist_session = persist_to_sqlite
+    messages = [
+        {"role": "user", "content": "do it", "timestamp": created_at - 1},
+        {"role": "tool", "content": "ok", "tool_call_id": "call-1"},
+    ]
+
+    finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=False,
+        _turn_exit_reason="fallback_prior_turn_content",
+    )
+
+    assert agent.persisted_messages[-1]["timestamp"] == created_at
+    assert agent.persisted_messages[-1]["timestamp"] != persisted_at
 
 
 def test_final_response_fills_pure_tool_call_tail(monkeypatch):
@@ -248,50 +226,21 @@ def test_final_response_fills_pure_tool_call_tail(monkeypatch):
     assert sum(1 for m in persisted if m.get("role") == "assistant") == 1
 
 
-def test_final_response_does_not_clobber_tool_call_tail_with_text(monkeypatch):
-    """A tail tool-call turn that already carries model text must be left alone."""
-    agent = FakeAgent()
-    messages = [
-        {"role": "user", "content": "q"},
-        {
-            "role": "assistant",
-            "content": "partial text",
-            "tool_calls": [
-                {"id": "t1", "type": "function",
-                 "function": {"name": "f", "arguments": "{}"}}
-            ],
-        },
-    ]
-
-    finalize_turn(
-        agent,
-        final_response="Here is your answer.",
-        api_call_count=3,
-        interrupted=False,
-        failed=False,
-        messages=messages,
-        conversation_history=[],
-        effective_task_id="t",
-        turn_id="tid",
-        user_message="q",
-        original_user_message="q",
-        _should_review_memory=False,
-        _turn_exit_reason="text_response(final)",
-    )
-
-    assert agent.persisted_messages[-1]["content"] == "partial text"
 
 
-def test_fill_pops_db_persisted_marker_for_durable_rewrite(monkeypatch):
-    """The incremental tool-call persist stamps ``_db_persisted`` on the row.
 
-    If finalize_turn fills the tail's content but leaves the marker, the next
-    ``_flush_messages_to_session_db`` skips the row and the durable SQLite
-    store keeps ``content=""`` — so ``/resume`` reloads the empty content and
-    the bug resurfaces cross-session. The fix pops the marker so the filled
-    content is re-written.
+
+def test_final_response_fill_invalidates_flush_scan_cursor():
+    """The fill's marker pop must invalidate the bounded flush-scan cursor.
+
+    The cursor (run_agent.py) skips the identity-matched prefix of its
+    previous snapshot assuming no live dict loses ``_db_persisted`` in place
+    — the fill is the one path that pops it. Without invalidation, the
+    turn-end flush skips the filled row as 'already stamped' and the
+    delivered answer never reaches state.db (the #43849 class resurfacing).
     """
     agent = FakeAgent()
+    agent._db_flush_scan_prefix = ["prior-snapshot"]
     messages = [
         {"role": "user", "content": "q"},
         {
@@ -301,7 +250,7 @@ def test_fill_pops_db_persisted_marker_for_durable_rewrite(monkeypatch):
                 {"id": "t1", "type": "function",
                  "function": {"name": "f", "arguments": "{}"}}
             ],
-            "_db_persisted": True,  # stamped by conversation_loop.py:4990
+            "_db_persisted": True,
         },
     ]
 
@@ -321,10 +270,142 @@ def test_fill_pops_db_persisted_marker_for_durable_rewrite(monkeypatch):
         _turn_exit_reason="text_response(final)",
     )
 
-    persisted = agent.persisted_messages
-    assert persisted is not None
-    assert persisted[-1]["content"] == "Here is your answer."
-    assert persisted[-1]["tool_calls"]
-    assert "_db_persisted" not in persisted[-1], (
-        "marker must be popped so the next flush re-writes the filled content"
+    assert agent._db_flush_scan_prefix is None
+
+
+def test_empty_final_response_recovers_stream_buffer_into_blank_assistant_row(
+    monkeypatch, tmp_path
+):
+    """#95514: empty terminal completion must not persist content='' over a live stream.
+
+    After a tool result the incremental flush can leave a blank assistant tail.
+    If finalize_turn then receives final_response='' while the stream buffer
+    still holds the delivered text, that blank row is the durable transcript —
+    Desktop reload shows nothing even though the user already saw the answer.
+    """
+    from hermes_state import SessionDB
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-test", source="cli")
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "Already streamed to the user."
+
+    def persist_to_sqlite(messages, _conversation_history):
+        db.replace_messages(agent.session_id, messages)
+        agent.persisted_messages = db.get_messages_as_conversation(agent.session_id)
+
+    agent._persist_session = persist_to_sqlite
+    messages = [
+        {"role": "user", "content": "summarize"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "t1", "type": "function",
+                 "function": {"name": "terminal", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "name": "terminal", "content": "ok"},
+        {"role": "assistant", "content": "", "_db_persisted": True},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="summarize",
+        original_user_message="summarize",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
     )
+
+    assert result["final_response"] == "Already streamed to the user."
+    assistants = [m for m in agent.persisted_messages if m.get("role") == "assistant"]
+    assert assistants[-1]["content"] == "Already streamed to the user."
+    assert assistants[0].get("tool_calls")
+    assert sum(1 for m in assistants) == 2
+
+    reopened = SessionDB(db_path=tmp_path / "state.db")
+    reloaded = reopened.get_messages_as_conversation("sess-test")
+    assert reloaded[-1]["role"] == "assistant"
+    assert reloaded[-1]["content"] == "Already streamed to the user."
+    assert sum(1 for m in reloaded if m.get("role") == "assistant") == 2
+
+
+def test_failed_turn_does_not_recover_stream_buffer_as_final_response(monkeypatch):
+    """A failed turn must not invent a successful answer from the stream buffer."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._current_streamed_assistant_text = "partial tokens"
+
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=True,
+        messages=[{"role": "user", "content": "q"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="q",
+        original_user_message="q",
+        _should_review_memory=False,
+        _turn_exit_reason="error",
+    )
+
+    assert result["final_response"] in ("", None)
+    assert result["failed"] is True
+
+
+def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypatch):
+    """Labeled empty-terminal excerpt is delivery-only, not durable content.
+
+    ``empty_response_exhausted`` sets final_response to a labeled reasoning
+    excerpt while the transcript tail is a blank/sentinel assistant without
+    tool_calls. Filling that tail would persist the excerpt and break replay
+    (test_empty_terminal_reasoning_surface).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    excerpt = (
+        "⚠️ The model produced only internal reasoning and no final answer, "
+        "despite retries. Its last reasoning, which may contain the answer:\n\n"
+        "The answer is 42"
+    )
+    messages = [
+        {"role": "user", "content": "what is the answer?"},
+        {"role": "assistant", "content": ""},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response=excerpt,
+        api_call_count=6,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="what is the answer?",
+        original_user_message="what is the answer?",
+        _should_review_memory=False,
+        _turn_exit_reason="empty_response_exhausted",
+    )
+
+    assert result["final_response"] == excerpt
+    assert not any(
+        m.get("role") == "assistant"
+        and "only internal reasoning" in (m.get("content") or "")
+        for m in result["messages"]
+    )
+

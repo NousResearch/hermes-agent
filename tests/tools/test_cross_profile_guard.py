@@ -67,31 +67,18 @@ class TestWriteFileCrossProfileGuard:
         assert target.exists()
         assert target.read_text() == "in-profile content"
 
-    def test_cross_profile_write_blocked_by_default(self, fake_hermes):
-        """The May 2026 incident — security-profile session edits default
-        profile's skill. Must be blocked."""
+    def test_cross_profile_write_allowed_guard_retired(self, fake_hermes):
+        """Guard RETIRED (maintainer decision): profiles are not isolated —
+        the same OS user owns every profile dir and the terminal tool
+        always could write them. Cross-profile writes now succeed; the
+        system prompt's profile hint is the only steering."""
         from tools.file_tools import write_file_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
-        original = target.read_text()
-        result_json = write_file_tool(str(target), "OVERWRITTEN")
+        result_json = write_file_tool(str(target), "cross-profile write, allowed")
         result = json.loads(result_json)
-        assert result.get("error"), "Cross-profile write should be refused"
-        assert "cross-profile" in result["error"].lower()
-        assert "default" in result["error"]
-        assert "hermes-security" in result["error"]
-        # File untouched.
-        assert target.read_text() == original
+        assert not result.get("error"), f"guard retired; write must succeed: {result}"
+        assert target.read_text() == "cross-profile write, allowed"
 
-    def test_cross_profile_True_bypass(self, fake_hermes):
-        """Explicit override after user direction must succeed."""
-        from tools.file_tools import write_file_tool
-        target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
-        result_json = write_file_tool(
-            str(target), "user-directed override", cross_profile=True
-        )
-        result = json.loads(result_json)
-        assert not result.get("error"), f"cross_profile=True must succeed: {result}"
-        assert target.read_text() == "user-directed override"
 
     def test_non_hermes_path_unaffected(self, fake_hermes, tmp_path):
         from tools.file_tools import write_file_tool
@@ -109,20 +96,18 @@ class TestWriteFileCrossProfileGuard:
 
 
 class TestPatchCrossProfileGuard:
-    def test_cross_profile_patch_blocked(self, fake_hermes):
+    def test_cross_profile_patch_allowed_guard_retired(self, fake_hermes):
         from tools.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
-        original = target.read_text()
         result_json = patch_tool(
             mode="replace",
             path=str(target),
             old_string="default copy.",
-            new_string="HIJACKED.",
+            new_string="patched without any flag.",
         )
         result = json.loads(result_json)
-        assert result.get("error")
-        assert "cross-profile" in result["error"].lower()
-        assert target.read_text() == original
+        assert not result.get("error"), f"guard retired; patch must succeed: {result}"
+        assert "patched without any flag." in target.read_text()
 
     def test_cross_profile_patch_bypass(self, fake_hermes):
         from tools.file_tools import patch_tool
@@ -135,28 +120,28 @@ class TestPatchCrossProfileGuard:
             cross_profile=True,
         )
         result = json.loads(result_json)
-        assert not result.get("error"), f"cross_profile=True bypass: {result}"
+        assert not result.get("error"), f"cross_profile still handler-accepted (compat): {result}"
         assert "user-directed update." in target.read_text()
 
-    def test_v4a_patch_extracts_path_for_guard(self, fake_hermes):
-        """V4A patches embed the target paths in the patch body, not in
-        a ``path`` kwarg. The guard must still apply."""
+    def test_v4a_patch_writes_through_guard_retired(self, fake_hermes):
+        """V4A patch to a cross-profile path succeeds (guard retired).
+        V4A patches embed target paths in the patch body; path extraction
+        for the surviving mirror guards still runs, but cross-profile
+        targets are no longer refused."""
         from tools.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
-        original = target.read_text()
         v4a = (
             "*** Begin Patch\n"
             f"*** Update File: {target}\n"
             "@@\n"
             "-default copy.\n"
-            "+HIJACKED.\n"
+            "+v4a cross-profile write, allowed.\n"
             "*** End Patch"
         )
         result_json = patch_tool(mode="patch", patch=v4a)
         result = json.loads(result_json)
-        assert result.get("error"), f"V4A cross-profile must block: {result}"
-        assert "cross-profile" in result["error"].lower()
-        assert target.read_text() == original
+        assert not result.get("error"), f"guard retired; V4A must succeed: {result}"
+        assert "v4a cross-profile write, allowed." in target.read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -189,23 +174,9 @@ class TestSkillManageCrossProfileErrorUX:
         err = _skill_not_found_error("default-only-skill")
         assert "not found in active profile 'hermes-security'" in err
         assert "default" in err
-        assert "cross_profile=True" in err
+        assert "cross_profile" not in err  # retired vocabulary
+        assert "file tools / terminal" in err
 
-    def test_error_names_multiple_profiles(self, fake_hermes, monkeypatch):
-        """When the skill exists in TWO other profiles, both should be named."""
-        self._make_skill_in_profile(fake_hermes["root"], "everywhere-skill")
-        self._make_skill_in_profile(fake_hermes["coder_home"], "everywhere-skill")
-
-        import importlib
-        import tools.skill_manager_tool
-        importlib.reload(tools.skill_manager_tool)
-        from tools.skill_manager_tool import _skill_not_found_error
-
-        err = _skill_not_found_error("everywhere-skill")
-        assert "default" in err
-        assert "coder" in err
-        # Switch-profiles hint
-        assert "hermes -p" in err
 
     def test_genuinely_missing_skill_keeps_helpful_hint(
         self, fake_hermes, monkeypatch
@@ -251,7 +222,7 @@ class TestSystemPromptActiveProfile:
         from pathlib import Path
         src = Path("agent/system_prompt.py").read_text()
         assert "Active Hermes profile" in src
-        assert "cross_profile=True" in src
+        assert "cross_profile=True" not in src  # guard retired
         assert "~/.hermes/profiles/" in src
         # Both branches present (default and named profile).
         assert "Active Hermes profile: default" in src

@@ -1,34 +1,59 @@
 import { atom } from 'nanostores'
 
+import { releaseTypingFocus } from '@/components/ui/keyboard-first'
+
 /** Whether the global command palette (Cmd/Ctrl+K) is currently open. */
 export const $commandPaletteOpen = atom(false)
 
 /** Optional nested page to open when the palette next opens (e.g. `pets`). */
 export const $commandPalettePage = atom<string | null>(null)
 
+/** Optional search text to prefill when the palette next opens (type-to-search
+ *  from a surface: the keystroke that opened the palette must not be lost). */
+export const $commandPaletteSeed = atom<string | null>(null)
+
 export function openCommandPalette(): void {
   $commandPaletteOpen.set(true)
 }
 
 /** Open the palette directly on a nested page (`theme`, `pets`, …). */
-export function openCommandPalettePage(page: string): void {
+export function openCommandPalettePage(page: string, seed?: string): void {
   $commandPalettePage.set(page)
+
+  if (seed) {
+    $commandPaletteSeed.set(seed)
+  }
+
   $commandPaletteOpen.set(true)
 }
 
-export function closeCommandPalette(): void {
-  $commandPaletteOpen.set(false)
-  $commandPalettePage.set(null)
-}
+// Closing hands the keyboard back to the composer — a hotkey-opened overlay
+// owes typing focus to whatever the user was writing, not to its trigger.
+// Skipped when the palette action itself moved focus (navigating to a route,
+// opening a dialog): those surfaces claim focus after this runs.
+function setOpen(open: boolean): void {
+  const wasOpen = $commandPaletteOpen.get()
 
-export function setCommandPaletteOpen(open: boolean): void {
   $commandPaletteOpen.set(open)
 
   if (!open) {
     $commandPalettePage.set(null)
+    $commandPaletteSeed.set(null)
+
+    if (wasOpen) {
+      releaseTypingFocus()
+    }
   }
 }
 
+export function closeCommandPalette(): void {
+  setOpen(false)
+}
+
+export function setCommandPaletteOpen(open: boolean): void {
+  setOpen(open)
+}
+
 export function toggleCommandPalette(): void {
-  $commandPaletteOpen.set(!$commandPaletteOpen.get())
+  setOpen(!$commandPaletteOpen.get())
 }

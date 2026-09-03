@@ -199,92 +199,39 @@ class TestWebExtractSecretExfil:
 
 
 class TestBrowserSnapshotRedaction:
-    """Verify secrets in page snapshots are redacted before auxiliary LLM calls."""
+    """Verify secrets in stored/truncated page snapshots are redacted.
 
-    def test_extract_relevant_content_redacts_secrets(self):
-        """Snapshot containing secrets should be redacted before call_llm."""
-        from tools.browser_tool import _extract_relevant_content
+    The old LLM summarization path (_extract_relevant_content) is gone —
+    oversized snapshots always truncate-and-store. The security boundary is
+    now the stored file (force-redacted in _store_full_snapshot) and the
+    returned view (_redact_browser_output at the call sites).
+    """
 
-        # Build a snapshot with a fake Anthropic-style key embedded
+    def test_stored_snapshot_redacts_secrets(self):
+        """Secrets in a snapshot must be masked in the stored full-text file."""
+        from pathlib import Path
+        from tools.browser_tool import _store_full_snapshot
+
         fake_key = "sk-" + "FAKESECRETVALUE1234567890ABCDEF"
         snapshot_with_secret = (
             "heading: Dashboard Settings\n"
             f"text: API Key: {fake_key}\n"
             "button [ref=e5]: Save\n"
         )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Dashboard with save button [ref=e5]"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(snapshot_with_secret, "check settings")
-
-        assert len(captured_prompts) == 1
-        # The middle portion of the key must not appear in the prompt
-        assert "FAKESECRETVALUE1234567890" not in captured_prompts[0]
+        stored = _store_full_snapshot(snapshot_with_secret)
+        assert stored is not None
+        content = Path(stored).read_text(encoding="utf-8")
+        assert "FAKESECRETVALUE1234567890" not in content
         # Non-secret content should survive
-        assert "Dashboard" in captured_prompts[0]
-        assert "ref=e5" in captured_prompts[0]
+        assert "Dashboard" in content
+        assert "ref=e5" in content
 
-    def test_extract_relevant_content_no_task_redacts_secrets(self):
-        """Snapshot without user_task should also redact secrets."""
-        from tools.browser_tool import _extract_relevant_content
+    def test_no_llm_summarization_entry_points(self):
+        """The auxiliary-LLM snapshot path must not exist anymore."""
+        import tools.browser_tool as bt
 
-        fake_key = "sk-" + "ANOTHERFAKEKEY99887766554433"
-        snapshot_with_secret = (
-            f"text: OPENAI_API_KEY={fake_key}\n"
-            "link [ref=e2]: Home\n"
-        )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Page with home link [ref=e2]"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(snapshot_with_secret)
-
-        assert len(captured_prompts) == 1
-        assert "ANOTHERFAKEKEY99887766" not in captured_prompts[0]
-
-    def test_extract_relevant_content_normal_snapshot_unchanged(self):
-        """Snapshot without secrets should pass through normally."""
-        from tools.browser_tool import _extract_relevant_content
-
-        normal_snapshot = (
-            "heading: Welcome\n"
-            "text: Click the button below to continue\n"
-            "button [ref=e1]: Continue\n"
-        )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Welcome page with continue button"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(normal_snapshot, "proceed")
-
-        assert len(captured_prompts) == 1
-        assert "Welcome" in captured_prompts[0]
-        assert "Continue" in captured_prompts[0]
+        assert not hasattr(bt, "_extract_relevant_content")
+        assert not hasattr(bt, "_get_extraction_model")
 
 
 class TestCamofoxAnnotationRedaction:

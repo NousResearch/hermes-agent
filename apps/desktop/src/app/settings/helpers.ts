@@ -97,6 +97,86 @@ export function getNested(obj: HermesConfigRecord, path: string): unknown {
   return cur
 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+/**
+ * Structural diff between two config snapshots: an object holding only the
+ * branches of `next` that changed relative to `base`. Plain-object values are
+ * compared key by key so editing one field doesn't drag its untouched
+ * siblings back into the result; arrays and scalars are compared as whole
+ * values.
+ *
+ * The autosave path sends this instead of the full draft so a field the user
+ * never touched — one an agent may have changed via `hermes config set`
+ * while Settings was open with a stale snapshot — is never resent with its
+ * now-stale value. `PUT /api/config` deep-merges onto disk, so an omitted
+ * key keeps whatever is currently there.
+ */
+export function diffConfig(base: HermesConfigRecord, next: HermesConfigRecord): HermesConfigRecord {
+  const patch: HermesConfigRecord = {}
+
+  for (const key of Object.keys(next)) {
+    const baseValue = base[key]
+    const nextValue = next[key]
+
+    if (isPlainObject(baseValue) && isPlainObject(nextValue)) {
+      const nested = diffConfig(baseValue, nextValue)
+
+      if (Object.keys(nested).length > 0) {
+        patch[key] = nested
+      }
+    } else if (JSON.stringify(baseValue) !== JSON.stringify(nextValue)) {
+      patch[key] = nextValue
+    }
+  }
+
+  return patch
+}
+
+/**
+ * True when an edit clears the entire "Enabled Toolsets" list — i.e. the
+ * previous config had a non-empty toolsets array and the next one is an
+ * explicit empty array.
+ *
+ * A *missing* toolsets key is deliberately NOT a clear: `PUT /api/config`
+ * deep-merges the override onto the stored config (`_deep_merge` preserves base
+ * keys absent from the override), so an import that omits `toolsets` leaves the
+ * existing toolsets intact. Prompting there would warn about a wipe that never
+ * happens. Only an explicit `[]` actually empties the list.
+ *
+ * Clearing every toolset silently disables memory, terminal, web search,
+ * delegation, and most tools, and config auto-saves with no undo, so callers
+ * use this to confirm the destructive transition before applying it. Any edit
+ * that keeps at least one toolset — or that never had one — returns false.
+ */
+export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConfigRecord): boolean {
+  const prevToolsets = getNested(prev, 'toolsets')
+  const nextToolsets = getNested(next, 'toolsets')
+  const hadToolsets = Array.isArray(prevToolsets) && prevToolsets.length > 0
+  const clearsToolsets = Array.isArray(nextToolsets) && nextToolsets.length === 0
+
+  return hadToolsets && clearsToolsets
+}
+
+// Voice renders only fields for the selected TTS/STT provider. Search and the
+// page share this rule so every indexed field can actually mount when opened.
+export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
+
+  if (!match) {
+    return true
+  }
+
+  const [, domain, provider] = match
+
+  if (domain === 'stt' && !getNested(config, 'stt.enabled')) {
+    return false
+  }
+
+  return provider === String(getNested(config, `${domain}.provider`) ?? '')
+}
+
 export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   if (typeof value === 'boolean') {
     return { type: 'boolean' }
@@ -113,7 +193,7 @@ export function inferFieldSchema(value: unknown): ConfigFieldSchema {
   return { type: 'string' }
 }
 
-// Backend schema omits some declared keys (e.g. memory.provider); config presence is the availability signal.
+// Backend schema omits some declared keys; config presence is the availability signal.
 export function sectionFieldEntries(
   schema: Record<string, ConfigFieldSchema>,
   config: HermesConfigRecord
@@ -259,6 +339,12 @@ function commandProviderNames(config: HermesConfigRecord, section: 'tts' | 'stt'
   return [...names]
 }
 
+// Voice sets per OpenAI speech model, per the OpenAI TTS API docs: tts-1 and
+// tts-1-hd support 9 voices; gpt-4o-mini-tts supports those plus ballad,
+// verse, marin, and cedar (13 total). Unknown/future models get the full
+// union (the field is free-input anyway — this only narrows suggestions).
+const OPENAI_TTS1_VOICES = new Set(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
+
 export function enumOptionsFor(
   key: string,
   value: unknown,
@@ -277,6 +363,16 @@ export function enumOptionsFor(
 
     if (custom.length > 0) {
       opts = [...opts, ...custom]
+    }
+  }
+
+  // Narrow OpenAI voice suggestions to what the selected model actually
+  // accepts — offering `marin` against tts-1 would 400 at the API.
+  if (!dynamicOptions && opts && key === 'tts.openai.voice') {
+    const model = asText(getNested(config, 'tts.openai.model'))
+
+    if (model === 'tts-1' || model === 'tts-1-hd') {
+      opts = opts.filter(voice => OPENAI_TTS1_VOICES.has(voice))
     }
   }
 

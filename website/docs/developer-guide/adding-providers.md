@@ -34,9 +34,14 @@ A built-in provider has to line up across a few layers:
 The important abstraction is `api_mode`.
 
 - Most providers use `chat_completions`.
-- Codex uses `codex_responses`.
+- Codex and Meta Model API (`api.meta.ai` — Muse Spark) use `codex_responses` (auto-sends `prompt_cache_retention: 24h` for prompt caching; `api.meta.ai` achieves 93–99% cache hits only on `/v1/responses`).
+- Ramp Router (`api.router.com`) also uses `codex_responses` — Responses is Router's native wire (`/v1/chat/completions` is only a minimal compatibility shim), and it validates `reasoning.effort` per model, which the router profile handles by declaring each model's vocabulary from the live catalog (`ProviderProfile.supported_reasoning_efforts`).
 - Anthropic uses `anthropic_messages`.
 - A new non-OpenAI protocol usually means adding a new adapter and a new `api_mode` branch.
+
+### Tool-call wire format
+
+Hermes stores conversation history in the OpenAI chat-completions shape internally, so the `chat_completions` transport's `convert_messages` / `convert_tools` (`agent/transports/chat_completions.py`) are near-identity, and every other transport converts *from* that shape into its native protocol. The canonical reference for the shape — `tools` definitions with JSON-schema `parameters`, assistant `tool_calls` entries with stringified `function.arguments`, and `role: "tool"` result messages keyed by `tool_call_id` — is the [OpenAI chat completions API reference](https://platform.openai.com/docs/api-reference/chat/create). When you write a native adapter, that page defines the input side of your conversion; your provider's docs define the output side.
 
 ## Choose the implementation path first
 
@@ -61,7 +66,7 @@ Use this when the provider does not behave like OpenAI chat completions.
 
 Examples in-tree today:
 
-- `codex_responses`
+- `codex_responses` (OpenAI Codex, xAI Grok, Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h` — and Ramp Router via `api.router.com`)
 - `anthropic_messages`
 
 This path includes everything from Path A plus:
@@ -338,11 +343,11 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 - provider:model parsing
 - any adapter-specific message conversion
 
-Run tests with xdist disabled:
+Run the targeted tests (or use `scripts/run_tests.sh`, which runs each file in its own subprocess):
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -n0 -q
+python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
 ```
 
 For deeper changes, run the full suite before pushing:

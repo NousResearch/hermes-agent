@@ -76,7 +76,11 @@ _STORE_DIRNAME = "store"
 _REFS_PREFIX = "refs/hermes"
 _INDEXES_DIRNAME = "indexes"
 _PROJECTS_DIRNAME = "projects"
+_LEDGERS_DIRNAME = "ledgers"
 _LEGACY_PREFIX = "legacy-"
+
+# Agent-write ledger cap: newest entries retained per project.
+_LEDGER_MAX_ENTRIES = 2000
 
 DEFAULT_EXCLUDES = [
     # Dependency / build output
@@ -224,6 +228,56 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
+def _ledger_path(store: Path, dir_hash: str) -> Path:
+    return store / _LEDGERS_DIRNAME / f"{dir_hash}.json"
+
+
+def _hash_file(path: Path) -> Optional[str]:
+    """Streaming sha256 of a file's bytes. None if unreadable/missing."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _load_ledger(store: Path, dir_hash: str) -> Dict[str, Dict]:
+    """Load the agent-write ledger: {relpath: {"sha256": ..., "ts": ...}}.
+
+    The ledger records the content hash of every file the last successful
+    ``write_file`` / ``patch`` produced, so restores can tell "Hermes wrote
+    this" apart from "the user hand-edited this afterwards".
+    """
+    try:
+        raw = _ledger_path(store, dir_hash).read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_ledger(store: Path, dir_hash: str, ledger: Dict[str, Dict]) -> None:
+    """Persist the agent-write ledger, capped to the newest entries."""
+    try:
+        if len(ledger) > _LEDGER_MAX_ENTRIES:
+            newest = sorted(
+                ledger.items(),
+                key=lambda kv: kv[1].get("ts", 0) if isinstance(kv[1], dict) else 0,
+                reverse=True,
+            )[:_LEDGER_MAX_ENTRIES]
+            ledger = dict(newest)
+        path = _ledger_path(store, dir_hash)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(ledger), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        logger.debug("Failed to save agent-write ledger for %s", dir_hash, exc_info=True)
+
+
 def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
 
@@ -258,7 +312,10 @@ def _git_env(
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    env = os.environ.copy()
+    # git child with hand-isolated config env; exact preservation — a HOME
+    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -327,7 +384,7 @@ def _run_git(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
             env=env,
             cwd=str(normalized_working_dir),
@@ -442,7 +499,8 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
-    init_env = os.environ.copy()
+    from tools.environments.local import build_subprocess_env
+    init_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -453,7 +511,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["git", "init", "--bare", str(store)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
@@ -483,6 +541,39 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     return None
 
 
+def _volume_evidence(workdir: Path) -> Dict:
+    """Record the identity of ``workdir``'s parent while the project is live.
+
+    ``(st_dev, st_ino)`` of the parent directory, captured at a moment when
+    the workdir itself is reachable, identifies the *directory* — not just
+    the path.  A mount point resolves to the mounted filesystem's root while
+    the volume is attached and to the underlying (underlay) directory after
+    unmount: same path, different directory, different ``(st_dev, st_ino)``.
+    Orphan pruning uses this to distinguish "the project was deleted out of
+    the directory we knew" from "a different directory is now visible at
+    that path because the volume is detached".
+
+    Returns ``{}`` when the workdir is not currently reachable, when the
+    filesystem does not provide a usable directory identity (a zero
+    ``st_dev`` or ``st_ino`` — e.g. Windows filesystems without file IDs and
+    some network shares), or when the probe fails — callers treat all of
+    these as "no evidence recorded" and orphan pruning stays conservative
+    for the project (never classified as orphan; retention still applies).
+    """
+    try:
+        if not workdir.exists():
+            return {}
+        st = workdir.parent.stat()
+        if not st.st_dev or not st.st_ino:
+            return {}
+        return {
+            "workdir_parent_dev": st.st_dev,
+            "workdir_parent_ino": st.st_ino,
+        }
+    except OSError:
+        return {}
+
+
 def _register_project(store: Path, working_dir: str) -> None:
     """Create or update ``projects/<hash>.json`` with workdir + timestamps."""
     dir_hash = _project_hash(working_dir)
@@ -490,11 +581,22 @@ def _register_project(store: Path, working_dir: str) -> None:
     now = time.time()
     meta: Dict = {"workdir": str(_normalize_path(working_dir)),
                   "created_at": now, "last_touch": now}
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
     if meta_path.exists():
         try:
             existing = json.loads(meta_path.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
                 meta["created_at"] = existing.get("created_at", now)
+                if not evidence:
+                    # Fresh probe failed — keep the previously recorded
+                    # parent identity rather than dropping it. Stale evidence
+                    # only makes pruning MORE conservative (mismatch => not
+                    # an orphan).
+                    for key in ("workdir_parent_dev", "workdir_parent_ino"):
+                        if key in existing:
+                            meta[key] = existing[key]
         except (OSError, ValueError):
             pass
     try:
@@ -520,6 +622,13 @@ def _touch_project(store: Path, working_dir: str) -> None:
     meta["workdir"] = str(_normalize_path(working_dir))
     meta["last_touch"] = time.time()
     meta.setdefault("created_at", meta["last_touch"])
+    # Refresh the parent-directory identity while the project is observably
+    # live — a remount can legitimately change it (new device, new inode).
+    # On probe failure the previous evidence is kept: stale evidence can only
+    # make pruning MORE conservative (mismatch => not an orphan).
+    evidence = _volume_evidence(_normalize_path(working_dir))
+    if evidence:
+        meta.update(evidence)
     try:
         meta_path.write_text(json.dumps(meta), encoding="utf-8")
     except OSError as exc:
@@ -542,6 +651,44 @@ def _list_projects(store: Path) -> List[Dict]:
             continue
         meta["_hash"] = dir_hash
         out.append(meta)
+    return out
+
+
+def _pre_v2_shadow_repos(base: Path) -> List[Dict]:
+    """Return pre-v2 per-project shadow repos still directly under ``base``.
+
+    Pre-v2 layout kept one shadow git repo per working directory directly
+    under ``CHECKPOINT_BASE`` (identified by a ``HEAD`` file).  This is the
+    single source of truth for that scan so a preview built from it (e.g.
+    ``store_status``) always matches what ``prune_checkpoints`` deletes.
+    """
+    out: List[Dict] = []
+    if not base.exists():
+        return out
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name == _STORE_DIRNAME or child.name.startswith(_LEGACY_PREFIX):
+            continue
+        if not (child / "HEAD").exists():
+            continue
+        workdir: Optional[str] = None
+        marker_unreadable = False
+        wd_marker = child / "HERMES_WORKDIR"
+        if wd_marker.exists():
+            try:
+                workdir = wd_marker.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError):
+                # The marker is there, we just could not read it. That is
+                # not evidence the project is gone — never delete on it.
+                workdir = None
+                marker_unreadable = True
+        out.append({
+            "path": child,
+            "workdir": workdir,
+            "exists": bool(workdir) and Path(workdir).exists(),
+            "marker_unreadable": marker_unreadable,
+        })
     return out
 
 
@@ -653,6 +800,99 @@ class CheckpointManager:
     # Public API
     # ------------------------------------------------------------------
 
+    def record_agent_write(self, file_path: str) -> None:
+        """Record the content hash of a file Hermes just successfully wrote.
+
+        Feeds the agent-write ledger used by :meth:`restore` in safe mode:
+        at restore time, a file whose current content no longer matches the
+        recorded hash was hand-edited by the user after Hermes last touched
+        it, and is skipped instead of clobbered.
+
+        Never raises — the ledger is best-effort bookkeeping.
+        """
+        if not self.enabled:
+            return
+        try:
+            path = _normalize_path(file_path)
+            digest = _hash_file(path)
+            if digest is None:
+                return
+            working_dir = self.get_working_dir_for_path(str(path))
+            store = _store_path(CHECKPOINT_BASE)
+            dir_hash = _project_hash(working_dir)
+            ledger = _load_ledger(store, dir_hash)
+            ledger[str(path)] = {"sha256": digest, "ts": time.time()}
+            _save_ledger(store, dir_hash, ledger)
+        except Exception as exc:
+            logger.debug("record_agent_write failed for %s: %s", file_path, exc)
+
+    def safe_restore_plan(self, working_dir: str, commit_hash: str) -> Dict:
+        """Classify files changed since ``commit_hash`` for a safe restore.
+
+        Returns ``{"success", "restore": [rel...], "skipped": [rel...],
+        "error"?}`` where ``restore`` lists files whose current content
+        still matches what Hermes last wrote (per the agent-write ledger)
+        and ``skipped`` lists files the user hand-edited after Hermes'
+        last write or that Hermes never wrote at all.
+        """
+        hash_err = _validate_commit_hash(commit_hash)
+        if hash_err:
+            return {"success": False, "error": hash_err}
+
+        abs_dir = str(_normalize_path(working_dir))
+        store = _store_path(CHECKPOINT_BASE)
+        if not (store / "HEAD").exists():
+            return {"success": False, "error": "No checkpoints exist for this directory"}
+
+        dir_hash = _project_hash(abs_dir)
+        index_file = _index_path(store, dir_hash)
+
+        # Stage the current tree so the name-only diff sees new files too.
+        _run_git(["add", "-A"], store, abs_dir,
+                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        ok, names_out, err = _run_git(
+            ["diff", "--name-only", commit_hash, "--cached"],
+            store, abs_dir, index_file=index_file,
+        )
+        # Reset the index back to the project ref so it doesn't drift.
+        _run_git(["read-tree", _ref_name(dir_hash)], store, abs_dir,
+                 index_file=index_file, allowed_returncodes={128})
+        if not ok:
+            return {"success": False, "error": f"Could not compute changed files: {err}"}
+
+        ledger = _load_ledger(store, dir_hash)
+        if not ledger:
+            # No agent-write ledger yet (pre-existing store, or Hermes has
+            # not written any files here since the ledger was introduced).
+            # Signal callers to fall back to a full restore rather than
+            # skipping every file.
+            return {"success": True, "restore": [], "skipped": [],
+                    "ledger_empty": True}
+        restore: List[str] = []
+        skipped: List[str] = []
+        for rel in names_out.splitlines():
+            rel = rel.strip()
+            if not rel:
+                continue
+            abs_path = Path(abs_dir) / rel
+            entry = ledger.get(str(abs_path))
+            recorded = entry.get("sha256") if isinstance(entry, dict) else None
+            if recorded is None:
+                # Hermes never wrote this file (or the ledger predates it) —
+                # do not touch it in safe mode.
+                skipped.append(rel)
+                continue
+            current = _hash_file(abs_path)
+            if current is None:
+                # File deleted since Hermes wrote it: restoring it back is
+                # safe — its last content was Hermes-authored.
+                restore.append(rel)
+            elif current == recorded:
+                restore.append(rel)
+            else:
+                skipped.append(rel)
+        return {"success": True, "restore": restore, "skipped": skipped}
+
     def ensure_checkpoint(self, working_dir: str, reason: str = "auto") -> bool:
         """Take a checkpoint if enabled and not already done this turn.
 
@@ -728,6 +968,29 @@ class CheckpointManager:
                 results.append(entry)
         return results
 
+    def list_all_checkpoints(self) -> List[Dict]:
+        """List checkpoints across every registered project (most recent first).
+
+        Surgical reapply of PR #10633 by @nightq (#10505) onto the v2
+        single-store layout: iterate ``projects/<hash>.json`` metadata via
+        ``_list_projects`` instead of the pre-v2 per-shadow-dir scan. Each
+        entry carries the extra ``workdir`` key so callers can label which
+        project a checkpoint belongs to.
+        """
+        store = _store_path(CHECKPOINT_BASE)
+        if not (store / "HEAD").exists():
+            return []
+        results: List[Dict] = []
+        for meta in _list_projects(store):
+            workdir = meta.get("workdir") or ""
+            if not workdir:
+                continue
+            for entry in self.list_checkpoints(workdir):
+                entry["workdir"] = workdir
+                results.append(entry)
+        results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        return results
+
     @staticmethod
     def _parse_shortstat(stat_line: str, entry: Dict) -> None:
         """Parse git --shortstat output into entry dict."""
@@ -791,8 +1054,55 @@ class CheckpointManager:
             "diff": diff_out if ok_diff else "",
         }
 
-    def restore(self, working_dir: str, commit_hash: str, file_path: str = None) -> Dict:
-        """Restore files to a checkpoint state."""
+    def session_diff(self, working_dir: str) -> Dict:
+        """Show the cumulative diff of everything changed in this directory.
+
+        This powers ``/diff session``.  It answers "what has Hermes changed
+        here?" by diffing the *earliest retained checkpoint* — the snapshot
+        taken before the first recorded edit — against the current working
+        tree.  Because checkpoints are captured just before each file-mutating
+        tool call, that baseline is the pre-edit state, so the diff covers the
+        first edit and everything after it.
+
+        Note: checkpoints are a persistent per-project ref, so the earliest
+        *retained* checkpoint may predate the current session (or, after
+        pruning, postdate its true start).  It is an approximation of "what
+        Hermes changed", not an exact per-session ledger.
+
+        Returns the same shape as :meth:`diff` (``{"success", "stat",
+        "diff"}``).  When no checkpoints exist yet — nothing has been edited —
+        the call still *succeeds* with empty output and ``"empty": True`` so
+        callers can show a friendly "no changes" message rather than an error.
+        """
+        checkpoints = self.list_checkpoints(working_dir)
+        if not checkpoints:
+            return {"success": True, "stat": "", "diff": "", "empty": True}
+
+        baseline = checkpoints[-1].get("hash") or ""
+        result = self.diff(working_dir, baseline)
+        if result.get("success"):
+            result.setdefault("baseline", baseline)
+            if not result.get("stat") and not result.get("diff"):
+                result["empty"] = True
+        return result
+
+    def restore(
+        self,
+        working_dir: str,
+        commit_hash: str,
+        file_path: str = None,
+        safe: bool = False,
+    ) -> Dict:
+        """Restore files to a checkpoint state.
+
+        With ``safe=True`` (full-directory restores only), files the user
+        hand-edited after Hermes' last write — per the agent-write ledger —
+        are left untouched, and only Hermes-authored changes are reverted.
+        The result gains ``skipped_user_edits`` listing the preserved paths,
+        ``skipped_oversize`` listing paths kept because the size cap excluded
+        them from every checkpoint, and — only when a delete failed —
+        ``failed_deletes`` listing paths that could not be removed.
+        """
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
             return {"success": False, "error": hash_err}
@@ -816,18 +1126,86 @@ class CheckpointManager:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
+        skipped_user_edits: List[str] = []
+        kept_oversize: List[str] = []
+        failed_deletes: List[str] = []
+        restore_paths: Optional[List[str]] = None
+        if safe and not file_path:
+            plan = self.safe_restore_plan(abs_dir, commit_hash)
+            if not plan.get("success"):
+                return {"success": False, "error": plan.get("error", "Safe-restore plan failed")}
+            if plan.get("ledger_empty"):
+                # No agent-write history to compare against — fall back to
+                # the classic full restore rather than restoring nothing.
+                restore_paths = None
+            else:
+                restore_paths = plan["restore"]
+                skipped_user_edits = plan["skipped"]
+                if not restore_paths:
+                    return {
+                        "success": True,
+                        "restored_to": commit_hash[:8],
+                        "reason": "nothing to restore (all changed files were user-edited)",
+                        "directory": abs_dir,
+                        "restored_files": [],
+                        "skipped_user_edits": skipped_user_edits,
+                        "skipped_oversize": [],
+                    }
+
         # Take a pre-rollback snapshot so you can undo the undo.
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
 
-        restore_target = file_path if file_path else "."
-        ok, stdout, err = _run_git(
-            ["checkout", commit_hash, "--", restore_target],
-            store, abs_dir, timeout=_GIT_TIMEOUT * 2,
-            index_file=index_file,
-        )
+        if restore_paths is not None:
+            # Split into files present in the checkpoint (checkout) and
+            # Hermes-created files absent from it (delete to restore state).
+            checkout_targets: List[str] = []
+            delete_targets: List[str] = []
+            for rel in restore_paths:
+                ok_in_commit, _, _ = _run_git(
+                    ["cat-file", "-e", f"{commit_hash}:{rel}"],
+                    store, abs_dir, allowed_returncodes={1, 128},
+                )
+                if ok_in_commit:
+                    checkout_targets.append(rel)
+                elif self._exceeds_size_cap(Path(abs_dir) / rel):
+                    # Absent from the checkpoint because ``max_file_size_mb``
+                    # kept it out (_drop_oversize_from_index), not because
+                    # Hermes created it. Deleting it would not restore a prior
+                    # state — no checkpoint holds one — it would destroy the
+                    # only copy. The ledger records a content hash, not whether
+                    # a write created or modified the file, so an oversize path
+                    # cannot be proven agent-created; leaving it costs a stale
+                    # file, deleting it costs the file.
+                    kept_oversize.append(rel)
+                else:
+                    delete_targets.append(rel)
+            for rel in delete_targets:
+                try:
+                    target = Path(abs_dir) / rel
+                    if target.is_file() or target.is_symlink():
+                        target.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "Safe restore: could not remove %s: %s", rel, exc,
+                    )
+                    failed_deletes.append(rel)
+            if not checkout_targets:
+                ok, stdout, err = True, "", ""
+            else:
+                ok, stdout, err = _run_git(
+                    ["checkout", commit_hash, "--", *checkout_targets],
+                    store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                    index_file=index_file,
+                )
+        else:
+            ok, stdout, err = _run_git(
+                ["checkout", commit_hash, "--", file_path if file_path else "."],
+                store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                index_file=index_file,
+            )
 
         if not ok:
             return {"success": False, "error": f"Restore failed: {err}",
@@ -846,6 +1224,20 @@ class CheckpointManager:
         }
         if file_path:
             result["file"] = file_path
+        if restore_paths is not None:
+            # Only what was actually acted on. A kept oversize path was not
+            # restored (and a failed unlink left the file in place), and
+            # reporting either as restored is how the data loss above stayed
+            # silent: the user was told "Restored" for a file that had just
+            # been unlinked.
+            not_restored = set(kept_oversize) | set(failed_deletes)
+            result["restored_files"] = [
+                rel for rel in restore_paths if rel not in not_restored
+            ]
+            result["skipped_user_edits"] = skipped_user_edits
+            result["skipped_oversize"] = kept_oversize
+            if failed_deletes:
+                result["failed_deletes"] = failed_deletes
         return result
 
     def get_working_dir_for_path(self, file_path: str) -> str:
@@ -1004,6 +1396,22 @@ class CheckpointManager:
 
         return True
 
+    def _exceeds_size_cap(self, path: Path) -> bool:
+        """Whether *path* is larger than ``max_file_size_mb``.
+
+        The same test :meth:`_drop_oversize_from_index` applies when building a
+        checkpoint, so "excluded from the checkpoint" and "refused deletion at
+        restore" agree on one definition. A cap of 0 disables it, and an
+        unstattable path is not claimed to be oversize.
+        """
+        cap = self.max_file_size_mb * 1024 * 1024
+        if cap <= 0:
+            return False
+        try:
+            return path.stat().st_size > cap
+        except OSError:
+            return False
+
     def _drop_oversize_from_index(
         self, store: Path, working_dir: str, index_file: Path,
     ) -> None:
@@ -1012,8 +1420,7 @@ class CheckpointManager:
         Lets the agent keep snapshotting source code while refusing to
         swallow generated assets (datasets, model weights, logs, videos).
         """
-        cap = self.max_file_size_mb * 1024 * 1024
-        if cap <= 0:
+        if self.max_file_size_mb <= 0:
             return
         ok, stdout, _ = _run_git(
             ["ls-files", "--cached", "-z"],
@@ -1025,14 +1432,13 @@ class CheckpointManager:
         # whitespace but that leaves NULs alone; rebuild list.
         paths = [p for p in stdout.split("\x00") if p]
         abs_workdir = _normalize_path(working_dir)
-        oversize: List[str] = []
-        for rel in paths:
-            try:
-                size = (abs_workdir / rel).stat().st_size
-            except OSError:
-                continue
-            if size > cap:
-                oversize.append(rel)
+        # Same predicate safe restore consults, called rather than restated:
+        # a threshold that drifted between the two would make a file both
+        # absent from the checkpoint and not recognised as capped at restore,
+        # which is precisely the deletion this change exists to prevent.
+        oversize = [
+            rel for rel in paths if self._exceeds_size_cap(abs_workdir / rel)
+        ]
         if not oversize:
             return
         logger.debug(
@@ -1227,7 +1633,16 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
         else:
             stat = ""
 
-        lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
+        # Label per-project entries when showing the cross-project view
+        # (workdir key only present on list_all_checkpoints results).
+        workdir = cp.get("workdir", "")
+        if workdir and directory == "all directories":
+            workdir_short = Path(workdir).name or workdir
+            lines.append(
+                f"  {i}. {cp['short_hash']}  {ts}  [{workdir_short}]  {cp['reason']}{stat}"
+            )
+        else:
+            lines.append(f"  {i}. {cp['short_hash']}  {ts}  {cp['reason']}{stat}")
 
     lines.append("\n  /rollback <N>             restore to checkpoint N")
     lines.append("  /rollback diff <N>        preview changes since checkpoint N")
@@ -1255,11 +1670,112 @@ def _delete_ref(store: Path, ref: str) -> bool:
     return ok
 
 
+def _workdir_is_observably_gone(
+    workdir: str,
+    parent_dev: Optional[int] = None,
+    parent_ino: Optional[int] = None,
+    require_parent_identity: bool = True,
+) -> bool:
+    """True only when we can positively observe that ``workdir`` was removed.
+
+    ``Path.exists()`` returns False for a deleted directory AND for one whose
+    storage simply is not attached right now — an unplugged external drive, a
+    network share behind a downed VPN, a bind-mount absent from this
+    container, an offline Windows mapped drive. Orphan pruning deletes the
+    project's entire checkpoint history, so treating that ambiguity as
+    "deleted" throws away the user's restore points over a transient mount
+    state, unattended, at startup.
+
+    Require corroboration, in three steps.
+
+    First, the parent directory must be present, so the absence of the project
+    inside it is something we actually observed. When the parent is missing
+    too, the volume is not there and we know nothing.
+
+    Second, the present parent must be the directory we knew — not merely a
+    directory at the same path. Unmounting swaps the directory visible at a
+    mount point: while the volume is attached the path resolves to the
+    mounted filesystem's root; after detach it resolves to the *underlying*
+    (underlay) directory, which may carry entries of its own (a ``.keep``
+    placeholder, sibling mount points). Those entries were never next to the
+    project and prove nothing about the volume being attached. So the
+    parent's ``(st_dev, st_ino)`` must match the identity recorded in the
+    project's metadata while the project was observably live
+    (``parent_dev``/``parent_ino``). A mismatch means a different directory
+    is visible at that path — a detached volume, not an observed deletion.
+    When no identity was ever recorded (metadata written by an older
+    version) and ``require_parent_identity`` is True, stay conservative and
+    do not classify as orphan. Callers that have no identity channel at all
+    (the frozen pre-v2 layout) pass ``require_parent_identity=False`` to
+    keep the structural checks only.
+
+    Third, the (identity-confirmed) parent must actually carry information.
+    Unmounting leaves classic static mount points (``/mnt/volume/proj``, an
+    fstab entry, a container bind-mount) behind as *empty* directories, so an
+    empty parent is the signature of a detached volume just as much as of a
+    deleted project. Prune only when the parent holds something else (we
+    observed a populated directory that does not contain the project) or is
+    itself a live mount point (the volume is demonstrably attached and the
+    project is demonstrably not on it).
+
+    Genuinely abandoned projects are still reclaimed by the retention/stale
+    rule, which runs off ``last_touch`` rather than a filesystem probe.
+    """
+    if not workdir:
+        return False
+    path = Path(workdir)
+    try:
+        if path.exists():
+            return False
+        parent = path.parent
+        # A path whose parent is itself (a filesystem root) gives us nothing
+        # to corroborate against.
+        if parent == path:
+            return False
+        if not parent.is_dir():
+            return False
+        if parent_dev is not None and parent_ino is not None:
+            st = parent.stat()
+            if (st.st_dev, st.st_ino) != (parent_dev, parent_ino):
+                # A different directory is visible at the parent's path than
+                # the one the project lived in — the volume is detached (its
+                # underlay showing through) or was swapped. Not a deletion.
+                return False
+        elif require_parent_identity:
+            # No recorded identity to check against — we cannot tell the
+            # project's real parent from an underlay directory exposed by an
+            # unmount. Unsure never deletes; retention still reclaims.
+            return False
+        if _dir_has_any_entry(parent):
+            return True
+        # Empty parent: only evidence if that directory is a mount point, i.e.
+        # the volume is attached right now and simply does not hold the
+        # project. An empty plain directory is an unmounted mount point as
+        # readily as an emptied project root.
+        return os.path.ismount(parent)
+    except OSError:
+        # Probe failed (permission, I/O error) — not evidence of deletion.
+        return False
+
+
+def _dir_has_any_entry(directory: Path) -> bool:
+    """True when ``directory`` contains at least one entry.
+
+    Stops after the first entry rather than materializing the listing; a
+    project root can hold a large tree.
+    """
+    with os.scandir(directory) as entries:
+        for _ in entries:
+            return True
+    return False
+
+
 def prune_checkpoints(
     retention_days: int = 7,
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
+    orphan_allowlist: Optional[set] = None,
 ) -> Dict[str, int]:
     """Delete stale/orphan checkpoints and reclaim store space.
 
@@ -1268,6 +1784,17 @@ def prune_checkpoints(
     * ``delete_orphans=True`` and its ``workdir`` no longer exists on disk
       (the original project was deleted / moved); OR
     * its ``last_touch`` is older than ``retention_days`` days.
+
+    ``orphan_allowlist``, when not ``None``, restricts orphan deletion to
+    the given identities (v2 project ``_hash`` strings and/or pre-v2 shadow
+    repo paths as ``str``). This lets a caller that showed the user a
+    confirmation preview (built from ``store_status()``) bind the resulting
+    deletion to exactly what was displayed — a project that only becomes
+    orphaned *after* the preview (e.g. its workdir vanishes while the human
+    is answering the prompt) is skipped rather than swept up under the
+    earlier confirmation. Pass ``None`` (the default) to delete every
+    currently-orphaned project, e.g. for ``--force`` or unattended callers
+    that never show a preview.
 
     Additionally, if ``max_total_size_mb > 0`` and the store exceeds that
     after orphan/stale pruning, the oldest commit per remaining project is
@@ -1325,22 +1852,29 @@ def prune_checkpoints(
             except OSError as exc:
                 result["errors"] += 1
                 logger.warning("Failed to delete legacy archive %s: %s", child, exc)
-            continue
-        # Only count as a pre-v2 shadow repo if it has a HEAD.
-        if not (child / "HEAD").exists():
-            continue
+
+    # Pre-v2 per-project shadow repos.  Scanned via the same helper
+    # `store_status()` uses for its orphan preview, so a confirmation prompt
+    # built from that preview always matches what gets deleted here.
+    for repo in _pre_v2_shadow_repos(base):
+        child = repo["path"]
         result["scanned"] += 1
         reason: Optional[str] = None
-        if delete_orphans:
-            workdir: Optional[str] = None
-            wd_marker = child / "HERMES_WORKDIR"
-            if wd_marker.exists():
-                try:
-                    workdir = wd_marker.read_text(encoding="utf-8").strip()
-                except (OSError, UnicodeDecodeError):
-                    workdir = None
-            if workdir is None or not Path(workdir).exists():
-                reason = "orphan"
+        if (
+            delete_orphans
+            and not repo["marker_unreadable"]
+            and (
+                repo["workdir"] is None
+                # The frozen pre-v2 layout has no metadata channel to carry a
+                # recorded parent identity, so only the structural checks
+                # (parent present + populated / live mount point) apply here.
+                or _workdir_is_observably_gone(
+                    repo["workdir"], require_parent_identity=False,
+                )
+            )
+            and (orphan_allowlist is None or str(child) in orphan_allowlist)
+        ):
+            reason = "orphan"
         if reason is None and retention_days > 0:
             newest = 0.0
             try:
@@ -1378,7 +1912,24 @@ def prune_checkpoints(
                 continue
             result["scanned"] += 1
             reason = None
-            if delete_orphans and (not workdir or not Path(workdir).exists()):
+            parent_dev = meta.get("workdir_parent_dev")
+            parent_ino = meta.get("workdir_parent_ino")
+            if not isinstance(parent_dev, int) or isinstance(parent_dev, bool):
+                parent_dev = None
+            if not isinstance(parent_ino, int) or isinstance(parent_ino, bool):
+                parent_ino = None
+            if (
+                delete_orphans
+                and (
+                    not workdir
+                    or _workdir_is_observably_gone(
+                        workdir,
+                        parent_dev=parent_dev,
+                        parent_ino=parent_ino,
+                    )
+                )
+                and (orphan_allowlist is None or dir_hash in orphan_allowlist)
+            ):
                 reason = "orphan"
             elif retention_days > 0:
                 last_touch = float(meta.get("last_touch", 0) or 0)
@@ -1572,7 +2123,14 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
 
     ``{"base": path, "store_size_bytes": N, "legacy_size_bytes": N,
        "total_size_bytes": N, "project_count": N, "projects": [...],
-       "legacy_archives": [...]}``
+       "pre_v2_projects": [...], "legacy_archives": [...]}``
+
+    ``pre_v2_projects`` covers shadow repos still on the pre-v2 per-project
+    layout (``base/<hash>/HEAD``) — distinct from ``legacy_archives``, which
+    are already-migrated ``legacy-<ts>/`` dirs. Callers that preview an
+    orphan-deletion sweep must include both ``projects`` and
+    ``pre_v2_projects``, since ``prune_checkpoints`` deletes orphans from
+    both layouts.
     """
     base = checkpoint_base or CHECKPOINT_BASE
     out: Dict = {
@@ -1582,6 +2140,7 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
         "total_size_bytes": 0,
         "project_count": 0,
         "projects": [],
+        "pre_v2_projects": [],
         "legacy_archives": [],
     }
     if not base.exists():
@@ -1612,6 +2171,15 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
                     "commits": commits,
                 })
     out["project_count"] = len(out["projects"])
+
+    out["pre_v2_projects"] = [
+        {
+            "path": str(r["path"]),
+            "workdir": r["workdir"],
+            "exists": r["exists"],
+        }
+        for r in _pre_v2_shadow_repos(base)
+    ]
 
     for child in base.iterdir():
         if child.is_dir() and child.name.startswith(_LEGACY_PREFIX):

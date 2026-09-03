@@ -1,17 +1,36 @@
 import { atom } from 'nanostores'
 
-import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  liveSessionProjectId,
+  NO_PROJECT_ID,
+  type SidebarProjectTree
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import { getHermesConfig, hermesApi, type HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
+import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
-import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
+import {
+  $activeGatewayProfile,
+  $profileScope,
+  ALL_PROFILES,
+  normalizeProfileKey,
+  requestFreshSession
+} from '@/store/profile'
+import {
+  $selectedStoredSessionId,
+  $sessions,
+  sessionMatchesStoredId,
+  setSessions,
+  workspaceCwdForNewSession
+} from '@/store/session'
+import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -47,52 +66,6 @@ function projectsStaleBackendError(): Error {
   return new Error(translateNow('sidebar.projects.staleBackend'))
 }
 
-// Client-side cache eviction (Apollo-style optimistic layer): ids the user just
-// deleted/archived. The backend tree is a snapshot that still lists them until
-// its next refresh, so the render-time overlay strips these so the tree matches
-// the live `$sessions` cache exactly — same as the flat Recents list. Pruned on
-// refresh once the server snapshot has caught up.
-export const $removedSessionIds = atom<Set<string>>(new Set())
-
-export function tombstoneSessions(ids: Array<null | string | undefined>): void {
-  const next = new Set($removedSessionIds.get())
-  const before = next.size
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      next.add(trimmed)
-    }
-  }
-
-  if (next.size !== before) {
-    $removedSessionIds.set(next)
-  }
-}
-
-export function untombstoneSessions(ids: Array<null | string | undefined>): void {
-  const current = $removedSessionIds.get()
-
-  if (!current.size) {
-    return
-  }
-
-  const next = new Set(current)
-
-  for (const id of ids) {
-    const trimmed = id?.trim()
-
-    if (trimmed) {
-      next.delete(trimmed)
-    }
-  }
-
-  if (next.size !== current.size) {
-    $removedSessionIds.set(next)
-  }
-}
-
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
 
@@ -119,8 +92,8 @@ export function enterProject(id: string): void {
   $projectScope.set(id)
 
   // Only explicit, persisted projects (ids are `p_<hex>`) become active. Auto
-  // projects (ids are filesystem paths) and the "No project" bucket have no
-  // durable row to pin, so they're view-scope only.
+  // projects (ids are filesystem paths) and the Home bucket have no durable row
+  // to pin, so they're view-scope only.
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
@@ -130,18 +103,61 @@ export function exitProjectScope(): void {
   $projectScope.set(ALL_PROJECTS)
 }
 
-// The cwd a NEW chat should start in. The "active project" is just an atom
-// ($projectScope) — so when you're inside a project, a new session (cmd-n, the
-// trunk "+") starts at that project's root (its primary repo = the default-branch
-// checkout) instead of inheriting whatever unrelated worktree the live cwd
-// drifted into. Outside a project it falls back to the plain default (detached),
-// so a bare new chat shows no branch.
+// A project's working root: its primary folder, else the first repo that has
+// one. Empty for the path-less Home bucket. (The sidebar's `projectTreeCwd` is
+// the same rule over the same tree — this is the store-side copy so the store
+// doesn't reach into the sidebar's React module.)
+export const projectRootCwd = (project: SidebarProjectTree | undefined): string =>
+  (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+
+// ⌘K "go to project": flip the sidebar into grouped mode and enter the project
+// — a pure scope switch, same as clicking the overview row (never spends main).
+// With `newSession` (⌘-select / ⌘-Enter) it also lands on a fresh session draft
+// anchored at the project root — stacked as a tab when main already holds a
+// chat (palette opens are opens-from-nowhere). A path-less project (the Home
+// bucket) gets a plain detached draft.
+export function goToProject(id: string, options?: { newSession?: boolean }): void {
+  setSidebarAgentsGrouped(true)
+  enterProject(id)
+
+  if (!options?.newSession) {
+    return
+  }
+
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === id))
+
+  if (cwd) {
+    requestStartWorkSession(cwd, undefined, { openTab: true })
+  } else {
+    requestFreshSession()
+  }
+}
+
+// The cwd a NEW chat should start in.
+//
+// Priority (first hit wins):
+//   1. Explicit sidebar project scope (drilled into a project / Home bucket)
+//   2. Configured default project dir (detached otherwise — in BOTH local and
+//      remote mode; a bare new chat never inherits the sticky remembered cwd,
+//      #57911 / #84220)
+//
+// The "active project" is just an atom ($projectScope) — so inside a project a
+// new session (cmd-n, the trunk "+") starts at that project's root (its primary
+// repo = the default-branch checkout). Outside one it does NOT inherit the chat
+// you were looking at: after a restart that's the just-resumed session, whose
+// stored cwd is often a home-dir fallback, so every new chat landed there
+// instead of the configured default (#71873, #80213, #77496).
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
+  // Inside Home, "no folder" is the point: a new chat must stay detached rather
+  // than silently attaching to the configured default dir and leaving Home.
+  if (scope === NO_PROJECT_ID) {
+    return ''
+  }
+
   if (scope !== ALL_PROJECTS) {
-    const project = $projectTree.get().find(node => node.id === scope)
-    const cwd = (project?.path || project?.repos.find(repo => repo.path)?.path || '').trim()
+    const cwd = projectRootCwd($projectTree.get().find(node => node.id === scope))
 
     if (cwd) {
       return cwd
@@ -150,9 +166,6 @@ export function resolveNewSessionCwd(): string {
 
   return workspaceCwdForNewSession()
 }
-
-const underPath = (parent: string, child: string): boolean =>
-  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh
@@ -170,7 +183,7 @@ export function projectIdForCwd(cwd: string): null | string {
     for (const path of paths) {
       const p = (path || '').trim()
 
-      if (p && underPath(p, cwd) && p.length > bestLen) {
+      if (p && isUnderPath(p, cwd) && p.length > bestLen) {
         bestLen = p.length
         best = project.id
       }
@@ -184,8 +197,8 @@ export function projectIdForCwd(cwd: string): null | string {
 // match), or null when the cwd sits in no named project. The status bar reads
 // this to label the workspace by project instead of the bare cwd leaf. We skip
 // auto-projects (a repo root promoted with no projects.db row) and the synthetic
-// "No project" bucket on purpose: those have no human name, so their sessions
-// keep the cwd-leaf label — matching the backend `_project_info_for_cwd`, which
+// Home bucket on purpose: those have no human name, so their sessions keep the
+// cwd-leaf label — matching the backend `_project_info_for_cwd`, which
 // only resolves projects.db rows, so the desktop and TUI name the same session
 // identically without threading a second per-session copy through session.info.
 export function projectNameForCwd(cwd: string): null | string {
@@ -208,7 +221,7 @@ export function projectNameForCwd(cwd: string): null | string {
     for (const path of paths) {
       const p = (path || '').trim()
 
-      if (p && underPath(p, target) && p.length > bestLen) {
+      if (p && isUnderPath(p, target) && p.length > bestLen) {
         bestLen = p.length
         best = project.label
       }
@@ -265,19 +278,98 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+export function projectProfile(): null | string {
+  const profile = normalizeProfileKey($activeGatewayProfile.get())
+
+  return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
+}
+
+function projectParams(
+  params: Record<string, unknown> = {},
+  profile: null | string = projectProfile()
+): Record<string, unknown> {
+  if (!profile) {
+    throw new Error('Projects are unavailable while viewing all profiles')
+  }
+
+  return { ...params, profile }
+}
+
+async function gatewayRequestOn<T>(
+  gateway: HermesGateway,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  return gateway.request<T>(method, params)
+}
+
+function isRetryableProjectTreeReadError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.includes('request timed out') || message.includes('gateway connection closed')
+}
+
+interface ActiveProjectsContext {
+  gateway: HermesGateway
+  profile: string
+}
+
+function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
+  return activeGateway() === context.gateway && projectProfile() === context.profile
+}
+
+async function activeProjectsContext(): Promise<ActiveProjectsContext> {
+  const profile = projectProfile()
+
+  if (!profile) {
+    throw new Error('Projects are unavailable while viewing all profiles')
+  }
+
+  let gateway = activeGateway()
+
+  if (!gateway || gateway.connectionState !== 'open') {
+    gateway = await ensureActiveGatewayOpen()
+  }
+
+  if (!gateway || gateway !== activeGateway() || profile !== projectProfile()) {
+    throw new Error('Active Hermes profile changed while connecting')
+  }
+
+  return { gateway, profile }
+}
+
 function applyPayload(payload: ProjectsPayload): void {
   $projects.set(payload.projects ?? [])
   $activeProjectId.set(payload.active_id ?? null)
 }
 
+let projectsRefreshGeneration = 0
+
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
 export async function refreshProjects(): Promise<void> {
+  const generation = ++projectsRefreshGeneration
+  let context: ActiveProjectsContext | null = null
+
   try {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.list'))
+    context = await activeProjectsContext()
+
+    const payload = await gatewayRequestOn<ProjectsPayload>(
+      context.gateway,
+      'projects.list',
+      projectParams({}, context.profile)
+    )
+
+    if (generation !== projectsRefreshGeneration || !stillOnProjectsContext(context)) {
+      return
+    }
+
+    applyPayload(payload)
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (context && generation === projectsRefreshGeneration && stillOnProjectsContext(context)) {
+      markProjectsRpcFailure(err)
+    }
     // Backend may not be ready; keep the last known list.
   }
 }
@@ -288,51 +380,151 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
+const PROJECT_TREE_PREVIEW_LIMIT = 3
+// The all-profiles fan-out reads one database per profile, so it is allowed the
+// same headroom as the cross-profile session list rather than the interactive
+// default.
+const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
+
+let projectTreeRefreshGeneration = 0
+
+function applyProjectTreePayload(res: ProjectTreePayload): void {
+  const scoped = new Set(res.scoped_session_ids ?? [])
+  $projectTree.set(res.projects ?? [])
+  $activeProjectId.set(res.active_id ?? null)
+  const tombstones = $removedSessionIds.get()
+
+  if (tombstones.size) {
+    // Keep a tombstone while the backend still lists the id (delete pending on
+    // its side) OR while its mutation is still in flight locally — dropping it
+    // early flashes the row back until the RPC lands.
+    const inFlight = $sessionMutationsInFlight.get()
+    const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
+
+    if (pending.size !== tombstones.size) {
+      $removedSessionIds.set(pending)
+    }
+  }
+}
+
+async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
+  const { gateway, profile } = context
+
+  if (activeGateway() === gateway) {
+    $projectTreeLoading.set(true)
+  }
+
+  try {
+    let res: ProjectTreePayload
+
+    try {
+      res = await gatewayRequestOn<ProjectTreePayload>(
+        gateway,
+        'projects.tree',
+        projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+      )
+    } catch (error) {
+      // A remote source switch can leave the first read RPC on a newly-opened
+      // socket without a response even though the gateway remains healthy.
+      // Retry once only while this exact gateway/profile is still foreground;
+      // missing-method and other authoritative failures stay visible as-is.
+      if (!isRetryableProjectTreeReadError(error) || !stillOnProjectsContext(context)) {
+        throw error
+      }
+
+      res = await gatewayRequestOn<ProjectTreePayload>(
+        gateway,
+        'projects.tree',
+        projectParams({ preview_limit: PROJECT_TREE_PREVIEW_LIMIT }, profile)
+      )
+    }
+
+    if (generation !== projectTreeRefreshGeneration || !stillOnProjectsContext(context)) {
+      return
+    }
+
+    applyProjectTreePayload(res)
+    markProjectsRpcSuccess()
+  } catch (err) {
+    if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
+      markProjectsRpcFailure(err)
+    }
+  } finally {
+    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+      $projectTreeLoading.set(false)
+    }
+  }
+}
+
 // Pull the authoritative project tree (overview structure + counts + preview
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
+  if ($profileScope.get() === ALL_PROFILES) {
+    await refreshProjectTreeAcrossProfiles()
+
+    return
+  }
+
+  try {
+    await refreshProjectTreeOn(await activeProjectsContext())
+  } catch {
+    // Backend may not be ready; keep the last known tree.
+  }
+}
+
+// The grouped sidebar in all-profiles mode. `projects.tree` answers for one
+// backend's own profile, so it can only ever describe a slice of this view;
+// the REST fan-out reads every profile's databases directly instead of asking
+// us to hold a backend open per profile just to draw lanes.
+async function refreshProjectTreeAcrossProfiles(): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
   $projectTreeLoading.set(true)
 
   try {
-    const res = await gatewayRequest<ProjectTreePayload>('projects.tree', { preview_limit: 3 })
-    // The flat Sessions list shows everything; scoped ids are only used here to
-    // reconcile the optimistic eviction layer against what the server still lists.
-    const scoped = new Set(res.scoped_session_ids ?? [])
+    const res = await hermesApi<ProjectTreePayload>({
+      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_TREE_PREVIEW_LIMIT}`,
+      timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
+    })
 
-    $projectTree.set(res.projects ?? [])
-    $activeProjectId.set(res.active_id ?? null)
-
-    // Reconcile the optimistic eviction layer against the fresh snapshot: keep
-    // evicting ids the server still lists (delete in flight) and drop the rest
-    // (server caught up), so the set can't grow unbounded across a long session.
-    const tombstones = $removedSessionIds.get()
-
-    if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
-
-      if (pending.size !== tombstones.size) {
-        $removedSessionIds.set(pending)
-      }
+    // A profile switch mid-flight leaves this payload describing the wrong
+    // scope; the newer refresh owns the tree.
+    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+      return
     }
 
+    applyProjectTreePayload(res)
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)
-    // Backend may not be ready; keep the last known tree.
   } finally {
-    $projectTreeLoading.set(false)
+    if (generation === projectTreeRefreshGeneration) {
+      $projectTreeLoading.set(false)
+    }
   }
 }
 
 // Fully hydrated lanes (repo -> lane -> session rows) for one project, fetched
 // when the user enters it. Same backend grouping as `projects.tree`, so ids and
 // membership match exactly.
+let projectSessionsRefreshGeneration = 0
+
 export async function fetchProjectSessions(projectId: string): Promise<SidebarProjectTree | null> {
+  const generation = ++projectSessionsRefreshGeneration
+
   try {
-    const res = await gatewayRequest<{ project: SidebarProjectTree | null }>('projects.project_sessions', {
-      project_id: projectId
-    })
+    const context = await activeProjectsContext()
+
+    const res = await gatewayRequestOn<{ project: SidebarProjectTree | null }>(
+      context.gateway,
+      'projects.project_sessions',
+      projectParams({ project_id: projectId }, context.profile)
+    )
+
+    if (generation !== projectSessionsRefreshGeneration || !stillOnProjectsContext(context)) {
+      return null
+    }
 
     return res.project ?? null
   } catch {
@@ -340,30 +532,215 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
   }
 }
 
-// One filesystem scan per app run: the heavy disk walk happens once, the result
-// is cached in the backend, and later opens read the cache. Desktop-only (needs
-// the native crawler); elsewhere discovery falls back to session-derived repos.
-let didScanRepos = false
+interface WorkspaceMovePayload {
+  branch?: null | string
+  cwd?: string
+  git_repo_root?: null | string
+}
+
+// Re-home a stored session into another project's root folder — the fix for a
+// chat created in the wrong directory. The backend replaces cwd + git identity
+// (so the tree's grouping follows) and re-anchors any live agent bound to the
+// row; here we mirror the move into the `$sessions` cache so both the flat list
+// and the grouped tree reflect it before the next authoritative refresh.
+export async function moveSessionToProject(
+  sessionId: string,
+  projectId: string,
+  profile?: null | string
+): Promise<void> {
+  const cwd = projectRootCwd($projectTree.get().find(node => node.id === projectId))
+
+  if (!cwd) {
+    throw new Error(translateNow('sidebar.projects.moveNoFolder'))
+  }
+
+  const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
+    cwd,
+    session_key: sessionId,
+    ...(profile ? { profile } : {})
+  })
+
+  const moved = res.cwd || cwd
+  setSessions(prev =>
+    prev.map(s =>
+      sessionMatchesStoredId(s, sessionId)
+        ? { ...s, cwd: moved, git_branch: res.branch ?? null, git_repo_root: res.git_repo_root ?? null }
+        : s
+    )
+  )
+  void refreshProjectTree()
+}
+
+export interface RepoDiscoveryPolicy {
+  enabled: boolean
+  roots: string[]
+  exclude_paths: string[]
+}
+
+export function repoDiscoveryPolicyFromConfig(config: unknown): RepoDiscoveryPolicy {
+  const desktopValue = config && typeof config === 'object' ? (config as { desktop?: unknown }).desktop : undefined
+
+  const desktop =
+    desktopValue && typeof desktopValue === 'object'
+      ? (desktopValue as {
+          repo_scan_enabled?: unknown
+          repo_scan_exclude_paths?: unknown
+          repo_scan_roots?: unknown
+        })
+      : {}
+
+  return {
+    enabled: desktop.repo_scan_enabled !== false,
+    roots: Array.isArray(desktop.repo_scan_roots)
+      ? desktop.repo_scan_roots.filter((value): value is string => typeof value === 'string')
+      : [],
+    exclude_paths: Array.isArray(desktop.repo_scan_exclude_paths)
+      ? desktop.repo_scan_exclude_paths.filter((value): value is string => typeof value === 'string')
+      : []
+  }
+}
+
+export function repoDiscoveryPolicySignature(policy: RepoDiscoveryPolicy): string {
+  return JSON.stringify(policy)
+}
+
+interface RepoScanState {
+  completedSignature?: string
+  generation: number
+  runningSignature?: string
+}
+
+const repoScanStates = new WeakMap<HermesGateway, RepoScanState>()
+const scanningGatewayGenerations = new WeakMap<HermesGateway, number>()
+
+function syncReposScanning(): void {
+  const gateway = activeGateway()
+  $reposScanning.set(Boolean(gateway && scanningGatewayGenerations.has(gateway)))
+}
+
+$gateway.subscribe(syncReposScanning)
 
 export async function scanAndRecordRepos(force = false): Promise<void> {
-  const scan = desktopGit()?.scanRepos
+  if (isDesktopFsRemoteMode()) {
+    // On a remote backend the desktop can't crawl the host filesystem.
+    // Ask the host to scan its own discovery roots (`projects.discover_repos`
+    // with `scan: true` — added in #81723) so repos with zero Hermes
+    // sessions still surface, then refresh the tree so the sidebar picks up
+    // the merged session-derived + scanned list.
+    try {
+      const context = await activeProjectsContext()
 
-  if (!scan || (didScanRepos && !force)) {
+      const discovered = await gatewayRequestOn<{
+        repos?: unknown
+        discovery_policy?: unknown
+      }>(context.gateway, 'projects.discover_repos', projectParams({ scan: true }, context.profile))
+
+      // A resolved response must be the discovery shape. Anything else (an
+      // error/`accepted:false` body, or a backend that ignored `scan` and
+      // returned no repo list) means the scan didn't happen — bail out without
+      // touching the tree so the sidebar keeps its last known list instead of
+      // being blanked back to the silent, unpopulated state of #81723.
+      if (discovered?.repos === undefined) {
+        markProjectsRpcFailure(new Error('projects.discover_repos returned no repo list'))
+
+        return
+      }
+
+      // Remote scan succeeded: refresh the tree so the merged session-derived +
+      // scanned list surfaces. Skip if the user moved on — a stale scan must
+      // not publish into the newly focused profile.
+      if (stillOnProjectsContext(context)) {
+        await refreshProjectTreeOn(context)
+      }
+    } catch (err) {
+      // Surface the failure (stale backend, RPC error, gateway drop) instead
+      // of swallowing it: a silent return is exactly the "sidebar goes quiet"
+      // symptom `scan:true` was meant to fix (#81723). Keep the old list and
+      // let the sidebar show the error/absent state.
+      markProjectsRpcFailure(err)
+    }
+
     return
   }
 
-  didScanRepos = true
-  $reposScanning.set(true)
+  let context: ActiveProjectsContext
 
   try {
-    const repos = await scan([])
-    await gatewayRequest('projects.record_repos', { repos })
-    // The disk scan may surface new zero-session repos; refold them into the tree.
-    await refreshProjectTree()
+    context = await activeProjectsContext()
   } catch {
-    didScanRepos = false // let a later open retry a failed scan
+    return
+  }
+
+  const scan = desktopGit()?.scanRepos
+
+  if (!scan) {
+    return
+  }
+
+  const state = repoScanStates.get(context.gateway) ?? { generation: 0 }
+  repoScanStates.set(context.gateway, state)
+  let generation: number | undefined
+
+  try {
+    const policy = repoDiscoveryPolicyFromConfig(await getHermesConfig(context.profile))
+    const signature = repoDiscoveryPolicySignature(policy)
+
+    if (!force && (state.completedSignature === signature || state.runningSignature === signature)) {
+      return
+    }
+
+    generation = ++state.generation
+    state.runningSignature = signature
+
+    if (!policy.enabled) {
+      await gatewayRequestOn(
+        context.gateway,
+        'projects.record_repos',
+        projectParams({ discovery_policy: policy, repos: [] }, context.profile)
+      )
+    } else {
+      scanningGatewayGenerations.set(context.gateway, generation)
+      syncReposScanning()
+
+      const repos = await scan(policy.roots, {
+        enabled: true,
+        excludePaths: policy.exclude_paths
+      })
+
+      if (state.generation !== generation) {
+        return
+      }
+
+      await gatewayRequestOn(
+        context.gateway,
+        'projects.record_repos',
+        projectParams({ discovery_policy: policy, repos }, context.profile)
+      )
+    }
+
+    if (state.generation !== generation) {
+      return
+    }
+
+    state.completedSignature = signature
+
+    // Completion refresh only when the focused profile still matches the one
+    // the scan was captured under. refreshProjectTree() re-derives the current
+    // context, so skipping on mismatch keeps a stale scan from publishing into
+    // the newly focused profile.
+    if (stillOnProjectsContext(context)) {
+      await refreshProjectTree()
+    }
+  } catch {
+    state.completedSignature = undefined
   } finally {
-    $reposScanning.set(false)
+    state.runningSignature = undefined
+
+    if (scanningGatewayGenerations.get(context.gateway) === generation) {
+      scanningGatewayGenerations.delete(context.gateway)
+    }
+
+    syncReposScanning()
   }
 }
 
@@ -481,17 +858,20 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   let res: { project: ProjectInfo | null }
 
   try {
-    res = await gatewayRequest<{ project: ProjectInfo | null }>('projects.create', {
-      name: input.name,
-      folders: input.folders ?? [],
-      primary_path: input.primaryPath,
-      slug: input.slug,
-      description: input.description,
-      icon: input.icon,
-      color: input.color,
-      board_slug: input.boardSlug,
-      use: input.use ?? false
-    })
+    res = await gatewayRequest<{ project: ProjectInfo | null }>(
+      'projects.create',
+      projectParams({
+        name: input.name,
+        folders: input.folders ?? [],
+        primary_path: input.primaryPath,
+        slug: input.slug,
+        description: input.description,
+        icon: input.icon,
+        color: input.color,
+        board_slug: input.boardSlug,
+        use: input.use ?? false
+      })
+    )
   } catch (err) {
     if (isMissingRpcMethod(err)) {
       $projectsRpcAvailable.set(false)
@@ -564,12 +944,15 @@ export async function updateProject(
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
   await persistOrRollback(snap, () =>
-    gatewayRequest('projects.update', {
-      id,
-      ...patch,
-      ...(patch.color === null && { color: '' }),
-      ...(patch.icon === null && { icon: '' })
-    })
+    gatewayRequest(
+      'projects.update',
+      projectParams({
+        id,
+        ...patch,
+        ...(patch.color === null && { color: '' }),
+        ...(patch.icon === null && { icon: '' })
+      })
+    )
   )
 }
 
@@ -640,7 +1023,10 @@ export async function addProjectFolder(
   }
 
   await persistOrRollback(snap, () =>
-    gatewayRequest('projects.add_folder', { id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+    gatewayRequest(
+      'projects.add_folder',
+      projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false })
+    )
   )
   reconcileProjects()
 }
@@ -683,13 +1069,13 @@ export async function deleteProject(id: string): Promise<void> {
   }
 
   await persistOrRollback(snap, async () => {
-    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', { id }))
+    applyPayload(await gatewayRequest<ProjectsPayload>('projects.delete', projectParams({ id })))
   })
   void refreshProjectTree()
 }
 
 export async function setActiveProject(id: null | string): Promise<void> {
-  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', { id })
+  const res = await gatewayRequest<{ active_id: null | string }>('projects.set_active', projectParams({ id }))
   $activeProjectId.set(res.active_id ?? null)
 }
 
@@ -761,14 +1147,33 @@ export async function startWorkInRepo(
     return null
   }
 
-  const result = await git.worktreeAdd(repoPath, options)
+  let result
+
+  try {
+    result = await git.worktreeAdd(repoPath, options)
+  } catch (err) {
+    // Capability gate (#81724): a remote gateway serves worktree ops via the
+    // backend's /api/git mirror, and an older backend may predate it. The raw
+    // failure ("Expected JSON … but got HTML" / a bare 404) reads like a git
+    // error — name the real remedy instead of degrading silently.
+    if (isDesktopFsRemoteMode() && isMissingRestEndpoint(err)) {
+      throw new Error(translateNow('sidebar.projects.worktreeStaleBackend'))
+    }
+
+    throw err
+  }
+
   bumpWorktrees()
 
   return { branch: result.branch, path: result.path }
 }
 
-// Local branches for the composer's "convert a branch into a worktree" picker.
-// Empty on a remote backend / non-repo (the Electron probe can't run).
+// Branches for the composer's "convert a branch into a worktree" picker: the
+// local heads, plus the remote-tracking refs that have no local branch yet. A
+// teammate's branch is therefore reachable, and the user does not check it out
+// by hand first.
+// Empty on a non-repo. On a remote gateway the list comes from the backend's
+// /api/git/branches mirror, so it acts on the repo where sessions actually run.
 export async function listRepoBranches(repoPath: string): Promise<HermesGitBranch[]> {
   const git = desktopGit()
 
@@ -781,7 +1186,8 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
 
 // Local + remote-tracking branches for the base-branch picker in the
 // new-worktree dialog. The remote default (origin/HEAD) is flagged so the
-// UI can preselect it. Empty on a remote backend / non-repo.
+// UI can preselect it. Empty on a non-repo; remote gateways serve it from the
+// backend's /api/git/base-branches mirror.
 export async function listBaseBranches(repoPath: string): Promise<HermesGitBaseBranch[]> {
   const git = desktopGit()
 
@@ -811,26 +1217,39 @@ export async function switchBranchInRepo(repoPath: string, branch: string): Prom
 // effect even if the path repeats.
 export interface StartWorkSessionRequest {
   draft?: string
+  /** Stack the fresh session as a tab when main already holds a chat (palette/⌘O opens-from-nowhere). */
+  openTab?: boolean
   path: string
   token: number
 }
 
 export const $startWorkSessionRequest = atom<StartWorkSessionRequest | null>(null)
 
-// Keyboard-driven "spin up a new worktree" intent. The composer's coding rail
-// owns the name dialog (it has the active repo + branch context), so a global
-// hotkey just bumps this token; the rail opens its branch-off dialog in
-// response. A monotonic token re-fires even on repeat presses. No-ops off a
-// repo (the rail isn't mounted), which is the right "nothing to branch" outcome.
-export const $newWorktreeRequest = atom(0)
+// The "make a new worktree" intent, from the keyboard or a menu. One dialog is
+// mounted, in the sidebar beside ProjectDialog, and it reads this atom. This
+// mirrors $projectDialog. This atom was a monotonic token that every mounted
+// coding rail subscribed to. N composers on screen therefore gave N stacked
+// dialogs for one ⌘⇧B, and the dialog the user dismissed showed an identical
+// empty one behind it. One mount cannot double-open.
+//
+// `repoPath` is resolved when the dialog opens (see resolveWorktreeRepoPath).
+// It is not read from the rail that received the key, so the dialog always
+// targets the surface the user looks at.
+export interface WorktreeDialogState {
+  repoPath: string
+  /** The base branch selected in a "branch off from X" menu. */
+  base?: string
+}
 
-export function requestNewWorktree(): void {
-  $newWorktreeRequest.set($newWorktreeRequest.get() + 1)
+export const $worktreeDialog = atom<null | WorktreeDialogState>(null)
+
+export function closeWorktreeDialog(): void {
+  $worktreeDialog.set(null)
 }
 
 let startWorkToken = 0
 
-export function requestStartWorkSession(path: string, draft?: string): void {
+export function requestStartWorkSession(path: string, draft?: string, options?: { openTab?: boolean }): void {
   const target = path.trim()
 
   if (!target) {
@@ -838,7 +1257,12 @@ export function requestStartWorkSession(path: string, draft?: string): void {
   }
 
   startWorkToken += 1
-  $startWorkSessionRequest.set({ draft: draft?.trim() || undefined, path: target, token: startWorkToken })
+  $startWorkSessionRequest.set({
+    draft: draft?.trim() || undefined,
+    openTab: options?.openTab || undefined,
+    path: target,
+    token: startWorkToken
+  })
 }
 
 export async function removeWorktreePath(
@@ -881,4 +1305,49 @@ export async function pickProjectFolder(): Promise<null | string> {
   })
 
   return dir || null
+}
+
+// ⌘O / palette "Open folder…": open a folder AS a project, upserting. A folder
+// already covered by a project (explicit or auto) just enters it; anything else
+// becomes a new project named after the folder. Either way the sidebar scopes
+// to the project and a fresh session draft lands anchored at the folder — the
+// one-keystroke version of new project → enter → new session. Like goToProject,
+// this is an open-from-nowhere: an occupied main gets a stacked tab, not stolen.
+export async function openFolderAsProject(dir?: string): Promise<void> {
+  const target = (dir ?? (await pickProjectFolder()) ?? '').trim()
+
+  if (!target) {
+    return
+  }
+
+  // Refresh first so the membership check runs against live truth — a repo
+  // cloned since the last scan should enter its auto project, not double-create.
+  await refreshProjectTree()
+
+  const existing = projectIdForCwd(target)
+
+  if (existing) {
+    setSidebarAgentsGrouped(true)
+    enterProject(existing)
+  } else {
+    const name =
+      target
+        .replace(/[/\\]+$/, '')
+        .split(/[/\\]/)
+        .pop() || target
+
+    try {
+      const created = await createProject({ name, folders: [target], primaryPath: target, use: true })
+
+      if (created) {
+        enterProject(created.id)
+      }
+    } catch (err) {
+      // Stale backend (no projects.* RPC) or a failed write: still open the
+      // folder as a plain workspace session below — the project row can wait.
+      notify({ kind: 'warning', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  requestStartWorkSession(target, undefined, { openTab: true })
 }

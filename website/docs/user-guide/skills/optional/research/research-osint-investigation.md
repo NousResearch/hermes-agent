@@ -1,23 +1,24 @@
 ---
-title: "Osint Investigation"
+title: "Osint Investigation — Follow the money via public records and sanctions data"
 sidebar_label: "Osint Investigation"
-description: "Public-records OSINT investigation framework — SEC EDGAR filings, USAspending contracts, Senate lobbying, OFAC sanctions, ICIJ offshore leaks, NYC property r..."
+description: "Follow the money via public records and sanctions data"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Osint Investigation
 
-Public-records OSINT investigation framework — SEC EDGAR filings, USAspending contracts, Senate lobbying, OFAC sanctions, ICIJ offshore leaks, NYC property records (ACRIS), OpenCorporates registries, CourtListener court records, Wayback Machine archives, Wikipedia + Wikidata, GDELT news monitoring. Entity resolution across sources, cross-link analysis, timing correlation, evidence chains. Python stdlib only.
+Follow the money via public records and sanctions data.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/osint-investigation` |
-| Path | `optional-skills/research/osint-investigation` |
+| Path | `optional-skills/research\osint-investigation` |
 | Version | `0.1.0` |
 | Author | Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT) |
+| License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `osint`, `investigation`, `public-records`, `sec`, `sanctions`, `corporate-registry`, `property`, `courts`, `due-diligence`, `journalism` |
 | Related skills | [`domain-intel`](/docs/user-guide/skills/optional/research/research-domain-intel), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
@@ -116,24 +117,24 @@ Each source has a stdlib-only fetch script in `SKILL_DIR/scripts/`:
 
 ```bash
 # SEC EDGAR filings (corporate disclosures)
-python3 SKILL_DIR/scripts/fetch_sec_edgar.py --cik 0000320193 \
+python SKILL_DIR/scripts/fetch_sec_edgar.py --cik 0000320193 \
     --types 10-K,10-Q --out data/edgar_filings.csv
 
 # USAspending federal contracts
-python3 SKILL_DIR/scripts/fetch_usaspending.py --recipient "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_usaspending.py --recipient "EXAMPLE CORP" \
     --fy 2024 --out data/contracts.csv
 
 # Senate LD-1 / LD-2 lobbying disclosures
-python3 SKILL_DIR/scripts/fetch_senate_ld.py --client "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_senate_ld.py --client "EXAMPLE CORP" \
     --year 2024 --out data/lobbying.csv
 
 # OFAC SDN sanctions list (full snapshot)
-python3 SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
+python SKILL_DIR/scripts/fetch_ofac_sdn.py --out data/ofac_sdn.csv
 
 # ICIJ Offshore Leaks — downloads ~70 MB bulk CSV on first use,
 # then searches it locally. Cached for 30 days under
 # $HERMES_OSINT_CACHE/icij/ (default: ~/.cache/hermes-osint/icij/).
-python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
+python SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
     --out data/icij.csv
 ```
 
@@ -141,31 +142,31 @@ python3 SKILL_DIR/scripts/fetch_icij_offshore.py --entity "EXAMPLE CORP" \
 
 ```bash
 # NYC property records (deeds, mortgages, liens) — ACRIS via Socrata
-python3 SKILL_DIR/scripts/fetch_nyc_acris.py --name "SMITH, JOHN" \
+python SKILL_DIR/scripts/fetch_nyc_acris.py --name "SMITH, JOHN" \
     --out data/acris.csv
-python3 SKILL_DIR/scripts/fetch_nyc_acris.py --address "571 HUDSON" \
+python SKILL_DIR/scripts/fetch_nyc_acris.py --address "571 HUDSON" \
     --out data/acris_addr.csv
 
 # OpenCorporates — 130+ jurisdiction corporate registry
 # (free token required; set OPENCORPORATES_API_TOKEN or pass --token)
-python3 SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
+python SKILL_DIR/scripts/fetch_opencorporates.py --query "Example Corp" \
     --jurisdiction us_ny --out data/opencorporates.csv
 
 # CourtListener — federal + state court opinions, PACER dockets
-python3 SKILL_DIR/scripts/fetch_courtlistener.py --query "Smith v. Example Corp" \
+python SKILL_DIR/scripts/fetch_courtlistener.py --query "Smith v. Example Corp" \
     --type opinions --out data/courts.csv
 
 # Wayback Machine — historical web captures
-python3 SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
+python SKILL_DIR/scripts/fetch_wayback.py --url "example.com" \
     --match host --collapse digest --out data/wayback.csv
 
 # Wikipedia + Wikidata — narrative bio + structured facts
 # Set HERMES_OSINT_UA=your-app/1.0 (your@email) to identify yourself
-python3 SKILL_DIR/scripts/fetch_wikipedia.py --query "Bill Gates" \
+python SKILL_DIR/scripts/fetch_wikipedia.py --query "Bill Gates" \
     --out data/wp.csv
 
 # GDELT — global news in 100+ languages, ~2015→present
-python3 SKILL_DIR/scripts/fetch_gdelt.py --query '"Example Corp"' \
+python SKILL_DIR/scripts/fetch_gdelt.py --query '"Example Corp"' \
     --timespan 1y --out data/gdelt.csv
 ```
 
@@ -191,7 +192,7 @@ Normalize names and find matches between two CSV files:
 
 ```bash
 # Match lobbying clients (Senate LDA) against contract recipients (USAspending)
-python3 SKILL_DIR/scripts/entity_resolution.py \
+python SKILL_DIR/scripts/entity_resolution.py \
     --left  data/lobbying.csv   --left-name-col  client_name \
     --right data/contracts.csv  --right-name-col recipient_name \
     --out data/cross_links.csv
@@ -214,7 +215,7 @@ Test whether two time series cluster suspiciously close together — e.g.
 lobbying filings near contract awards — using a permutation test:
 
 ```bash
-python3 SKILL_DIR/scripts/timing_analysis.py \
+python SKILL_DIR/scripts/timing_analysis.py \
     --donations data/lobbying.csv --donation-date-col filing_date \
         --donation-amount-col income --donation-donor-col client_name \
         --donation-recipient-col registrant_name \
@@ -235,7 +236,7 @@ vendor) pair to run the test.
 ### 5. Build the findings JSON (evidence chain)
 
 ```bash
-python3 SKILL_DIR/scripts/build_findings.py \
+python SKILL_DIR/scripts/build_findings.py \
     --cross-links data/cross_links.csv \
     --timing data/timing.json \
     --out data/findings.json

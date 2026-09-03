@@ -88,6 +88,7 @@ export function FallbackModelsField({
 
   // Resync on real external changes (profile switch / config reload). Skip
   // when `value` is just our own commit echoing through the parent.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const persisted = normalizeEntries(value)
 

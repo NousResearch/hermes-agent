@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -40,6 +41,11 @@ export function GatewayConnectingOverlay() {
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
   const [previewing] = useState(forcedPreview)
+  const reduce = prefersReducedMotion()
+  // Under reduced motion, skip the multi-phase exit choreography (text-out →
+  // hold → overlay fade) and jump straight to gone so the overlay unmounts
+  // the instant the gateway opens. E2E screenshots rely on this to avoid
+  // catching the overlay mid-fade.
   const [phase, setPhase] = useState<Phase>('live')
   // Once cold boot has completed once, never resurrect the fullscreen overlay
   // — soft gateway switches keep the shell and reskeleton the sidebar instead.
@@ -81,9 +87,13 @@ export function GatewayConnectingOverlay() {
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      setPhase('text-out')
+      // Under reduced motion, skip the multi-phase exit choreography
+      // (text-out → hold → overlay fade) and jump straight to gone so the
+      // overlay unmounts the instant the gateway opens. E2E screenshots
+      // rely on this to avoid catching the overlay mid-fade.
+      setPhase(reduce ? 'gone' : 'text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, reduce])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -128,9 +138,13 @@ export function GatewayConnectingOverlay() {
   return (
     <div
       className={cn(
-        'fixed inset-0 z-[1200] grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
+        'fixed inset-0 z-(--z-connecting) grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
         overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app while booting — must stay filled under window
+      // glass or the shell shows through. Contract: `[data-glass-opaque]`
+      // in styles.css.
+      data-glass-opaque=""
     >
       <DecodeText
         active={phase === 'live' && (previewing || connecting)}

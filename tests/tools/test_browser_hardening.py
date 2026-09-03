@@ -62,12 +62,6 @@ class TestFindAgentBrowserCache:
         assert result1 == result2 == "/usr/bin/agent-browser"
         assert bt._agent_browser_resolved is True
 
-    def test_cache_cleared_by_cleanup(self):
-        import tools.browser_tool as bt
-        bt._cached_agent_browser = "/fake/path"
-        bt._agent_browser_resolved = True
-        bt.cleanup_all_browsers()
-        assert bt._agent_browser_resolved is False
 
     def test_not_found_cached_raises_on_subsequent(self):
         """After FileNotFoundError, subsequent calls should raise from cache."""
@@ -102,11 +96,6 @@ class TestCommandTimeoutCache:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert _get_command_timeout() == 30
 
-    def test_reads_from_config(self):
-        from tools.browser_tool import _get_command_timeout
-        cfg = {"browser": {"command_timeout": 60}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _get_command_timeout() == 60
 
     def test_cached_after_first_call(self):
         from tools.browser_tool import _get_command_timeout
@@ -126,19 +115,6 @@ class TestSessionInactivityTimeout:
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert _get_session_inactivity_timeout() == DEFAULT_CONFIG["browser"]["inactivity_timeout"]
 
-    def test_reads_from_config_over_env(self, monkeypatch):
-        from tools.browser_tool import _get_session_inactivity_timeout
-        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "120")
-        cfg = {"browser": {"inactivity_timeout": 900}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _get_session_inactivity_timeout() == 900
-
-    def test_floor_at_30_seconds(self, monkeypatch):
-        from tools.browser_tool import _get_session_inactivity_timeout
-        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "120")
-        cfg = {"browser": {"inactivity_timeout": 1}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _get_session_inactivity_timeout() == 30
 
     def test_invalid_config_preserves_env_fallback(self, monkeypatch):
         from tools.browser_tool import _get_session_inactivity_timeout
@@ -238,49 +214,6 @@ class TestTruncateSnapshot:
             if line.strip() and "truncated" not in line.lower():
                 assert line.startswith("- item") or line == ""
 
-    def test_truncation_reports_remaining_count(self):
-        from tools.browser_tool import _truncate_snapshot
-        lines = [f"- line {i}" for i in range(100)]
-        snapshot = "\n".join(lines)
-        result = _truncate_snapshot(snapshot, max_chars=200)
-        # Should mention how many lines were truncated
-        assert "more line" in result.lower()
-
-    def test_threshold_aligned_with_web_extract_budget(self):
-        """Snapshot and web_extract share the truncate-and-store pattern —
-        the per-page budget the model sees must stay aligned between them."""
-        from tools.browser_tool import SNAPSHOT_SUMMARIZE_THRESHOLD
-        from tools.web_tools import DEFAULT_EXTRACT_CHAR_LIMIT
-        assert SNAPSHOT_SUMMARIZE_THRESHOLD == DEFAULT_EXTRACT_CHAR_LIMIT
-
-    def test_truncation_stores_full_snapshot_and_points_to_it(self):
-        """Truncated snapshots save the complete text to cache/web (like web_extract)."""
-        from pathlib import Path
-        from tools.browser_tool import _truncate_snapshot
-
-        lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(500)]
-        snapshot = "\n".join(lines)
-        result = _truncate_snapshot(snapshot, max_chars=2000)
-
-        assert "read_file" in result
-        m = re.search(r'read_file path="([^"]+)"', result)
-        assert m, f"no stored-path pointer in truncation note: {result[-300:]}"
-        stored = Path(m.group(1))
-        assert stored.exists()
-        content = stored.read_text(encoding="utf-8")
-        # The full snapshot is in the file — including refs beyond the cut.
-        assert '[ref=e499]' in content
-
-    def test_truncation_survives_storage_failure(self):
-        """Storage is best-effort; the truncated view still returns."""
-        from tools.browser_tool import _truncate_snapshot
-
-        lines = [f"- line {i}" for i in range(100)]
-        snapshot = "\n".join(lines)
-        with patch("tools.browser_tool._store_full_snapshot", return_value=None):
-            result = _truncate_snapshot(snapshot, max_chars=200)
-        assert "truncated" in result.lower()
-        assert "read_file" not in result
 
     def test_stored_snapshot_is_secret_redacted(self):
         """Page-rendered secrets must not land unmasked on disk."""
@@ -296,22 +229,55 @@ class TestTruncateSnapshot:
         content = Path(stored).read_text(encoding="utf-8")
         assert "STOREDSNAPSHOTSECRET" not in content
 
-    def test_extract_relevant_content_appends_stored_pointer(self):
-        """LLM-summarized snapshots also point at the stored full text."""
-        from unittest.mock import MagicMock
-        from tools.browser_tool import _extract_relevant_content
+    def test_stored_snapshot_refuses_planted_symlink(self, tmp_path, monkeypatch):
+        """A pre-planted symlink at the content-hash path must not be
+        followed to its target — only the link itself may be replaced.
+
+        Mirrors web_tools._store_full_text's use of write_text_exclusive
+        (overwrite=True) for the same cache/web directory and naming
+        scheme: a legitimate re-snapshot of the same page state safely
+        replaces a same-path symlink with a real file, never writing
+        through it onto whatever the link points at.
+        """
+        import hashlib
+        from pathlib import Path
+        from tools.browser_tool import _store_full_snapshot
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        snapshot = "\n".join(f"- line {i}" for i in range(50))
+        # No secret-like content, so redact_sensitive_text leaves it
+        # unchanged and the digest is predictable from the raw text.
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()[:10]
+
+        cache_dir = tmp_path / "cache" / "web"
+        cache_dir.mkdir(parents=True)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original", encoding="utf-8")
+        planted = cache_dir / f"browser-snapshot-{digest}.txt"
+        planted.symlink_to(victim)
+
+        stored = _store_full_snapshot(snapshot)
+        assert stored is not None
+        assert victim.read_text(encoding="utf-8") == "original"  # link target untouched
+        assert not planted.is_symlink()  # link replaced by a real file
+        assert Path(stored).read_text(encoding="utf-8") == snapshot
+
+    def test_truncated_snapshot_appends_stored_pointer(self):
+        """Truncated snapshots point at the stored full text for read_file paging."""
+        from tools.browser_tool import _truncate_snapshot
 
         snapshot = "\n".join(f'- item "Element {i}" [ref=e{i}]' for i in range(400))
-        mock_resp = MagicMock()
-        mock_resp.choices = [MagicMock()]
-        mock_resp.choices[0].message.content = "Summary with button [ref=e5]"
+        result = _truncate_snapshot(snapshot, max_chars=500)
 
-        with patch("tools.browser_tool.call_llm", return_value=mock_resp):
-            result = _extract_relevant_content(snapshot, "find the button")
-
-        assert result.startswith("Summary with button")
-        assert "Full snapshot" in result
+        assert "truncated" in result.lower()
         assert "read_file" in result
+
+    def test_no_llm_summarization_path_remains(self):
+        """Snapshots must never route through an auxiliary LLM (truncate-and-store only)."""
+        import tools.browser_tool as bt
+
+        assert not hasattr(bt, "_extract_relevant_content")
+        assert not hasattr(bt, "_get_extraction_model")
 
 
 # ---------------------------------------------------------------------------

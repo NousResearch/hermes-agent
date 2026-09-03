@@ -194,7 +194,7 @@ This is often the most efficient pattern: `execute_code` handles the 10+ sequent
 
 ## Inherited Tool Access
 
-Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept a model-facing `toolsets` parameter, so delegated work cannot grant itself capabilities that the parent does not have. Configure the parent's tools before starting the conversation when a delegated task needs web, terminal, file, or other access. Hermes still strips child-blocked tools such as `clarify`, `memory`, and `execute_code`.
+Subagents inherit the parent's enabled toolsets. `delegate_task` does not accept a model-facing `toolsets` parameter, so delegated work cannot grant itself capabilities that the parent does not have. Configure the parent's tools before starting the conversation when a delegated task needs web, terminal, file, or other access. Hermes still strips child-blocked tools such as `clarify`, `memory`, and `send_message`; children keep `execute_code` for programmatic tool calling.
 
 ---
 
@@ -234,6 +234,8 @@ delegation:
 **Use delegation for context isolation.** Sometimes you want a fresh perspective. Delegating forces you to articulate the problem clearly, and the subagent approaches it without the assumptions that built up in your conversation.
 
 **Check results.** Subagent summaries are just that — summaries. If a subagent says "fixed the bug and tests pass," verify by running the tests yourself or reading the diff.
+
+**Failures are surfaced.** A subagent that dies (provider error, timeout, crash) is reported with a clean one-line notice — `⚠️ Subagent failed — "your goal": <reason>` — in the CLI delegation tree and as a chat notice on gateway platforms, even when tool progress is turned off. The parent agent also receives the full error in the tool result.
 
 ---
 

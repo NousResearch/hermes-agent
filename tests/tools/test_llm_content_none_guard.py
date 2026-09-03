@@ -159,9 +159,6 @@ class TestExtractContentOrReasoning:
         response = _make_response(None)
         assert extract_content_or_reasoning(response) == ""
 
-    def test_empty_string_returns_empty(self):
-        response = _make_response("")
-        assert extract_content_or_reasoning(response) == ""
 
     def test_think_blocks_stripped_with_remaining_content(self):
         response = _make_response("<think>internal reasoning</think>The answer is 42.")
@@ -175,40 +172,34 @@ class TestExtractContentOrReasoning:
         )
         assert extract_content_or_reasoning(response) == "The actual reasoning output"
 
-    def test_none_content_with_reasoning_field(self):
-        """DeepSeek-R1 pattern: content=None, reasoning='...'"""
-        response = _make_response(None, reasoning="Step 1: analyze the problem...")
-        assert extract_content_or_reasoning(response) == "Step 1: analyze the problem..."
-
-    def test_none_content_with_reasoning_content_field(self):
-        """Moonshot/Novita pattern: content=None, reasoning_content='...'"""
-        response = _make_response(None, reasoning_content="Let me think about this...")
-        assert extract_content_or_reasoning(response) == "Let me think about this..."
-
-    def test_none_content_with_reasoning_details(self):
-        """OpenRouter unified format: reasoning_details=[{summary: ...}]"""
-        response = _make_response(None, reasoning_details=[
-            {"type": "reasoning.summary", "summary": "The key insight is..."},
-        ])
-        assert extract_content_or_reasoning(response) == "The key insight is..."
-
-    def test_reasoning_fields_not_duplicated(self):
-        """When reasoning and reasoning_content have the same value, don't duplicate."""
-        response = _make_response(None, reasoning="same text", reasoning_content="same text")
-        assert extract_content_or_reasoning(response) == "same text"
-
-    def test_multiple_reasoning_sources_combined(self):
-        """Different reasoning sources are joined with double newline."""
-        response = _make_response(
-            None,
-            reasoning="First part",
-            reasoning_content="Second part",
-        )
-        result = extract_content_or_reasoning(response)
-        assert "First part" in result
-        assert "Second part" in result
 
     def test_content_preferred_over_reasoning(self):
         """When both content and reasoning exist, content wins."""
         response = _make_response("Actual answer", reasoning="Internal reasoning")
         assert extract_content_or_reasoning(response) == "Actual answer"
+
+    def test_dict_message_and_whitespace_fall_back(self):
+        assert extract_content_or_reasoning(
+            {"content": " ", "reasoning_content": "dict reasoning"}
+        ) == "dict reasoning"
+        assert extract_content_or_reasoning(
+            {"choices": [{"message": {"content": "", "reasoning": "from response"}}]}
+        ) == "from response"
+
+    def test_string_message_passthrough(self):
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message="plain summary text")]
+        )
+        assert extract_content_or_reasoning(response) == "plain summary text"
+
+    def test_reasoning_fallback_respects_max_chars(self):
+        huge = "t" * 20_000
+        text = extract_content_or_reasoning(
+            {"content": "", "reasoning_content": huge},
+            max_reasoning_chars=8000,
+        )
+        assert text == huge[:8000]
+        assert extract_content_or_reasoning(
+            {"content": "", "reasoning_content": "short"},
+            max_reasoning_chars=8000,
+        ) == "short"

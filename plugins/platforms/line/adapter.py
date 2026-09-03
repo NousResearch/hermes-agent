@@ -30,8 +30,8 @@ binary uploads — images, audio, and video must be reachable HTTPS URLs.
 We register registered tempfiles under ``/line/media/<token>/<filename>``
 served by the same aiohttp app, with an allowed-roots traversal guard.
 ``LINE_PUBLIC_URL`` (e.g. ``https://my-tunnel.example.com``) overrides
-the host:port construction so URLs are reachable when bind is 0.0.0.0
-or behind a reverse proxy.
+the host:port construction so URLs are reachable when the bind is a
+wildcard/dual-stack listener or behind a reverse proxy.
 
 **5-message batching.** LINE accepts at most 5 message objects per
 Reply/Push call; longer responses are smart-chunked at 4500 chars
@@ -71,6 +71,7 @@ import mimetypes
 import os
 import re
 import secrets
+import sys
 import tempfile
 import time
 import uuid
@@ -78,6 +79,30 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
+
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +113,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
-    cache_image_from_bytes,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.config import Platform
 
@@ -118,6 +147,29 @@ WEBHOOK_BODY_MAX_BYTES = 1_048_576  # 1 MiB — webhooks are tiny JSON
 DEFAULT_WEBHOOK_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/line/webhook"
 DEFAULT_MEDIA_PATH_PREFIX = "/line/media"
+
+# Default bind host. ``None`` tells aiohttp/asyncio's ``create_server`` to
+# bind BOTH address families (IPv4 + IPv6) — the portable dual-stack default.
+# Mirrors gateway/platforms/webhook.py DEFAULT_HOST (commit d542894ad).
+#
+# Why not "0.0.0.0" (the old default) or "::"?
+#   - "0.0.0.0" binds IPv4 ONLY. On IPv6-only private networks — notably
+#     Fly.io 6PN, where the hosted edge router reverse-proxies LINE ingest to
+#     ``<app>.internal:8646`` over an ``fdaa:…`` IPv6 address — an IPv4-only
+#     listener is unreachable: dial refused → customer-visible 502 (NS-603).
+#   - "::" is NOT a safe fix: on hosts where the kernel sets IPV6_V6ONLY=1
+#     (verified on Fly machines), binding "::" yields an IPv6-ONLY socket,
+#     breaking IPv4 loopback health probes.
+#   - ``None`` asks the event loop to create a listening socket per resolved
+#     family, so both 127.0.0.1 (v4) and the 6PN fdaa (v6) are served
+#     regardless of the bindv6only sysctl. Users can still pin a host via
+#     ``LINE_HOST`` or ``platforms.line.extra.host``.
+DEFAULT_HOST = None
+
+# Hosts that mean "listening on every interface" — i.e. the bind address is
+# not a name LINE's servers could ever fetch media from, so a public base URL
+# is required for outbound media.
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
 
 # Slow-LLM postback button defaults
 DEFAULT_SLOW_RESPONSE_THRESHOLD = 45.0  # seconds; 0 disables
@@ -463,7 +515,7 @@ class _LineClient:
     async def reply(self, reply_token: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.post(
                 LINE_REPLY_URL,
                 headers=self._headers,
@@ -476,7 +528,7 @@ class _LineClient:
     async def push(self, chat_id: str, messages: List[Dict[str, Any]]) -> None:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self._timeout)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.post(
                 LINE_PUSH_URL,
                 headers=self._headers,
@@ -495,7 +547,7 @@ class _LineClient:
         clamped = max(5, min(60, (seconds // 5) * 5 or 5))
         try:
             timeout = aiohttp.ClientTimeout(total=5.0)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
                 await session.post(
                     LINE_LOADING_URL,
                     headers=self._headers,
@@ -509,7 +561,7 @@ class _LineClient:
         import aiohttp
         url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
         timeout = aiohttp.ClientTimeout(total=30.0)
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
@@ -520,7 +572,7 @@ class _LineClient:
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=10.0)
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=gateway_trust_env()) as session:
                 async with session.get(LINE_BOT_INFO_URL, headers=self._headers) as resp:
                     if resp.status >= 400:
                         return None
@@ -651,16 +703,20 @@ class LineAdapter(BasePlatformAdapter):
 
         # Credentials
         self.channel_access_token = (
-            os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+            _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN")
             or extra.get("channel_access_token", "")
         )
         self.channel_secret = (
-            os.getenv("LINE_CHANNEL_SECRET")
+            _get_scoped_secret("LINE_CHANNEL_SECRET")
             or extra.get("channel_secret", "")
         )
 
-        # Webhook server
-        self.webhook_host = os.getenv("LINE_HOST") or extra.get("host", "0.0.0.0")
+        # Webhook server. Host default is ``None`` → dual-stack bind (both
+        # IPv4 and IPv6); see DEFAULT_HOST above. ``LINE_HOST``/extra.host pin
+        # a specific address when needed; empty string collapses to None.
+        self.webhook_host = (
+            os.getenv("LINE_HOST") or extra.get("host", DEFAULT_HOST) or DEFAULT_HOST
+        )
         try:
             self.webhook_port = int(
                 os.getenv("LINE_PORT") or extra.get("port", DEFAULT_WEBHOOK_PORT)
@@ -800,15 +856,33 @@ class LineAdapter(BasePlatformAdapter):
             self._handle_media,
         )
 
+        # Plugin-registered native handlers (aiohttp web.Application —
+        # router routes). Wired before AppRunner.setup() freezes the router.
+        self._wire_plugin_handlers(self._app)
+
         self._runner = web.AppRunner(self._app)
         try:
             await self._runner.setup()
-            self._site = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
+            # SO_REUSEADDR is platform-dependent (mirrors the generic webhook
+            # adapter, commits d542894ad/9420ad946):
+            #   - macOS (BSD semantics): two wildcard/specific sockets with
+            #     SO_REUSEADDR can silently split traffic — disable it there.
+            #   - Linux: SO_REUSEADDR only permits rebinding past TIME_WAIT;
+            #     disabling it would make a quick gateway restart fail to
+            #     bind for up to ~60s — keep the default (enabled).
+            self._site = web.TCPSite(
+                self._runner,
+                self.webhook_host,
+                self.webhook_port,
+                reuse_address=False if sys.platform == "darwin" else None,
+            )
             await self._site.start()
         except OSError as exc:
             self._set_fatal_error(
                 "bind_failed",
-                f"Could not bind LINE webhook on {self.webhook_host}:{self.webhook_port}: {exc}",
+                "Could not bind LINE webhook on "
+                f"{self.webhook_host or 'all IPv4+IPv6 interfaces'}:"
+                f"{self.webhook_port}: {exc}",
                 retryable=True,
             )
             return False
@@ -816,7 +890,7 @@ class LineAdapter(BasePlatformAdapter):
         self._mark_connected()
         logger.info(
             "LINE: webhook listening on %s:%s%s%s",
-            self.webhook_host,
+            self.webhook_host or "* (all interfaces, IPv4+IPv6)",
             self.webhook_port,
             self.webhook_path,
             f" (public: {self.public_base_url})" if self.public_base_url else "",
@@ -955,11 +1029,15 @@ class LineAdapter(BasePlatformAdapter):
 
         if msg_type == "text":
             text = msg.get("text", "") or ""
-        elif msg_type in {"image", "audio", "video", "file"}:
-            local_path = await self._download_media(message_id, msg_type)
+        elif msg_type in ("image", "audio", "video", "file"):
+            local_path, media_type = await self._download_media(
+                message_id,
+                msg_type,
+                filename=msg.get("fileName") or msg.get("file_name"),
+            )
             if local_path:
                 media_urls.append(local_path)
-                media_types.append(msg_type)
+                media_types.append(media_type)
             text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
@@ -1054,14 +1132,20 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self,
+        message_id: str,
+        msg_type: str,
+        *,
+        filename: Optional[str] = None,
+    ) -> Tuple[Optional[str], str]:
         if not self._client or not message_id:
-            return None
+            return None, ""
         try:
             data = await self._client.fetch_content(message_id)
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
-            return None
+            return None, ""
         ext = {
             "image": ".jpg",
             "audio": ".m4a",
@@ -1069,10 +1153,22 @@ class LineAdapter(BasePlatformAdapter):
             "file": ".bin",
         }.get(msg_type, ".bin")
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            if msg_type == "image":
+                return await cache_image_from_bytes_async(data, ext=ext), "image/jpeg"
+            if msg_type == "audio":
+                media_type = mimetypes.guess_type(f"audio{ext}")[0] or "audio/mp4"
+                return await cache_audio_from_bytes_async(data, ext=ext), media_type
+            if msg_type == "video":
+                media_type = mimetypes.guess_type(f"video{ext}")[0] or "video/mp4"
+                return await cache_video_from_bytes_async(data, ext=ext), media_type
+            document_name = filename or f"line_file{ext}"
+            return (
+                await cache_document_from_bytes_async(data, document_name),
+                mimetypes.guess_type(document_name)[0] or "application/octet-stream",
+            )
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
-            return None
+            return None, ""
 
     # ------------------------------------------------------------------
     # Outbound send (text)
@@ -1263,7 +1359,12 @@ class LineAdapter(BasePlatformAdapter):
         if self.public_base_url:
             base = self.public_base_url
         else:
+            # A wildcard/dual-stack bind has no fetchable hostname; the
+            # _missing_public_url guard should have caught this earlier.
+            # Fall back to localhost so the URL is at least well-formed.
             host = self.webhook_host
+            if host is None or host in _WILDCARD_HOSTS:
+                host = "127.0.0.1"
             port = self.webhook_port
             if port == 443:
                 base = f"https://{host}"
@@ -1271,6 +1372,14 @@ class LineAdapter(BasePlatformAdapter):
                 base = f"https://{host}:{port}"
         safe_name = _urlquote(filename, safe="")
         return f"{base}{DEFAULT_MEDIA_PATH_PREFIX}/{token}/{safe_name}"
+
+    def _missing_public_url(self) -> bool:
+        """True when outbound media cannot work: no LINE_PUBLIC_URL and the
+        bind host is a wildcard (or the dual-stack ``None`` default), i.e.
+        not an address LINE's fetchers could ever reach."""
+        if self.public_base_url:
+            return False
+        return self.webhook_host is None or self.webhook_host in _WILDCARD_HOSTS
 
     async def _handle_media(self, request) -> Any:
         """Serve a registered local file over HTTPS for LINE's media URLs.
@@ -1333,7 +1442,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="image exceeds 10 MB LINE limit")
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+        if self._missing_public_url():
             return SendResult(
                 success=False,
                 error="LINE_PUBLIC_URL must be set to send images "
@@ -1363,7 +1472,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="audio exceeds 200 MB LINE limit")
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+        if self._missing_public_url():
             return SendResult(
                 success=False,
                 error="LINE_PUBLIC_URL must be set to send audio",
@@ -1387,7 +1496,7 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="video exceeds 200 MB LINE limit")
         if not self._client:
             return SendResult(success=False, error="LINE adapter not connected")
-        if not self.public_base_url and self.webhook_host == "0.0.0.0":
+        if self._missing_public_url():
             return SendResult(
                 success=False,
                 error="LINE_PUBLIC_URL must be set to send video",
@@ -1481,9 +1590,9 @@ def _is_relative_to(child: Path, parent: Path) -> bool:
 
 def check_requirements() -> bool:
     """Plugin gate: require credentials AND aiohttp at runtime."""
-    if not os.getenv("LINE_CHANNEL_ACCESS_TOKEN"):
+    if not _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN"):
         return False
-    if not os.getenv("LINE_CHANNEL_SECRET"):
+    if not _get_scoped_secret("LINE_CHANNEL_SECRET"):
         return False
     try:
         import aiohttp  # noqa: F401
@@ -1495,10 +1604,10 @@ def check_requirements() -> bool:
 def validate_config(config) -> bool:
     extra = getattr(config, "extra", {}) or {}
     has_token = bool(
-        os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token")
+        _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token")
     )
     has_secret = bool(
-        os.getenv("LINE_CHANNEL_SECRET") or extra.get("channel_secret")
+        _get_scoped_secret("LINE_CHANNEL_SECRET") or extra.get("channel_secret")
     )
     return has_token and has_secret
 
@@ -1515,7 +1624,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     in ``.env`` without a ``platforms.line`` block in ``config.yaml``.
     Mirrors the IRC plugin's pattern.
     """
-    if not (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") and os.getenv("LINE_CHANNEL_SECRET")):
+    if not (_get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") and _get_scoped_secret("LINE_CHANNEL_SECRET")):
         return None
     seeded: Dict[str, Any] = {}
     if os.getenv("LINE_PORT"):
@@ -1555,7 +1664,7 @@ async def _standalone_send(
     """
     extra = getattr(pconfig, "extra", {}) or {}
     token = (
-        os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+        _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN")
         or extra.get("channel_access_token", "")
     )
     if not token or not chat_id:
@@ -1591,13 +1700,13 @@ def interactive_setup() -> None:
     print()
 
     try:
-        from hermes_cli.config import get_env_var, set_env_var
+        from hermes_cli.config import get_env_value as _get_env, save_env_value as _set_env
     except ImportError:
         print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
         return
 
     def _prompt(var: str, prompt: str, *, secret: bool = False) -> None:
-        existing = get_env_var(var) if callable(get_env_var) else None
+        existing = _get_env(var) if callable(_get_env) else None
         suffix = " [keep current]" if existing else ""
         try:
             if secret:
@@ -1609,7 +1718,7 @@ def interactive_setup() -> None:
             print()
             return
         if value:
-            set_env_var(var, value)
+            _set_env(var, value)
 
     _prompt("LINE_CHANNEL_ACCESS_TOKEN", "Channel access token", secret=True)
     _prompt("LINE_CHANNEL_SECRET", "Channel secret", secret=True)

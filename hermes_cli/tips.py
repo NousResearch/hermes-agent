@@ -10,7 +10,7 @@ import random
 
 TIPS = [
     # --- Slash Commands ---
-    "/background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.",
+    "/bg <prompt> runs a task in a separate session while your current one stays free; /btw <question> answers a side question about this conversation without interrupting it.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
     "/compress manually compresses conversation context when things get long.",
     "/rollback lists filesystem checkpoints — restore files the agent modified to any prior state.",
@@ -69,7 +69,7 @@ TIPS = [
     "hermes chat -t web,terminal enables only specific toolsets for a focused session.",
     "hermes chat -s github-pr-workflow preloads a skill at launch.",
     "hermes chat -q \"query\" runs a single non-interactive query and exits.",
-    "hermes chat --max-turns 200 overrides the default 90-iteration limit per turn.",
+    "hermes chat --max-turns 1000 overrides the default 500-iteration limit per turn.",
     "hermes chat --checkpoints enables filesystem snapshots before every destructive file change.",
     "hermes --yolo bypasses all dangerous command approval prompts for the entire session.",
     "hermes chat --source telegram tags the session for filtering in hermes sessions list.",
@@ -112,7 +112,7 @@ TIPS = [
     "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
     "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
-    "Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.",
+    "Set agent.max_turns: 1000 to let the agent take more tool-calling steps per turn.",
     "Set file_read_max_chars: 200000 to increase the max content per read_file call.",
     "Set approvals.mode: smart to let an LLM auto-approve safe commands and auto-deny dangerous ones.",
     "Set fallback_model in config.yaml to automatically fail over to a backup provider.",
@@ -175,7 +175,7 @@ TIPS = [
     "Skills can restrict to specific OS platforms — some only load on macOS or Linux.",
     "skills.external_dirs in config.yaml lets you load skills from custom directories.",
     "The agent can create its own skills as procedural memory using skill_manage.",
-    "The plan skill saves markdown plans under .hermes/plans/ in the active workspace.",
+    "/plan writes a markdown implementation plan to .hermes/plans/ without executing anything.",
 
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",
@@ -292,12 +292,12 @@ TIPS = [
     "Delegation has a heartbeat thread — child activity propagates to the parent, preventing gateway timeouts.",
     "When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.",
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",
-    "agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.",
+    "agent.restart_after_turn_timeout lets in-flight turns finish before /restart enters stop(); restart_drain_timeout is only the force-interrupt budget once stop() begins.",
     "agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the error — lower it for fast fallback.",
     "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.",
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",
-    "Stale git worktrees are auto-cleaned: 24-72h old with no unpushed commits get pruned on startup.",
+    "Stale git worktrees are auto-cleaned on startup: clean, fully-merged trees get pruned; dirty or unpushed work is always preserved.",
     "Profiles scope Hermes state via HERMES_HOME; host tool subprocesses keep your real HOME unless terminal.home_mode is profile.",
     "HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal.",
     "Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container.",
@@ -388,7 +388,7 @@ TIPS = [
 
     # --- Env Vars & Config Gates ---
     "display.tool_progress_command: true exposes /verbose on messaging platforms; it's CLI-only by default.",
-    'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).',
+    'HERMES_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs concise/all/error/off).',
     'HERMES_WRITE_SAFE_ROOT restricts write_file/patch to directory prefixes; multiple paths via os.pathsep (: or ;).',
     'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
     'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
@@ -483,3 +483,30 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
+
+
+# ---------------------------------------------------------------------------
+# Composer placeholders — short, task-oriented example prompts shown in the
+# empty input box to nudge new users toward high-value first actions (C-09,
+# inspired by opencode/codex rotating placeholders). Kept generic so they fit
+# any project or none — Hermes is not a coding-only agent.
+# ---------------------------------------------------------------------------
+
+COMPOSER_PLACEHOLDERS = [
+    "Ask anything, or type / for commands…",
+    "Summarize what's in this folder",
+    "Draft a reply to the last email in my inbox",
+    "Plan a feature, then build it step by step",
+    "Find and fix a failing test",
+    "Research this topic and write me a brief",
+    "What changed in this repo recently?",
+    "Turn these notes into a to-do list",
+    "Explain this error and how to fix it",
+    "Set a reminder or schedule a recurring task",
+    "Type / to browse commands, or Ctrl+P for the palette",
+]
+
+
+def get_random_composer_placeholder() -> str:
+    """Return a rotating task-oriented placeholder for the empty composer."""
+    return random.choice(COMPOSER_PLACEHOLDERS)

@@ -20,6 +20,7 @@ import argparse
 import contextlib
 import io
 import json
+import logging
 import os
 import sys
 import threading
@@ -27,6 +28,7 @@ import time
 
 import cli as cli_mod
 from cli import HermesCLI
+from tui_gateway._stdin_recovery import handle_spurious_eof
 from rich.console import Console
 
 # Env-overridable so the integration test can drive sub-second timing.
@@ -47,6 +49,7 @@ def _env_float(name: str, default: float) -> float:
 _WATCHDOG_POLL_S = max(0.05, _env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
 _ORPHAN_GRACE_S = max(0.0, _env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
 _in_flight = threading.Event()  # set while a command is executing
+logger = logging.getLogger(__name__)
 
 
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
@@ -140,7 +143,21 @@ def main():
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
 
-    for raw in sys.stdin:
+    # Spurious stdin-EOF recovery (same O_NONBLOCK shared file-description
+    # issue as the gateway entry point — any child inheriting fd 0 can flip
+    # the flag and launder EAGAIN into an apparent EOF).
+    _sw_recovery_times: list[float] = []
+
+    def _sw_log(reason: str) -> None:
+        print(f"[slash-worker] {reason}", file=sys.stderr, flush=True)
+
+    while True:
+        raw = sys.stdin.readline()
+        if not raw:
+            if not handle_spurious_eof(_sw_recovery_times, _sw_log):
+                break
+            continue
+
         line = raw.strip()
         if not line:
             continue
@@ -158,6 +175,21 @@ def main():
             sys.stdout.flush()
         finally:
             _in_flight.clear()
+            # Workers persist for the TUI session, so release allocator pages at
+            # the same command boundary as other long-lived gateway processes.
+            # trim_memory's shared cooldown coalesces this with nearby activity.
+            try:
+                from hermes_cli.mem_trim import trim_memory
+
+                trim_memory(reason="slash worker command completion")
+            except Exception as exc:
+                # debug, not warning — a persistent failure would repeat on
+                # every slash command forever.
+                logger.debug(
+                    "slash worker memory trim failed: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
 
 
 if __name__ == "__main__":

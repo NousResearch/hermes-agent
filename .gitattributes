@@ -8,3 +8,27 @@ web/package-lock.json linguist-generated=true
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Enforce LF for all source/text files. Windows editors and tools default to
+# CRLF; without normalization a Windows contributor's edit turns into a
+# whole-file phantom diff (every line "changed" by its ending), breaks
+# string-match patch tooling, and pollutes review. `text` normalizes to LF
+# at check-in; `eol=lf` also checks out as LF so the working tree matches
+# the index on every platform. PowerShell files are the deliberate
+# exception (PS 5.1 tooling expects CRLF).
+*.py    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.jsx   text eol=lf
+*.json  text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.svg   text eol=lf
+*.ps1   text eol=crlf

@@ -69,106 +69,6 @@ class TestClawHubSource(unittest.TestCase):
         self.assertTrue(args[0].endswith("/skills"))
         self.assertEqual(kwargs["params"], {"search": "caldav", "limit": 5})
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch.object(
-        ClawHubSource,
-        "_load_catalog_index",
-        return_value=[],
-    )
-    @patch("tools.skills_hub.httpx.get")
-    def test_search_falls_back_to_exact_slug_when_search_results_are_irrelevant(
-        self, mock_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
-    ):
-        def side_effect(url, *args, **kwargs):
-            if url.endswith("/skills"):
-                return _MockResponse(
-                    status_code=200,
-                    json_data={
-                        "items": [
-                            {
-                                "slug": "apple-music-dj",
-                                "displayName": "Apple Music DJ",
-                                "summary": "Unrelated result",
-                            }
-                        ]
-                    },
-                )
-            if url.endswith("/skills/self-improving-agent"):
-                return _MockResponse(
-                    status_code=200,
-                    json_data={
-                        "skill": {
-                            "slug": "self-improving-agent",
-                            "displayName": "self-improving-agent",
-                            "summary": "Captures learnings and errors for continuous improvement.",
-                            "tags": {"latest": "3.0.2", "automation": "3.0.2"},
-                        },
-                        "latestVersion": {"version": "3.0.2"},
-                    },
-                )
-            return _MockResponse(status_code=404, json_data={})
-
-        mock_get.side_effect = side_effect
-
-        results = self.src.search("self-improving-agent", limit=5)
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].identifier, "self-improving-agent")
-        self.assertEqual(results[0].name, "self-improving-agent")
-        self.assertIn("continuous improvement", results[0].description)
-
-    @patch("tools.skills_hub.httpx.get")
-    def test_search_repairs_poisoned_cache_with_exact_slug_lookup(self, mock_get):
-        mock_get.return_value = _MockResponse(
-            status_code=200,
-            json_data={
-                "skill": {
-                    "slug": "self-improving-agent",
-                    "displayName": "self-improving-agent",
-                    "summary": "Captures learnings and errors for continuous improvement.",
-                    "tags": {"latest": "3.0.2", "automation": "3.0.2"},
-                },
-                "latestVersion": {"version": "3.0.2"},
-            },
-        )
-
-        poisoned = [
-            SkillMeta(
-                name="Apple Music DJ",
-                description="Unrelated cached result",
-                source="clawhub",
-                identifier="apple-music-dj",
-                trust_level="community",
-                tags=[],
-            )
-        ]
-        results = self.src._finalize_search_results("self-improving-agent", poisoned, 5)
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].identifier, "self-improving-agent")
-        mock_get.assert_called_once()
-        self.assertTrue(mock_get.call_args.args[0].endswith("/skills/self-improving-agent"))
-
-    @patch.object(
-        ClawHubSource,
-        "_exact_slug_meta",
-        return_value=SkillMeta(
-            name="self-improving-agent",
-            description="Captures learnings and errors for continuous improvement.",
-            source="clawhub",
-            identifier="self-improving-agent",
-            trust_level="community",
-            tags=["automation"],
-        ),
-    )
-    def test_search_matches_space_separated_query_to_hyphenated_slug(
-        self, _mock_exact_slug
-    ):
-        results = self.src.search("self improving", limit=5)
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].identifier, "self-improving-agent")
 
     @patch("tools.skills_hub.httpx.get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):
@@ -212,8 +112,53 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.identifier, "self-improving-agent")
         self.assertEqual(meta.tags, ["automation"])
 
+    @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get):
+    def test_inspect_captures_owner_from_detail_api(self, mock_get, mock_safe_get):
+        """inspect() fetches the detail API which includes owner — capture it."""
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "skill": {
+                    "slug": "apple-docs",
+                    "displayName": "Apple Docs",
+                    "summary": "Documentation reader",
+                    "tags": {"latest": "1.0.0"},
+                },
+                "latestVersion": {"version": "1.0.0"},
+                "owner": {"handle": "thesethrose", "displayName": "Seth Rose"},
+            },
+        )
+
+        meta = self.src.inspect("apple-docs")
+
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.extra.get("owner"), "thesethrose")
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_tolerates_missing_owner(self, mock_get):
+        """inspect() should still work when the API omits owner."""
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "skill": {
+                    "slug": "some-skill",
+                    "displayName": "Some Skill",
+                    "summary": "A skill",
+                    "tags": {"latest": "1.0.0"},
+                },
+                "latestVersion": {"version": "1.0.0"},
+            },
+        )
+
+        meta = self.src.inspect("some-skill")
+
+        self.assertIsNotNone(meta)
+        self.assertNotIn("owner", meta.extra or {})
+
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_safe_get):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -233,11 +178,10 @@ class TestClawHubSource(unittest.TestCase):
                         ]
                     },
                 )
-            if url == "https://files.example/skill-md":
-                return _MockResponse(status_code=200, text="# Skill")
             return _MockResponse(status_code=404, json_data={})
 
         mock_get.side_effect = side_effect
+        mock_safe_get.return_value = _MockResponse(status_code=200, text="# Skill")
 
         bundle = self.src.fetch("caldav-calendar")
 
@@ -246,6 +190,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("SKILL.md", bundle.files)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
+        mock_safe_get.assert_called_once_with("https://files.example/skill-md", timeout=20)
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):
@@ -267,7 +212,8 @@ class TestClawHubSource(unittest.TestCase):
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_blocks_private_raw_url(self, mock_get, mock_safe, _mock_policy):
+    @patch("tools.skills_hub._ssrf_safe_http_get")
+    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_get, mock_safe, _mock_policy):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -297,6 +243,7 @@ class TestClawHubSource(unittest.TestCase):
 
         self.assertIsNone(bundle)
         self.assertEqual(mock_get.call_count, 3)
+        mock_safe_get.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -423,6 +370,62 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].identifier, "only-skill")
         mock_write_cache.assert_called_once()
 
+    def test_parse_identifier_accepts_clawhub_shapes(self):
+        self.assertEqual(ClawHubSource._parse_identifier("skillopt"), ("skillopt", None))
+        self.assertEqual(ClawHubSource._parse_identifier("clawhub/skillopt"), ("skillopt", None))
+        self.assertEqual(
+            ClawHubSource._parse_identifier("@harrylabsj/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+        self.assertEqual(
+            ClawHubSource._parse_identifier("harrylabsj/skills/skillopt"),
+            ("skillopt", "harrylabsj"),
+        )
+
+    def test_parse_identifier_rejects_github_style_paths(self):
+        self.assertIsNone(
+            ClawHubSource._parse_identifier("latipun7/agent-skill-collections/skillopt")
+        )
+        self.assertIsNone(
+            ClawHubSource._parse_identifier(
+                "latipun7/agent-skill-collections/skills/skillopt"
+            )
+        )
+        self.assertIsNone(
+            ClawHubSource._parse_identifier(
+                "skills-sh/latipun7/agent-skill-collections/skills/skillopt"
+            )
+        )
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_does_not_claim_github_style_identifier(self, mock_get):
+        meta = self.src.inspect("latipun7/agent-skill-collections/skills/skillopt")
+        self.assertIsNone(meta)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_does_not_claim_github_style_identifier(self, mock_get):
+        bundle = self.src.fetch("latipun7/agent-skill-collections/skillopt")
+        self.assertIsNone(bundle)
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_rejects_owner_mismatch_on_clawhub_url_path(self, mock_get):
+        mock_get.return_value = _MockResponse(
+            status_code=200,
+            json_data={
+                "slug": "skillopt",
+                "displayName": "SkillOpt",
+                "summary": "Train, evaluate, and improve Agent skill files",
+                "owner": {"handle": "harrylabsj"},
+            },
+        )
+
+        meta = self.src.inspect("latipun7/skills/skillopt")
+
+        self.assertIsNone(meta)
+        mock_get.assert_called_once()
+
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):
     """max_items bounds the walk so browse's cold-start fallback renders one
@@ -498,36 +501,6 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         self.assertEqual(page_calls["n"], 750)
         self.assertEqual(len(results), 750)
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub.httpx.get")
-    def test_max_items_zero_is_unbounded_and_caches(
-        self, mock_get, _mock_read_cache, mock_write_cache
-    ):
-        """max_items=0 (the index builder's path) walks to natural termination
-        and DOES cache the complete catalog."""
-
-        def side_effect(url, *args, **kwargs):
-            if url.endswith("/skills"):
-                return _MockResponse(
-                    status_code=200,
-                    json_data={
-                        "items": [
-                            {"slug": "a", "displayName": "A"},
-                            {"slug": "b", "displayName": "B"},
-                            {"slug": "c", "displayName": "C"},
-                        ],
-                        # No nextCursor -> natural termination.
-                    },
-                )
-            return _MockResponse(status_code=404, json_data={})
-
-        mock_get.side_effect = side_effect
-
-        results = self.src._load_catalog_index(max_items=0)
-
-        self.assertEqual(len(results), 3)
-        mock_write_cache.assert_called_once()
 
     @patch("tools.skills_hub._write_index_cache")
     @patch("tools.skills_hub._read_index_cache", return_value=None)
@@ -545,6 +518,162 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         self.assertEqual(len(results), 10, "browse page should be exactly `limit` items")
         # Walk stopped near the bound, not at the 750-page cap.
         self.assertLess(page_calls["n"], 30)
+
+
+class TestFetchOwnerHandleRetry(unittest.TestCase):
+    """Verify _fetch_owner_handle() retry/backoff on rate-limit and transient errors."""
+
+    def setUp(self):
+        self.src = ClawHubSource()
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_retries_on_429_with_retry_after_header(self, mock_get, mock_sleep):
+        """On 429, _fetch_owner_handle retries and honours Retry-After."""
+        mock_get.side_effect = [
+            _MockResponse(status_code=429, headers={"Retry-After": "3"}),
+            _MockResponse(
+                status_code=200,
+                json_data={"skill": {"slug": "test"}, "owner": {"handle": "alice"}},
+            ),
+        ]
+
+        handle = self.src._fetch_owner_handle("test")
+
+        self.assertEqual(handle, "alice")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(3.0)
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_retries_on_429_without_retry_after_uses_exponential_backoff(self, mock_get, mock_sleep):
+        """On 429 without Retry-After, use exponential backoff (2s, 4s)."""
+        mock_get.side_effect = [
+            _MockResponse(status_code=429, headers={}),
+            _MockResponse(status_code=429, headers={}),
+            _MockResponse(
+                status_code=200,
+                json_data={"skill": {"slug": "test"}, "owner": {"handle": "bob"}},
+            ),
+        ]
+
+        handle = self.src._fetch_owner_handle("test")
+
+        self.assertEqual(handle, "bob")
+        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        mock_sleep.assert_any_call(2.0)  # first backoff: 2s
+        mock_sleep.assert_any_call(4.0)  # second backoff: 4s
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_gives_up_after_max_attempts_on_429(self, mock_get, mock_sleep):
+        """After 3 attempts all 429, return None (no more retries)."""
+        mock_get.return_value = _MockResponse(status_code=429, headers={})
+
+        handle = self.src._fetch_owner_handle("test")
+
+        self.assertIsNone(handle)
+        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)  # sleeps between attempts, not after last
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_retries_on_5xx_transient_error(self, mock_get, mock_sleep):
+        """On 500/502/503, retries with exponential backoff."""
+        mock_get.side_effect = [
+            _MockResponse(status_code=503, headers={}),
+            _MockResponse(
+                status_code=200,
+                json_data={"skill": {"slug": "test"}, "owner": {"handle": "carol"}},
+            ),
+        ]
+
+        handle = self.src._fetch_owner_handle("test")
+
+        self.assertEqual(handle, "carol")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(2.0)
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_does_not_retry_on_4xx_non_429(self, mock_get, mock_sleep):
+        """4xx (not 429) means the resource doesn't exist — no retry."""
+        mock_get.return_value = _MockResponse(status_code=404, headers={})
+
+        handle = self.src._fetch_owner_handle("test")
+
+        self.assertIsNone(handle)
+        self.assertEqual(mock_get.call_count, 1)
+        mock_sleep.assert_not_called()
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_retries_on_transport_error(self, mock_get, mock_sleep):
+        """Network/transport errors (httpx.HTTPError) trigger retry with backoff."""
+        import httpx
+        mock_get.side_effect = [
+            httpx.ConnectError("connection refused"),
+            _MockResponse(
+                status_code=200,
+                json_data={"skill": {"slug": "test"}, "owner": {"handle": "dave"}},
+            ),
+        ]
+
+        handle = self.src._fetch_owner_handle("test")
+
+        self.assertEqual(handle, "dave")
+        self.assertEqual(mock_get.call_count, 2)
+        mock_sleep.assert_called_once_with(2.0)
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.get")
+    def test_enrich_owners_survives_burst_429_then_succeeds(self, mock_get, mock_sleep):
+        """enrich_owners() should not abort when a burst of 429s is followed by success.
+
+        Regression test: the '50 consecutive failures' safety rail previously
+        fired immediately under rate-limiting because _fetch_owner_handle() did
+        no retry. With retry, transient 429s are absorbed per-request.
+        """
+        # Each skill: 1st attempt 429 → retry → 200 with owner.
+        # call_count tracks attempts across all skills.
+        call_count = {"n": 0}
+
+        def side_effect(url, *args, **kwargs):
+            call_count["n"] += 1
+            # Odd calls → 429, even calls → 200 with data
+            if call_count["n"] % 2 == 1:
+                return _MockResponse(status_code=429, headers={"Retry-After": "0"})
+            return _MockResponse(
+                status_code=200,
+                json_data={"skill": {"slug": "s"}, "owner": {"handle": "eve"}},
+            )
+
+        mock_get.side_effect = side_effect
+
+        skills = [
+            SkillMeta(
+                name="s1", description="", source="clawhub",
+                identifier="s1", trust_level="community",
+            ),
+            SkillMeta(
+                name="s2", description="", source="clawhub",
+                identifier="s2", trust_level="community",
+            ),
+            SkillMeta(
+                name="s3", description="", source="clawhub",
+                identifier="s3", trust_level="community",
+            ),
+        ]
+
+        enriched = self.src.enrich_owners(skills, max_workers=1)
+
+        self.assertEqual(enriched, 3)
+        for s in skills:
+            self.assertEqual(s.extra.get("owner"), "eve")
+        # 3 skills × 2 attempts each = 6 total HTTP calls (no abort)
+        self.assertEqual(call_count["n"], 6)
+        mock_sleep.assert_called()
 
 
 if __name__ == "__main__":

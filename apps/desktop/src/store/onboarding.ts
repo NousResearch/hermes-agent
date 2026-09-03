@@ -7,12 +7,14 @@ import {
   listOAuthProviders,
   pollOAuthSession,
   setEnvVar,
-  setModelAssignment,
   startOAuthLogin,
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
+import { translateNow } from '@/i18n'
+import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
 
@@ -76,6 +78,7 @@ export interface DesktopOnboardingState {
 
 export interface OnboardingContext {
   onCompleted?: () => void
+  profile?: string
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -173,6 +176,30 @@ function clearPoll() {
     window.clearInterval(pollTimer)
     pollTimer = null
   }
+
+  clearPollExpiry()
+}
+
+let pollExpiryTimer: number | null = null
+
+function clearPollExpiry() {
+  if (pollExpiryTimer !== null) {
+    window.clearTimeout(pollExpiryTimer)
+    pollExpiryTimer = null
+  }
+}
+
+/** Lapse a device-code session locally when its window expires, instead of
+ * polling a dead session forever. Uses the flow's own `expires_in`; the
+ * backend poller may still flip the session to error first, and its message
+ * (surfaced by `pollSession`) is preferred whenever it arrives in time. */
+function schedulePollExpiry(start: DeviceStart, onExpire: () => void) {
+  clearPollExpiry()
+  const ttlMs = Math.max(1, Number(start.expires_in) || 0) * 1000
+  pollExpiryTimer = window.setTimeout(() => {
+    pollExpiryTimer = null
+    onExpire()
+  }, ttlMs)
 }
 
 async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string): Promise<RuntimeReadinessResult> {
@@ -184,9 +211,8 @@ async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string):
 }
 
 function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
-  // A fallback result means both runtime probes were non-authoritative
-  // (transport timeout/disconnect). Keep a previously verified configured
-  // state instead of forcing the blocking onboarding overlay.
+  // Non-authoritative transport fallback only — keep a previously verified
+  // configured state instead of forcing the blocking onboarding overlay.
   return runtime.source === 'fallback' && state.configured === true && !state.requested
 }
 
@@ -317,16 +343,22 @@ async function completeWithModelConfirm(
     // config provider (e.g. anthropic from a prior failed setup) cannot make
     // setup.runtime_check validate the wrong backend after a fresh OAuth login.
     try {
-      const res = await setModelAssignment({
-        scope: 'main',
-        provider: defaults.providerSlug,
-        model: defaults.defaultModel
-      })
+      const res = await setMainModelAssignment(
+        {
+          provider: defaults.providerSlug,
+          model: defaults.defaultModel
+        },
+        undefined,
+        // Headless automated flow: nothing is mounted to click a guard
+        // prompt, so fail with the message instead of hanging.
+        { skipConfirmPrompt: true }
+      )
 
       notifyGatewayTools(res.gateway_tools)
-    } catch {
-      // Persistence failed — still run the scoped runtime check below and
-      // show the confirm card so the user can pick something explicitly.
+    } catch (error) {
+      onFail(error instanceof Error ? error.message : 'Hermes could not save the selected model.')
+
+      return
     }
   }
 
@@ -387,6 +419,40 @@ async function refreshProviders() {
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+}
+
+/** Credential warning delivered passively (session create/activate/resume
+ *  runtime info, stream heartbeats) — e.g. right after switching to a
+ *  profile that has no provider configured. Popping the blocking onboarding
+ *  overlay here punishes merely LOOKING at an unconfigured profile, so the
+ *  warning is deferred instead: stashed until the user actually tries to
+ *  chat, where the submit path consumes it and opens onboarding before the
+ *  doomed send. The latest warning wins; a session event without a warning
+ *  clears the stash (the profile became configured, or the user switched
+ *  back to a healthy one). */
+let pendingCredentialWarning: null | string = null
+
+export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
+  const warning = reason?.trim()
+
+  if (!warning || !isProviderSetupErrorMessage(warning)) {
+    pendingCredentialWarning = null
+
+    return
+  }
+
+  pendingCredentialWarning = warning
+}
+
+/** Submit-time gate: returns the deferred credential warning (and clears it)
+ *  so the caller can open onboarding instead of sending a prompt that the
+ *  gateway already said will fail. Null when the active profile is healthy. */
+export function consumePendingCredentialWarning(): null | string {
+  const warning = pendingCredentialWarning
+
+  pendingCredentialWarning = null
+
+  return warning
 }
 
 // Open the onboarding provider selector on demand from an already-configured
@@ -589,6 +655,14 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
     }
 
     setFlow({ status: 'polling', provider, start, copied: false })
+    schedulePollExpiry(start, () =>
+      setFlow({
+        status: 'error',
+        provider,
+        start,
+        message: translateNow('onboarding.signInExpired')
+      })
+    )
     pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
     setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
@@ -835,7 +909,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key })
+    await setMainModelAssignment({ provider: 'custom', model, base_url: url, api_key: key })
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     const runtime = await checkRuntime(ctx)
@@ -872,8 +946,7 @@ export async function setOnboardingModel(model: string) {
   setFlow({ ...flow, currentModel: model, saving: true })
 
   try {
-    await setModelAssignment({
-      scope: 'main',
+    await setMainModelAssignment({
       provider: flow.providerSlug,
       model
     })

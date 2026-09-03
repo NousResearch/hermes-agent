@@ -140,10 +140,21 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
     # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
-    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
+    "slack":           {
+        **_TIER_MEDIUM,
+        "tool_progress": "off",
+        "long_running_notifications": False,
+        "busy_ack_detail": False,
+    },
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
+    # Buzz (Nostr relay via buzz-cli): messages can be edited in place
+    # (`buzz messages edit`), so grouped/accumulating progress works, but
+    # channels are shared community spaces — keep the medium tier. Without
+    # this entry Buzz inherited the verbose _GLOBAL_DEFAULTS and every
+    # interim update became a separate permanent channel post (#95841).
+    "buzz":            _TIER_MEDIUM,
 
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
@@ -154,9 +165,21 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # status update as a separate message. Promote to TIER_MEDIUM once
     # Cloud's edit_message lands.
     "whatsapp_cloud":  _TIER_LOW,
+    # Photon (managed iMessage over the gRPC sidecar) and BlueBubbles are both
+    # permanent-message iMessage inboxes with no message-edit support, so both
+    # stay TIER_LOW. This keeps tool progress, interim scratch commentary,
+    # "still working" heartbeats, and busy-ack iteration detail out of the
+    # user's iMessage thread. Without this entry Photon inherited the noisy
+    # global ("all") defaults and compacted/narrated on nearly every turn.
+    "photon":          _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
-    "wecom":           _TIER_LOW,
+    # WeCom is technically non-editable but exposes a native streaming
+    # transport (msgtype: "stream" via aibot_respond_msg) that the gateway
+    # consumer routes mid-stream content through. Enable streaming by default
+    # so the WeCom client renders the typing animation and cumulative content
+    # updates instead of a single one-shot markdown drop.
+    "wecom":           {**_TIER_LOW, "streaming": True},
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
 

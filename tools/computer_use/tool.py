@@ -38,6 +38,7 @@ For captures / actions with `capture_after=True`:
 
 from __future__ import annotations
 
+import atexit
 import base64
 import json
 import logging
@@ -77,7 +78,9 @@ def set_approval_callback(cb) -> None:
 
 
 # Actions that read, not mutate. Always allowed.
-_SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
+_SAFE_ACTIONS = frozenset({
+    "capture", "wait", "list_apps", "list_windows",
+})
 
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
@@ -109,9 +112,41 @@ _KEY_ALIASES = {
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    parts = [p.strip().lower() for p in re.split(r"\s*\+\s*", keys) if p.strip()]
+    # Split on both "+" and "-": the cua-driver backend's _parse_key_combo
+    # accepts hyphen-separated combos too, so "ctrl-alt-delete" executes as
+    # the real destructive shortcut. Mirror its separators here, otherwise the
+    # _BLOCKED_KEY_COMBOS gate is trivially bypassed with hyphen notation.
+    parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
+
+
+# Native input actions that deliver to the backend's sticky target. `app=`
+# on these calls is NOT a targeting parameter — see the mismatch guard in
+# _dispatch. Kept in sync with the dispatch branches below.
+_INPUT_ACTIONS = frozenset({
+    "click", "double_click", "right_click", "middle_click",
+    "drag", "scroll", "type", "key", "set_value",
+})
+
+
+def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
+    """Current sticky-target app when it clearly differs from *requested_app*.
+
+    Returns the CURRENT target's app name only for a provable mismatch:
+    both names known and neither a substring of the other (list_windows
+    app names are localized/variant — 'Google-chrome' vs 'chrome'). An
+    unknown current target returns None (fail open: legacy flows that
+    never pass app= on input keep working; wrong-window delivery there is
+    caught by the verify ladder instead).
+    """
+    current = (getattr(backend, "_last_app", None) or "").strip().lower()
+    wanted = requested_app.strip().lower()
+    if not current or not wanted:
+        return None
+    if wanted in current or current in wanted:
+        return None
+    return getattr(backend, "_last_app", None)
 
 
 # Dangerous text patterns for the `type` action. Same list as #4562.
@@ -136,9 +171,16 @@ def _is_blocked_type(text: str) -> Optional[str]:
 # Backend selection — env-swappable for tests
 # ---------------------------------------------------------------------------
 
-# Per-process cached backend; lazily instantiated on first call.
+# Per-Hermes-session cached backends. Each backend owns its own cua-driver
+# session, native target, typed-browser binding, refs, and grant namespace.
 _backend_lock = threading.Lock()
+# Backward-compatible empty-session injection hook used by older tests.
+# Process-scoped aux-vision routing cache: (provider, model) → bool.
+_AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}
 _backend: Optional[ComputerUseBackend] = None
+_backends: Dict[str, ComputerUseBackend] = {}
+_backend_call_locks: Dict[str, threading.RLock] = {}
+_backend_permission_modes: Dict[str, str] = {}
 # Approval state, scoped per conversation/run (keyed by session_id) so a
 # gateway serving concurrent sessions can't leak one run's "always approve"
 # unlock into another. Falls back to a shared "" bucket for callers that
@@ -151,43 +193,259 @@ _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
 
 
-def _get_backend() -> ComputerUseBackend:
+# Sessions already told that their approval bypass widened the driver mode.
+# The resolver runs per dispatch, so without this the warning would repeat on
+# every single tool call.
+_escalation_warned: set = set()
+
+
+def _warn_bypass_escalation(session_id: str) -> None:
+    """Say out loud that an approval bypass just widened the driver's mode.
+
+    ``-z`` / ``--yolo`` read as "don't prompt me", but they also swap the
+    driver onto a private ``unrestricted`` daemon, dropping the ceiling the
+    configured mode would have applied. That is deliberate (see
+    ``_cua_permission_mode``) and ``unrestricted`` is reachable no other way
+    — it is intentionally not a config value, so a stale config line cannot
+    silently bypass approvals. But it is easy to trigger without meaning to:
+    a script gets ``-z`` for quiet output and loses its limits as a side
+    effect. So the widening is at least stated, once per session.
+    """
+    key = str(session_id or "")
+    with _approval_lock:
+        if key in _escalation_warned:
+            return
+        _escalation_warned.add(key)
+    try:
+        from tools.computer_use.cua_backend import _cua_configured_permission_mode
+
+        configured = _cua_configured_permission_mode()
+    except Exception:
+        configured = "standard"
+    logger.warning(
+        "computer_use: approval bypass (--yolo / -z) escalated the cua-driver "
+        "permission mode from the configured '%s' to 'unrestricted' for this "
+        "session. Runtime approval prompts are disabled and the driver's "
+        "residual ceilings no longer apply. Drop the bypass flag to keep '%s', "
+        "or declare a version-3 computer_use.capability_manifest to keep a "
+        "ceiling on bypassed runs.",
+        configured,
+        configured,
+    )
+
+
+def _cua_permission_mode(session_id: str) -> str:
+    """Map Hermes's explicit approval bypass onto Cua's immutable mode.
+
+    Hermes has TWO session-identity namespaces: the tool-dispatch path passes
+    the DB ``session_id`` (``agent.session_id``), while gateway ``/yolo``
+    keys approval state off the gateway ``session_key`` (set per turn via the
+    ``set_current_session_key`` contextvar in tools/approval.py). CLI and TUI
+    use the DB id for both. Checking ONLY ``session_id`` here would make a
+    gateway ``/yolo`` toggle silently invisible to computer_use (works in
+    CLI, dead on messaging platforms), so we consult both namespaces —
+    bypass in either means the user explicitly opted out of approvals for
+    this run. Fails closed on any resolution error.
+    """
+    try:
+        from tools.approval import (
+            get_current_session_key,
+            is_approval_bypass_active_for_session,
+        )
+
+        if is_approval_bypass_active_for_session(session_id):
+            _warn_bypass_escalation(session_id)
+            return "unrestricted"
+        current_key = get_current_session_key(default="")
+        if current_key and is_approval_bypass_active_for_session(current_key):
+            _warn_bypass_escalation(session_id)
+            return "unrestricted"
+    except Exception:
+        # Approval state must fail closed if it cannot be resolved.
+        pass
+    try:
+        # Without YOLO, honor the configured mode (standard | bounded).
+        # bounded requires computer_use.capability_manifest; the backend
+        # fails loudly at session start when the manifest is missing.
+        from tools.computer_use.cua_backend import _cua_configured_permission_mode
+
+        return _cua_configured_permission_mode()
+    except Exception:
+        return "standard"
+
+
+def _get_backend(session_id: str = "") -> ComputerUseBackend:
     global _backend
-    with _backend_lock:
-        if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
-                from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
-            elif backend_name == "noop":  # pragma: no cover
-                _backend = _NoopBackend()
+    sid = str(session_id or "")
+    while True:
+        stale_backend: Optional[ComputerUseBackend] = None
+        stale_lock: Optional[threading.RLock] = None
+        with _backend_lock:
+            # Resolve the mode while holding the cache lock. Session YOLO
+            # mutation never holds the approval lock while releasing this
+            # cache, so the lock order cannot cycle.
+            permission_mode = _cua_permission_mode(sid)
+            if sid == "" and _backend is not None and sid not in _backends:
+                # Preserve the long-standing empty-session injection hook used
+                # by integrations and tests while normalizing it into the
+                # session-owned cache/lifecycle path.
+                _backends[sid] = _backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+            cached = _backends.get(sid)
+            if cached is not None:
+                if _backend_permission_modes.get(sid, "standard") == permission_mode:
+                    return cached
+                # Cua's permission mode cannot change after daemon startup. A
+                # /yolo toggle replaces only this session's backend.
+                stale_backend = _backends.pop(sid)
+                stale_lock = _backend_call_locks.pop(sid, None)
+                _backend_permission_modes.pop(sid, None)
+                if sid == "":
+                    _backend = None
             else:
-                raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            try:
-                _backend.start()
-            except Exception:
-                # Don't cache a backend whose start() failed (e.g. a lazy
-                # dependency install was declined / failed). The next call
-                # retries cleanly instead of returning a half-initialised
-                # backend.
-                _backend = None
-                raise
-        return _backend
+                backend_name = os.environ.get(
+                    "HERMES_COMPUTER_USE_BACKEND", "cua"
+                ).lower()
+                if backend_name in {"cua", "cua-driver", ""}:
+                    from tools.computer_use.cua_backend import CuaDriverBackend
+
+                    backend = CuaDriverBackend(permission_mode=permission_mode)
+                elif backend_name == "noop":  # pragma: no cover
+                    backend = _NoopBackend()
+                else:
+                    raise RuntimeError(
+                        f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}"
+                    )
+                # Starting under the cache lock preserves the existing
+                # one-backend-per-session invariant. A concurrent mode toggle
+                # releases this backend before returning to its caller.
+                backend.start()
+                _backends[sid] = backend
+                _backend_call_locks[sid] = threading.RLock()
+                _backend_permission_modes[sid] = permission_mode
+                if sid == "":
+                    _backend = backend
+                return backend
+
+        # Stop a mismatched backend outside the global cache lock. Another
+        # session can continue creating or releasing its own backend, and the
+        # loop re-reads the authoritative mode before installing a replacement.
+        try:
+            if stale_lock is not None:
+                with stale_lock:
+                    stale_backend.stop()
+            elif stale_backend is not None:
+                stale_backend.stop()
+        except Exception:
+            pass
+
+
+def release_computer_use_session(session_id: str) -> bool:
+    """Release one session-owned computer-use backend.
+
+    This is the production lifecycle seam for hosts and policy plugins. It
+    removes the exact session backend, its call lock, and its recorded
+    permission mode before stopping the backend, so new lookups cannot retain
+    the stale target/ref namespace — and stops a private embedded daemon when
+    Hermes YOLO selected unrestricted mode. Approval state is cleared even
+    when no backend was started.
+
+    Returns ``True`` when a backend was found and released, ``False`` when the
+    session was already absent. Safe to call repeatedly.
+    """
+    global _backend
+    sid = str(session_id or "")
+    with _backend_lock:
+        backend = _backends.pop(sid, None)
+        call_lock = _backend_call_locks.pop(sid, None)
+        _backend_permission_modes.pop(sid, None)
+        # Preserve the backward-compatible empty-session injection hook:
+        # older callers/tests may populate only `_backend`.
+        if sid == "" and backend is None:
+            backend = _backend
+        if sid == "" and _backend is backend:
+            _backend = None
+
+    with _approval_lock:
+        _session_auto_approve.pop(sid, None)
+        _always_allow.pop(sid, None)
+
+    if backend is None:
+        return False
+    try:
+        # Let an in-flight action finish before ending the driver session and
+        # dropping its target/ref state. Do not hold the global cache lock
+        # while waiting: unrelated Hermes sessions remain independent.
+        if call_lock is not None:
+            with call_lock:
+                backend.stop()
+        else:
+            backend.stop()
+    except Exception:
+        logger.debug(
+            "computer_use backend release failed for session %s",
+            sid,
+            exc_info=True,
+        )
+    return True
+
+
+def _shutdown_backend_atexit() -> None:
+    """Stop all cached backends so cua-driver children don't outlive us.
+
+    Each session backend holds a long-lived ``cua-driver`` subprocess, so
+    without this a driver can survive the Hermes process that spawned it
+    (#28152 item 3). #69903 kept the orphan from burning a core by disabling
+    the cursor overlay; the process itself still lingered.
+
+    Mirrors ``browser_tool``'s ``atexit.register(_emergency_cleanup_all_sessions)``
+    — same spawn-and-drive-a-subprocess shape. atexit only, no signal handlers:
+    a ``SystemExit`` raised from a prompt_toolkit key binding corrupts its
+    coroutine state and makes the process unkillable. Never raises, since an
+    exception escaping atexit prints a traceback on every exit.
+    """
+    global _backend
+    # Drop the global lock before stop() — teardown budgets 5s and shouldn't
+    # block an unrelated caller waiting to spawn.
+    with _backend_lock:
+        unique = {
+            id(backend): (backend, _backend_call_locks.get(sid))
+            for sid, backend in _backends.items()
+        }
+        if _backend is not None:
+            unique.setdefault(
+                id(_backend),
+                (_backend, _backend_call_locks.get("")),
+            )
+        _backend = None
+        _backends.clear()
+        _backend_call_locks.clear()
+        _backend_permission_modes.clear()
+
+    with _approval_lock:
+        _session_auto_approve.clear()
+        _always_allow.clear()
+        _escalation_warned.clear()
+
+    for backend, call_lock in unique.values():
+        try:
+            if call_lock is not None:
+                with call_lock:
+                    backend.stop()
+            else:
+                backend.stop()
+        except Exception as e:
+            logger.debug("cua-driver atexit teardown failed: %s", e)
+
+
+atexit.register(_shutdown_backend_atexit)
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
-    global _backend
-    with _backend_lock:
-        if _backend is not None:
-            try:
-                _backend.stop()
-            except Exception:
-                pass
-        _backend = None
-    with _approval_lock:
-        _session_auto_approve.clear()
-        _always_allow.clear()
+    _shutdown_backend_atexit()
+    _AUX_VISION_ROUTE_CACHE.clear()
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -265,7 +523,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
-    # Per-run key for approval-state isolation across concurrent sessions.
+    # Per-run key for approval-state and daemon-mode isolation across
+    # concurrent sessions.
     session_id = str(kwargs.get("session_id") or "")
 
     # Safety: validate actions before approval prompt.
@@ -288,15 +547,30 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
                     "hint": "Destructive system shortcuts are hard-blocked.",
                 })
 
+    if args.get("bring_to_front") and args.get("delivery_mode") != "foreground":
+        return json.dumps({
+            "error": "bring_to_front requires delivery_mode='foreground'",
+            "code": "bring_to_front_requires_foreground",
+        })
+
     # Approval gate (destructive actions only).
     if action in _DESTRUCTIVE_ACTIONS:
         err = _request_approval(action, args, session_id)
         if err is not None:
             return err
+    # Persistent focus is a separate, visible side effect from the input
+    # itself. Keep its approval scope distinct even when the input rung has
+    # already been approved for this session.
+    if args.get("bring_to_front") or (
+        action == "focus_app" and args.get("raise_window")
+    ):
+        err = _request_approval("bring_to_front", args, session_id)
+        if err is not None:
+            return err
 
     # Dispatch to backend.
     try:
-        backend = _get_backend()
+        backend = _get_backend(session_id=session_id)
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
@@ -305,7 +579,10 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         })
 
     try:
-        return _dispatch(backend, action, args)
+        with _backend_lock:
+            call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
+        with call_lock:
+            return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -350,6 +627,14 @@ def _request_approval(action: str, args: Dict[str, Any],
             if verdict == "always_approve":
                 _session_auto_approve[session_id] = True
         return None
+    if verdict == "timeout":
+        return json.dumps({
+            "error": (
+                "approval prompt timed out — the user did not respond. "
+                "Silence is not consent; do not retry without the user."
+            ),
+            "action": action,
+        })
     return json.dumps({"error": "denied by user", "action": action})
 
 
@@ -393,7 +678,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
                 "window_id": args.get("window_id"),
             })
         cap = backend.capture(**capture_kwargs)
-        return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
+        return _capture_response(cap)
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -419,6 +704,31 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     # model can escalate background → foreground per cua-driver's ladder.
     delivery_mode = args.get("delivery_mode")
     bring_to_front = bool(args.get("bring_to_front"))
+
+    # ── app= mismatch guard for input actions ──────────────────────────
+    # Input goes to the backend's sticky target (set by the last capture/
+    # focus_app). Models routinely pass app= on the input call itself —
+    # live QA (Aug 2026) proved `type(text=..., app="kate")` typed into
+    # kcalc while reporting ok:true, because the argument was silently
+    # dropped. Refuse the clear mismatch instead of delivering input to
+    # the wrong window; the fix instruction keeps the flow one call long.
+    if action in _INPUT_ACTIONS:
+        requested_app = args.get("app")
+        if isinstance(requested_app, str) and requested_app.strip():
+            mismatch = _input_target_mismatch(backend, requested_app)
+            if mismatch is not None:
+                return json.dumps({
+                    "ok": False,
+                    "action": action,
+                    "code": "input_target_mismatch",
+                    "error": (
+                        f"{action} would go to the current target "
+                        f"{mismatch!r}, not {requested_app.strip()!r} — input "
+                        "actions always hit the sticky target from the last "
+                        f"capture/focus_app. Call capture(app={requested_app.strip()!r}) "
+                        "or focus_app first, then retry."
+                    ),
+                })
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
         button = args.get("button")
@@ -490,6 +800,24 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.set_value(value=str(value), element=args.get("element"))
         return _maybe_follow_capture(backend, res, capture_after)
 
+    # Do NOT alias unknown actions (we never repair bad model output), but
+    # name the nearest real action: live QA showed a model emitting
+    # "hotkey"/"press_key" and getting zero guidance from the bare error.
+    _suggestions = {
+        "hotkey": "key", "press_key": "key", "keypress": "key",
+        "key_combo": "key", "shortcut": "key",
+        "type_text": "type", "input_text": "type",
+        "screenshot": "capture", "get_window_state": "capture",
+        "left_click": "click", "mouse_click": "click",
+    }
+    hint = _suggestions.get(str(action))
+    if hint:
+        return json.dumps({
+            "error": (
+                f"unknown action {action!r} — did you mean {hint!r}? "
+                "See the action enum in the tool schema."
+            )
+        })
     return json.dumps({"error": f"unknown action {action!r}"})
 
 
@@ -497,7 +825,47 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 # Response shaping
 # ---------------------------------------------------------------------------
 
-def _text_response(res: ActionResult) -> str:
+def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
+    """Choose the next ladder step from semantic evidence, in precedence order.
+
+    An escalation recommendation is advisory. It never overrides a confirmed
+    effect and it never turns an unverifiable action into permission to repeat
+    input. The model must first obtain fresh evidence.
+    """
+    if res.effect == "confirmed" or res.verified is True:
+        return {"decision": "done"}
+    if res.effect == "unverifiable":
+        return {
+            "decision": "verify_fresh_state",
+            "hint": (
+                "Input was delivered but not confirmed. Re-capture and check "
+                "the result BEFORE any retry — do not repeat the input on an "
+                "escalation recommendation alone."
+            ),
+        }
+    if res.effect == "suspected_noop" or not res.ok or res.code is not None:
+        decision: Dict[str, Any] = {"decision": "escalate"}
+        if isinstance(res.escalation, dict):
+            decision["recommended"] = res.escalation.get("recommended")
+        decision["hint"] = (
+            "The input likely did not land. Climb one rung following "
+            "`recommended`: 'px' → re-issue by coordinate; 'foreground' (or a "
+            "failed pixel click) → re-issue with delivery_mode='foreground' "
+            "(separate approval). Do not predict the rung from the app being "
+            "Electron/Chromium — react to this signal."
+        )
+        return decision
+    # Transport success without semantic proof is not proof of effect.
+    return {
+        "decision": "verify_fresh_state",
+        "hint": (
+            "Transport succeeded but the effect is unproven. Re-capture and "
+            "confirm before continuing."
+        ),
+    }
+
+
+def _action_payload(res: ActionResult) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
@@ -509,8 +877,9 @@ def _text_response(res: ActionResult) -> str:
         payload["verified"] = res.verified
     if res.effect is not None:
         payload["effect"] = res.effect
-    if res.escalation is not None:
-        payload["escalation"] = res.escalation
+    escalation = _enrich_escalation(res)
+    if escalation is not None:
+        payload["escalation"] = escalation
     if res.path is not None:
         payload["path"] = res.path
     if res.degraded is not None:
@@ -521,18 +890,26 @@ def _text_response(res: ActionResult) -> str:
         payload["code"] = res.code
     if res.meta:
         payload["meta"] = res.meta
-    return json.dumps(payload)
+    payload["verdict"] = _classify_action_result(res)
+    return payload
 
 
-# Default cap for the AX `elements` array returned by capture. Dense UIs
-# (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes, which
-# can exhaust session context after a single capture. The model-facing
-# `max_elements` argument lets callers raise this when they need the full tree.
+def _text_response(res: ActionResult) -> str:
+    return json.dumps(_action_payload(res))
+
+
+def _enrich_escalation(res: ActionResult) -> Optional[Dict[str, Any]]:
+    """Return the driver's escalation dict unchanged."""
+    return res.escalation
+
+
+# Fixed cap for the AX `elements` array surfaced in a capture response. Dense
+# UIs (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes,
+# which would exhaust session context after a single capture. The full,
+# untruncated tree is always written to an `elements_file` spill (see
+# _capture_lost_detail) so nothing is lost — read_file/search_files it when the
+# target isn't in the surfaced window.
 _DEFAULT_MAX_ELEMENTS = 100
-# Hard upper bound on caller-supplied `max_elements`. Without this, a tool
-# call passing a very large integer would silently disable the safeguard and
-# reintroduce the original unbounded behavior.
-_MAX_ALLOWED_MAX_ELEMENTS = 1000
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
 
 
@@ -590,28 +967,6 @@ def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _coerce_max_elements(value: Any) -> int:
-    """Validate the caller-supplied ``max_elements``.
-
-    Falls back to :data:`_DEFAULT_MAX_ELEMENTS` for missing / non-integer /
-    sub-1 inputs so the cap can never be silently disabled by a malformed
-    tool-call argument. Clamps oversized values to
-    :data:`_MAX_ALLOWED_MAX_ELEMENTS` so a caller cannot bypass the
-    safeguard by passing a very large integer.
-    """
-    if value is None:
-        return _DEFAULT_MAX_ELEMENTS
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return _DEFAULT_MAX_ELEMENTS
-    if n < 1:
-        return _DEFAULT_MAX_ELEMENTS
-    if n > _MAX_ALLOWED_MAX_ELEMENTS:
-        return _MAX_ALLOWED_MAX_ELEMENTS
-    return n
-
-
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
@@ -619,6 +974,21 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     image_dimensions = _image_dimensions_from_b64(cap.png_b64 or "") if cap.png_b64 else None
     response_width = image_dimensions[0] if image_dimensions else cap.width
     response_height = image_dimensions[1] if image_dimensions else cap.height
+    bounds_note = _bounds_space_note(visible_elements, response_width, response_height)
+    bounds_scale = _bounds_scale(visible_elements, response_width, response_height)
+    if bounds_note and bounds_scale:
+        bounds_note += (
+            f"; estimated scale ~{bounds_scale}x (screenshot position x "
+            f"{bounds_scale} ≈ native coordinate)"
+        )
+    # When the in-context response drops detail (capped labels / capped element
+    # array), spill the complete tree to a cache file so the model can read or
+    # grep the full text on demand instead of losing it entirely.
+    elements_file = (
+        _spill_elements_to_file(cap)
+        if _capture_lost_detail(cap, visible_elements, truncated_elements)
+        else None
+    )
     image_too_small = bool(
         image_dimensions
         and (
@@ -626,11 +996,16 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             or image_dimensions[1] < _MIN_PROVIDER_IMAGE_DIMENSION
         )
     )
+    screenshot_path = (
+        _persist_capture_image(cap)
+        if cap.png_b64 and cap.mode != "ax" and not image_too_small
+        else None
+    )
 
     # Index only what's actually surfaced in the response — otherwise the
     # human-readable summary references element indices the model cannot
-    # find in the JSON `elements` array (e.g. max_elements=10 vs the default
-    # 40-line index window).
+    # find in the JSON `elements` array (the surfaced window is capped at
+    # _DEFAULT_MAX_ELEMENTS; the full tree spills to elements_file).
     element_index = _format_elements(visible_elements)
     summary_lines = [
         f"capture mode={cap.mode} {response_width}x{response_height}"
@@ -638,6 +1013,20 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         + (f" window={cap.window_title!r}" if cap.window_title else ""),
         f"{total_elements} interactable element(s):",
     ]
+    if bounds_note:
+        summary_lines.append(f"  ({bounds_note})")
+    if screenshot_path:
+        summary_lines.append(
+            f"  (shareable screenshot saved to {screenshot_path})"
+        )
+    if cap.note:
+        summary_lines.append(f"  ({cap.note})")
+    if elements_file:
+        summary_lines.append(
+            f"  (full element tree with untruncated labels saved to "
+            f"{elements_file} — read_file/search_files it if you need "
+            "dropped label text or elements beyond the cap)"
+        )
     if element_index:
         summary_lines.extend(element_index)
     # Multimodal and AX paths both reference `summary`; build it once up-front
@@ -661,7 +1050,13 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # main models tripped HTTP 404 / 400 at the provider boundary even
         # when auxiliary.vision was explicitly configured to handle this.
         if _should_route_through_aux_vision():
-            routed = _route_capture_through_aux_vision(cap, summary)
+            routed = _route_capture_through_aux_vision(
+                cap, summary,
+                visible_elements=visible_elements,
+                truncated_elements=truncated_elements,
+                elements_file=elements_file,
+                screenshot_path=screenshot_path,
+            )
             if routed is not None:
                 return routed
             # Aux routing was requested but failed (vision node down, aux call
@@ -678,8 +1073,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             if truncated_elements:
                 summary_lines.append(
                     f"  (response truncated to {len(visible_elements)} of "
-                    f"{total_elements} elements; raise max_elements or pass "
-                    "app= to narrow)"
+                    f"{total_elements} elements; the full tree is in "
+                    "elements_file — read_file/search_files it, or pass app= "
+                    "to narrow scope)"
                 )
             payload = {
                 "mode": cap.mode,
@@ -694,6 +1090,12 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             }
             if truncated_elements:
                 payload["truncated_elements"] = truncated_elements
+            if elements_file:
+                payload["elements_file"] = elements_file
+            if screenshot_path:
+                payload["screenshot_path"] = screenshot_path
+            if bounds_scale:
+                payload["bounds_scale"] = bounds_scale
             return json.dumps(payload)
 
         # Prefer the explicit MIME type cua-driver attaches to its image
@@ -717,14 +1119,17 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
-                     "elements": total_elements, "png_bytes": cap.png_bytes_len},
+                      "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                      **({"screenshot_path": screenshot_path} if screenshot_path else {}),
+                      **({"elements_file": elements_file} if elements_file else {}),
+                      **({"bounds_scale": bounds_scale} if bounds_scale else {})},
         }
     # AX-only (or image-missing fallback): text path actually carries the
     # `elements` array, so the truncation note applies here.
     if truncated_elements:
         summary_lines.append(
             f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
-            f"raise max_elements or pass app= to narrow)"
+            "the full tree is in elements_file — read_file/search_files it, or pass app= to narrow scope)"
         )
     summary = "\n".join(summary_lines)
     payload: Dict[str, Any] = {
@@ -739,6 +1144,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     }
     if truncated_elements:
         payload["truncated_elements"] = truncated_elements
+    if elements_file:
+        payload["elements_file"] = elements_file
+    if bounds_scale:
+        payload["bounds_scale"] = bounds_scale
     return json.dumps(payload)
 
 
@@ -753,25 +1162,47 @@ _MAX_VISION_DIM = 1456
 
 
 def _shrink_capture_for_vision(raw: bytes, ext: str,
-                               max_dim: int = _MAX_VISION_DIM) -> bytes:
+                               max_dim: int = _MAX_VISION_DIM,
+                               ) -> tuple[bytes, Optional[str]]:
     """Downscale encoded image bytes so the longest side is <= max_dim.
 
-    Returns the original bytes unchanged when the image already fits or when
-    Pillow is unavailable/fails — no worse than the pre-shrink behavior.
+    Returns ``(bytes, scale_note)``. ``scale_note`` is ``None`` when the image
+    was returned unchanged (already fits, or Pillow unavailable/failed — no
+    worse than the pre-shrink behavior). When a downscale happened, the note
+    tells the vision model the scale factor so any coordinates it reports can
+    be mapped back to the real screen instead of being silently wrong.
     """
     try:
         from io import BytesIO
         from PIL import Image
         img = Image.open(BytesIO(raw))
         if max(img.size) <= max_dim:
-            return raw
+            return raw, None
+        orig_w, orig_h = img.size
         img.thumbnail((max_dim, max_dim))
+        new_w, new_h = img.size
         out = BytesIO()
         img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
-        return out.getvalue()
+        fx = orig_w / new_w if new_w else 1.0
+        fy = orig_h / new_h if new_h else 1.0
+        if f"{fx:.2f}" == f"{fy:.2f}":
+            factor_clause = (
+                f"multiply any coordinates you report by {fx:.2f} "
+                f"to map back to the real screen."
+            )
+        else:
+            factor_clause = (
+                f"multiply any x coordinates you report by {fx:.2f} and "
+                f"any y coordinates by {fy:.2f} to map back to the real screen."
+            )
+        scale_note = (
+            f"Screenshot downscaled from {orig_w}x{orig_h} to "
+            f"{new_w}x{new_h} for vision; {factor_clause}"
+        )
+        return out.getvalue(), scale_note
     except Exception as exc:
         logger.debug("computer_use: vision downscale skipped: %s", exc)
-        return raw
+        return raw, None
 
 def _should_route_through_aux_vision() -> bool:
     """Return True when ``_capture_response`` should hand the PNG to aux vision.
@@ -792,22 +1223,47 @@ def _should_route_through_aux_vision() -> bool:
         logger.debug("computer_use: aux-vision routing import failed: %s", exc)
         return False
     try:
-        provider = _read_main_provider()
-        model = _read_main_model()
-        cfg = load_config()
+        provider = _read_main_provider() or ""
+        model = _read_main_model() or ""
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing config read failed: %s", exc)
         return False
+    cache_key = (str(provider), str(model))
+    cached = _AUX_VISION_ROUTE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     try:
-        return bool(should_route_capture_to_aux_vision(provider, model, cfg))
+        cfg = load_config()
+        decision = bool(should_route_capture_to_aux_vision(provider, model, cfg))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing decision failed: %s", exc)
         return False
+    _AUX_VISION_ROUTE_CACHE[cache_key] = decision
+    return decision
+
+
+def _capture_after_mode() -> str:
+    """Mode for ``capture_after`` follow-ups. Default ``som`` (screenshot)."""
+    try:
+        from hermes_cli.config import load_config
+
+        raw = ((load_config() or {}).get("computer_use") or {}).get(
+            "capture_after_mode", "som"
+        )
+    except Exception:
+        return "som"
+    mode = str(raw or "som").strip().lower()
+    return mode if mode in {"som", "vision", "ax"} else "som"
 
 
 def _route_capture_through_aux_vision(
     cap: CaptureResult,
     summary: str,
+    *,
+    visible_elements: Optional[List[UIElement]] = None,
+    truncated_elements: int = 0,
+    elements_file: Optional[str] = None,
+    screenshot_path: Optional[str] = None,
 ) -> Optional[str]:
     """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
 
@@ -855,7 +1311,7 @@ def _route_capture_through_aux_vision(
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
-        raw = _shrink_capture_for_vision(raw, ext)
+        raw, scale_note = _shrink_capture_for_vision(raw, ext)
         temp_image_path.write_bytes(raw)
 
         prompt = (
@@ -867,6 +1323,8 @@ def _route_capture_through_aux_vision(
             "actually visible.\n\n"
             f"AX/SOM index for cross-reference:\n{summary}"
         )
+        if scale_note:
+            prompt += f"\n\nNote: {scale_note}"
 
         result_json = _run_async(
             vision_analyze_tool(str(temp_image_path), prompt)
@@ -897,17 +1355,31 @@ def _route_capture_through_aux_vision(
     if not analysis_text:
         return None
 
-    return json.dumps({
+    # Respect the same element cap as every other capture branch. Before this,
+    # the aux-vision path dumped cap.elements in full — silently bypassing
+    # max_elements exactly when a non-vision main model was configured, so a
+    # dense Electron UI (Discord, Slack, IDEs) could blow the response budget
+    # on this branch alone.
+    elements_out = cap.elements if visible_elements is None else visible_elements
+    payload: Dict[str, Any] = {
         "mode": cap.mode,
         "width": cap.width,
         "height": cap.height,
         "app": cap.app,
         "window_title": cap.window_title,
-        "elements": [_element_to_dict(e) for e in cap.elements],
+        "elements": [_element_to_dict(e) for e in elements_out],
+        "total_elements": len(cap.elements),
         "summary": summary,
         "vision_analysis": analysis_text,
         "vision_analysis_routed_via": "auxiliary.vision",
-    })
+    }
+    if truncated_elements:
+        payload["truncated_elements"] = truncated_elements
+    if elements_file:
+        payload["elements_file"] = elements_file
+    if screenshot_path:
+        payload["screenshot_path"] = screenshot_path
+    return json.dumps(payload)
 
 
 def _maybe_follow_capture(
@@ -927,51 +1399,276 @@ def _maybe_follow_capture(
         target = getattr(backend, "_last_target", None) or {}
         pid = target.get("pid")
         window_id = target.get("window_id")
+        mode = _capture_after_mode()
         if pid is not None and window_id is not None:
-            cap = backend.capture(mode="som", pid=pid, window_id=window_id)
+            cap = backend.capture(mode=mode, pid=pid, window_id=window_id)
         else:
-            cap = backend.capture(mode="som", app=getattr(backend, "_last_app", None))
+            cap = backend.capture(mode=mode, app=getattr(backend, "_last_app", None))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
     # Combine action summary with the capture.
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):
-        prefix = f"[{res.action}] ok={res.ok}" + (f" — {res.message}" if res.message else "")
+        # Keep the complete evidence/verdict contract visible when an image is
+        # attached; otherwise capture_after would accidentally discard the
+        # very signal that governs whether repeating input is allowed.
+        prefix = json.dumps(_action_payload(res))
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]
         resp["text_summary"] = prefix + "\n\n" + resp["text_summary"]
+        resp["action_result"] = _action_payload(res)
         return resp
     # Fallback: action + text capture merged.
     try:
         data = json.loads(resp)
     except (TypeError, json.JSONDecodeError):
         data = {"capture": resp}
-    data["action"] = res.action
-    data["ok"] = res.ok
-    if res.message:
-        data["message"] = res.message
+    data.update(_action_payload(res))
     return json.dumps(data)
+
+
+def _bounds_unknown(bounds) -> bool:
+    """True when the AX tree reported no real geometry for an element.
+
+    KDE/Qt apps commonly report ``[0, 0, 0, 0]`` for elements that are
+    perfectly clickable by index (live QA, Aug 2026: all of kcalc's radio
+    buttons). Serializing that as a plausible-looking rect invites a model
+    to derive ``coordinate=[0, 0]`` from it and click the screen corner.
+    """
+    try:
+        return all(int(v) == 0 for v in bounds)
+    except (TypeError, ValueError):
+        return False
 
 
 def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str]:
     out: List[str] = []
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
-        out.append(f"  #{e.index} {e.role} {label!r} @ {e.bounds}"
+        where = "@ bounds-unknown (click by element index)" if _bounds_unknown(e.bounds) else f"@ {e.bounds}"
+        out.append(f"  #{e.index} {e.role} {label!r} {where}"
                    + (f" [{e.app}]" if e.app else ""))
     if len(elements) > max_lines:
         out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")
     return out
 
 
+# Element labels come straight from the platform accessibility tree, which on
+# some apps (Discord/Slack via UIA, Electron chat clients generally) exposes
+# ENTIRE message bodies / document text as the accessible name of a node.
+# 100 elements x multi-KB labels made single capture responses exceed 170KB —
+# blowing the tool-result budget so the model never saw the elements it needed,
+# and leaking full private chat text into context. The summary line has always
+# truncated to 60 chars; this applies a (more generous) cap to the JSON
+# `elements` array too. Labels are for identifying a control, not for reading
+# page content — captures are not a text-extraction surface.
+_MAX_ELEMENT_LABEL_CHARS = 120
+
+# Keep at most this many spilled element-tree files in the cache dir. Each
+# capture of a dense UI can spill; without pruning the cache grows unbounded.
+_MAX_SPILL_FILES = 20
+
+# Keep user-shareable capture files bounded independently from the gateway's
+# periodic media-cache cleanup. CLI-only sessions may never start the gateway,
+# and capture_after can otherwise leave an unbounded screenshot trail.
+_MAX_CAPTURE_FILES = 20
+
+
+def _persist_capture_image(cap: CaptureResult) -> Optional[str]:
+    """Save a capture in Hermes' media cache and return its absolute path.
+
+    Captures are normally embedded only in the model's tool context. Persisting
+    a bounded copy gives attachment-capable surfaces a real file to deliver
+    when the user explicitly asks for the screenshot. This is best-effort: an
+    unwritable cache must never break computer control.
+    """
+    if not cap.png_b64:
+        return None
+    try:
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+
+        raw = base64.b64decode(cap.png_b64, validate=False)
+        mime = str(cap.image_mime_type or "").lower()
+        ext = ".jpg" if mime == "image/jpeg" or (
+            not mime and cap.png_b64[:8].startswith("/9j/")
+        ) else ".png"
+
+        cache_dir = get_hermes_dir("cache/images", "image_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            captures = sorted(
+                cache_dir.glob("computer_use_*.*"),
+                key=lambda path: path.stat().st_mtime,
+            )
+            keep_before_write = max(0, _MAX_CAPTURE_FILES - 1)
+            for stale in captures[: max(0, len(captures) - keep_before_write)]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        path.write_bytes(raw)
+        return str(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: screenshot persistence failed: %s", exc)
+        return None
+
+
+def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
+    """Write the FULL element tree (untruncated labels) to a cache file.
+
+    The in-context response caps labels at ``_MAX_ELEMENT_LABEL_CHARS`` and
+    the array at ``max_elements`` to protect the tool-result budget, but the
+    dropped text is sometimes exactly what the task needs (reading a chat
+    transcript or document text exposed through the AX tree). Spilling the
+    complete tree to disk gives the model an escape hatch — read_file /
+    search_files against the returned path — without paying the full tree
+    into context on every capture.
+
+    Returns the absolute path, or None on any failure (spilling is an
+    enhancement; a capture must never fail because the cache dir is
+    unwritable).
+    """
+    try:
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+
+        cache_dir = get_hermes_dir("cache/computer_use", "computer_use_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Prune oldest spills beyond the cap (best-effort).
+        try:
+            spills = sorted(
+                cache_dir.glob("elements_*.json"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            for stale in spills[: max(0, len(spills) - (_MAX_SPILL_FILES - 1))]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+        path = cache_dir / f"elements_{_uuid.uuid4().hex}.json"
+        payload = {
+            "app": cap.app,
+            "window_title": cap.window_title,
+            "total_elements": len(cap.elements),
+            "elements": [
+                {
+                    "index": e.index,
+                    "role": e.role,
+                    "label": e.label,  # full, untruncated
+                    "bounds": list(e.bounds),
+                    "app": e.app,
+                }
+                for e in cap.elements
+            ],
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: element spill failed: %s", exc)
+        return None
+
+
+def _capture_lost_detail(
+    cap: CaptureResult, visible_elements: List[UIElement], truncated_elements: int,
+) -> bool:
+    """True when the in-context response drops information the full tree has."""
+    if truncated_elements:
+        return True
+    return any(
+        len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible_elements
+    )
+
+
+def _bounds_scale(
+    elements: List[UIElement], image_width: int, image_height: int,
+) -> Optional[float]:
+    """Estimated native-bounds → screenshot-pixel scale factor, or None.
+
+    Only meaningful when the two spaces diverge (same condition as
+    ``_bounds_space_note``). Uses the larger of the two axis ratios so the
+    estimate is driven by the axis with real extent data. Rounded to 2
+    decimals — this is a heuristic for mapping screenshot positions to
+    native coordinates, not display-metrics ground truth.
+    """
+    if not elements or image_width <= 0 or image_height <= 0:
+        return None
+    max_x = 0
+    max_y = 0
+    for e in elements:
+        try:
+            x, y, w, h = e.bounds
+        except (TypeError, ValueError):
+            continue
+        max_x = max(max_x, int(x) + int(w))
+        max_y = max(max_y, int(y) + int(h))
+    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
+        return None
+    return round(max(max_x / image_width, max_y / image_height), 2)
+
+
+def _bounds_space_note(
+    elements: List[UIElement], image_width: int, image_height: int,
+) -> Optional[str]:
+    """Warn when element bounds live in a different coordinate space.
+
+    On HiDPI/scaled displays (common on Windows + macOS retina), cua-driver
+    reports AX element bounds in native desktop coordinates while the
+    screenshot is captured/downscaled to a smaller pixel grid. Nothing in the
+    response related the two, so models reading a position off the screenshot
+    and clicking by coordinate= missed by the scale factor (e.g. 2.6x on a
+    4K display with a 1455px-wide screenshot). Element bounds are what
+    click(coordinate=...) expects; the note makes that explicit whenever the
+    two spaces visibly diverge.
+    """
+    if not elements or image_width <= 0 or image_height <= 0:
+        return None
+    max_x = 0
+    max_y = 0
+    for e in elements:
+        try:
+            x, y, w, h = e.bounds
+        except (TypeError, ValueError):
+            continue
+        max_x = max(max_x, int(x) + int(w))
+        max_y = max(max_y, int(y) + int(h))
+    if max_x <= 0 and max_y <= 0:
+        return None
+    # 5% slack: window chrome can hang a few px past the captured frame
+    # without implying a different coordinate space.
+    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
+        return None
+    return (
+        f"element bounds are in native desktop coordinates (extend to "
+        f"~{max_x}x{max_y}), NOT screenshot pixels ({image_width}x"
+        f"{image_height}). coordinate= clicks expect the native space — "
+        "derive click points from element bounds, or scale screenshot "
+        "positions up accordingly"
+    )
+
+
 def _element_to_dict(e: UIElement) -> Dict[str, Any]:
-    return {
+    label = e.label
+    truncated = len(label) > _MAX_ELEMENT_LABEL_CHARS
+    if truncated:
+        label = label[:_MAX_ELEMENT_LABEL_CHARS]
+    out: Dict[str, Any] = {
         "index": e.index,
         "role": e.role,
-        "label": e.label,
-        "bounds": list(e.bounds),
+        "label": label,
+        # A zero rect is "geometry unknown", not a position — null it so no
+        # coordinate= is ever derived from it. The element index still works.
+        "bounds": None if _bounds_unknown(e.bounds) else list(e.bounds),
         "app": e.app,
     }
+    if truncated:
+        out["label_truncated"] = True
+    return out
 
 
 # ---------------------------------------------------------------------------

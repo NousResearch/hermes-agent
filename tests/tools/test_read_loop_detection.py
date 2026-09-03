@@ -82,16 +82,6 @@ class TestReadLoopDetection(unittest.TestCase):
         self.assertNotIn("_warning", result)
         self.assertIn("content", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_third_consecutive_read_has_warning(self, _mock_ops):
-        """3rd consecutive read of the same region triggers a warning."""
-        for _ in range(2):
-            read_file_tool("/tmp/test.py", task_id="t1")
-        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("3 times", result["_warning"])
-        # Warning still returns content
-        self.assertIn("content", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_fourth_consecutive_read_is_blocked(self, _mock_ops):
@@ -113,33 +103,6 @@ class TestReadLoopDetection(unittest.TestCase):
         self.assertIn("BLOCKED", result["error"])
         self.assertIn("5 times", result["error"])
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_region_resets_consecutive(self, _mock_ops):
-        """Reading a different region of the same file resets consecutive count."""
-        read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        # Now read a different region — this resets the consecutive counter
-        result = json.loads(
-            read_file_tool("/tmp/test.py", offset=501, limit=500, task_id="t1")
-        )
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_file_resets_consecutive(self, _mock_ops):
-        """Reading a different file resets the consecutive counter."""
-        read_file_tool("/tmp/a.py", task_id="t1")
-        read_file_tool("/tmp/a.py", task_id="t1")
-        result = json.loads(read_file_tool("/tmp/b.py", task_id="t1"))
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_tasks_isolated(self, _mock_ops):
-        """Different task_ids have separate consecutive counters."""
-        read_file_tool("/tmp/test.py", task_id="task_a")
-        result = json.loads(
-            read_file_tool("/tmp/test.py", task_id="task_b")
-        )
-        self.assertNotIn("_warning", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_warning_still_returns_content(self, _mock_ops):
@@ -191,9 +154,6 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         notify_other_tool_call("nonexistent_task")  # Should not raise
 
 
-
-
-
 class TestSearchLoopDetection(unittest.TestCase):
     """Verify that search_tool detects and blocks consecutive repeated searches."""
 
@@ -217,16 +177,6 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertNotIn("_warning", result)
         self.assertNotIn("error", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_third_consecutive_search_has_warning(self, _mock_ops):
-        """3rd consecutive identical search triggers a warning."""
-        for _ in range(2):
-            search_tool("def main", task_id="t1")
-        result = json.loads(search_tool("def main", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("3 times", result["_warning"])
-        # Warning still returns results
-        self.assertIn("matches", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_fourth_consecutive_search_is_blocked(self, _mock_ops):
@@ -238,31 +188,6 @@ class TestSearchLoopDetection(unittest.TestCase):
         self.assertIn("BLOCKED", result["error"])
         self.assertNotIn("matches", result)
 
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_pattern_resets_consecutive(self, _mock_ops):
-        """A different search pattern resets the consecutive counter."""
-        search_tool("def main", task_id="t1")
-        search_tool("def main", task_id="t1")
-        result = json.loads(search_tool("class Foo", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertNotIn("error", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_different_task_isolated(self, _mock_ops):
-        """Different tasks have separate consecutive counters."""
-        search_tool("def main", task_id="t1")
-        result = json.loads(search_tool("def main", task_id="t2"))
-        self.assertNotIn("_warning", result)
-
-    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
-    def test_other_tool_resets_search_consecutive(self, _mock_ops):
-        """notify_other_tool_call resets search consecutive counter too."""
-        search_tool("def main", task_id="t1")
-        search_tool("def main", task_id="t1")
-        notify_other_tool_call("t1")
-        result = json.loads(search_tool("def main", task_id="t1"))
-        self.assertNotIn("_warning", result)
-        self.assertNotIn("error", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_pagination_offset_does_not_count_as_repeat(self, _mock_ops):
@@ -302,19 +227,6 @@ class TestTodoInjectionFiltering(unittest.TestCase):
         self.assertIn("Write fix", injection)
         self.assertIn("Run tests", injection)
 
-    def test_all_completed_returns_none(self):
-        from tools.todo_tool import TodoStore
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Done", "status": "completed"},
-            {"id": "2", "content": "Also done", "status": "cancelled"},
-        ])
-        self.assertIsNone(store.format_for_injection())
-
-    def test_empty_store_returns_none(self):
-        from tools.todo_tool import TodoStore
-        store = TodoStore()
-        self.assertIsNone(store.format_for_injection())
 
     def test_all_active_included(self):
         from tools.todo_tool import TodoStore

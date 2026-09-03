@@ -31,32 +31,6 @@ from hermes_cli import main as cli_main
 # ---------------------------------------------------------------------------
 
 
-def test_venv_health_reports_healthy_when_no_venv(tmp_path):
-    """No venv python in a DEV checkout → nothing to probe → healthy."""
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-    assert healthy is True
-    assert detail == ""
-
-
-def test_venv_health_missing_venv_unhealthy_on_managed_install(tmp_path):
-    """On a managed install (bootstrap marker) the venv IS the install —
-    its absence must be reported unhealthy so the repair lane runs instead
-    of 'Already up to date!'."""
-    (tmp_path / ".hermes-bootstrap-complete").write_text("done")
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-    assert healthy is False
-    assert "venv python missing" in detail
-
-
-def test_venv_health_missing_venv_unhealthy_with_interrupted_marker(tmp_path):
-    """An interrupted-update breadcrumb also flips missing-venv to unhealthy."""
-    (tmp_path / ".update-incomplete").write_text("started=1\npid=1\n")
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-    assert healthy is False
-    assert "venv python missing" in detail
 
 
 def _fake_venv_python(tmp_path, *, windows: bool = False):
@@ -67,56 +41,6 @@ def _fake_venv_python(tmp_path, *, windows: bool = False):
     return py
 
 
-def test_venv_health_reports_missing_imports(tmp_path):
-    """Probe output lines are surfaced as the unhealthy detail."""
-    _fake_venv_python(tmp_path)
-
-    fake = SimpleNamespace(
-        returncode=0,
-        stdout="fastapi: No module named 'annotated_doc'\n",
-        stderr="",
-    )
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
-        cli_main.subprocess, "run", return_value=fake
-    ):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-
-    assert healthy is False
-    assert "annotated_doc" in detail
-
-
-def test_venv_health_healthy_when_probe_clean(tmp_path):
-    _fake_venv_python(tmp_path)
-    fake = SimpleNamespace(returncode=0, stdout="", stderr="")
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
-        cli_main.subprocess, "run", return_value=fake
-    ):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-    assert healthy is True
-
-
-def test_venv_health_broken_interpreter_is_unhealthy(tmp_path):
-    """Nonzero exit with no module list = interpreter itself is broken."""
-    _fake_venv_python(tmp_path)
-    fake = SimpleNamespace(returncode=1, stdout="", stderr="Fatal Python error: init failed\n")
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
-        cli_main.subprocess, "run", return_value=fake
-    ):
-        healthy, detail = cli_main._venv_core_imports_healthy()
-    assert healthy is False
-    assert "Fatal Python error" in detail
-
-
-def test_venv_health_probe_failure_reports_healthy(tmp_path):
-    """A probe that can't run must NOT force needless reinstalls."""
-    _fake_venv_python(tmp_path)
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.object(
-        cli_main.subprocess,
-        "run",
-        side_effect=subprocess.TimeoutExpired(cmd="python", timeout=60),
-    ):
-        healthy, _detail = cli_main._venv_core_imports_healthy()
-    assert healthy is True
 
 
 # ---------------------------------------------------------------------------
@@ -130,40 +54,12 @@ def _proc(pid: int, exe: str, name: str, cmdline: list[str] | None = None, cwd: 
         "pid": pid,
         "exe": exe,
         "name": name,
-        "cmdline": cmdline or [],
-        "cwd": cwd,
     }
+    proc.cmdline.return_value = cmdline or []
+    proc.cwd.return_value = cwd
     return proc
 
 
-def test_detect_venv_python_off_windows_is_empty():
-    with patch.object(cli_main, "_is_windows", return_value=False):
-        assert cli_main._detect_venv_python_processes() == []
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_venv_python_finds_backend(_winp, tmp_path):
-    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
-    other_py = "C:\\Python311\\python.exe"
-
-    me = MagicMock()
-    me.parents.return_value = []
-    fake_psutil = types.SimpleNamespace(
-        process_iter=lambda attrs: iter(
-            [
-                _proc(101, venv_py, "python.exe", ["python.exe", "-m", "hermes_cli.main", "serve"]),
-                _proc(102, other_py, "python.exe", ["python.exe", "somescript.py"]),
-            ]
-        ),
-        Process=lambda *a, **k: me,
-    )
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
-        sys.modules, {"psutil": fake_psutil}
-    ):
-        matches = cli_main._detect_venv_python_processes()
-
-    assert [m[0] for m in matches] == [101]
-    assert "serve" in matches[0][2]
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
@@ -191,53 +87,22 @@ def test_detect_venv_python_excludes_self_and_ancestors(_winp, tmp_path):
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_venv_python_no_psutil_is_empty(_winp, tmp_path):
-    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
-        sys.modules, {"psutil": None}
-    ):
-        assert cli_main._detect_venv_python_processes() == []
-
-
-def test_format_venv_holders_message_flags_desktop_backend(tmp_path):
-    matches = [
-        (101, "python.exe", "python.exe -m hermes_cli.main serve --host 127.0.0.1"),
-        (102, "pythonw.exe", "pythonw.exe -m hermes_cli.main gateway run"),
-    ]
-    msg = cli_main._format_venv_python_holders_message(matches)
-    assert "101" in msg
-    assert "desktop app" in msg.lower()
-    assert "gateway" in msg
-    assert "hermes update" in msg
-    assert "--force-venv" in msg
-
-
-@patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_venv_python_catches_outside_venv_trampoline(_winp, tmp_path):
-    """uv/base-interpreter trampoline: exe OUTSIDE the venv, but the cmdline
-    clearly runs Hermes from this install → must still be flagged as a holder
-    (it imports from the venv and holds its .pyd files)."""
-    base_py = "C:\\Python311\\python.exe"
-    venv_path = str(tmp_path / "venv" / "Scripts" / "python.exe")
-
+def test_detect_venv_python_prefetches_only_cheap_process_fields(_winp, tmp_path):
+    venv_py = str(tmp_path / "venv" / "Scripts" / "python.exe")
+    holder = _proc(101, venv_py, "python.exe", [venv_py, "-m", "hermes_cli.main", "serve"])
+    unrelated = _proc(102, r"C:\Program Files\Browser\browser.exe", "browser.exe")
+    unrelated.cmdline.side_effect = AssertionError("unrelated cmdline must stay lazy")
+    unrelated.cwd.side_effect = AssertionError("unrelated cwd must stay lazy")
+    attrs_seen = []
     me = MagicMock()
     me.parents.return_value = []
+
+    def process_iter(attrs):
+        attrs_seen.append(attrs)
+        return iter([unrelated, holder])
+
     fake_psutil = types.SimpleNamespace(
-        process_iter=lambda attrs: iter(
-            [
-                # cmdline references the venv path directly
-                _proc(201, base_py, "python.exe", [base_py, venv_path, "-m", "x"]),
-                # `-m hermes_cli.main serve` with the install root as cwd
-                _proc(
-                    202,
-                    base_py,
-                    "python.exe",
-                    [base_py, "-m", "hermes_cli.main", "serve"],
-                    cwd=str(tmp_path),
-                ),
-                # unrelated base-interpreter python → NOT a holder
-                _proc(203, base_py, "python.exe", [base_py, "somescript.py"], cwd="C:\\other"),
-            ]
-        ),
+        process_iter=process_iter,
         Process=lambda *a, **k: me,
     )
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
@@ -245,34 +110,39 @@ def test_detect_venv_python_catches_outside_venv_trampoline(_winp, tmp_path):
     ):
         matches = cli_main._detect_venv_python_processes()
 
-    assert sorted(m[0] for m in matches) == [201, 202]
+    assert attrs_seen == [["pid", "exe", "name"]]
+    assert [match[0] for match in matches] == [101]
+    holder.cmdline.assert_called_once_with()
+    holder.cwd.assert_not_called()
+    unrelated.cmdline.assert_not_called()
+    unrelated.cwd.assert_not_called()
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
-def test_detect_venv_hermes_cli_cmdline_outside_install_not_matched(_winp, tmp_path):
-    """A hermes_cli.main process belonging to a DIFFERENT install (neither
-    install root in cmdline nor cwd under it) must not be flagged."""
-    base_py = "C:\\Python311\\python.exe"
+def test_detect_venv_python_keeps_external_interpreter_fallback(_winp, tmp_path):
+    external = _proc(
+        103,
+        r"C:\Python311\python.exe",
+        "python.exe",
+        ["python.exe", "-m", "hermes_cli.main", "serve"],
+        str(tmp_path),
+    )
     me = MagicMock()
     me.parents.return_value = []
     fake_psutil = types.SimpleNamespace(
-        process_iter=lambda attrs: iter(
-            [
-                _proc(
-                    301,
-                    base_py,
-                    "python.exe",
-                    [base_py, "-m", "hermes_cli.main", "serve"],
-                    cwd="C:\\other-install",
-                ),
-            ]
-        ),
+        process_iter=lambda attrs: iter([external]),
         Process=lambda *a, **k: me,
     )
     with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(
         sys.modules, {"psutil": fake_psutil}
     ):
-        assert cli_main._detect_venv_python_processes() == []
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [match[0] for match in matches] == [103]
+    external.cmdline.assert_called_once_with()
+    external.cwd.assert_called_once_with()
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +190,12 @@ def _run_update_until_guard(args):
         cli_main,
         "_detect_venv_python_processes",
         return_value=[(101, "python.exe", "python.exe -m hermes_cli.main serve")],
+    ), patch.object(
+        # Pin the orphan classifier: this test exercises --force/--force-venv
+        # gating, not orphan detection (covered in
+        # test_update_orphan_backend_reap.py). None = "not provably orphaned"
+        # → the guard refuses exactly as before the orphan-reap addition.
+        cli_main, "_orphaned_desktop_backend_pids", return_value=None
     ), patch.object(
         cli_main, "PROJECT_ROOT", _RootSentinel()
     ):

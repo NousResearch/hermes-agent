@@ -2,6 +2,7 @@ import { DropdownMenu as DropdownMenuPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
 import { cn } from '@/lib/utils'
 
 // Shared class tokens for edge-to-edge menus (use with `p-0` content): rows go
@@ -70,11 +71,19 @@ function DropdownMenuSearch({
 function DropdownMenuContent({
   className,
   collisionPadding = 8,
+  portalContainer,
   sideOffset = 4,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Content> & {
+  portalContainer?: HTMLElement | null
+}) {
+  // An explicit target-owned container supports global menus whose component
+  // lives outside the dialog's React context. Nested menus still inherit the
+  // enclosing dialog; everything else falls back to document.body.
+  const container = usePopoverPortalContainer(portalContainer)
+
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={container}>
       <DropdownMenuPrimitive.Content
         // `dt-portal-scrollbar` reproduces the thin themed scrollbar from
         // `.scrollbar-dt` for portaled overlays (Radix renders this under

@@ -66,6 +66,7 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     ("nemotron-3-ultra", 600),
     ("nemotron-3-super", 600),
     ("nemotron-3-nano",  300),
+    ("nemotron-3.5-lightning", 300),
     # DeepSeek — R1 and V4 reasoning models on hosted NIM / DeepSeek direct.
     # V4 series emits reasoning_content in a separate delta field before
     # final content, requiring the same extended stale timeout floor.
@@ -102,8 +103,18 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # ``claude-opus-4`` so non-thinking Claude 3.x or future
     # non-reasoning Claude variants don't match.
     ("claude-opus-4", 240),
+    ("claude-opus-5", 240),
+    ("claude-sonnet-5", 180),
     ("claude-sonnet-4.5", 180),
     ("claude-sonnet-4.6", 180),
+    # Anthropic Mythos-class named reasoning models (claude-fable-5, …).
+    # 1M context + 128K output — heavier thinking phase than the
+    # numbered Claude line, so the floor is in the deep-reasoning tier
+    # alongside o1 / deepseek-r1 / nemotron-3-ultra.  Without this
+    # entry the stale-stream detector kills fable-5's thinking phase
+    # at the default 180s (300s with context scaling), tripping the
+    # cross-turn circuit breaker after 5 consecutive stale kills.
+    ("claude-fable", 600),
     # xAI Grok reasoning variants.  Explicit reasoning-only keys
     # plus one for the ``non-reasoning`` variant so users picking
     # the fast variant don't get the 300s floor.  Bare ``grok-3``,
@@ -111,7 +122,22 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # non-reasoning pairs.
     ("grok-4-fast-reasoning", 300),
     ("grok-4.20-reasoning", 300),
+    ("grok-4.5", 300),
+    ("grok-4.6", 300),
     ("grok-4-fast-non-reasoning", 180),
+    # "Ox Alpha" stealth reasoning model (stealth/ox-alpha on OpenRouter,
+    # x-preview-f-free on OpenCode Zen).  Marketed as a reasoning model for
+    # long-horizon coding/agentic work; 1M context — same tier as the Grok
+    # reasoning variants.
+    ("ox-alpha", 300),
+    ("x-preview-f-free", 300),
+    # Thinking Machines Inkling (thinkingmachines/inkling[-small][:free]
+    # on OpenRouter).  Reasoning model (OpenRouter supported_parameters
+    # includes "reasoning"); 1M context — same tier as the Grok
+    # reasoning variants and Ox Alpha.  "inkling" left-anchors on the
+    # slug after the aggregator prefix and the right anchor accepts the
+    # "-" separator, so inkling-small and the :free SKUs all match.
+    ("inkling", 300),
 )
 
 
@@ -135,19 +161,23 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
 # so we accept that community forks inheriting the same prefix are
 # treated as reasoning models (a reasonable default — the upstream
 # gateway timing is the same).
-_PATTERN_CACHE: dict[str, re.Pattern[str]] = {}
-
-
-def _get_pattern(slug: str) -> re.Pattern[str]:
-    compiled = _PATTERN_CACHE.get(slug)
-    if compiled is None:
-        compiled = re.compile(
-            r"^"
-            + re.escape(slug)
-            + r"(?:$|[\-._])"
-        )
-        _PATTERN_CACHE[slug] = compiled
-    return compiled
+# Pre-compile all patterns at module load time to avoid per-call regex
+# compilation and thread-safety issues with the mutable _PATTERN_CACHE.
+# The list is built once at import and never mutated afterwards, so it is
+# safe for free-threaded Python 3.13+ without any locking. The slug is kept
+# in each entry for debuggability (log/inspection), even though _match_any
+# only consumes floor + pattern.
+_SORTED_REASONING_FLOORS: list[tuple[str, float, re.Pattern[str]]] = [
+    # Right anchor: end-of-string or a slug separator.  ``:`` is in the
+    # separator class because OpenRouter SKU/routing suffixes
+    # (``:free``, ``:batch``, ``:nitro``, ``:floor``) attach directly to
+    # the slug — ``thinkingmachines/inkling:free`` must match the
+    # ``inkling`` entry the same way ``inkling-small`` does.
+    (slug, floor, re.compile(r"^" + re.escape(slug) + r"(?:$|[\-._:])"))
+    for slug, floor in sorted(
+        _REASONING_STALE_TIMEOUT_FLOORS, key=lambda kv: -len(kv[0])
+    )
+]
 
 
 def _match_any(model_lower: str) -> Optional[float]:
@@ -158,13 +188,8 @@ def _match_any(model_lower: str) -> Optional[float]:
     order is irrelevant: longest slug wins (so ``o3-mini`` beats
     ``o3`` on a model like ``openai/o3-mini``).
     """
-    # Sort by slug length descending so longer / more-specific slugs
-    # win on shared prefixes (o3-mini beats o3).
-    sorted_floors = sorted(
-        _REASONING_STALE_TIMEOUT_FLOORS, key=lambda kv: -len(kv[0])
-    )
-    for slug, floor in sorted_floors:
-        if _get_pattern(slug).search(model_lower):
+    for _slug, floor, pattern in _SORTED_REASONING_FLOORS:
+        if pattern.search(model_lower):
             return float(floor)
     return None
 
@@ -204,6 +229,8 @@ def get_reasoning_stale_timeout_floor(model: object) -> Optional[float]:
     300.0
     >>> get_reasoning_stale_timeout_floor("anthropic/claude-opus-4-6")
     240.0
+    >>> get_reasoning_stale_timeout_floor("anthropic/claude-fable-5")
+    600.0
     >>> get_reasoning_stale_timeout_floor("gpt-4o") is None
     True
     >>> get_reasoning_stale_timeout_floor("olmo-1") is None

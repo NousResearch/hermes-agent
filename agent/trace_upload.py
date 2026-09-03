@@ -162,7 +162,7 @@ def build_trace_jsonl(
         if cwd:
             r = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=3, cwd=cwd,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=cwd,
             )
             if r.returncode == 0:
                 git_branch = r.stdout.strip()
@@ -336,10 +336,16 @@ def load_session_messages(
     """
     from hermes_state import SessionDB
     db = SessionDB(db_path=db_path) if db_path else SessionDB()
-    resolved = db.resolve_session_id(session_id) or session_id
-    meta = db.get_session(resolved) or {}
-    messages = db.get_messages_as_conversation(resolved)
-    return messages, meta
+    try:
+        resolved = db.resolve_session_id(session_id) or session_id
+        meta = db.get_session(resolved) or {}
+        messages = db.get_messages_as_conversation(resolved)
+        return messages, meta
+    finally:
+        try:
+            db.close()
+        except Exception:
+            logger.debug("Failed to close trace-upload SessionDB", exc_info=True)
 
 
 def upload_session_trace(

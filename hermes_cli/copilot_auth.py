@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -79,9 +80,11 @@ def resolve_copilot_token() -> tuple[str, str]:
     Raises ValueError if only a classic PAT is available.
     """
     # 1. Check env vars in priority order
+    any_env_var_set = False
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()
         if val:
+            any_env_var_set = True
             valid, msg = validate_copilot_token(val)
             if not valid:
                 logger.warning(
@@ -90,7 +93,23 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
+    # 2. Fall back to gh auth token — but ONLY when no Copilot env var was
+    #    explicitly set. When the user exported GITHUB_TOKEN (even an
+    #    unsupported classic PAT), their intent is to use *that* token, not
+    #    to silently substitute one from the gh CLI credential store.
+    #    Skipping the subprocess here also avoids a slow `gh auth token`
+    #    call (up to 5s timeout on Windows) on every cold start that scans
+    #    Copilot auth state — a measurable contributor to the ~14s
+    #    cold-start stall (#60800). The user can run `copilot login` or
+    #    set a supported token (gho_*/github_pat_*/ghu_) explicitly.
+    if any_env_var_set:
+        logger.debug(
+            "Copilot env var(s) set but none held a supported token; "
+            "skipping `gh auth token` fallback to honor explicit env-var "
+            "intent (and avoid the subprocess cost on cold start, #60800)."
+        )
+        return "", ""
+
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)
@@ -124,6 +143,26 @@ def _gh_cli_candidates() -> list[str]:
     return candidates
 
 
+# ``gh auth token`` result cache. The probe shells out to the gh CLI, and when
+# gh has no credential store for this HOME (fresh profile, desktop-spawned
+# backend, CI) it can block for its full 5s subprocess timeout — on keyring /
+# D-Bus prompts rather than returning immediately. Provider inventory builds
+# (``/api/model/options``, ``hermes tools``) probe Copilot auth several times
+# per request, so an uncached miss turns one settings-page load into a 4×5s
+# stall that exceeds the Desktop renderer's 15s IPC budget and paints an error
+# (observed Aug 2026: Models/Providers settings pages timing out on every
+# open). Successes and failures are both cached; a short TTL keeps a freshly
+# run ``gh auth login`` discoverable without restarting the backend.
+_GH_CLI_TOKEN_CACHE_TTL_SECONDS = 300.0
+_gh_cli_token_cache: tuple[float, Optional[str]] | None = None
+
+
+def _invalidate_gh_cli_token_cache() -> None:
+    """Reset the ``gh auth token`` probe cache (used by tests and re-auth flows)."""
+    global _gh_cli_token_cache
+    _gh_cli_token_cache = None
+
+
 def _try_gh_cli_token() -> Optional[str]:
     """Return a token from ``gh auth token`` when the GitHub CLI is available.
 
@@ -131,12 +170,34 @@ def _try_gh_cli_token() -> Optional[str]:
     correct host's token.  Also strips GITHUB_TOKEN / GH_TOKEN from the
     subprocess environment so ``gh`` reads from its own credential store
     (hosts.yml) instead of just echoing the env var back.
+
+    The result (including a miss) is cached for a short TTL — see the cache
+    comment above. Callers that just re-authenticated can call
+    ``_invalidate_gh_cli_token_cache()`` to re-probe immediately.
     """
+    global _gh_cli_token_cache
+
+    now = time.monotonic()
+    if _gh_cli_token_cache is not None:
+        cached_at, cached_token = _gh_cli_token_cache
+        if now - cached_at < _GH_CLI_TOKEN_CACHE_TTL_SECONDS:
+            return cached_token
+
+    token = _probe_gh_cli_token()
+    _gh_cli_token_cache = (now, token)
+    return token
+
+
+def _probe_gh_cli_token() -> Optional[str]:
+    """Uncached ``gh auth token`` subprocess probe (see ``_try_gh_cli_token``)."""
     hostname = os.getenv("COPILOT_GH_HOST", "").strip()
 
     # Build a clean env so gh doesn't short-circuit on GITHUB_TOKEN / GH_TOKEN
     clean_env = {k: v for k, v in os.environ.items()
                  if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
+    # Never let gh open an interactive prompt from a backend process.
+    clean_env.setdefault("GH_PROMPT_DISABLED", "1")
+    clean_env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
 
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     for gh_path in _gh_cli_candidates():
@@ -147,9 +208,10 @@ def _try_gh_cli_token() -> Optional[str]:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 timeout=5,
                 env=clean_env,
+                stdin=subprocess.DEVNULL,
                 **_popen_kwargs,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -297,11 +359,234 @@ _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
 
+# Transient-failure hardening for the token exchange. Gateway startup often
+# races network readiness (launchd relaunch, DHCP/VPN settling); a single-shot
+# exchange that fails there silently degrades to the RAW GitHub token, which the
+# Copilot server routes to the "copilot-language-server" integrator whose model
+# allowlist omits enterprise-only models (e.g. claude-opus-4.8) → HTTP 400 on
+# every turn until the next restart. Retry a few times, and persist the last
+# good exchanged JWT to disk so a restart during a blip reuses the still-valid
+# ~30-min token instead of degrading.
+_EXCHANGE_MAX_ATTEMPTS = 3
+_EXCHANGE_BACKOFF_BASE_SECONDS = 1.5  # sleeps ~1.5s, ~3.0s between attempts
+_JWT_DISK_FILENAME = ".copilot_jwt.json"
+_JWT_DISK_MAX_BYTES = 1_048_576  # 1 MiB cap on the persisted JWT store read
+
+# Negative cache for failed exchanges. Without it, every load_pool("copilot")
+# call re-runs the full exchange — and on a permanently-rejected token
+# (HTTP 403: account not Copilot-entitled, expired grant, org policy) the
+# retry backoff burned ~4.5s of time.sleep() on EVERY provider-discovery
+# pass. The /model picker, delegation child spawns, and the web dashboard
+# all walk that path, so a single bad Copilot token made all of them crawl.
+# Maps raw-token fingerprint -> epoch until which exchange attempts are
+# skipped (raise immediately). Success clears the entry.
+_exchange_failure_cache: dict[str, float] = {}
+# Single-flight guard per token fingerprint: concurrent callers (the dashboard
+# polls /api/credentials/pool every few seconds, each poll off-loop) wait on
+# the ONE in-flight exchange and then hit the positive/negative cache, instead
+# of each spawning their own hung resolver thread during a DNS outage.
+_exchange_locks: dict[str, threading.Lock] = {}
+_exchange_locks_guard = threading.Lock()
+
+
+def _exchange_lock_for(fp: str) -> threading.Lock:
+    with _exchange_locks_guard:
+        lock = _exchange_locks.get(fp)
+        if lock is None:
+            lock = _exchange_locks[fp] = threading.Lock()
+        return lock
+_EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS = 60.0     # network blips: retry soon
+_EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS = 1800.0   # 401/403/404: won't heal
+# HTTP statuses that indicate the token itself is rejected — retrying with
+# backoff is pointless (the retry loop exists for startup network races,
+# not for auth rejections) and sleeping on them just blocks the caller.
+_EXCHANGE_PERMANENT_HTTP_STATUSES = frozenset({401, 403, 404})
+
 
 def _token_fingerprint(raw_token: str) -> str:
     """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
     import hashlib
     return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+
+
+def _read_jwt_store(path: Path) -> Optional[dict]:
+    """Bounded read of the on-disk JWT store → dict, or None if unusable.
+
+    Single chokepoint for every read of the persisted store (load, eviction,
+    save-merge). A well-formed store is a few KB; a file over the 1 MiB cap or
+    with non-dict content is treated as unusable so a corrupt/oversized file
+    can't balloon memory or get rewritten back out.
+    """
+    try:
+        if path.stat().st_size > _JWT_DISK_MAX_BYTES:
+            logger.debug(
+                "Persisted Copilot JWT store exceeds %d bytes; ignoring", _JWT_DISK_MAX_BYTES
+            )
+            return None
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else None
+    except Exception as exc:
+        logger.debug("Failed to read persisted Copilot JWT store: %s", exc)
+        return None
+
+
+def evict_cached_exchanged_token(raw_token: str) -> None:
+    """Drop any cached exchanged JWT for ``raw_token`` (in-process + on-disk).
+
+    Used by the runtime stale-credential recovery path: when a live request
+    starts failing with a Copilot ``model_not_available_for_integrator`` /
+    ``model_not_supported`` 400, the cached exchanged token (or a degraded raw
+    fallback that was cached in its place) is stale. Evicting both cache tiers
+    forces the next ``exchange_copilot_token`` call to hit the network and mint
+    a fresh token instead of returning the poisoned cache entry.
+    """
+    if not raw_token:
+        return
+    fp = _token_fingerprint(raw_token)
+    _jwt_cache.pop(fp, None)
+    # Also clear any negative-cache entry: eviction is an explicit "force a
+    # fresh exchange" signal from the stale-credential recovery path, so the
+    # next exchange_copilot_token() must be allowed to hit the network.
+    _exchange_failure_cache.pop(fp, None)
+    path = _jwt_disk_path()
+    if not path or not path.exists():
+        return
+    try:
+        store = _read_jwt_store(path)
+        if store is not None and fp in store:
+            del store[fp]
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(store), encoding="utf-8")
+            try:
+                os.chmod(tmp, 0o600)
+            except Exception:
+                pass
+            os.replace(tmp, path)
+    except Exception as exc:
+        logger.debug("Failed to evict cached Copilot JWT: %s", exc)
+
+
+def _jwt_disk_path() -> Optional[Path]:
+    """Path to the on-disk exchanged-JWT cache (profile-aware), or None."""
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home()) / _JWT_DISK_FILENAME
+    except Exception:
+        return None
+
+
+def _load_jwt_from_disk(fp: str) -> Optional[tuple[str, float, Optional[str]]]:
+    """Load a persisted exchanged JWT for ``fp`` → (api_token, expires_at, base_url)."""
+    path = _jwt_disk_path()
+    if not path or not path.exists():
+        return None
+    try:
+        # Bound the read: this file is a small JSON map of fingerprint → token.
+        # An oversized/corrupt store is treated as unusable — the caller
+        # re-exchanges (bound shared with eviction/save via _read_jwt_store).
+        store = _read_jwt_store(path)
+        entry = store.get(fp) if store is not None else None
+        if not isinstance(entry, dict):
+            return None
+        api_token = entry.get("api_token", "")
+        expires_at = float(entry.get("expires_at", 0) or 0)
+        base_url = entry.get("base_url")
+        if api_token and expires_at:
+            return api_token, expires_at, base_url
+    except Exception as exc:
+        logger.debug("Failed to load persisted Copilot JWT: %s", exc)
+    return None
+
+
+def _save_jwt_to_disk(
+    fp: str, api_token: str, expires_at: float, base_url: Optional[str]
+) -> None:
+    """Persist an exchanged JWT (0o600), pruning expired entries."""
+    path = _jwt_disk_path()
+    if not path:
+        return
+    try:
+        store: dict = {}
+        if path.exists():
+            store = _read_jwt_store(path) or {}
+        now = time.time()
+        store = {
+            k: v
+            for k, v in store.items()
+            if isinstance(v, dict) and float(v.get("expires_at", 0) or 0) > now
+        }
+        store[fp] = {
+            "api_token": api_token,
+            "expires_at": expires_at,
+            "base_url": base_url,
+        }
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(store), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except Exception:
+            pass
+        os.replace(tmp, path)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.debug("Failed to persist Copilot JWT: %s", exc)
+
+
+# Hard wall-clock cap for the token-exchange HTTP call. urllib's ``timeout``
+# only bounds socket operations AFTER DNS resolution succeeds; getaddrinfo
+# blocks in C and ignores it entirely, so on a networkless Windows host the
+# resolver can hang for many minutes (observed: a 17-minute event-loop stall
+# on 2026-08-22 that took the whole backend down with it).
+_DNS_GRACE_SECONDS = 5.0
+
+
+def _urlopen_bounded(req, timeout: float):
+    """urlopen() with a hard wall-clock cap of timeout + _DNS_GRACE_SECONDS.
+
+    Runs the call on a daemon thread and abandons it if the cap fires, so a
+    DNS/getaddrinfo hang cannot block the caller indefinitely. Raises the
+    worker's exception, or TimeoutError when the cap fires.
+    """
+    import urllib.request
+
+    box: dict = {}
+    abandoned = threading.Event()
+
+    def _worker() -> None:
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except BaseException as exc:  # re-raised on the caller's thread
+            box["exc"] = exc
+            return
+        if abandoned.is_set():
+            # The caller already timed out; nobody will read this response,
+            # so release its socket instead of leaking it with the thread.
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return
+        box["resp"] = resp
+
+    t = threading.Thread(
+        target=_worker, name="copilot-token-exchange", daemon=True
+    )
+    t.start()
+    t.join(timeout + _DNS_GRACE_SECONDS)
+    if t.is_alive():
+        abandoned.set()
+        raise TimeoutError(
+            "copilot token exchange exceeded hard cap of "
+            f"{timeout + _DNS_GRACE_SECONDS:.0f}s (DNS/getaddrinfo hang?)"
+        )
+    if "exc" in box:
+        raise box["exc"]
+    if "resp" not in box:
+        raise TimeoutError("copilot token exchange worker died without result")
+    return box["resp"]
 
 
 def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float, Optional[str]]:
@@ -320,16 +605,62 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     Results are cached in-process and reused until close to expiry.
     Raises ``ValueError`` on failure.
     """
-    import urllib.request
-
     fp = _token_fingerprint(raw_token)
 
-    # Check cache first
+    # Fast paths outside the lock: a valid in-process JWT needs no exchange,
+    # and a recent failure means queueing behind the in-flight holder (up to
+    # ~50 s) would only park an executor thread to learn the same answer.
+    cached = _jwt_cache.get(fp)
+    if cached and time.time() < cached[1] - _JWT_REFRESH_MARGIN_SECONDS:
+        return cached
+    _fail_until = _exchange_failure_cache.get(fp, 0.0)
+    if time.time() < _fail_until:
+        raise ValueError(
+            "Copilot token exchange recently failed; skipping re-attempt "
+            f"for another {int(_fail_until - time.time())}s"
+        )
+
+    # Note: a waiter's own ``timeout`` is not honoured across the lock wait —
+    # by design of single-flight, it observes the holder's outcome instead.
+    with _exchange_lock_for(fp):
+        return _exchange_copilot_token_locked(raw_token, fp, timeout=timeout)
+
+
+def _exchange_copilot_token_locked(
+    raw_token: str, fp: str, *, timeout: float
+) -> tuple[str, float, Optional[str]]:
+    import urllib.request
+
+    # Re-check the caches under the lock: a concurrent caller may have just
+    # completed (or just failed) the exchange we were queued behind.
     cached = _jwt_cache.get(fp)
     if cached:
         api_token, expires_at, base_url = cached
         if time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS:
             return api_token, expires_at, base_url
+
+    # Then the on-disk cache: a fresh process (e.g. gateway restart) has an
+    # empty in-process cache but may have a still-valid persisted JWT. Reusing
+    # it avoids a network round-trip at startup — precisely when the network is
+    # most likely to be flaky and the single-shot exchange would degrade to the
+    # raw token.
+    disk_cached = _load_jwt_from_disk(fp)
+    if disk_cached:
+        api_token, expires_at, base_url = disk_cached
+        if time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS:
+            _jwt_cache[fp] = (api_token, expires_at, base_url)
+            return api_token, expires_at, base_url
+
+    # Negative cache: a recent exchange failure for this token means the
+    # network round-trip (and its retry backoff) would just repeat. Fail
+    # fast so provider discovery / picker opens don't block on a token we
+    # already know is rejected or unreachable.
+    _fail_until = _exchange_failure_cache.get(fp, 0.0)
+    if time.time() < _fail_until:
+        raise ValueError(
+            "Copilot token exchange recently failed; skipping re-attempt "
+            f"for another {int(_fail_until - time.time())}s"
+        )
 
     req = urllib.request.Request(
         _TOKEN_EXCHANGE_URL,
@@ -342,11 +673,49 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
         },
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as exc:
-        raise ValueError(f"Copilot token exchange failed: {exc}") from exc
+    # Retry with backoff. Startup network races (launchd relaunch, VPN/DHCP
+    # settling) make the first attempt flaky; without this the sole failure
+    # silently degrades to the raw token for the whole process lifetime.
+    # Permanent HTTP rejections (401/403/404 — token not Copilot-entitled,
+    # revoked, or org-blocked) skip the retry loop entirely: backoff exists
+    # for transient network races, and sleeping on an auth rejection just
+    # blocks the caller for ~4.5s with an identical outcome.
+    data = None
+    last_exc: Optional[Exception] = None
+    permanent_failure = False
+    for attempt in range(_EXCHANGE_MAX_ATTEMPTS):
+        try:
+            with _urlopen_bounded(req, timeout) as resp:
+                data = json.loads(resp.read().decode())
+            break
+        except Exception as exc:  # noqa: BLE001 — retry all, re-raise below
+            last_exc = exc
+            status = getattr(exc, "code", None) or getattr(exc, "status", None)
+            if status in _EXCHANGE_PERMANENT_HTTP_STATUSES:
+                permanent_failure = True
+                logger.debug(
+                    "Copilot token exchange rejected (HTTP %s); not retrying",
+                    status,
+                )
+                break
+            if attempt < _EXCHANGE_MAX_ATTEMPTS - 1:
+                sleep_s = _EXCHANGE_BACKOFF_BASE_SECONDS * (attempt + 1)
+                logger.debug(
+                    "Copilot token exchange attempt %d/%d failed (%s); retrying in %.1fs",
+                    attempt + 1, _EXCHANGE_MAX_ATTEMPTS, exc, sleep_s,
+                )
+                time.sleep(sleep_s)
+    if data is None:
+        ttl = (
+            _EXCHANGE_FAILURE_TTL_PERMANENT_SECONDS
+            if permanent_failure
+            else _EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS
+        )
+        _exchange_failure_cache[fp] = time.time() + ttl
+        raise ValueError(
+            f"Copilot token exchange failed after {_EXCHANGE_MAX_ATTEMPTS} attempts: {last_exc}"
+        ) from last_exc
+    _exchange_failure_cache.pop(fp, None)
 
     api_token = data.get("token", "")
     expires_at = data.get("expires_at", 0)
@@ -372,6 +741,7 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
         base_url = _derive_base_url_from_proxy_ep(api_token)
 
     _jwt_cache[fp] = (api_token, expires_at, base_url)
+    _save_jwt_to_disk(fp, api_token, expires_at, base_url)
     logger.debug(
         "Copilot token exchanged, expires_at=%s, base_url=%s",
         expires_at,

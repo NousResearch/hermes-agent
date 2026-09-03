@@ -34,7 +34,6 @@ def _make_agent() -> AIAgent:
             skip_memory=True,
         )
     agent.client = MagicMock()
-    agent.tool_delay = 0
     agent._flush_messages_to_session_db = MagicMock()
     return agent
 

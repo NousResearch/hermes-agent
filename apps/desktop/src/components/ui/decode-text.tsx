@@ -1,5 +1,6 @@
 import { type ComponentProps, useEffect, useState } from 'react'
 
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 
 /**
@@ -57,6 +58,15 @@ export function DecodeText({
 
   useEffect(() => {
     if (!active) {
+      setTail(tailText)
+
+      return
+    }
+
+    // Under reduced motion, skip the scramble interval and render the fully
+    // resolved text immediately. The cursor blink (CSS animation) is also
+    // killed by the blanket reduced-motion CSS rule.
+    if (prefersReducedMotion()) {
       setTail(tailText)
 
       return

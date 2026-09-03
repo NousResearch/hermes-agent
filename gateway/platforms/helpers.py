@@ -315,13 +315,16 @@ def is_table_row(line: str) -> bool:
 
 
 def split_markdown_table_row(line: str) -> list[str]:
-    """Split a GFM table row into stripped cell values."""
-    stripped = line.strip()
-    if stripped.startswith("|"):
-        stripped = stripped[1:]
-    if stripped.endswith("|"):
-        stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
+    """Split a GFM table row into stripped cell values.
+
+    Thin delegate to the canonical implementation in
+    :mod:`agent.markdown_tables` (``split_table_row``) so the three
+    formerly byte-identical copies (here, ``agent/markdown_tables.py``,
+    ``weixin._split_table_row``) share one body.
+    """
+    from agent.markdown_tables import split_table_row
+
+    return split_table_row(line)
 
 
 def _render_table_block(table_block: list[str]) -> str:
@@ -417,3 +420,523 @@ def convert_table_to_bullets(text: str) -> str:
         i += 1
 
     return '\n'.join(out)
+
+
+# ─── Mention-pattern compilation ─────────────────────────────────────────────
+
+
+def compile_mention_patterns(
+    raw,
+    *,
+    log_prefix: str,
+    platform_label: str | None = None,
+    display_label: str | None = None,
+    defaults: 'list[str] | None' = None,
+    logger_: 'logging.Logger | None' = None,
+) -> 'list[re.Pattern]':
+    """Compile regex wake-word/mention patterns from config or env values.
+
+    Two adapter families share this logic:
+
+    * **Config-style** (dingtalk, telegram): pass ``platform_label`` (e.g.
+      ``"dingtalk"``). ``raw`` is the value from ``config.extra`` after env
+      fallback parsing; must be a list or string, anything else logs a warning
+      and yields ``[]``. Non-string entries are skipped. A summary info log is
+      emitted when patterns load.
+    * **Wakeword-style** (photon, bluebubbles): pass ``defaults``. ``raw`` may
+      be None (use defaults), a string (JSON list or comma/newline separated),
+      a list, or a scalar (wrapped in a list). Entries are coerced via
+      ``str()``.
+
+    ``log_prefix`` is interpolated into every log message so per-adapter log
+    output stays byte-identical to the historical inline implementations.
+    """
+    log = logger_ or logger
+
+    if platform_label is not None:
+        # Config-style (dingtalk/telegram) semantics.
+        display = display_label or platform_label
+        patterns = raw
+        if patterns is None:
+            return []
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if not isinstance(patterns, list):
+            log.warning(
+                "[%s] %s mention_patterns must be a list or string; got %s",
+                log_prefix,
+                platform_label,
+                type(patterns).__name__,
+            )
+            return []
+
+        compiled: list[re.Pattern] = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                log.warning(
+                    "[%s] Invalid %s mention pattern %r: %s",
+                    log_prefix,
+                    display,
+                    pattern,
+                    exc,
+                )
+        if compiled:
+            log.info(
+                "[%s] Loaded %d %s mention pattern(s)",
+                log_prefix,
+                len(compiled),
+                display,
+            )
+        return compiled
+
+    # Wakeword-style (photon/bluebubbles) semantics.
+    if raw is None:
+        patterns = list(defaults or [])
+    elif isinstance(raw, str):
+        text = raw.strip()
+        try:
+            loaded = json.loads(text) if text else []
+        except Exception:
+            loaded = None
+        patterns = loaded if isinstance(loaded, list) else [
+            part.strip()
+            for line in text.splitlines()
+            for part in line.split(",")
+        ]
+    elif isinstance(raw, list):
+        patterns = raw
+    else:
+        patterns = [raw]
+
+    compiled = []
+    for pattern in patterns:
+        text = str(pattern).strip()
+        if not text:
+            continue
+        try:
+            compiled.append(re.compile(text, re.IGNORECASE))
+        except re.error as exc:
+            log.warning("[%s] Invalid mention pattern %r: %s", log_prefix, text, exc)
+    return compiled
+
+
+# ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
+# Shared core for the fence-aware markdown chunkers that previously lived as
+# near-duplicates in gateway/stream_consumer.py, gateway/platforms/yuanbao.py
+# (MarkdownProcessor — the richest version, which this core is derived from),
+# and gateway/platforms/weixin.py.  Each caller keeps its own knobs:
+#
+#   * stream_consumer: newline-preferred splitting + close/reopen fence
+#     balancing (``prefer_paragraphs=False, balance_fences=True``)
+#   * yuanbao: atomic-block extraction + paragraph-boundary splitting, fences
+#     kept intact as atoms (``prefer_paragraphs=True, balance_fences=False``)
+#   * weixin: keeps its own block splitter (anchored ``_FENCE_RE``, per-line
+#     rstrip semantics) but reuses ``greedy_pack_blocks`` for packing.
+#
+# The typing helpers below use ``Optional``/``Callable`` from ``typing`` to
+# match the module's existing import style.
+
+
+def text_has_unclosed_fence(text: str) -> bool:
+    """Return True when *text* ends inside an unclosed ``` code fence.
+
+    Scans line by line, toggling in/out state on lines starting with ```.
+    An odd number of toggles means the trailing fence is unclosed.
+    """
+    in_fence = False
+    for line in text.split('\n'):
+        if line.startswith('```'):
+            in_fence = not in_fence
+    return in_fence
+
+
+def text_ends_with_table_row(text: str) -> bool:
+    """True when the last non-empty line starts and ends with ``|``."""
+    trimmed = text.rstrip()
+    if not trimmed:
+        return False
+    last_line = trimmed.split('\n')[-1].strip()
+    return last_line.startswith('|') and last_line.endswith('|')
+
+
+def is_fence_atom(text: str) -> bool:
+    """True when an atomic block is a code block (starts with ```)."""
+    return text.lstrip().startswith('```')
+
+
+def is_table_atom(text: str) -> bool:
+    """True when an atomic block is a table (first line is ``|...|``)."""
+    first_line = text.split('\n')[0].strip()
+    return first_line.startswith('|') and first_line.endswith('|')
+
+
+_SENTENCE_END_NEWLINE_RE = re.compile(r'[。！？.!?]\n')
+
+
+def split_at_paragraph_boundary(text, max_chars, len_fn=None):
+    """Find the nearest paragraph boundary within *max_chars*; return (head, tail).
+
+    Split priority:
+      1. Blank line (paragraph boundary)
+      2. Newline after sentence-ending punctuation (CJK and ASCII)
+      3. Last newline
+      4. Force split at the *max_chars* window boundary
+
+    ``head + tail == text`` always holds.  *len_fn* allows measuring in
+    custom units (e.g. UTF-16 code units); a binary search finds the largest
+    prefix that fits when it is provided.
+    """
+    _len = len_fn or len
+    if _len(text) <= max_chars:
+        return text, ''
+
+    if _len is len:
+        window = text[:max_chars]
+    else:
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if _len(text[:mid]) <= max_chars:
+                lo = mid
+            else:
+                hi = mid - 1
+        window = text[:lo]
+
+    # 1. Prefer the last blank line (\n\n) as paragraph boundary
+    pos = window.rfind('\n\n')
+    if pos > 0:
+        return text[:pos + 2], text[pos + 2:]
+
+    # 2. Then the last newline following sentence-ending punctuation
+    best_pos = -1
+    for m in _SENTENCE_END_NEWLINE_RE.finditer(window):
+        best_pos = m.end()
+    if best_pos > 0:
+        return text[:best_pos], text[best_pos:]
+
+    # 3. Fallback: last newline
+    pos = window.rfind('\n')
+    if pos > 0:
+        return text[:pos + 1], text[pos + 1:]
+
+    # 4. No valid split point: force split at the window boundary
+    cut = len(window)
+    return text[:cut], text[cut:]
+
+
+def split_markdown_atoms(text: str) -> "list[str]":
+    """Split markdown into indivisible "atomic blocks".
+
+    Atoms are: fenced code blocks (``` ... ``` inclusive), tables
+    (consecutive ``|...|`` lines), and plain paragraphs separated by blank
+    lines.  Blank lines are separators and belong to no atom.
+    """
+    lines = text.split('\n')
+    atoms: "list[str]" = []
+
+    current_lines: "list[str]" = []
+    in_fence = False
+
+    def _is_table_line(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith('|') and stripped.endswith('|')
+
+    def _flush_current() -> None:
+        if current_lines:
+            atom = '\n'.join(current_lines)
+            if atom.strip():
+                atoms.append(atom)
+            current_lines.clear()
+
+    for line in lines:
+        if in_fence:
+            current_lines.append(line)
+            if line.startswith('```') and len(current_lines) > 1:
+                in_fence = False
+                _flush_current()
+        elif line.startswith('```'):
+            _flush_current()
+            in_fence = True
+            current_lines.append(line)
+        elif _is_table_line(line):
+            if current_lines and not _is_table_line(current_lines[-1]):
+                _flush_current()
+            current_lines.append(line)
+        elif line.strip() == '':
+            _flush_current()
+        else:
+            if current_lines and _is_table_line(current_lines[-1]):
+                _flush_current()
+            current_lines.append(line)
+
+    _flush_current()
+
+    return atoms
+
+
+def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
+    """Infer the separator (``'\\n'`` or ``'\\n\\n'``) between two chunks.
+
+    Single newline when the boundary sits at a code fence or a continued
+    table; paragraph separator otherwise.
+    """
+    prev_trimmed = prev_chunk.rstrip()
+    next_trimmed = next_chunk.lstrip()
+
+    if prev_trimmed.endswith('```') or next_trimmed.startswith('```'):
+        return '\n'
+
+    if text_ends_with_table_row(prev_chunk):
+        first_line = next_trimmed.split('\n')[0].strip() if next_trimmed else ''
+        if first_line.startswith('|') and first_line.endswith('|'):
+            return '\n'
+
+    return '\n\n'
+
+
+def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
+    """Stream-aware fence merge: rejoin chunks truncated mid-fence.
+
+    While chunk *i* has an unclosed fence and a successor exists, merge the
+    successor into it using :func:`infer_block_separator`.
+    """
+    if not chunks:
+        return []
+
+    result: "list[str]" = []
+    i = 0
+    while i < len(chunks):
+        current = chunks[i]
+        while text_has_unclosed_fence(current) and i + 1 < len(chunks):
+            sep = infer_block_separator(current, chunks[i + 1])
+            current = current + sep + chunks[i + 1]
+            i += 1
+        result.append(current)
+        i += 1
+
+    return result
+
+
+def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
+    """Close orphaned ``` fences at each chunk boundary and reopen on the next.
+
+    When a split lands inside a triple-backtick code block, close the fence
+    at the end of the head chunk and reopen it (with the original language
+    tag) at the start of the next, so every delivered chunk is
+    fence-balanced on its own.
+    """
+    if len(chunks) <= 1:
+        return chunks
+    out: "list[str]" = []
+    carry_lang = None
+    for chunk in chunks:
+        prefix = f"```{carry_lang}\n" if carry_lang is not None else ""
+        in_code = carry_lang is not None
+        lang = carry_lang or ""
+        for line in chunk.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                if in_code:
+                    in_code = False
+                    lang = ""
+                else:
+                    in_code = True
+                    tag = stripped[3:].strip()
+                    lang = tag.split()[0] if tag else ""
+        body = prefix + chunk
+        if in_code:
+            body += "\n```"
+            carry_lang = lang
+        else:
+            carry_lang = None
+        out.append(body)
+    return out
+
+
+def greedy_pack_blocks(blocks, max_length, len_fn=None, sep="\n\n", overflow=None):
+    """Greedily pack pre-split *blocks* into chunks of at most *max_length*.
+
+    Blocks are joined with *sep* while they fit.  A block that alone exceeds
+    the limit is passed to *overflow(block)* (which must return a list of
+    chunks) when provided, else emitted as-is.
+    """
+    _len = len_fn or len
+    packed: "list[str]" = []
+    current = ""
+    for block in blocks:
+        candidate = block if not current else f"{current}{sep}{block}"
+        if _len(candidate) <= max_length:
+            current = candidate
+            continue
+        if current:
+            packed.append(current)
+            current = ""
+        if _len(block) <= max_length:
+            current = block
+            continue
+        if overflow is not None:
+            packed.extend(overflow(block))
+        else:
+            packed.append(block)
+    if current:
+        packed.append(current)
+    return packed
+
+
+def split_text_fence_aware(
+    text,
+    limit,
+    len_fn=None,
+    *,
+    prefer_paragraphs=True,
+    balance_fences=False,
+):
+    """Split markdown text into chunks of at most *limit*, respecting fences.
+
+    Two strategies, selected by ``prefer_paragraphs``:
+
+    ``prefer_paragraphs=True`` (yuanbao-derived, the richest):
+      Extract atomic blocks (code fences, tables, paragraphs), greedily merge
+      them up to *limit*, split still-oversized non-atomic chunks at
+      paragraph boundaries, then re-merge small neighbours.  Code blocks and
+      tables are never split in the middle; a single atom larger than
+      *limit* is emitted oversize rather than broken.
+
+    ``prefer_paragraphs=False`` (stream_consumer-derived):
+      Newline-preferred hard splitting with headroom reserved for fence
+      markers when the text contains ```.
+
+    ``balance_fences=True`` post-processes the chunks so a split inside a
+    code block closes the fence on the head chunk and reopens it (with the
+    language tag) on the tail — required by callers whose chunks are
+    delivered as independent messages that each must render standalone.
+    """
+    _len = len_fn or len
+
+    if not text:
+        return []
+
+    if prefer_paragraphs:
+        chunks = _chunk_markdown_paragraphs(text, limit, len_fn)
+    else:
+        chunks = _chunk_newline_preferred(text, limit, _len)
+
+    if balance_fences:
+        chunks = balance_fences_across_chunks(chunks)
+    return chunks
+
+
+def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
+    """Yuanbao-derived paragraph/atom chunking pipeline (see module docs)."""
+    _len = len_fn or len
+
+    if _len(text) <= max_chars:
+        return [text]
+
+    # Phase 1: Extract atomic blocks
+    atoms = split_markdown_atoms(text)
+
+    # Phase 2: Greedy merge
+    chunks: "list[str]" = []
+    indivisible_set: "set[int]" = set()
+    current_parts: "list[str]" = []
+    current_len = 0
+
+    def _flush_parts() -> None:
+        if current_parts:
+            chunks.append('\n\n'.join(current_parts))
+
+    for atom in atoms:
+        atom_len = _len(atom)
+        sep_len = 2 if current_parts else 0
+        projected_len = current_len + sep_len + atom_len
+
+        if projected_len > max_chars and current_parts:
+            _flush_parts()
+            current_parts = []
+            current_len = 0
+            sep_len = 0
+
+        if (not current_parts
+                and atom_len > max_chars
+                and (is_fence_atom(atom) or is_table_atom(atom))):
+            indivisible_set.add(len(chunks))
+            chunks.append(atom)
+            continue
+
+        current_parts.append(atom)
+        current_len += sep_len + atom_len
+
+    _flush_parts()
+
+    # Phase 3: Split still-oversized chunks at paragraph boundaries
+    result: "list[str]" = []
+    for idx, chunk in enumerate(chunks):
+        if _len(chunk) <= max_chars:
+            result.append(chunk)
+            continue
+
+        if idx in indivisible_set:
+            result.append(chunk)
+            continue
+
+        if text_has_unclosed_fence(chunk):
+            result.append(chunk)
+            continue
+
+        remaining = chunk
+        while _len(remaining) > max_chars:
+            head, remaining = split_at_paragraph_boundary(
+                remaining, max_chars, len_fn=len_fn,
+            )
+            if not head:
+                head, remaining = remaining[:max_chars], remaining[max_chars:]
+            if head:
+                result.append(head)
+        if remaining:
+            result.append(remaining)
+
+    # Phase 4: Merge small trailing/leading chunks with neighbours
+    if len(result) > 1:
+        merged: "list[str]" = [result[0]]
+        for chunk in result[1:]:
+            prev = merged[-1]
+            combined = prev + '\n\n' + chunk
+            if _len(combined) <= max_chars:
+                merged[-1] = combined
+            else:
+                merged.append(chunk)
+        result = merged
+
+    return [c for c in result if c]
+
+
+def _chunk_newline_preferred(text, limit, len_fn):
+    """Stream-consumer-derived newline-preferred splitting (no balancing)."""
+    if len_fn(text) <= limit:
+        return [text]
+    # Reserve headroom for the close/reopen fence markers a balancing pass
+    # may add, so balanced chunks stay within the platform limit.
+    split_limit = limit
+    if "```" in text:
+        split_limit = max(limit - 16, limit // 2, 1)
+    # Local import: gateway.platforms.base is heavyweight and pulls config;
+    # helpers must stay import-light for adapters that import it first.
+    from gateway.platforms.base import _custom_unit_to_cp
+
+    chunks: "list[str]" = []
+    remaining = text
+    while len_fn(remaining) > split_limit:
+        _cp_budget = _custom_unit_to_cp(remaining, split_limit, len_fn)
+        split_at = remaining.rfind("\n", 0, _cp_budget)
+        if split_at < _cp_budget // 2:
+            split_at = _cp_budget
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks

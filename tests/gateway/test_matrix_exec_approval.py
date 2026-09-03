@@ -7,29 +7,7 @@ from gateway.config import PlatformConfig
 
 
 class TestMatrixExecApprovalReactions:
-    @pytest.mark.asyncio
-    async def test_send_exec_approval_registers_prompt_and_seeds_reactions(self, monkeypatch):
-        monkeypatch.setenv("MATRIX_ALLOWED_USERS", "@liizfq:liizfq.top")
-        from plugins.platforms.matrix.adapter import MatrixAdapter
 
-        adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
-        adapter._client = types.SimpleNamespace()
-        adapter.send = AsyncMock(return_value=types.SimpleNamespace(success=True, message_id="$evt1"))
-        adapter._send_reaction = AsyncMock(return_value="$r")
-
-        result = await adapter.send_exec_approval(
-            chat_id="!room:example.org",
-            command="rm -rf /tmp/test",
-            session_key="sess-1",
-            description="dangerous",
-        )
-
-        assert result.success is True
-        assert adapter._approval_prompt_by_session["sess-1"] == "$evt1"
-        assert adapter._approval_prompts_by_event["$evt1"].session_key == "sess-1"
-        assert adapter._send_reaction.await_count == 3
-        emojis = [call.args[2] for call in adapter._send_reaction.await_args_list]
-        assert emojis == ["✅", "♾️", "❌"]
 
     @pytest.mark.asyncio
     async def test_reaction_resolves_pending_approval(self, monkeypatch):

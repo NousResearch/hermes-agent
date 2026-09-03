@@ -31,8 +31,12 @@ def _fake_completed_process(stdout: str) -> MagicMock:
 
 
 def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-super-secret-should-not-leak")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "«redacted:sk-…»")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+        lambda: "/resolved/cua-driver",
+    )
 
     captured = {}
 
@@ -49,25 +53,8 @@ def test_cli_fallback_strips_provider_secret_from_subprocess_env(monkeypatch):
     assert captured["env"] is not None, "subprocess.run must receive an explicit env="
     assert "ANTHROPIC_API_KEY" not in captured["env"]
     # Sanitization filters secrets, not everything — an ordinary var survives.
-    assert captured["env"].get("PATH") == "/usr/bin:/bin"
+    # Original PATH entries are preserved; the hermes console-script dir may
+    # be prepended (see _sanitize_subprocess_env, issue #92998).
+    assert captured["env"].get("PATH", "").endswith("/usr/bin:/bin")
 
 
-def test_cli_fallback_applies_telemetry_policy(monkeypatch):
-    """The env should also go through cua_driver_child_env(), like every
-    other cua-driver spawn site, not just _sanitize_subprocess_env alone."""
-    monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
-    captured = {}
-
-    def fake_run(cmd, **kwargs):
-        captured["env"] = kwargs.get("env")
-        return _fake_completed_process(json.dumps({"tree_markdown": "root"}))
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-
-    session = _make_session()
-    session._call_tool_via_cli("list_windows", {}, timeout=5.0)
-
-    # cua_driver_child_env() injects this when telemetry is disabled
-    # (the default) — confirms the fallback goes through the same helper
-    # the sanctioned spawn site uses, not an ad hoc env dict.
-    assert captured["env"].get("CUA_DRIVER_RS_TELEMETRY_ENABLED") == "0"

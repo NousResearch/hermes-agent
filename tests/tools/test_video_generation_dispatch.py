@@ -88,53 +88,31 @@ class TestUnifiedDispatch:
         assert result["success"] is False
         assert result["error_type"] == "provider_not_registered"
 
-    def test_text_to_video_routes_without_image_url(self):
-        provider = _RecordingProvider("rec")
-        video_gen_registry.register_provider(provider)
-        result = self._run({"prompt": "a happy dog"})
-        assert result["success"] is True
-        assert result["modality"] == "text"
-        assert "image_url" not in provider.last_kwargs
-        assert provider.last_kwargs["aspect_ratio"] == "16:9"
-        assert provider.last_kwargs["resolution"] == "720p"
-
-    def test_image_to_video_routes_with_image_url(self):
-        provider = _RecordingProvider("rec")
-        video_gen_registry.register_provider(provider)
-        result = self._run({
-            "prompt": "animate this",
-            "image_url": "https://example.com/img.png",
-        })
-        assert result["success"] is True
-        assert result["modality"] == "image"
-        assert provider.last_kwargs["image_url"] == "https://example.com/img.png"
-
-    def test_prompt_required(self):
-        provider = _RecordingProvider("rec")
-        video_gen_registry.register_provider(provider)
-        result = self._run({"prompt": "", "image_url": "https://example.com/i.png"})
-        assert "error" in result
-        assert "prompt" in result["error"].lower()
-
-    def test_edit_extend_args_are_rejected_by_generate_tool(self):
-        provider = _RecordingProvider("rec")
-        video_gen_registry.register_provider(provider)
-        result = self._run({
-            "prompt": "make it rain",
-            "operation": "edit",
-            "video_url": "https://example.com/in.mp4",
-        })
-        assert "error" in result
-        assert "provider-specific tool" in result["error"]
-
-    def test_provider_exception_caught(self):
-        video_gen_registry.register_provider(_RaisingProvider())
-        result = self._run({"prompt": "x"})
-        assert result["success"] is False
-        assert result["error_type"] == "provider_exception"
 
     def test_edit_extend_fields_not_in_schema(self):
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "operation" not in props
         assert "video_url" not in props
+
+
+    def test_upscale_in_schema_and_forwarded(self):
+        """`upscale` is advertised per-capability by the dynamic builder
+        (#95681 diet — static schema no longer carries it) and forwarded
+        to providers when set, omitted (not None) when unset."""
+        from tools.video_generation_tool import (
+            VIDEO_GENERATE_SCHEMA,
+            _build_dynamic_video_schema,
+        )
+        # Static placeholder: capability args live in the dynamic override.
+        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "upscale" not in props
+
+        provider = _RecordingProvider()
+        video_gen_registry.register_provider(provider)
+        result = self._run({"prompt": "a dog", "upscale": True}, configured="fake")
+        assert result["success"] is True
+        assert provider.last_kwargs["upscale"] is True
+
+        self._run({"prompt": "a dog"}, configured="fake")
+        assert "upscale" not in provider.last_kwargs

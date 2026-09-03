@@ -146,6 +146,10 @@ class ServerDef:
     build_spawn: Callable[[str, "ServerContext"], Optional[SpawnSpec]]
     seed_first_push: bool = False
     description: str = ""
+    # Server handles ``workspace/didChangeWorkspaceFolders``: one process
+    # serves every project root (git worktrees included) as extra
+    # workspaceFolders instead of one process per root.
+    multi_root: bool = False
 
     def matches(self, file_path: str) -> bool:
         """Return True iff this server handles ``file_path``."""
@@ -710,9 +714,9 @@ def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
     env_path = os.environ.get("PSES_BUNDLE_PATH")
     if env_path:
         candidates.append(env_path)
-    home = os.environ.get("HERMES_HOME") or os.path.join(
-        os.path.expanduser("~"), ".hermes"
-    )
+    from hermes_constants import get_hermes_home
+
+    home = str(get_hermes_home())
     candidates.append(os.path.join(home, "lsp", "PowerShellEditorServices"))
 
     for cand in candidates:
@@ -796,9 +800,9 @@ def _spawn_powershell_es(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
 
 def hermes_lsp_session_dir() -> str:
     """Return (and create) the dir for PSES session/log scratch files."""
-    home = os.environ.get("HERMES_HOME") or os.path.join(
-        os.path.expanduser("~"), ".hermes"
-    )
+    from hermes_constants import get_hermes_home
+
+    home = str(get_hermes_home())
     d = os.path.join(home, "lsp", "pses")
     os.makedirs(d, exist_ok=True)
     return d
@@ -974,6 +978,7 @@ SERVERS: List[ServerDef] = [
         extensions=(".py", ".pyi"),
         resolve_root=_root_python,
         build_spawn=_spawn_pyright,
+        multi_root=True,
         description="Python — Microsoft pyright",
     ),
     ServerDef(

@@ -11,8 +11,8 @@ import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-
 /**
  * Floating "jump to bottom" control. Sits centered just above the composer,
  * clearing the out-of-flow status stack via the same measured-height CSS vars
- * the thread's bottom clearance uses (`--composer-measured-height` +
- * `--status-stack-measured-height`), so it never overlaps the queue / subagent
+ * the thread's bottom clearance uses (`--composer-measured-height`, which
+ * covers the whole dock), so it never overlaps the queue / subagent
  * / background cards. Visible only while the user has scrolled meaningfully
  * away from the bottom; clicking re-arms sticky-bottom and pins the viewport.
  *
@@ -28,7 +28,7 @@ import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-
  * `data-state`. `idle` (never-shown) stays silent so it can't flash on mount;
  * `in`/`out` only swap once it has actually appeared.
  */
-export function ScrollToBottomButton() {
+export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
   const visible = useStore($threadJumpButtonVisible)
   const request = useStore($approvalRequest)
@@ -59,10 +59,10 @@ export function ScrollToBottomButton() {
       data-state={state}
       onClick={() => {
         triggerHaptic('selection')
-        requestScrollToBottom()
+        requestScrollToBottom(sessionId)
       }}
       style={{
-        bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.625rem)'
+        bottom: 'calc(var(--composer-measured-height) + 0.625rem)'
       }}
       tabIndex={visible ? 0 : -1}
       type="button"

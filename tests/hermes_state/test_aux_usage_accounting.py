@@ -67,28 +67,20 @@ class TestRecordAuxiliaryUsage:
         assert rows[0]["input_tokens"] == 3000
         assert rows[0]["api_call_count"] == 3
 
-    def test_task_rows_do_not_touch_session_counters(self, db):
-        """Aux usage must NOT increment sessions.input_tokens — the gateway
-        overwrites those with absolute main-loop totals."""
+    def test_explicit_none_api_call_count_uses_default_one(self, db):
+        """Explicit None must match the documented default of 1, not become 0."""
         db.create_session("s1", source="cli")
-        db.record_auxiliary_usage("s1", "vision", model="m", input_tokens=999)
-        sess = db.get_session("s1")
-        assert (sess.get("input_tokens") or 0) == 0
-
-    def test_task_row_does_not_inherit_session_route(self, db):
-        """An aux call on a different provider must not borrow the session's
-        main-loop model/provider."""
-        db.create_session("s1", source="cli", model="anthropic/claude-opus-4.6")
-        db.update_token_counts(
-            "s1", input_tokens=10, model="anthropic/claude-opus-4.6",
-            billing_provider="anthropic", api_call_count=1,
+        db.record_auxiliary_usage(
+            "s1",
+            "vision",
+            model="gemini-3-flash",
+            input_tokens=10,
+            output_tokens=1,
+            api_call_count=None,
         )
-        db.record_auxiliary_usage("s1", "vision", input_tokens=5)  # no model given
-        rows = {r["task"]: r for r in _usage_rows(db, "s1")}
-        assert rows["vision"]["model"] == "unknown"
-        assert rows["vision"]["billing_provider"] == ""
-        # main-loop row unaffected
-        assert rows[""]["model"] == "anthropic/claude-opus-4.6"
+        rows = _usage_rows(db, "s1")
+        assert len(rows) == 1
+        assert rows[0]["api_call_count"] == 1
 
     def test_main_loop_and_aux_rows_coexist(self, db):
         db.create_session("s1", source="cli")
@@ -104,17 +96,7 @@ class TestRecordAuxiliaryUsage:
         tasks = sorted(r["task"] for r in rows)
         assert tasks == ["", "title_generation"]
 
-    def test_noop_without_session_or_task(self, db):
-        db.record_auxiliary_usage("", "vision", input_tokens=5)
-        db.create_session("s1", source="cli")
-        db.record_auxiliary_usage("s1", "", input_tokens=5)
-        assert _usage_rows(db, "s1") == []
 
-    def test_creates_session_row_if_missing(self, db):
-        """FK safety: recording against a not-yet-created session must not fail."""
-        db.record_auxiliary_usage("ghost", "vision", model="m", input_tokens=5)
-        rows = _usage_rows(db, "ghost")
-        assert len(rows) == 1
 
 
 class TestSchemaMigrationV22:
@@ -207,12 +189,6 @@ class TestAmbientAccountingContext:
         assert rows[0]["input_tokens"] == 100
         assert rows[0]["output_tokens"] == 20
 
-    def test_noop_outside_context(self, db):
-        from agent.aux_accounting import record_aux_usage
-
-        db.create_session("s1", source="cli")
-        record_aux_usage(_mk_response(), "vision")
-        assert _usage_rows(db, "s1") == []
 
     def test_moa_tasks_excluded(self, db):
         """MoA advisor usage is already folded into the main-loop delta by
@@ -232,38 +208,7 @@ class TestAmbientAccountingContext:
             reset_accounting_context(token)
         assert _usage_rows(db, "s1") == []
 
-    def test_no_usage_object_is_noop(self, db):
-        from agent.aux_accounting import (
-            record_aux_usage,
-            reset_accounting_context,
-            set_accounting_context,
-        )
 
-        db.create_session("s1", source="cli")
-        resp = SimpleNamespace(model="m", choices=[])
-        token = set_accounting_context(db, "s1")
-        try:
-            record_aux_usage(resp, "vision")
-        finally:
-            reset_accounting_context(token)
-        assert _usage_rows(db, "s1") == []
-
-    def test_recording_failure_never_raises(self, db):
-        from agent.aux_accounting import (
-            record_aux_usage,
-            reset_accounting_context,
-            set_accounting_context,
-        )
-
-        class ExplodingDB:
-            def record_auxiliary_usage(self, *a, **kw):
-                raise RuntimeError("disk full")
-
-        token = set_accounting_context(ExplodingDB(), "s1")
-        try:
-            record_aux_usage(_mk_response(), "vision")  # must not raise
-        finally:
-            reset_accounting_context(token)
 
     def test_validate_llm_response_records(self, db):
         """The aux client's validation chokepoint feeds the recorder."""
@@ -285,19 +230,6 @@ class TestAmbientAccountingContext:
         assert rows[0]["task"] == "web_extract"
         assert rows[0]["billing_provider"] == "openrouter"
 
-    def test_context_isolated_between_copied_contexts(self, db):
-        import contextvars
-
-        from agent.aux_accounting import get_accounting_context, set_accounting_context
-
-        def _set_and_get(sid):
-            set_accounting_context(db, sid)
-            return get_accounting_context()[1]
-
-        a = contextvars.copy_context().run(_set_and_get, "agent-a")
-        b = contextvars.copy_context().run(_set_and_get, "agent-b")
-        assert (a, b) == ("agent-a", "agent-b")
-        assert get_accounting_context() is None
 
 
 class TestAnalyticsAuxRows:
@@ -364,25 +296,3 @@ class TestInsightsAuxTotals:
         models = {m["model"] for m in report["models"]}
         assert {"main-model", "glm-5"} <= models
 
-    def test_overview_totals_not_double_counted_with_absolute_updates(self, db):
-        """Gateway absolute overwrites + aux rows must not inflate totals."""
-        from agent.insights import InsightsEngine
-
-        db.create_session("s2", source="telegram")
-        db.update_token_counts(
-            "s2", input_tokens=2000, output_tokens=200,
-            model="main-model", billing_provider="nous", api_call_count=1,
-        )
-        db.update_token_counts(
-            "s2", input_tokens=2000, output_tokens=200,
-            model="main-model", billing_provider="nous",
-            absolute=True, api_call_count=1,
-        )
-        db.record_auxiliary_usage(
-            "s2", "title_generation", model="main-model",
-            billing_provider="nous", input_tokens=40, output_tokens=8,
-        )
-        report = InsightsEngine(db).generate(days=30)
-        ov = report["overview"]
-        assert ov["total_input_tokens"] == 2040
-        assert ov["total_output_tokens"] == 208

@@ -61,6 +61,29 @@ def _good_stream_cm():
 
 
 class TestStreamStaleCircuitBreaker:
+    def test_interrupted_pre_response_wait_advances_streak(self, monkeypatch):
+        """Qualified pre-response interrupts advance the breaker, while early
+        and mid-stream user cancellations remain neutral."""
+        from agent.chat_completion_helpers import (
+            _check_stale_giveup,
+            _record_interrupted_provider_wait,
+        )
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "2")
+        agent = _make_anthropic_agent()
+        agent._consecutive_stale_streams = 0
+
+        assert _record_interrupted_provider_wait(agent, 29.9, response_started=False) is False
+        assert _record_interrupted_provider_wait(agent, 45.0, response_started=True) is False
+        assert agent._consecutive_stale_streams == 0
+
+        assert _record_interrupted_provider_wait(agent, 45.0, response_started=False) is True
+        assert agent._consecutive_stale_streams == 1
+
+        assert _record_interrupted_provider_wait(agent, 60.0, response_started=False) is True
+        with pytest.raises(RuntimeError, match="2 consecutive stale attempts"):
+            _check_stale_giveup(agent)
+
     @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
     def test_short_circuits_when_streak_at_threshold(self, monkeypatch):
         """A session already past the consecutive-stale threshold must abort

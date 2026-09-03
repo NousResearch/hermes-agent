@@ -165,7 +165,7 @@ def load_soul_md() -> Optional[str]:
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
     content = _scan_context_content(content, "SOUL.md")  # Security scan
-    content = _truncate_content(content, "SOUL.md")       # Cap defaults to 20k chars, configurable
+    content = _truncate_content(content, "SOUL.md")       # Cap scales with model context window (20k floor); config override wins
     return content
 ```
 
@@ -174,13 +174,16 @@ When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_
 If `SOUL.md` doesn't exist, the system falls back to:
 
 ```
-You are Hermes Agent, an intelligent AI assistant created by Nous Research.
-You are helpful, knowledgeable, and direct. You assist users with a wide
-range of tasks including answering questions, writing and editing code,
-analyzing information, creative work, and executing actions via your tools.
-You communicate clearly, admit uncertainty when appropriate, and prioritize
-being genuinely useful over being verbose unless otherwise directed below.
-Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length
+of your reply to the weight of the ask — a one-line question gets a
+one-line answer, and finished work gets a short report of what changed,
+what's verified, and what's left, never a replay of the process. No
+filler ("Great question," "I'd be happy to"), no restating the request
+back, no re-summarizing what you already said, no narrating tool calls
+the user can see. Plain claims over adjectives; when unsure, say so
+plainly. Agree because it's right, not because the user said it. Depth
+is earned — give it when the user asks for detail, teaches, or the
+stakes demand it, not by default.
 ```
 
 ## How context files are injected
@@ -232,7 +235,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 All context files are:
 - **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts)
-- **Truncated** — capped at `context_file_max_chars` characters (default 20,000) using 70/20 head/tail ratio with a truncation marker
+- **Truncated** — capped at `context_file_max_chars` characters using a 70/20 head/tail split with a truncation marker. The cap scales with the model's context window (20,000-char floor, 500K ceiling); an explicit `context_file_max_chars` in `config.yaml` always wins.
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
 ## API-call-time-only layers

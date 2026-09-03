@@ -80,10 +80,12 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
 | `skills` | No | List of skill names to load for the agent run. |
+| `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 | `deliver_only` | No | If `true`, skip the agent entirely — the rendered `prompt` template becomes the literal message that gets delivered. Zero LLM cost, sub-second delivery. See [Direct Delivery Mode](#direct-delivery-mode) for use cases. Requires `deliver` to be a real target (not `log`). |
@@ -445,6 +447,47 @@ The agent can create subscriptions via the terminal tool when guided by the `web
 
 ---
 
+## Per-route toolsets {#per-route-toolsets}
+
+Webhook agent runs default to a deliberately constrained toolset (`web_search`, `web_extract`, `vision_analyze`, `clarify`) because webhook payloads can carry untrusted third-party content — a public PR title or issue comment should never be able to prompt-inject its way into your terminal.
+
+For **trusted** routes — a localhost monitoring daemon pushing system alerts, an internal CI system — you can grant a wider toolset to that route only, without widening every other webhook route:
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        oom-emergency:
+          secret: "monitor-secret"
+          prompt: "Memory emergency: {detail}. Diagnose with ps/free/py-spy and report."
+          toolsets: ["terminal", "file", "code_execution", "web"]
+          deliver: "telegram"
+```
+
+For dynamic subscriptions, add the `toolsets` key by editing `~/.hermes/webhook_subscriptions.json` directly:
+
+```json
+{
+  "oom-emergency": {
+    "secret": "...",
+    "prompt": "...",
+    "toolsets": ["terminal", "file", "web"],
+    "deliver": "telegram"
+  }
+}
+```
+
+Behavior and safety properties:
+
+- The route list **replaces** the platform-level webhook toolset resolution for that route's runs (it is not merged).
+- Names are validated through the same path as `platform_toolsets` config — unknown names and platform-restricted toolsets are dropped.
+- `hermes webhook subscribe` deliberately does **not** accept a toolsets flag. Granting elevated tools is a manual config-file edit, so an agent creating its own subscription at runtime cannot self-grant `terminal`.
+- Only grant elevated toolsets to routes whose senders you fully control, with a real HMAC secret. Anyone who can POST a validly-signed payload to that route is effectively running an agent with those tools.
+
+---
+
 ## Security {#security}
 
 The webhook adapter includes multiple layers of security:
@@ -463,6 +506,11 @@ If a secret is configured but no recognized signature header is present, the req
 ### Secret is required
 
 Every route must have a secret — either set directly on the route or inherited from the global `secret`. Routes without a secret cause the adapter to fail at startup with an error. For development/testing only, you can set the secret to `"INSECURE_NO_AUTH"` to skip validation entirely.
+
+When multi-profile routing is enabled, the route's `profile` field also
+binds that secret to one execution target. A route without `profile` is
+default-profile-only. A request carrying a valid route signature is still
+rejected if its `/p/<profile>/` prefix does not match the route binding.
 
 `INSECURE_NO_AUTH` is only accepted when the gateway is bound to a loopback host (`127.0.0.1`, `localhost`, `::1`). If it is combined with a non-loopback bind such as `0.0.0.0` or a LAN IP, the adapter refuses to start — this prevents accidentally exposing an unauthenticated endpoint on a public interface.
 

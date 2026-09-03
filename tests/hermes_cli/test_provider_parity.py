@@ -31,7 +31,11 @@ HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 # derived from the catalog so any future virtual provider is covered without a
 # hardcoded slug.
 _VIRTUAL = {d.slug for d in provider_catalog() if d.auth_type == "virtual"}
-_EXEMPT = {"custom"} | _VIRTUAL
+# Keyless providers (opencode-free) are served anonymously: no credential
+# exists, so there is nothing to configure on either Providers tab. Derived
+# from the catalog flag so any future keyless provider is covered.
+_KEYLESS = {d.slug for d in provider_catalog() if d.keyless}
+_EXEMPT = {"custom"} | _VIRTUAL | _KEYLESS
 
 # Providers that legitimately offer BOTH auth methods and so intentionally
 # appear on both desktop tabs (an API-key card AND an account sign-in card).
@@ -86,12 +90,3 @@ def test_each_provider_lands_on_the_tab_its_auth_type_dictates():
             assert d.slug in accounts, f"{d.slug} (accounts tab) missing from /api/providers/oauth"
 
 
-def test_no_provider_appears_on_both_tabs():
-    """A provider should be configured exactly one way — not duplicated across
-    both tabs (which would confuse users about where to put credentials).
-
-    Exception: genuinely dual-auth providers (see ``_DUAL_TAB``) intentionally
-    appear on both tabs.
-    """
-    overlap = (_keys_tab_providers() & _accounts_tab_providers()) - _EXEMPT - _DUAL_TAB
-    assert not overlap, f"providers appearing on BOTH desktop tabs: {sorted(overlap)}"

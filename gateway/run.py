@@ -9048,7 +9048,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        service_tier: Optional[str] = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
         Always uses the session's primary model/provider.  If `/fast` is
@@ -9061,6 +9067,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         carrying ``chat_template_kwargs``) are preserved here and merged *under*
         the fast-mode overrides, so a provider's configured request body still
         reaches the model on the gateway turn path.
+
+        ``service_tier`` may be supplied explicitly for callers (such as
+        stateless contractor turns) that must not write shared runner state.
+        When omitted, the runner's own session-bound value is used.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -9096,7 +9106,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # dropped by the runtime whitelist above, so a custom provider's
         # configured extra_body (chat_template_kwargs, etc.) never reached the
         # model on the gateway path -- only /fast service-tier overrides did.
-        service_tier = getattr(self, "_service_tier", None)
+        if service_tier is None:
+            service_tier = getattr(self, "_service_tier", None)
         if service_tier != "priority":
             # None (normal) or auto/cold — the bounded window is applied per
             # request by agent.fast_mode, not pinned into request_overrides.
@@ -12375,10 +12386,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cleanup_exc,
             )
 
-    def _cleanup_agent_resources(self, agent: Any) -> None:
-        """Best-effort cleanup for temporary or cached agent instances."""
+    def _cleanup_agent_resources(
+        self, agent: Any, *, reraise: bool = False
+    ) -> None:
+        """Best-effort cleanup for temporary or cached agent instances.
+
+        By default each cleanup step is allowed to fail silently so that a
+        stuck memory provider, terminal, or client does not block the rest of
+        teardown. For callers such as stateless contractor turns that need to
+        observe cleanup failures, pass ``reraise=True`` to raise the first
+        encountered error after all steps have run.
+        """
         if agent is None:
             return
+        _cleanup_errors: list[Exception] = []
         try:
             if hasattr(agent, "shutdown_memory_provider"):
                 # Drain queued memory writes BEFORE tearing the provider down.
@@ -12414,16 +12435,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent.shutdown_memory_provider(session_messages)
                 else:
                     agent.shutdown_memory_provider()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cleanup_errors.append(exc)
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) to prevent zombie
         # process accumulation.
         try:
             if hasattr(agent, "close"):
                 agent.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cleanup_errors.append(exc)
         # Auxiliary async clients (session_search/web/vision/etc.) live in a
         # process-global cache and are created inside worker threads. Clean up
         # any entries whose event loop is now dead so their httpx transports do
@@ -12431,8 +12452,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
-        except Exception:
-            pass
+        except Exception as exc:
+            _cleanup_errors.append(exc)
+        if _cleanup_errors and reraise:
+            raise _cleanup_errors[0]
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -21115,9 +21138,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source=None,
             session_key=None,
         )
-        self._reasoning_config = reasoning_config
-        self._service_tier = service_tier
-        turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+        # Keep contractor reasoning/service-tier local; do not write shared
+        # runner state that ordinary or sibling turns could observe (#33GOD-51).
+        turn_route = self._resolve_turn_agent_config(
+            prompt, model, runtime_kwargs, service_tier=service_tier
+        )
 
         configured_routing = user_config.get("provider_routing")
         provider_routing = (
@@ -21165,6 +21190,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             skip_background_review=True,
         )
         self._set_active_contractor_agent(session_id, agent)
+        result: Optional[dict[str, Any]] = None
         try:
             # Cancellation can arrive while the relatively heavy agent
             # constructor is still loading plugins and tool schemas. The async
@@ -21213,10 +21239,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise ContractorTurnRejected(
                     "contractor agent returned an invalid execution result"
                 )
-            return result
         finally:
             self._set_active_contractor_agent(session_id, None)
-            self._cleanup_agent_resources(agent)
+            cleanup_error = None
+            try:
+                self._cleanup_agent_resources(agent, reraise=True)
+            except Exception as exc:
+                cleanup_error = str(exc)
+                logger.warning(
+                    "Contractor agent cleanup failed for %s: %s", session_id, exc
+                )
+            if cleanup_error is not None:
+                active_exc = sys.exc_info()[1]
+                if active_exc is not None:
+                    active_exc.add_note(
+                        f"Contractor agent cleanup also failed: {cleanup_error}"
+                    )
+                elif isinstance(result, dict):
+                    result["cleanup_error"] = cleanup_error
+        return result
 
     async def _handle_contractor_turn(
         self,
@@ -21238,7 +21279,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not command_id:
             raise ContractorTurnRejected("contractor turn requires a command identity")
         session_id = f"contractor:{context.contractor_id}:{command_id}"
-        profile_home = self._resolve_profile_home_for_source(source)
+
+        # Bind the project root to the trusted profile home before any runtime
+        # scope or skill loading is acquired. The profile home is authoritative
+        # Hermes state; the context project root must be the same directory or
+        # safely contained within it, with symlinks fully resolved (#33GOD-51).
+        try:
+            profile_home = Path(
+                self._resolve_profile_home_for_source(source)
+            ).resolve(strict=True)
+        except Exception as exc:
+            raise ContractorTurnRejected(
+                "could not resolve canonical profile home for contractor authorization"
+            ) from exc
+        try:
+            project_root = Path(context.project_root).resolve(strict=True)
+        except Exception as exc:
+            raise ContractorTurnRejected(
+                "could not resolve canonical contractor project root"
+            ) from exc
+        if not project_root.is_relative_to(profile_home):
+            raise ContractorTurnRejected(
+                "contractor project root is outside the authorized profile boundary"
+            )
 
         async with _async_profile_runtime_scope(profile_home):
             from agent.skill_commands import _build_skill_message, _load_skill_payload

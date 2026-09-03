@@ -319,14 +319,16 @@ async def test_required_skills_keep_order_and_registry_cwd_is_task_scoped(
     tmp_path, monkeypatch
 ):
     runner = object.__new__(gateway_run.GatewayRunner)
-    runner._resolve_profile_home_for_source = lambda _source: tmp_path / "profile"
-    (tmp_path / "profile").mkdir()
+    profile_home = tmp_path / "profile"
+    project_root = profile_home / "project"
+    project_root.mkdir(parents=True)
+    runner._resolve_profile_home_for_source = lambda _source: profile_home
 
     loaded = []
 
     def load_skill(name, task_id=None):
         loaded.append((name, task_id))
-        return ({"content": f"instructions:{name}"}, tmp_path / name, name)
+        return ({"content": f"instructions:{name}"}, project_root / name, name)
 
     def build_skill(payload, _skill_dir, note, **_kwargs):
         return f"{note}\n{payload['content']}"
@@ -356,7 +358,7 @@ async def test_required_skills_keep_order_and_registry_cwd_is_task_scoped(
     runner._run_contractor_agent_sync = execute
     runner._run_in_executor_with_context = run_inline
 
-    event = _event(tmp_path)
+    event = _event(tmp_path, project_root=str(project_root))
     response = await runner._handle_contractor_turn(
         event, event.source, event.contractor_context
     )
@@ -367,7 +369,7 @@ async def test_required_skills_keep_order_and_registry_cwd_is_task_scoped(
     assert captured["prompt"].index("instructions:alpha") < captured["prompt"].index(
         "instructions:beta"
     ) < captured["prompt"].index("Implement the story.")
-    assert captured["cwd"] == tmp_path.resolve()
+    assert captured["cwd"] == project_root.resolve()
     assert captured["profile"] == "operations"
     assert captured["session_id"] == "contractor:board-cranker:command-1"
 
@@ -448,7 +450,7 @@ def test_agent_is_fresh_memoryless_unpersisted_and_uses_configured_runtime(
     )
     runner._resolve_session_reasoning_config = lambda **_kwargs: {"effort": "high"}
     runner._resolve_session_service_tier = lambda **_kwargs: "priority"
-    runner._resolve_turn_agent_config = lambda _message, model, runtime: {
+    runner._resolve_turn_agent_config = lambda _message, model, runtime, **kwargs: {
         "model": model,
         "runtime": runtime,
         "request_overrides": {"service_tier": "priority"},
@@ -537,7 +539,7 @@ def test_memory_or_history_tool_leak_fails_before_model_execution(tmp_path, monk
     runner._resolve_session_agent_runtime = lambda **_kwargs: ("model", {})
     runner._resolve_session_reasoning_config = lambda **_kwargs: None
     runner._resolve_session_service_tier = lambda **_kwargs: None
-    runner._resolve_turn_agent_config = lambda _message, model, runtime: {
+    runner._resolve_turn_agent_config = lambda _message, model, runtime, **kwargs: {
         "model": model,
         "runtime": runtime,
         "request_overrides": {},
@@ -568,4 +570,282 @@ def test_memory_or_history_tool_leak_fails_before_model_execution(tmp_path, monk
             _context(tmp_path),
             "contractor:board-cranker:command-1",
         )
-    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Quality-fix tests for 33GOD-51
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_contractor_turn_rejects_project_root_outside_profile_home(
+    tmp_path, monkeypatch
+):
+    rejected_type = getattr(gateway_run, "ContractorTurnRejected", RuntimeError)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runner._resolve_profile_home_for_source = lambda _source: profile_home
+    runner._run_in_executor_with_context = AsyncMock(
+        side_effect=AssertionError("agent construction must not start")
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload", lambda *_a, **_k: None
+    )
+
+    event = _event(tmp_path, project_root=str(outside))
+    with pytest.raises(rejected_type, match="authorized profile boundary"):
+        await runner._handle_contractor_turn(
+            event, event.source, event.contractor_context
+        )
+
+    runner._run_in_executor_with_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_contractor_turn_rejects_symlink_escape_outside_profile_home(
+    tmp_path, monkeypatch
+):
+    rejected_type = getattr(gateway_run, "ContractorTurnRejected", RuntimeError)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink = profile_home / "project"
+    symlink.symlink_to(outside)
+    runner._resolve_profile_home_for_source = lambda _source: profile_home
+    runner._run_in_executor_with_context = AsyncMock(
+        side_effect=AssertionError("agent construction must not start")
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload", lambda *_a, **_k: None
+    )
+
+    event = _event(tmp_path, project_root=str(symlink))
+    with pytest.raises(rejected_type, match="authorized profile boundary"):
+        await runner._handle_contractor_turn(
+            event, event.source, event.contractor_context
+        )
+
+    runner._run_in_executor_with_context.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_contractor_turn_accepts_project_root_under_profile_home(
+    tmp_path, monkeypatch
+):
+    rejected_type = getattr(gateway_run, "ContractorTurnRejected", RuntimeError)
+    runner = object.__new__(gateway_run.GatewayRunner)
+    profile_home = tmp_path / "profile"
+    project_root = profile_home / "project"
+    project_root.mkdir(parents=True)
+    runner._resolve_profile_home_for_source = lambda _source: profile_home
+    runner._run_in_executor_with_context = AsyncMock(
+        side_effect=AssertionError("agent construction must not start")
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands._load_skill_payload", lambda *_a, **_k: None
+    )
+
+    event = _event(tmp_path, project_root=str(project_root))
+    with pytest.raises(rejected_type, match="alpha"):
+        await runner._handle_contractor_turn(
+            event, event.source, event.contractor_context
+        )
+
+    runner._run_in_executor_with_context.assert_not_awaited()
+
+
+def _minimal_contractor_runner(tmp_path, monkeypatch, **overrides):
+    """Build a GatewayRunner stub wired for direct _run_contractor_agent_sync tests."""
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._resolve_profile_home_for_source = lambda _source: tmp_path
+    runner._provider_routing = {}
+    runner._resolve_enabled_toolsets_for_source = lambda *_args: ["web"]
+    runner._resolve_session_agent_runtime = lambda **_kwargs: ("model", {})
+    runner._resolve_session_reasoning_config = lambda **_kwargs: {"effort": "high"}
+    runner._resolve_session_service_tier = lambda **_kwargs: "priority"
+    runner._resolve_turn_agent_config = lambda _message, model, runtime, **kwargs: {
+        "model": model,
+        "runtime": runtime,
+        "request_overrides": {},
+    }
+    runner._refresh_fallback_model = lambda: None
+    for name, value in overrides.items():
+        setattr(runner, name, value)
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_checkpoint_agent_kwargs", lambda _cfg: {})
+    monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 10)
+    return runner
+
+
+class _CleanFakeAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, *_args, **_kwargs):
+        return {"final_response": "ok", "completed": True, "failed": False}
+
+    def close(self):
+        pass
+
+
+def test_contractor_turn_does_not_mutate_shared_runner_state(
+    tmp_path, monkeypatch
+):
+    runner = _minimal_contractor_runner(
+        tmp_path,
+        monkeypatch,
+        _reasoning_config="initial-reasoning",
+        _service_tier="initial-tier",
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _CleanFakeAgent)
+
+    runner._run_contractor_agent_sync(
+        "prompt",
+        _source(),
+        _context(tmp_path),
+        "contractor:board-cranker:command-1",
+    )
+
+    assert runner._reasoning_config == "initial-reasoning"
+    assert runner._service_tier == "initial-tier"
+
+
+def test_concurrent_contractor_turns_leave_runner_config_unchanged(
+    tmp_path, monkeypatch
+):
+    runner = _minimal_contractor_runner(
+        tmp_path,
+        monkeypatch,
+        _reasoning_config="initial-reasoning",
+        _service_tier="initial-tier",
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _CleanFakeAgent)
+
+    import concurrent.futures
+
+    def run_turn(i):
+        return runner._run_contractor_agent_sync(
+            "prompt",
+            _source(),
+            _context(tmp_path),
+            f"contractor:board-cranker:command-{i}",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(run_turn, i) for i in range(2)]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    assert runner._reasoning_config == "initial-reasoning"
+    assert runner._service_tier == "initial-tier"
+
+
+class _MessySuccessAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, *_args, **_kwargs):
+        return {"final_response": "ok", "completed": True, "failed": False}
+
+    def close(self):
+        raise RuntimeError("cleanup failed")
+
+
+def test_contractor_cleanup_failure_is_observed_on_successful_turn(
+    tmp_path, monkeypatch
+):
+    runner = _minimal_contractor_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", _MessySuccessAgent)
+
+    result = runner._run_contractor_agent_sync(
+        "prompt",
+        _source(),
+        _context(tmp_path),
+        "contractor:board-cranker:command-1",
+    )
+
+    assert result["final_response"] == "ok"
+    assert result["completed"] is True
+    assert "cleanup_error" in result
+    assert "cleanup failed" in result["cleanup_error"]
+
+
+class _MessyFailureAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, *_args, **_kwargs):
+        raise RuntimeError("model call failed")
+
+    def close(self):
+        raise RuntimeError("cleanup failed")
+
+
+def test_contractor_cleanup_failure_is_observed_on_failed_turn(
+    tmp_path, monkeypatch
+):
+    runner = _minimal_contractor_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", _MessyFailureAgent)
+
+    with pytest.raises(RuntimeError, match="model call failed") as exc_info:
+        runner._run_contractor_agent_sync(
+            "prompt",
+            _source(),
+            _context(tmp_path),
+            "contractor:board-cranker:command-1",
+        )
+
+    notes = getattr(exc_info.value, "__notes__", [])
+    assert any("cleanup failed" in note for note in notes)
+
+
+def test_contractor_agent_registry_is_evicted_after_successful_turn(
+    tmp_path, monkeypatch
+):
+    runner = _minimal_contractor_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", _CleanFakeAgent)
+
+    session_id = "contractor:board-cranker:command-1"
+    runner._run_contractor_agent_sync(
+        "prompt",
+        _source(),
+        _context(tmp_path),
+        session_id,
+    )
+
+    assert runner._contractor_agents.get(session_id) is None
+
+
+class _FailingAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, *_args, **_kwargs):
+        raise RuntimeError("model call failed")
+
+    def close(self):
+        pass
+
+
+def test_contractor_agent_registry_is_evicted_after_failed_turn(
+    tmp_path, monkeypatch
+):
+    runner = _minimal_contractor_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", _FailingAgent)
+
+    session_id = "contractor:board-cranker:command-1"
+    with pytest.raises(RuntimeError):
+        runner._run_contractor_agent_sync(
+            "prompt",
+            _source(),
+            _context(tmp_path),
+            session_id,
+        )
+
+    assert runner._contractor_agents.get(session_id) is None

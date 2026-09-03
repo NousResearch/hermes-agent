@@ -26,6 +26,7 @@ def _session_with_compressor(**compression_ctor):
         provider="openai-codex",
         context_compressor=compressor,
         compression_enabled=True,
+        compression_checkpoint_required=False,
         compression_idle_compact_after_seconds=0,
         codex_responses_native_compaction=False,
         codex_responses_compact_threshold=200_000,
@@ -81,6 +82,49 @@ def test_live_codex_native_compaction_applies_on_next_turn(monkeypatch):
     server._sync_agent_compression_with_config("sid-95151", session)
 
     assert session["agent"].codex_responses_native_compaction is True
+
+
+def test_live_checkpoint_gate_disable_applies_on_next_turn(monkeypatch):
+    session, _ = _session_with_compressor()
+    session["agent"].compression_checkpoint_required = True
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"checkpoint_required": False}},
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"].compression_checkpoint_required is False
+
+
+def test_live_checkpoint_gate_reads_changed_config_from_active_home(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    config_path = home / "config.yaml"
+    config_path.write_text(
+        "compression:\n  checkpoint_required: true\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(server, "_hermes_home", home)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_mtime", None)
+    monkeypatch.setattr(server, "_cfg_path", None)
+
+    session, _ = _session_with_compressor()
+    session["agent"].compression_checkpoint_required = True
+    session["config_compression_seen"] = server._tui_compression_config_signature(
+        server._load_cfg()
+    )
+
+    config_path.write_text(
+        "compression:\n  checkpoint_required: false\n# changed\n", encoding="utf-8"
+    )
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"].compression_checkpoint_required is False
 
 
 def test_live_codex_native_threshold_applies_on_next_turn(monkeypatch):
@@ -164,6 +208,7 @@ def _neutral_session(**compression_ctor):
         provider="",
         context_compressor=compressor,
         compression_enabled=True,
+        compression_checkpoint_required=False,
         compression_idle_compact_after_seconds=0,
         codex_responses_native_compaction=False,
         codex_responses_compact_threshold=200_000,
@@ -267,6 +312,13 @@ def test_removing_enabled_restores_true(monkeypatch):
     session["agent"].compression_enabled = False
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].compression_enabled is True
+
+
+def test_removing_checkpoint_required_restores_false(monkeypatch):
+    session, _ = _neutral_session()
+    session["agent"].compression_checkpoint_required = True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].compression_checkpoint_required is False
 
 
 def test_removing_codex_native_compaction_restores_false(monkeypatch):

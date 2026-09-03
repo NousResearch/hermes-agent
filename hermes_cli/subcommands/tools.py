@@ -93,3 +93,26 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
         help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
     )
     tools_parser.set_defaults(func=cmd_tools)
+
+    # hermes tools analytics [--verbose]
+    tools_analytics_p = tools_sub.add_parser(
+        "analytics",
+        help="Show per-tool usage analytics",
+        description=(
+            "Aggregate report of tool call counts, success rates, "
+            "and estimated token cost per tool. Requires tools.analytics: true."
+        ),
+    )
+    tools_analytics_p.add_argument(
+        "--verbose", action="store_true", help="Show detailed per-tool breakdown",
+    )
+
+    # hermes tools prune
+    tools_prune_p = tools_sub.add_parser(
+        "prune",
+        help="Suggest rarely-used tools to disable",
+        description=(
+            "Analyze tool usage across sessions and suggest toolsets that are "
+            "cold enough to disable, saving tokens on every API call."
+        ),
+    )

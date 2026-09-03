@@ -1098,51 +1098,28 @@ def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "
     return context_length if isinstance(context_length, int) else None
 
 
-def _resolve_profile_context_length(
-    profile: Any,
-    model: str,
-    base_url: str,
-    api_key: str = "",
-) -> Optional[int]:
-    """Resolve context length through a provider profile's catalog hook."""
-    try:
-        entries = profile.fetch_model_metadata(
-            api_key=api_key,
-            base_url=base_url or None,
-        )
-    except Exception as exc:
-        logger.debug(
-            "Provider %s live metadata lookup failed: %s",
-            getattr(profile, "name", "unknown"),
-            exc,
-        )
-        return None
-    if not entries:
-        return None
+def _is_separator_boundary_match(model: str, entry_id: str) -> bool:
+    """Whether two catalog ids denote the same base model across a
+    namespace or variant-tag boundary.
 
-    matched = next(
-        (
-            entry
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("id") == model
-        ),
-        None,
-    )
-    if matched is None:
-        valid_entries = [entry for entry in entries if isinstance(entry, dict)]
-        if len(valid_entries) == 1:
-            matched = valid_entries[0]
-        else:
-            matched = next(
-                (
-                    entry
-                    for entry in valid_entries
-                    if isinstance(entry.get("id"), str)
-                    and (model in entry["id"] or entry["id"] in model)
-                ),
-                None,
-            )
-    return _extract_context_length(matched) if matched else None
+    The two ids must be identical, or one must be the other plus a
+    namespace (``vendor/model``) or variant-tag (``model:beta``) segment
+    split at a ``/`` or ``:`` boundary, in either direction: a bare model
+    name resolves against its vendor-qualified catalog id, and an untagged
+    query resolves against a tagged catalog entry. Hyphen splits are
+    deliberately NOT accepted: ``vendor/model`` and ``vendor/model-large``
+    are distinct models with distinct context windows, and a
+    wrong-but-plausible value is worse than falling through to the next
+    step of the resolution chain.
+    """
+    if model == entry_id:
+        return True
+    for sep in ("/", ":"):
+        if entry_id.startswith(model + sep) or model.startswith(entry_id + sep):
+            return True
+        if entry_id.endswith(sep + model) or model.endswith(sep + entry_id):
+            return True
+    return False
 
 
 def _resolve_profile_context_length(
@@ -1228,11 +1205,11 @@ def _resolve_profile_context_length(
                 entry
                 for entry in entries
                 if isinstance(entry.get("id"), str)
-                and (model in entry["id"] or entry["id"] in model)
+                and _is_separator_boundary_match(model, entry["id"])
             ),
             None,
         )
-    return _extract_context_length(matched) if matched else None
+    return _extract_first_int(matched, _CONTEXT_LENGTH_KEYS) if matched else None
 
 
 def _get_context_cache_path() -> Path:
@@ -2478,6 +2455,8 @@ def get_model_context_length(
     # 2. Authoritative live /models catalog for provider profiles that opt in,
     # then the generic custom-endpoint probe for the rest. Known providers skip
     # both: their /models may report a provider-imposed limit (Copilot: 128k).
+    # Opted-in profiles also skip the custom-endpoint helper, whose hard
+    # probe-down default would preempt the provider-aware fallbacks below.
     if use_live_model_metadata and provider_profile is not None:
         context_length = _resolve_profile_context_length(
             provider_profile,
@@ -2491,7 +2470,12 @@ def get_model_context_length(
     # Live /models for truly custom endpoints. Known providers skip this: their /models may
     # report a provider-imposed limit (Copilot: 128k) rather than the window. The native
     # openai-codex provider skips it too even on a proxy URL — step 5 runs its live catalog probe.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and (provider or "").strip().lower() != "openai-codex":
+    if (
+        _is_custom_endpoint(base_url)
+        and not _is_known_provider_base_url(base_url)
+        and not use_live_model_metadata
+        and (provider or "").strip().lower() != "openai-codex"
+    ):
         resolve = _resolve_custom_codex_route_context_length if codex_route else _resolve_custom_endpoint_context_length
         return resolve(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)

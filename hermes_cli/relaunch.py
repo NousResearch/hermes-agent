@@ -101,9 +101,27 @@ def resolve_hermes_bin() -> Optional[str]:
     def _is_python_script(p: str) -> bool:
         return p.lower().endswith((".py", ".pyc"))
 
+    def _has_env_shebang(p: str) -> bool:
+        # A script with a "#!/usr/bin/env python3" shebang resolves python3
+        # through the caller's PATH. That works from a login shell (venv on
+        # PATH) but breaks when a desktop launcher runs the entry with a
+        # bare environment: the system python3 lacks Hermes' deps. The PATH
+        # entry point (venv wrapper) has an absolute interpreter shebang, so
+        # prefer it whenever argv[0] is an env-shebang script.
+        try:
+            with open(p, "rb") as fh:
+                return fh.readline().startswith(b"#!/usr/bin/env")
+        except OSError:
+            return False
+
     # Absolute path to an executable (covers nix store, venv wrappers, etc.)
     if os.path.isabs(argv0) and os.path.isfile(argv0) and os.access(argv0, os.X_OK):
         if not (_is_windows and _is_python_script(argv0)):
+            if not _has_env_shebang(argv0):
+                return argv0
+            path_bin = shutil.which("hermes")
+            if path_bin:
+                return path_bin
             return argv0
 
     # Relative path — resolve against CWD

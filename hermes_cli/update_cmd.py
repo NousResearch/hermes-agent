@@ -2805,6 +2805,37 @@ def _stash_apply_failed_only_on_existing_untracked(stderr: str) -> bool:
             return False
     return saw_untracked_error
 
+class _PromptTimeout(Exception):
+    """Raised when the interactive autostash restore prompt exceeds its timeout."""
+
+
+def _input_with_timeout(prompt: str, *, timeout: float) -> str:
+    """Read a line from stdin with a bounded wait.
+
+    On POSIX, uses ``signal.SIGALRM`` to interrupt ``input()`` after
+    ``timeout`` seconds. On Windows there is no ``SIGALRM``; the call
+    falls back to a blocking ``input()`` (matching the pre-fix behavior)
+    because the unattended-TTY hang this guards against is macOS-specific
+    (issue #85753). ``timeout <= 0`` also selects the blocking path for
+    users who explicitly disable the guard via config.
+    """
+    import signal as _signal
+
+    if timeout <= 0 or not hasattr(_signal, "SIGALRM"):
+        return input(prompt)
+
+    def _alarm_handler(signum, frame):
+        raise _PromptTimeout
+
+    previous = _signal.signal(_signal.SIGALRM, _alarm_handler)
+    _signal.alarm(int(max(timeout, 1)))
+    try:
+        return input(prompt)
+    finally:
+        _signal.alarm(0)
+        _signal.signal(_signal.SIGALRM, previous)
+
+
 def _park_stashed_changes(stash_ref: str) -> None:
     """Leave a pre-update autostash parked instead of re-applying it.
 
@@ -2946,6 +2977,7 @@ def _restore_stashed_changes(
     stash_ref: str,
     prompt_user: bool = False,
     input_fn=None,
+    timeout: float = 60.0,
 ) -> bool:
     if prompt_user:
         remote_prompt = input_fn is not None
@@ -2961,7 +2993,7 @@ def _restore_stashed_changes(
             response = input_fn(f"Restore local changes now? {prompt_suffix}", "n")
         else:
             try:
-                response = input().strip().lower()
+                response = _input_with_timeout("Restore local changes now? [Y/n] ", timeout=timeout).strip().lower()
             except (EOFError, UnicodeDecodeError):
                 # Mirror the config-migration prompt's fix: don't let a
                 # terminal-encoding issue or a closed stdin crash the
@@ -2969,6 +3001,15 @@ def _restore_stashed_changes(
                 # skip-restore path below, which already explains how to
                 # restore manually from git stash.
                 response = "n"
+            except _PromptTimeout:
+                # Unattended TTY: stdin is open but nobody is answering.
+                # Skip restore so the post-update gateway restart still
+                # runs (issue #85753). The stash is preserved; the user
+                # can restore manually later.
+                print(f"  (autostash restore prompt timed out after {int(timeout)}s — skipping)")
+                print("Your changes are still preserved in git stash.")
+                print(f"Restore manually with: git stash apply {stash_ref}")
+                return False
         accepted = response in {"y", "yes"} or (not remote_prompt and response == "")
         if not accepted:
             print("Skipped restoring local changes.")
@@ -8211,6 +8252,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # when updates.parked_branch_strategy is "update_in_place".
     switch_branch = bool(getattr(args, "switch_branch", False))
 
+    # Bounded wait on the autostash restore prompt so an unattended
+    # terminal cannot hang the update mid-restore and leave a managed
+    # gateway on stale code (issue #85753). 0 disables the guard.
+    try:
+        from hermes_cli.config import load_config
+
+        _autostash_prompt_timeout = float(
+            (load_config() or {}).get("updates", {}).get("autostash_prompt_timeout", 60)
+        )
+    except (TypeError, ValueError):
+        _autostash_prompt_timeout = 60.0
+
     # Whether this update is running without a human at the keyboard.
     # Interactive terminal updates always stash-and-ask (unchanged behavior);
     # only non-interactive updates (desktop/chat app, gateway, `--yes`) consult
@@ -8771,6 +8824,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             auto_stash_ref,
                             prompt_user=False,
                             input_fn=gw_input_fn,
+                            timeout=_autostash_prompt_timeout,
                         )
                     print(f"✗ Branch '{branch}' does not exist locally or on origin.")
                     if track_result.stderr.strip():
@@ -8872,6 +8926,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     auto_stash_ref,
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
+                    timeout=_autostash_prompt_timeout,
                 )
             if parked_branch_switched:
                 if switch_block_reason.startswith("unmerged:"):
@@ -9298,6 +9353,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         auto_stash_ref,
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
+                        timeout=_autostash_prompt_timeout,
                     )
 
         _invalidate_update_cache()

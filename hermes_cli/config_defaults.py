@@ -3667,6 +3667,13 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Maximum seconds the interactive autostash-restore prompt
+        # ("Restore local changes now? [Y/n]") waits before skipping
+        # restore so an unattended `hermes update` cannot hang mid-
+        # update with a managed gateway left on stale code (#85753).
+        # 0 disables the guard (blocks forever, pre-fix behavior).
+        # POSIX-only (SIGALRM); Windows keeps the blocking path.
+        "autostash_prompt_timeout": 60,
         # When `hermes update` finds the source checkout parked on a feature
         # branch (left behind by tooling or a manual checkout), switch back
         # to the update target automatically whenever the working tree is

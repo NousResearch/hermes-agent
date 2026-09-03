@@ -568,26 +568,128 @@ def test_respawn_guard_caches_pr_state_lookups(kanban_home):
         calls.append(url)
         return "open"
 
+    first = "http://github.com/NousResearch/hermes-agent/pull/00456"
+    equivalent = "https://github.com/nousresearch/HERMES-AGENT/pull/456"
+    assert kb._cached_github_pr_state(first, resolve) == "open"
+    assert kb._cached_github_pr_state(equivalent, resolve) == "open"
+    assert calls == [first]
+
+
+def test_explicit_ci_repair_unblock_admits_same_pr_exactly_once(kanban_home):
+    """A structured repair admission bypasses active_pr until one claim consumes it."""
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/123"
+
     with kb.connect() as conn:
-        task_id = _task_with_pr_comment(
+        task_id = _task_with_pr_comment(conn, pr_url)
+        original = kb.claim_task(conn, task_id)
+        assert original is not None
+        assert kb.block_task(
             conn,
-            "http://github.com/NousResearch/hermes-agent/pull/456",
+            task_id,
+            reason="CI failed",
+            expected_run_id=original.current_run_id,
         )
 
+        assert kb.unblock_task(conn, task_id, active_pr_url=pr_url)
+        unblocked = [
+            event for event in kb.list_events(conn, task_id)
+            if event.kind == "unblocked"
+        ][-1]
+        assert unblocked.payload is not None
+        assert unblocked.payload["active_pr_admission"] == {
+            "url": "https://github.com/nousresearch/hermes-agent/pull/123"
+        }
         assert kb.check_respawn_guard(
-            conn, task_id, pr_state_resolver=resolve,
-        ) == "active_pr"
+            conn,
+            task_id,
+            pr_state_resolver=lambda _url: (_ for _ in ()).throw(
+                AssertionError("authorized PR should not require a live lookup")
+            ),
+        ) is None
+
+        repair = kb.claim_task(conn, task_id)
+        assert repair is not None
         assert kb.check_respawn_guard(
-            conn, task_id, pr_state_resolver=resolve,
+            conn,
+            task_id,
+            pr_state_resolver=lambda _url: "open",
+        ) == "active_pr"
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="repair worker stopped",
+            kind="transient",
+            expected_run_id=repair.current_run_id,
+        )
+        assert kb.unblock_task(conn, task_id)
+        assert kb.check_respawn_guard(
+            conn,
+            task_id,
+            pr_state_resolver=lambda _url: "open",
         ) == "active_pr"
 
-    assert calls == ["http://github.com/NousResearch/hermes-agent/pull/456"]
+        # A later explicit admission is a new one-shot authorization.
+        held = kb.claim_task(conn, task_id)
+        assert held is not None
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="CI failed again",
+            kind="capability",
+            expected_run_id=held.current_run_id,
+        )
+        assert kb.unblock_task(conn, task_id, active_pr_url=pr_url)
+        assert kb.check_respawn_guard(
+            conn,
+            task_id,
+            pr_state_resolver=lambda _url: "open",
+        ) is None
 
 
+def test_ci_repair_admission_is_revoked_by_terminal_transition(kanban_home):
+    """An unused admission cannot survive completion into a future lifecycle."""
+    pr_url = "https://github.com/NousResearch/hermes-agent/pull/123"
+    with kb.connect() as conn:
+        task_id = _task_with_pr_comment(conn, pr_url)
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="CI failed",
+            expected_run_id=claimed.current_run_id,
+        )
+        assert kb.unblock_task(conn, task_id, active_pr_url=pr_url)
+        assert kb._has_unconsumed_active_pr_admission(conn, task_id, pr_url)
+
+        assert kb.complete_task(conn, task_id, summary="cancelled repair")
+        assert not kb._has_unconsumed_active_pr_admission(conn, task_id, pr_url)
 
 
+def test_ci_repair_unblock_requires_prior_matching_pr_evidence(kanban_home):
+    """Admissions are task-local and cannot target an unrecorded PR."""
+    evidenced_url = "https://github.com/NousResearch/hermes-agent/pull/123"
+    unrelated_url = "https://github.com/NousResearch/hermes-agent/pull/999"
 
+    with kb.connect() as conn:
+        task_id = _task_with_pr_comment(conn, evidenced_url)
+        other_task_id = _task_with_pr_comment(conn, unrelated_url)
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            task_id,
+            reason="CI failed",
+            expected_run_id=claimed.current_run_id,
+        )
 
+        assert not kb.unblock_task(conn, task_id, active_pr_url=unrelated_url)
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "blocked"
+        assert not kb._has_unconsumed_active_pr_admission(
+            conn, other_task_id, evidenced_url
+        )
 
 
 # ---------------------------------------------------------------------------

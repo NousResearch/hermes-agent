@@ -985,6 +985,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         action="store_true",
         help="Emit one JSON object per task on stdout",
     )
+    p_decompose.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the routing decision (predicted owner, context "
+             "envelope, dependency graph) without creating cards, writing "
+             "to the DB, or invoking a worker. Not compatible with --all.",
+    )
 
     # --- gc ---
     p_gc = sub.add_parser(
@@ -3142,6 +3149,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
     tenant = getattr(args, "tenant", None)
     author = getattr(args, "author", None) or _profile_author()
     want_json = bool(getattr(args, "json", False))
+    dry_run = bool(getattr(args, "dry_run", False))
 
     if args.task_id and all_flag:
         print(
@@ -3149,6 +3157,43 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if dry_run and all_flag:
+        print(
+            "kanban: --dry-run is not compatible with --all",
+            file=sys.stderr,
+        )
+        return 2
+
+    if dry_run:
+        if not args.task_id:
+            print(
+                "kanban: --dry-run requires a task id",
+                file=sys.stderr,
+            )
+            return 2
+        result = decomp.dry_run_route(task_id=args.task_id)
+        if want_json:
+            print(json.dumps({
+                "ok": result.ok,
+                "reason": result.reason,
+                "predicted_owner": result.predicted_owner,
+                "context_envelope": result.context_envelope,
+                "dependency_graph": result.dependency_graph,
+                "rationale": result.rationale,
+                "fanout": result.fanout,
+            }))
+        elif result.ok:
+            print(f"[dry-run] predicted owner: {result.predicted_owner}")
+            if result.fanout and result.dependency_graph:
+                print(f"[dry-run] fan-out: {len(result.dependency_graph)} children (no cards created)")
+                for child in result.dependency_graph:
+                    print(f"  - [{child['index']}] {child['title']} -> {child['assignee']} (parents={child['parents']})")
+            else:
+                print("[dry-run] single task (no fanout, no card mutated)")
+        else:
+            print(f"kanban: dry-run {args.task_id}: {result.reason}", file=sys.stderr)
+        return 0 if result.ok else 1
 
     if all_flag:
         ids = decomp.list_triage_ids(tenant=tenant)

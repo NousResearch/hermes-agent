@@ -136,6 +136,42 @@ class DecomposeOutcome:
     new_title: Optional[str] = None
 
 
+@dataclass
+class PredictedRouting:
+    """Pure prediction produced by steps 1-4 of the routing pipeline.
+
+    Shared by the live (mutating) path and the dry-run (non-mutating)
+    path so the two can never diverge in *what* gets predicted, only in
+    whether the prediction is persisted.
+    """
+
+    ok: bool
+    reason: str = ""
+    fanout: bool = False
+    rationale: str = ""
+    orchestrator: str = ""
+    default_assignee: str = ""
+    roster: list[dict] | None = None
+    # single-task (fanout=false) path
+    title: Optional[str] = None
+    body: Optional[str] = None
+    assignee: Optional[str] = None
+    # fan-out (fanout=true) path — validated children, never written here
+    children: list[dict] | None = None
+
+
+class _AdHocTask:
+    """Stand-in for ``kb.Task`` when previewing routing on text that has
+    no backing DB row (dry-run's ``title``/``body`` input mode)."""
+
+    def __init__(self, title: str, body: str) -> None:
+        self.id = "(preview)"
+        self.title = title
+        self.body = body
+        self.status = "triage"
+        self.assignee: Optional[str] = None
+
+
 def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -268,40 +304,29 @@ def _normalize_assignee_choice(
     return chosen
 
 
-def decompose_task(
-    task_id: str,
+def _predict_routing(
+    task: "kb.Task | _AdHocTask",
     *,
-    author: Optional[str] = None,
+    task_id_for_log: str,
     timeout: Optional[int] = None,
-) -> DecomposeOutcome:
-    """Decompose a triage task into a graph of child tasks.
+) -> PredictedRouting:
+    """Steps 1-4 of routing: read (already done by caller), resolve roster,
+    call the LLM, parse + validate its JSON. Pure — never touches the DB.
 
-    Returns an outcome describing what happened. Never raises for
-    expected failure modes (task not in triage, no aux client
-    configured, API error, malformed response, decomposer returned
-    fanout=true with empty task list) — those surface via ``ok=False``.
+    Shared verbatim by ``decompose_task`` (live) and ``dry_run_route``
+    (preview) so the two can never predict differently; only what happens
+    *after* this call (persist vs. return) differs.
     """
-    with kb.connect_closing() as conn:
-        task = kb.get_task(conn, task_id)
-    if task is None:
-        return DecomposeOutcome(task_id, False, "unknown task id")
-    if task.status != "triage":
-        return DecomposeOutcome(
-            task_id, False, f"task is not in triage (status={task.status!r})"
-        )
-
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
-    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
     roster, valid_names = _build_roster()
 
     try:
         from agent.auxiliary_client import call_llm  # type: ignore
     except Exception as exc:
         logger.debug("decompose: auxiliary client import failed: %s", exc)
-        return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
+        return PredictedRouting(False, "auxiliary client unavailable")
 
     user_msg = _USER_TEMPLATE.format(
         task_id=task.id,
@@ -328,9 +353,9 @@ def decompose_task(
         )
     except Exception as exc:
         logger.info(
-            "decompose: API call failed for %s (%s)", task_id, exc,
+            "decompose: API call failed for %s (%s)", task_id_for_log, exc,
         )
-        return DecomposeOutcome(task_id, False, f"LLM error: {type(exc).__name__}")
+        return PredictedRouting(False, f"LLM error: {type(exc).__name__}")
 
     try:
         raw = resp.choices[0].message.content or ""
@@ -339,50 +364,38 @@ def decompose_task(
 
     parsed = _extract_json_blob(raw)
     if parsed is None:
-        return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
+        return PredictedRouting(False, "LLM returned malformed JSON")
 
     fanout = bool(parsed.get("fanout"))
-    audit_author = author or _profile_author()
+    _rationale_raw = parsed.get("rationale")
+    rationale = _rationale_raw if isinstance(_rationale_raw, str) else ""
 
     if not fanout:
-        # Fall back to single-task spec promotion (same effect as specify).
         new_title = parsed.get("title")
         new_body = parsed.get("body")
         title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
         body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
         assignee_val = None
-        if not task.assignee:
+        if not getattr(task, "assignee", None):
             assignee_val = _normalize_assignee_choice(
                 parsed.get("assignee"),
                 default_assignee=default_assignee,
                 valid_names=valid_names,
             )
         if title_val is None and body_val is None:
-            return DecomposeOutcome(
-                task_id, False, "decomposer returned fanout=false with no title/body",
+            return PredictedRouting(
+                False, "decomposer returned fanout=false with no title/body",
             )
-        with kb.connect_closing() as conn:
-            ok = kb.specify_triage_task(
-                conn,
-                task_id,
-                title=title_val,
-                body=body_val,
-                assignee=assignee_val,
-                author=audit_author,
-            )
-        if not ok:
-            return DecomposeOutcome(
-                task_id, False, "task moved out of triage before promotion",
-            )
-        return DecomposeOutcome(
-            task_id, True, "single task (no fanout)",
-            fanout=False, new_title=title_val,
+        return PredictedRouting(
+            True, "", fanout=False, rationale=rationale,
+            orchestrator=orchestrator, default_assignee=default_assignee,
+            roster=roster, title=title_val, body=body_val, assignee=assignee_val,
         )
 
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
-        return DecomposeOutcome(
-            task_id, False, "decomposer returned fanout=true with empty tasks list",
+        return PredictedRouting(
+            False, "decomposer returned fanout=true with empty tasks list",
         )
 
     # Rewrite invalid assignees to the default fallback. Never leave a
@@ -390,14 +403,10 @@ def decompose_task(
     children: list[dict] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):
-            return DecomposeOutcome(
-                task_id, False, f"tasks[{idx}] is not an object",
-            )
+            return PredictedRouting(False, f"tasks[{idx}] is not an object")
         title = entry.get("title")
         if not isinstance(title, str) or not title.strip():
-            return DecomposeOutcome(
-                task_id, False, f"tasks[{idx}].title is missing or empty",
-            )
+            return PredictedRouting(False, f"tasks[{idx}].title is missing or empty")
         body = entry.get("body")
         if not isinstance(body, str):
             body = ""
@@ -415,7 +424,7 @@ def decompose_task(
             logger.info(
                 "decompose: task %s child %d picked unknown assignee %r — "
                 "routing to default_assignee %r",
-                task_id, idx, assignee, default_assignee,
+                task_id_for_log, idx, assignee, default_assignee,
             )
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
@@ -429,13 +438,70 @@ def decompose_task(
             "parents": clean_parents,
         })
 
+    return PredictedRouting(
+        True, "", fanout=True, rationale=rationale,
+        orchestrator=orchestrator, default_assignee=default_assignee,
+        roster=roster, children=children,
+    )
+
+
+def decompose_task(
+    task_id: str,
+    *,
+    author: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> DecomposeOutcome:
+    """Decompose a triage task into a graph of child tasks.
+
+    Returns an outcome describing what happened. Never raises for
+    expected failure modes (task not in triage, no aux client
+    configured, API error, malformed response, decomposer returned
+    fanout=true with empty task list) — those surface via ``ok=False``.
+    """
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    if task is None:
+        return DecomposeOutcome(task_id, False, "unknown task id")
+    if task.status != "triage":
+        return DecomposeOutcome(
+            task_id, False, f"task is not in triage (status={task.status!r})"
+        )
+
+    cfg = _load_config()
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    audit_author = author or _profile_author()
+
+    prediction = _predict_routing(task, task_id_for_log=task_id, timeout=timeout)
+    if not prediction.ok:
+        return DecomposeOutcome(task_id, False, prediction.reason)
+
+    if not prediction.fanout:
+        with kb.connect_closing() as conn:
+            ok = kb.specify_triage_task(
+                conn,
+                task_id,
+                title=prediction.title,
+                body=prediction.body,
+                assignee=prediction.assignee,
+                author=audit_author,
+            )
+        if not ok:
+            return DecomposeOutcome(
+                task_id, False, "task moved out of triage before promotion",
+            )
+        return DecomposeOutcome(
+            task_id, True, "single task (no fanout)",
+            fanout=False, new_title=prediction.title,
+        )
+
     try:
         with kb.connect_closing() as conn:
             child_ids = kb.decompose_triage_task(
                 conn,
                 task_id,
-                root_assignee=orchestrator,
-                children=children,
+                root_assignee=prediction.orchestrator,
+                children=prediction.children,
                 author=audit_author,
                 auto_promote=auto_promote,
             )
@@ -453,6 +519,106 @@ def decompose_task(
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children",
         fanout=True, child_ids=child_ids,
+    )
+
+
+@dataclass
+class DryRunResult:
+    """Predicted routing decision, never persisted.
+
+    Mirrors what a live call to ``decompose_task`` would decide and
+    (for an existing ``task_id``) what a dispatched worker would see as
+    its ``worker_context``, but stops before the two mutating DB calls
+    (``kb.specify_triage_task`` / ``kb.decompose_triage_task``) that
+    ``decompose_task`` uses to persist the decision. No row is ever
+    created, so the dispatcher never has anything to spawn a worker for.
+    """
+
+    ok: bool
+    reason: str = ""
+    predicted_owner: Optional[str] = None
+    context_envelope: Optional[dict] = None
+    dependency_graph: Optional[list[dict]] = None
+    rationale: str = ""
+    fanout: bool = False
+
+
+def dry_run_route(
+    *,
+    task_id: Optional[str] = None,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> DryRunResult:
+    """Preview the routing decision for a task without mutating anything.
+
+    Exactly one of ``task_id`` (an existing row, any status, read-only
+    lookup) or ``title`` (with optional ``body``, no backing row at all)
+    must be given.
+
+    Shares steps 1-4 of the live pipeline via ``_predict_routing`` so the
+    prediction cannot drift from what live routing would actually decide.
+    Deliberately never calls ``kb.specify_triage_task``,
+    ``kb.decompose_triage_task``, or any other write helper — those two
+    functions are the *only* mutating calls in the live path (see
+    ``docs/rfcs/yout-plus-dry-run-routing.md``), and this function does
+    not reference either name.
+    """
+    if (task_id is None) == (not title):
+        return DryRunResult(False, "exactly one of task_id or title must be given")
+
+    if task_id is not None:
+        with kb.connect_closing() as conn:
+            task = kb.get_task(conn, task_id)
+        if task is None:
+            return DryRunResult(False, "unknown task id")
+        log_id = task_id
+    else:
+        task = _AdHocTask(title=title or "", body=body or "")
+        log_id = "(preview)"
+
+    prediction = _predict_routing(task, task_id_for_log=log_id, timeout=timeout)
+    if not prediction.ok:
+        return DryRunResult(False, prediction.reason)
+
+    if not prediction.fanout:
+        owner = prediction.assignee or getattr(task, "assignee", None) or prediction.default_assignee
+        envelope = {
+            "title": prediction.title or task.title,
+            "body": prediction.body or task.body,
+            "assignee": owner,
+            "parent_handoffs": [],
+            "roster": prediction.roster,
+            "orchestrator": prediction.orchestrator,
+            "default_assignee": prediction.default_assignee,
+        }
+        if task_id is not None:
+            with kb.connect_closing() as conn:
+                envelope["worker_context"] = kb.build_worker_context(conn, task_id)
+        return DryRunResult(
+            True, predicted_owner=owner, context_envelope=envelope,
+            dependency_graph=None, rationale=prediction.rationale, fanout=False,
+        )
+
+    dependency_graph = [
+        {"index": idx, **child}
+        for idx, child in enumerate(prediction.children or [])
+    ]
+    envelope = {
+        "title": task.title,
+        "body": task.body,
+        "assignee": prediction.orchestrator,
+        "parent_handoffs": [],
+        "roster": prediction.roster,
+        "orchestrator": prediction.orchestrator,
+        "default_assignee": prediction.default_assignee,
+    }
+    if task_id is not None:
+        with kb.connect_closing() as conn:
+            envelope["worker_context"] = kb.build_worker_context(conn, task_id)
+    return DryRunResult(
+        True, predicted_owner=prediction.orchestrator, context_envelope=envelope,
+        dependency_graph=dependency_graph, rationale=prediction.rationale, fanout=True,
     )
 
 

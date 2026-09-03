@@ -264,6 +264,20 @@ def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
     assert leftovers == [], f"temp upload files leaked on cancellation: {leftovers}"
 
 
+def test_locked_managed_files_root_allows_media_playback(forced_files_client):
+    """An operator-locked Files root is already fully trusted for reads, so
+    media playback through /api/files/stream must not require it to ALSO be a
+    configured media root (the overlap between the managed-files policy and
+    the unified media-roots policy)."""
+    client, root = forced_files_client
+    file_path = _seed_file(client, root, name="out/demo.mp4")
+
+    response = client.get("/api/files/stream", params={"path": str(file_path)})
+
+    assert response.status_code == 200
+    assert response.content == b"hello"
+
+
 def test_sensitive_env_files_hidden_from_listing(forced_files_client):
     """Regression test for #57505: .env files must not appear in directory listings."""
     client, root = forced_files_client

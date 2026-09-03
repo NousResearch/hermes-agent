@@ -1507,6 +1507,9 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # bot_mode holds a couple of relay tuning knobs — keep it folded into the
     # agent tab rather than spawning a tiny standalone category.
     "bot_mode": "agent",
+    # `media.roots` is the only schema-surfaced media field — fold it into the
+    # security tab next to the other what-can-be-read knobs.
+    "media": "security",
     "goals": "agent",
     "updates": "general",
     # `onboarding.profile_build` is the only schema-surfaced onboarding field
@@ -2534,21 +2537,16 @@ def _fs_git_branch(cwd: str) -> str:
 def _media_serve_roots() -> list[Path]:
     """Directories ``GET /api/media`` is allowed to read from.
 
-    Confined to where the agent and attach pipeline actually write media on the
-    gateway host — its images dir and cache subtree. This stops an authenticated
-    client from reading image-extension files anywhere on disk (e.g. a renamed
-    key or a screenshot outside the cache) merely because the suffix passes the
+    Delegates to the unified media-roots policy (``hermes_cli.media_roots``):
+    ``media.roots`` from config.yaml, defaulting to the gateway workspace plus
+    the Hermes-managed media subtrees. This stops an authenticated client from
+    reading image-extension files anywhere on disk (e.g. a renamed key or a
+    screenshot outside the cache) merely because the suffix passes the
     allowlist.
     """
-    home = get_hermes_home()
-    roots = [home / "images", home / "screenshots", home / "cache"]
-    out: list[Path] = []
-    for root in roots:
-        try:
-            out.append(root.resolve())
-        except (OSError, RuntimeError):
-            continue
-    return out
+    from hermes_cli.media_roots import media_roots
+
+    return media_roots()
 
 
 @app.get("/api/media")
@@ -2945,6 +2943,28 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
+def _ensure_media_roots_allowed(target: Path, *, media_only: bool, extra_roots=None) -> None:
+    """Deny media-serving fetches outside the unified media-roots policy.
+
+    The one shared gate for ``/api/media``, ``/api/files/stream``, the
+    media-subresource branch of ``/api/files/download``, and
+    ``/api/fs/read-data-url`` for media-extension files (see
+    ``hermes_cli.media_roots``). Non-media branches (documents, the FS text
+    preview) are NOT gated here — a chart PDF or a text file the agent wrote
+    into an arbitrary workspace is a legitimate managed-file read, and the
+    Save-as fallback (``/api/fs/download``) remains available for anything the
+    inline policy denies. ``extra_roots`` extends the policy with roots the
+    caller already trusts for full read access (the operator-locked managed
+    files root) — see ``hermes_cli.media_roots.path_in_media_roots``.
+    """
+    if not media_only:
+        return
+    from hermes_cli.media_roots import path_in_media_roots
+
+    if not path_in_media_roots(target, extra_roots=extra_roots):
+        raise HTTPException(status_code=403, detail="Path outside media roots")
+
+
 def _managed_file_response(
     request: Request,
     path: str,
@@ -2962,6 +2982,9 @@ def _managed_file_response(
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
+    _ensure_media_roots_allowed(
+        target, media_only=media_only, extra_roots=[policy.locked_root] if policy.locked_root else None
+    )
 
     try:
         size = target.stat().st_size
@@ -3272,6 +3295,12 @@ async def fs_read_data_url(path: str):
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
+    # Unified media-roots policy: media-extension files (the desktop's inline
+    # preview class) must live under a media root, same as /api/media and the
+    # streaming endpoints. Non-media files (text, PDF, ...) keep the historical
+    # unconfined preview so the FS browser/editor still works anywhere.
+    if target.suffix.lower() in _MEDIA_CONTENT_TYPES or target.suffix.lower() in _FS_MIME_TYPES:
+        _ensure_media_roots_allowed(target, media_only=True)
     try:
         encoded = base64.b64encode(target.read_bytes()).decode("ascii")
     except PermissionError:

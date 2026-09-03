@@ -1909,6 +1909,27 @@ display:
 #   redact_pii: false
 
 # =============================================================================
+# Media-serving roots
+# =============================================================================
+# The dashboard endpoints that serve media inline — GET /api/media (images),
+# GET /api/files/stream (audio/video), the audio/video branch of
+# GET /api/files/download, and GET /api/fs/read-data-url for media-extension
+# files — only serve files under one of these directories. Unset/empty means
+# the safe default: the gateway workspace plus ~/.hermes/{images,screenshots,
+# cache} (generated images, browser screenshots, cached platform/relay media).
+#
+# Add a directory (absolute path, ~ expanded) to also serve agent-written
+# media from elsewhere, e.g. a shared project tree:
+#
+# media:
+#   roots:
+#     - /srv/shared-media
+#     - ~/gallery
+#
+# Non-media files (text previews, document downloads, explicit Save-as) are
+# not restricted by this key; the dashboard Files tab has its own policy.
+
+# =============================================================================
 # Shell-script hooks
 # =============================================================================
 # Register shell scripts as plugin-hook callbacks.  Each entry is executed as

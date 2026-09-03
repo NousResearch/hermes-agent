@@ -735,6 +735,30 @@ memory:
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
+## Media Serving Roots
+
+When Hermes Desktop talks to a gateway over the network, media the agent wrote on the gateway host is fetched through authenticated dashboard endpoints: `GET /api/media` (images), `GET /api/files/stream` (audio/video playback), the audio/video branch of `GET /api/files/download`, and `GET /api/fs/read-data-url` for media-extension files. All four enforce **one** shared policy: the file must live under a **media root**.
+
+```yaml
+media:
+  roots: []   # default — workspace + ~/.hermes/{images, screenshots, cache}
+```
+
+The safe default covers where Hermes itself writes media: the gateway's workspace (agent-produced artifacts) and the Hermes home's `images/`, `screenshots/`, and `cache/` directories (generated images, browser screenshots, cached platform and relay media). Files inside those trees render inline; anything else gets a visible fallback card with a Save-as option instead of a silent failure.
+
+To serve media the agent writes elsewhere (a shared project tree, an export directory), add absolute paths (`~` is expanded):
+
+```yaml
+media:
+  roots:
+    - /srv/shared-media
+    - ~/gallery
+```
+
+Configuring `media.roots` replaces the default set, so include the directories you still want covered. Entries must be existing directories; a typo is logged as a warning rather than silently ignored. The policy is re-read per request — edits apply without restarting the gateway.
+
+Not restricted by this key: non-media file reads (text previews, documents) in the dashboard Files tab, and explicit Save-as downloads, which keep their own credential-file denylist.
+
 ## Context File Truncation
 
 Controls how much content Hermes loads from each automatic context file before applying head/tail truncation. This applies to files injected into the system prompt such as `SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`. It does **not** affect the `read_file` tool.

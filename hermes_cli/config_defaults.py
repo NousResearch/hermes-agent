@@ -1869,6 +1869,18 @@ DEFAULT_CONFIG = {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
 
+    # Media-serving roots (hermes_cli/media_roots.py). The dashboard endpoints
+    # that serve media inline — GET /api/media, GET /api/files/stream, the
+    # media branch of GET /api/files/download, and GET /api/fs/read-data-url
+    # for media-extension files — only serve files under one of these
+    # directories. Unset/empty = the safe default: the gateway workspace plus
+    # ~/.hermes/{images,screenshots,cache} (generated images, screenshots,
+    # cached platform/relay media). Add a directory to serve agent-written
+    # media from elsewhere; entries are ~-expanded absolute paths.
+    "media": {
+        "roots": [],
+    },
+
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented

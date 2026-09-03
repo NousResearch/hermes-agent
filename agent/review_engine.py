@@ -234,6 +234,28 @@ def _load_review_credentials_cfg() -> Optional[Dict[str, Any]]:
     }
 
 
+def _load_review_timeout_override() -> tuple[Any, Optional[str]]:
+    """Return the dedicated reviewer timeout and its config path when set.
+
+    ``None`` means the key is unset and the delegation-wide timeout should be
+    inherited. An explicit zero is preserved because it disables the cap.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        full = load_config_readonly()
+        aux = full.get("auxiliary") or {}
+        review = aux.get("review") or {}
+        if not isinstance(review, dict):
+            return None, None
+        value = review.get("child_timeout_seconds")
+    except Exception:
+        return None, None
+    if value is None:
+        return None, None
+    return value, "auxiliary.review.child_timeout_seconds"
+
+
 def start_review(
     parent_agent,
     messages: List[Dict[str, Any]],
@@ -258,15 +280,23 @@ def start_review(
     loaded_skills = collect_parent_loaded_skills(parent_agent, messages)
     goal, context = build_review_task(snapshot, user_prompt, loaded_skills)
     credentials_cfg = _load_review_credentials_cfg()
+    timeout_value, timeout_source = _load_review_timeout_override()
 
     from tools.delegate_tool import delegate_task
 
+    delegate_kwargs: Dict[str, Any] = {}
+    if timeout_source is not None:
+        delegate_kwargs.update(
+            _child_timeout_seconds=timeout_value,
+            _child_timeout_source=timeout_source,
+        )
     raw = delegate_task(
         goal=goal,
         context=context,
         background=True,
         parent_agent=parent_agent,
         credentials_cfg=credentials_cfg,
+        **delegate_kwargs,
     )
     try:
         result = json.loads(raw)

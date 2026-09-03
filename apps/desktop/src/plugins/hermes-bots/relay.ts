@@ -238,7 +238,7 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
           ? connection.remoteProfile.trim()
           : 'default'
 
-      byConnection.set(id, {
+      const seeded: RelayConnection = {
         id,
         route: {
           connectionId: id,
@@ -246,7 +246,22 @@ async function relayRosterConnections(): Promise<RelayConnection[]> {
           profile: 'default',
           targetProfile
         }
-      })
+      }
+
+      // Registry membership proves the target is configured, not that its
+      // profile socket is ready.  The async retention door performs the same
+      // bounded warm/readiness handshake used by delivery recovery; hold its
+      // lease through this roster pass so profiles.list cannot race the SSH
+      // dashboard startup.
+      if (typeof host.retainProfile === 'function') {
+        try {
+          seeded.recoveryRelease = await host.retainProfile(seeded.route)
+        } catch {
+          continue
+        }
+      }
+
+      byConnection.set(id, seeded)
     }
 
     return [...byConnection.values()]
@@ -441,8 +456,10 @@ async function syncRelayRosters() {
 
   relay.rosterBusy = true
 
+  let connections: RelayConnection[] = []
+
   try {
-    const connections = await relayRosterConnections()
+    connections = await relayRosterConnections()
 
     if (connections.length < 2) {
       return
@@ -496,6 +513,14 @@ async function syncRelayRosters() {
       })
     )
   } finally {
+    for (const connection of connections) {
+      try {
+        connection.recoveryRelease?.()
+      } catch {
+        // A temporary readiness lease must never break the standing loop.
+      }
+    }
+
     relay.rosterBusy = false
   }
 }

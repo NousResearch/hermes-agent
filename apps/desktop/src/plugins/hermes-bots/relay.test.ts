@@ -413,6 +413,9 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     startBotRelay()
     await vi.advanceTimersByTimeAsync(0)
 
+    expect(hostMock.retainProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'm5', profile: 'default' })
+    )
     expect(calls).toContainEqual(
       expect.objectContaining({ connectionId: 'm5', method: 'profiles.list' })
     )

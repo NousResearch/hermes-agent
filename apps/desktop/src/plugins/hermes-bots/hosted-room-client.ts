@@ -387,7 +387,7 @@ export function classifyHostedRoomCapability(
       reason: capabilities.driver === false ? 'driver-disabled' : 'incomplete-contract',
       connectionId: localConnectionId,
       exactPeerGrantRevoke: false,
-      authorityId: null,
+      authorityId: capabilities.driver === false ? text(capabilities.authority_gateway_id) : null,
       persistentProcess: capabilities.persistent_process === true,
       routeGrantFingerprint: false,
       roomLink: roomLinkCapability(capabilities.room_link),
@@ -425,6 +425,13 @@ export function classifyHostedRoomCapability(
     maxLogLimit: positiveInteger(capabilities.max_log_limit, 100) || 100,
     limits: hostedCapabilityLimits(capabilities)
   }
+}
+
+/** Stored room reads do not require a live, persistent execution worker. */
+export function isHostedRoomReadEligible(capability: HostedRoomCapability): boolean {
+  return (
+    Boolean(capability.authorityId) && (capability.kind === 'driver-capable' || capability.reason === 'driver-disabled')
+  )
 }
 
 export function isHostedRoomContinuityEligible(capability: unknown): boolean {

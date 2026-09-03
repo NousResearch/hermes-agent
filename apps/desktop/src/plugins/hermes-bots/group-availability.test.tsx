@@ -62,7 +62,7 @@ async function withHostFailure(state: 'offline' | 'unsupported', check: (room: G
       throw new Error('Connection failed')
     }
 
-    return { authority_gateway_id: 'authority', driver: false, persistent_process: true }
+    throw Object.assign(new Error('groups.capabilities method not found'), { code: -32601 })
   })
 
   try {

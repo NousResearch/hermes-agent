@@ -466,7 +466,7 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
   const hostedState = String(room.hostedStatus?.state || '')
 
   const renameBlocked =
-    hosted && (room.running === true || ['queued', 'sending', 'stopping', 'working'].includes(hostedState))
+    hosted && (room.running === true || ['queued', 'read-only', 'sending', 'stopping', 'working'].includes(hostedState))
 
   const continuity = groupChatContinuityMode(room)
   const [name, setName] = useState(group)
@@ -517,10 +517,18 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
         </DialogHeader>
         <div className="grid gap-0.5 text-sm">
           <div className="font-medium text-(--ui-text-primary)">
-            {continuity === 'desktop' ? b.group.continuityDesktopTitle : b.group.continuityOnTitle}
+            {hostedState === 'read-only'
+              ? b.group.continuityReadOnlyTitle
+              : continuity === 'desktop'
+                ? b.group.continuityDesktopTitle
+                : b.group.continuityOnTitle}
           </div>
           <div className="text-xs text-(--ui-text-tertiary)">
-            {continuity === 'desktop' ? b.group.continuityDesktopDesc : b.group.continuityOnDesc}
+            {hostedState === 'read-only'
+              ? b.group.continuityReadOnlyDesc
+              : continuity === 'desktop'
+                ? b.group.continuityDesktopDesc
+                : b.group.continuityOnDesc}
           </div>
         </div>
         <GroupImageControls

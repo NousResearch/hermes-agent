@@ -221,6 +221,8 @@ type BotsMessages = {
     continuityOnDesc: string
     continuityDesktopTitle: string
     continuityDesktopDesc: string
+    continuityReadOnlyTitle: string
+    continuityReadOnlyDesc: string
     retryTitle: string
     retryDesc: string
     retryAction: string
@@ -503,6 +505,8 @@ const en: BotsMessages = {
     continuityOnDesc: 'Bots can continue while Desktop is closed.',
     continuityDesktopTitle: 'Keep Desktop open',
     continuityDesktopDesc: 'Bots pause when Desktop closes.',
+    continuityReadOnlyTitle: 'Read-only history',
+    continuityReadOnlyDesc: 'This gateway can show this Group Chat, but cannot keep it running.',
     retryTitle: 'Retry uncertain work?',
     retryDesc: 'The earlier attempt may have finished. Retrying could repeat actions.',
     retryAction: 'Retry',
@@ -780,6 +784,8 @@ const ja: BotsMessages = {
     continuityOnDesc: 'このグループチャットのボットは作業を続けます。',
     continuityDesktopTitle: 'Desktopを開いたままにしてください',
     continuityDesktopDesc: 'Desktopを閉じると、このグループチャットは一時停止します。',
+    continuityReadOnlyTitle: '閲覧専用の履歴',
+    continuityReadOnlyDesc: 'このゲートウェイではグループチャットを表示できますが、実行を継続できません。',
     retryTitle: '不確かな作業を再試行しますか？',
     retryDesc: '前の試行が完了している可能性があります。再試行すると操作が重複する場合があります。',
     retryAction: '再試行',
@@ -1051,6 +1057,8 @@ const zh: BotsMessages = {
     continuityOnDesc: '此群聊中的机器人会继续工作。',
     continuityDesktopTitle: '请保持 Desktop 打开',
     continuityDesktopDesc: '关闭 Desktop 会暂停此群聊。',
+    continuityReadOnlyTitle: '只读历史记录',
+    continuityReadOnlyDesc: '此网关可以显示此群聊，但无法让它持续运行。',
     retryTitle: '重试状态不确定的工作？',
     retryDesc: '之前的尝试可能已完成。重试可能会重复操作。',
     retryAction: '重试',
@@ -1322,6 +1330,8 @@ const zhHant: BotsMessages = {
     continuityOnDesc: '此群組聊天中的機器人會繼續工作。',
     continuityDesktopTitle: '請保持 Desktop 開啟',
     continuityDesktopDesc: '關閉 Desktop 會暫停此群組聊天。',
+    continuityReadOnlyTitle: '唯讀歷史記錄',
+    continuityReadOnlyDesc: '此閘道可以顯示此群組聊天，但無法讓它持續執行。',
     retryTitle: '重試狀態不確定的工作？',
     retryDesc: '先前的嘗試可能已完成。重試可能會重複操作。',
     retryAction: '重試',

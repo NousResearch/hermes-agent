@@ -34,6 +34,19 @@ function PhotonIcon(props: React.SVGProps<SVGSVGElement>) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Blooio brand icon — a rounded chat bubble with a tail. Blooio delivers
+// iMessage over its hosted API, so the mark reads as a soft speech bubble
+// (distinct from Photon's diagonal bars and BlueBubbles' Apple glyph).
+// ---------------------------------------------------------------------------
+function BlooioIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg fill="currentColor" viewBox="0 0 24 24" {...props}>
+      <path d="M12 3.75c-4.83 0-8.75 3.08-8.75 6.88 0 2.16 1.27 4.09 3.26 5.35-.14 1.16-.68 2.2-1.5 3-.28.27-.09.74.3.71 1.7-.12 3.2-.68 4.34-1.57.75.18 1.54.28 2.35.28 4.83 0 8.75-3.08 8.75-6.88S16.83 3.75 12 3.75Z" />
+    </svg>
+  )
+}
+
 // We render simpleicons.org brand glyphs for platforms whose owners publish a
 // usable mark (telegram, discord, matrix, ...). A few brands — Slack, Dingtalk,
 // Feishu, WeCom — have been removed from Simple Icons at the brand owner's
@@ -62,6 +75,7 @@ const PLATFORM_ICONS: Record<string, PlatformIconSpec> = {
   whatsapp: { Icon: SiWhatsapp, color: '#25D366', kind: 'brand' },
   bluebubbles: { Icon: SiApple, color: '#0BD318', kind: 'brand' },
   photon: { Icon: PhotonIcon, color: '#6366F1', kind: 'brand' },
+  blooio: { Icon: BlooioIcon, color: '#0A84FF', kind: 'brand' },
   homeassistant: { Icon: SiHomeassistant, color: '#18BCF2', kind: 'brand' },
   email: { Icon: SiGmail, color: '#EA4335', kind: 'brand' },
   sms: { Icon: MessageSquareText, color: '#F43F5E', kind: 'generic' },

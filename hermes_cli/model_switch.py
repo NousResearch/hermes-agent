@@ -3662,6 +3662,14 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
+            # Config-namespace stubs carry runtime settings only (e.g.
+            # ``stale_timeout_seconds``) with no endpoint URL. Emitting a row
+            # for them would claim the slug before section 4 runs and shadow
+            # the real ``custom_providers`` entry of the same name behind a
+            # zero-model phantom row (#101711). Sections 3b and 4 already
+            # require an endpoint URL.
+            if not api_url:
+                continue
             key_env = str(
                 ep_cfg.get("key_env") or ep_cfg.get("api_key_env") or ""
             ).strip()

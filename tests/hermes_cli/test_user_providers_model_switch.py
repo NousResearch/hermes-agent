@@ -614,3 +614,46 @@ def test_current_custom_model_not_leaked_into_other_provider_rows(monkeypatch):
     for row in providers:
         if row["slug"] != "openrouter" and not row.get("is_current"):
             assert custom not in row.get("models", []), f"leaked into {row['slug']}"
+
+
+def test_url_less_provider_stubs_do_not_shadow_custom_providers(monkeypatch):
+    """``providers:`` stubs without an endpoint URL must not emit picker rows.
+
+    Regression test for #101711: runtime-settings-only keys under
+    ``providers:`` (e.g. ``stale_timeout_seconds`` written under both
+    ``local`` and ``custom:local``) used to collapse into one phantom
+    zero-model row that claimed the ``custom:local`` slug before section 4
+    ran, so the real ``custom_providers`` entry named ``local`` was skipped
+    and its models were unselectable from /model.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    # Keep the picker offline: no live /models probes for either section.
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._fetch_picker_live_models",
+        lambda *_a, **_kw: None,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.cached_fetch_api_models",
+        lambda *_a, **_kw: None,
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="custom:local",
+        user_providers={
+            "custom:local": {"stale_timeout_seconds": 600},
+            "local": {"stale_timeout_seconds": 600},
+        },
+        custom_providers=[
+            {
+                "name": "local",
+                "base_url": "http://localhost:8000/v1",
+                "models": {"unsloth/Qwen3.8-27B-NVFP4": {}},
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p.get("slug") == "custom:local"]
+    assert rows, "the real custom_providers entry must own the custom:local row"
+    assert all("unsloth/Qwen3.8-27B-NVFP4" in p["models"] for p in rows)

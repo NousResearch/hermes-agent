@@ -336,6 +336,78 @@ class TestNodeToolRunnable:
 
         assert hermes_constants.find_hermes_node_executable("node") == str(node)
 
+    def test_mode_only_damage_repairs_without_full_heal(self, tmp_path, monkeypatch):
+        """0644 managed shims get +x restored; heal must not redownload."""
+        target = hermes_constants._HERMES_NODE_TARGET_MAJOR
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = self._stub(
+            managed_bin, "node", f"#!/bin/sh\necho 'v{target}.5.1'\nexit 0\n", mode=0o644
+        )
+        self._stub(managed_bin, "npm", "#!/bin/sh\necho '10.9.0'\nexit 0\n", mode=0o644)
+        self._stub(managed_bin, "npx", "#!/bin/sh\necho '10.9.0'\nexit 0\n", mode=0o644)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+
+        def _heal():
+            raise AssertionError("heal must not run for mode-only damage")
+
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", _heal)
+
+        resolved = hermes_constants.find_hermes_node_executable("node")
+        assert resolved == str(node)
+        assert os.access(node, os.X_OK)
+
+    def test_symlink_escape_not_chmodded(self, tmp_path, monkeypatch):
+        """Repair must not chmod a managed shim that points outside the tree."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        outside = tmp_path / "outside-node"
+        outside.write_text("#!/bin/sh\necho 'v22.0.0'\nexit 0\n")
+        outside.chmod(0o644)
+        (managed_bin / "node").symlink_to(outside)
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setattr(hermes_constants, "_managed_node_heal_attempted", False)
+        monkeypatch.setattr(hermes_constants, "heal_hermes_managed_node", lambda: False)
+
+        assert hermes_constants.repair_managed_node_executable_modes() is False
+        assert not os.access(outside, os.X_OK)
+
+        hermes_constants.find_hermes_node_executable("node")
+        assert not os.access(outside, os.X_OK)
+        assert outside.stat().st_mode & 0o111 == 0
+
+    def test_tree_present_with_nonexecutable_files(self, tmp_path, monkeypatch):
+        """A 0644 managed node file still counts as a present tree."""
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        self._stub(managed_bin, "node", "#!/bin/sh\necho 'v22.0.0'\nexit 0\n", mode=0o644)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        assert hermes_managed_node_tree_present() is True
+
+    def test_repair_managed_node_executable_modes_restores_execute_bit(
+        self, tmp_path, monkeypatch
+    ):
+        profile_home = tmp_path / "hermes"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        node = self._stub(managed_bin, "node", "#!/bin/sh\nexit 0\n", mode=0o644)
+        npm = self._stub(managed_bin, "npm", "#!/bin/sh\nexit 0\n", mode=0o644)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+        assert not os.access(node, os.X_OK)
+        assert hermes_constants.repair_managed_node_executable_modes() is True
+        assert os.access(node, os.X_OK)
+        assert os.access(npm, os.X_OK)
+        assert hermes_constants.repair_managed_node_executable_modes() is False
 
 
 class TestIsContainer:

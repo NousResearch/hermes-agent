@@ -93,6 +93,9 @@ _DISCORD_MODEL_SELECT_CAPACITY = (
 ) * _DISCORD_SELECT_MAX_OPTIONS
 _DISCORD_BUTTON_LABEL_LIMIT = 80
 _DISCORD_ELLIPSIS = "\u2026"
+# Discord caps a single embed field's `value` at 1024 characters; a field
+# over the cap is rejected by the API, not silently trimmed.
+_DISCORD_EMBED_FIELD_LIMIT = 1024
 _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
@@ -7814,9 +7817,29 @@ class DiscordAdapter(BasePlatformAdapter):
             clean_choices = clean_choices[:24]
 
             if clean_choices:
+                # Mirror the full choice text as a numbered list, same as the
+                # Telegram/WhatsApp adapters. Button labels are capped at 80
+                # chars by Discord and truncated well before that on mobile
+                # (see ClarifyChoiceView), so a long choice is only fully
+                # readable here, in the embed field / message body.
+                option_lines_full = "\n".join(
+                    f"**{i + 1}.** {c}" for i, c in enumerate(clean_choices)
+                )
+                embed_suffix = (
+                    "\n\nPick one below, or click ✏️ Other to type a "
+                    "custom answer."
+                )
+                # Reserve the suffix before truncating the options list:
+                # an options block that is itself under the cap can still
+                # push the *combined* field value past Discord's real 1024
+                # embed-field limit, and the send fails downstream.
+                option_lines = option_lines_full
+                if len(option_lines) + len(embed_suffix) > _DISCORD_EMBED_FIELD_LIMIT:
+                    budget = _DISCORD_EMBED_FIELD_LIMIT - len(embed_suffix) - 3
+                    option_lines = option_lines_full[:budget] + "..."
                 embed.add_field(
                     name="Choices",
-                    value="Pick one below, or click ✏️ Other to type a custom answer.",
+                    value=f"{option_lines}{embed_suffix}",
                     inline=False,
                 )
                 view = ClarifyChoiceView(
@@ -7832,14 +7855,21 @@ class DiscordAdapter(BasePlatformAdapter):
                     inline=False,
                 )
                 view = None
+                option_lines_full = ""
 
-            # Mirror the question in plain content — embeds are invisible on
-            # some clients (see send_exec_approval).
-            clarify_tail = (
-                "\n\nPick one below, or click ✏️ Other to type a custom answer."
-                if clean_choices
-                else "\n\nReply in this channel with your answer."
-            )
+            # Mirror the question (and, for multi-choice, the full option text)
+            # in plain content — embeds are invisible on some clients (see
+            # send_exec_approval). This mirror uses the *untruncated* option
+            # list: message content is capped at 2000 chars, a separate and
+            # much larger limit than the embed field's 1024, and
+            # _self_contained_prompt_content() already enforces it.
+            if clean_choices:
+                clarify_tail = (
+                    f"\n\n{option_lines_full}\n\nPick one below, or click "
+                    "✏️ Other to type a custom answer."
+                )
+            else:
+                clarify_tail = "\n\nReply in this channel with your answer."
             content = self._self_contained_prompt_content(
                 "❓ **Hermes needs your input**", str(question or "").strip(),
                 tail=clarify_tail,

@@ -294,3 +294,109 @@ class TestDiscordSendClarify:
         for label in choice_labels:
             assert "only_name_here" not in label, f"name leaked: {label!r}"
             assert "only_value_here" not in label, f"value leaked: {label!r}"
+
+
+# ===========================================================================
+# Full choice text mirrored into the embed field / message body (#62291)
+# ===========================================================================
+
+
+def _choices_field_value(embed) -> str:
+    """Pull the 'Choices' embed field's rendered text (full option list).
+
+    The test conftest's ``_FakeEmbed.add_field`` stores fields as plain
+    dicts (``{"name": ..., "value": ..., "inline": ...}``); support both
+    that shape and objects with ``.name``/``.value`` attributes in case a
+    real ``discord.Embed`` is ever passed in.
+    """
+    for field in embed.fields:
+        if isinstance(field, dict):
+            if field.get("name") == "Choices":
+                return field.get("value") or ""
+        elif getattr(field, "name", None) == "Choices":
+            return field.value
+    return ""
+
+
+class TestClarifyChoicesFullTextMirror:
+    """Button labels are capped at 80 chars and truncated well before that
+    on mobile, so the full choice text has to be readable somewhere. It is
+    mirrored as a numbered list in the embed field and the plain content."""
+
+    @pytest.mark.asyncio
+    async def test_full_choice_text_is_mirrored_in_the_embed_and_content(self):
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 999
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        # Longer than the 80-char button-label cap: the button necessarily
+        # truncates it, so the untruncated text must survive elsewhere.
+        long_choice = "Deploy the staging stack and run the full smoke suite before promoting to production"
+        assert len(long_choice) > 80
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick one",
+            choices=[long_choice, "Cancel"],
+            clarify_id="cidMirror",
+            session_key="sk-Mirror",
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        option_text = _choices_field_value(kwargs["embed"])
+        assert long_choice in option_text, (
+            "Full choice text must appear in the Choices embed field"
+        )
+        assert "**1.**" in option_text and "**2.**" in option_text
+        # Embeds are invisible on some clients, so the plain content mirror
+        # must carry the same untruncated text.
+        assert long_choice in kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_choices_field_value_never_exceeds_discord_embed_field_cap(self):
+        # Regression test: the "Choices" embed field value is the numbered
+        # option list PLUS a fixed instruction suffix ("Pick a button
+        # below, or click..."). Truncating only the option list to 1024
+        # chars and then appending the suffix can push the *combined*
+        # value over Discord's real 1024-char embed-field cap, which
+        # causes channel.send() to raise and send_clarify() to report a
+        # failed send on exactly the long-choice-list case this feature
+        # exists to handle.
+        adapter = _make_adapter()
+        channel = MagicMock()
+        sent_msg = MagicMock()
+        sent_msg.id = 999
+        channel.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=channel)
+
+        # 24 choices (the max allowed) of substantial length guarantees the
+        # raw numbered option list alone is well over 1024 chars, forcing
+        # the truncation path to run.
+        long_choices = [
+            f"Option number {i} with some extra descriptive text" for i in range(24)
+        ]
+
+        result = await adapter.send_clarify(
+            chat_id="9001",
+            question="Pick one",
+            choices=long_choices,
+            clarify_id="cidCap",
+            session_key="sk-Cap",
+        )
+
+        assert result.success is True
+        kwargs = channel.send.call_args.kwargs
+        option_text = _choices_field_value(kwargs["embed"])
+        assert len(option_text) <= 1024, (
+            f"Choices embed field value is {len(option_text)} chars, "
+            "exceeding Discord's 1024-char embed field cap"
+        )
+        # The instruction suffix must still be present and intact even when
+        # the option list had to be truncated to make room for it.
+        assert option_text.endswith(
+            "Pick one below, or click ✏️ Other to type a custom answer."
+        )

@@ -432,6 +432,26 @@ def _profile_name_for_home(home: Path) -> str:
         return "default"
 
 
+def _configured_compact_skill_categories() -> frozenset:
+    """Top-level skill categories the user asked to keep names-only, from
+    ``skills.compact_categories`` in config. Never hides a skill: the index
+    still lists every name and ``skill_view``/``skills_list`` reach all of
+    them. Fails open to an empty set on any config problem."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = ((load_config_readonly() or {}).get("skills") or {}).get("compact_categories")
+    except Exception:
+        return frozenset()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(
+        str(c).strip().split("/", 1)[0] for c in raw if str(c).strip()
+    )
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -638,6 +658,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             _compact_cats = frozenset()
+        # ``skills.compact_categories`` in config demotes those categories to
+        # names-only in EVERY posture (same never-hidden semantics as focus
+        # mode): the user's explicit list is unioned with the posture's.
+        _compact_cats = _compact_cats | _configured_compact_skill_categories()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,

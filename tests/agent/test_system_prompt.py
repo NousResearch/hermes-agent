@@ -763,3 +763,37 @@ class TestConversationStartedTwoLine:
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
 
+
+
+class TestConfiguredCompactSkillCategories:
+    """``skills.compact_categories`` in config demotes categories to names-only
+    in every posture, unioned with whatever the coding posture demotes."""
+
+    def _compact_kwarg(self, cfg, posture=frozenset()):
+        agent = _make_agent(valid_tool_names=["skills_list"])
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+            patch("run_agent.get_toolset_for_tool", return_value=None),
+            patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+            patch("agent.coding_context.coding_compact_skill_categories", return_value=posture),
+            patch("run_agent.build_skills_system_prompt", return_value="") as bs,
+        ):
+            build_system_prompt(agent)
+        return bs.call_args.kwargs.get("compact_categories")
+
+    def test_config_list_is_applied_in_general_posture(self):
+        got = self._compact_kwarg({"skills": {"compact_categories": ["devops", "creative"]}})
+        assert got == frozenset({"devops", "creative"})
+
+    def test_config_unions_with_posture_and_normalises_nested(self):
+        got = self._compact_kwarg(
+            {"skills": {"compact_categories": ["social-media/twitter", " mlops "]}},
+            posture=frozenset({"creative"}),
+        )
+        assert got == frozenset({"social-media", "mlops", "creative"})
+
+    def test_missing_or_malformed_config_changes_nothing(self):
+        assert self._compact_kwarg({}) is None
+        assert self._compact_kwarg({"skills": {"compact_categories": 42}}) is None

@@ -158,6 +158,26 @@ Level 2: skill_view(name, path)  → Specific reference file       (varies)
 
 The agent only loads the full skill content when it actually needs it.
 
+### Keeping the skill index small (`compact_categories`)
+
+Every skill's one-line description ships in the system prompt. With a few
+hundred skills that index can outweigh the rest of the prompt. List the
+top-level categories you want **names-only** in the index:
+
+```yaml
+skills:
+  compact_categories:
+    - devops
+    - creative
+    - productivity
+```
+
+Demoted categories are never hidden: every skill name stays in the index and
+`skill_view` / `skills_list` still reach all of them; only the descriptions are
+dropped from the always-on prompt. Nested categories (`social-media/twitter`)
+are demoted with their parent. Applies in every posture; the coding `focus`
+mode's own demotions are added on top.
+
 ## SKILL.md Format
 
 ```markdown

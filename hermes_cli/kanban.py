@@ -1758,6 +1758,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
             current_step_key=args.current_step_key,
         )
     if getattr(args, "json", False):
+        # Machine-parseable stdout only — no board header, claim banner, or
+        # diagnostics. Downstream `jq` treats a banner prefix as rc=5.
         print(json.dumps([_task_to_dict(t) for t in tasks], indent=2, ensure_ascii=False))
         return 0
     # Passive discoverability: when the user has multiple boards, surface
@@ -1961,6 +1963,19 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
     with kb.connect_closing() as conn:
+        task = kb.get_task(conn, args.task_id)
+        if task is None:
+            print(f"no such task: {args.task_id}", file=sys.stderr)
+            return 1
+        if task.status == "review":
+            print(
+                "kanban: cannot assign a card in review — review is a lane, "
+                "not a claim. Name a reviewer with "
+                "`hermes kanban request-review --reviewer <profile>` "
+                "(or swap the reviewer with `hermes kanban reassign`).",
+                file=sys.stderr,
+            )
+            return 2
         ok = kb.assign_task(conn, args.task_id, profile)
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)

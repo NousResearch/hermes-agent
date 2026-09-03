@@ -3715,6 +3715,12 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
+
+    This writes the assignee (and the ``assigned`` event) only.  It never
+    changes ``status``, ``started_at``, or ``claim_lock`` — review is a
+    lane, not a claim.  Naming a reviewer on a ``review`` card belongs to
+    :func:`request_review` (or the dashboard reviewer field), not a status
+    flip.
     """
     profile = _canonical_assignee(profile)
     with write_txn(conn):

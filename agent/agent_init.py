@@ -2028,6 +2028,19 @@ def init_agent(
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
 
+    # Proactive feature router (PR-B). Off by default; reads
+    # proactive_features.* from config. Non-fatal: a broken router config
+    # must never break agent init.
+    agent._feature_router = None
+    try:
+        _pf_cfg = _agent_cfg.get("proactive_features", {}) or {}
+        if _pf_cfg.get("enabled", False):
+            from agent.feature_router import FeatureRouter as _FeatureRouter
+
+            agent._feature_router = _FeatureRouter(_pf_cfg)
+    except Exception:
+        agent._feature_router = None
+
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
     try:

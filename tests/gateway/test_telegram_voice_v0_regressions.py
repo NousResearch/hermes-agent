@@ -160,7 +160,12 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
             drain_transcripts,
         )
 
-    assert interrupt_text == '"hello once"'
+    # The enriched text now carries the `[User sent audio: <path>]` marker on
+    # its own line after the quoted transcript, so assert on the transcript
+    # prefix rather than exact equality. What this test pins is that the
+    # transcript is reused rather than re-transcribed, and
+    # mock_transcribe.assert_called_once_with below still checks that exactly.
+    assert interrupt_text.startswith('"hello once"')
     assert drain_text == interrupt_text
     assert drain_transcripts == interrupt_transcripts == ["hello once"]
     mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg", None, "gateway")
@@ -215,7 +220,12 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
         )
 
     assert result["final_response"] == "follow-up complete"
-    assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
+    # Same reason as above: tolerate the appended `[User sent audio: <path>]`
+    # line while still pinning that exactly two messages reached the agent, in
+    # order, the second being the voice transcript.
+    assert len(_PendingVoiceAgent.messages) == 2
+    assert _PendingVoiceAgent.messages[0] == "initial turn"
+    assert _PendingVoiceAgent.messages[1].startswith('"hello once"')
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
     assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
 

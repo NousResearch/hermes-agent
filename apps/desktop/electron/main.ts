@@ -168,6 +168,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { shouldKeepE2EWindowsHidden } from './e2e-window-visibility'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -455,6 +456,7 @@ if (USER_DATA_OVERRIDE) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+const KEEP_E2E_WINDOWS_HIDDEN = shouldKeepE2EWindowsHidden(process.env)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -13014,6 +13016,14 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 // `onRevealed` carry the caller's reveal action and post-visible work; whichever
 // path wins runs them exactly once.
 function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onRevealed?: () => void } = {}) {
+  if (KEEP_E2E_WINDOWS_HIDDEN) {
+    return {
+      dispose: () => {},
+      reveal: () => false,
+      scheduleFallback: () => {}
+    }
+  }
+
   const controller = createWindowRevealController(
     {
       isDestroyed: () => win.isDestroyed(),

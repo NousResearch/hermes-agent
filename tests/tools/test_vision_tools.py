@@ -983,6 +983,129 @@ class TestDownloadRetryClassification:
         assert mock_sleep.await_count == 2
 
 
+class TestVideoDownloadRetryClassification:
+    """``_download_video`` must classify errors like ``_download_image``.
+
+    The streaming rewrite bounds a single video transfer to
+    ``_MAX_VIDEO_BASE64_BYTES``, but a retry loop that treats every exception
+    as transient re-streams that whole capped payload once per attempt. The
+    size cap is only meaningful if a terminal failure stops the loop.
+    """
+
+    @staticmethod
+    def _oversize_client():
+        """AsyncClient streaming more bytes than the cap allows."""
+
+        class _FakeStreamResponse:
+            url = "https://example.com/big.mp4"
+            headers = {}
+
+            def raise_for_status(self):
+                return None
+
+            async def aiter_bytes(self):
+                yield b"12345"
+                yield b"678901"
+
+        class _FakeAsyncStream:
+            async def __aenter__(self):
+                return _FakeStreamResponse()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=_FakeAsyncStream())
+        return mock_client
+
+    @pytest.mark.asyncio
+    async def test_oversize_video_is_downloaded_only_once(self, tmp_path):
+        """An oversize video must not be re-streamed on every retry."""
+        from tools.vision_tools import _download_video
+
+        mock_client = self._oversize_client()
+        with (
+            patch("tools.vision_tools._MAX_VIDEO_BASE64_BYTES", 10),
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(ValueError, match="Video too large"),
+        ):
+            await _download_video(
+                "https://example.com/big.mp4", tmp_path / "big.mp4", max_retries=3
+            )
+
+        # One attempt only — retrying would re-download up to the cap each time.
+        assert mock_client.stream.call_count == 1
+        assert mock_sleep.await_count == 0
+        assert not (tmp_path / "big.mp4").exists()
+        assert not list(tmp_path.glob(".big.mp4.*.tmp"))
+
+    @pytest.mark.asyncio
+    async def test_policy_blocked_video_is_not_retried(self, tmp_path):
+        """A website-policy block is deterministic — fail on the first attempt."""
+        from tools.vision_tools import _download_video
+
+        mock_client = self._oversize_client()
+        with (
+            patch(
+                "tools.vision_tools.check_website_access",
+                return_value={"message": "blocked by policy"},
+            ),
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(PermissionError, match="blocked by policy"),
+        ):
+            await _download_video(
+                "https://example.com/blocked.mp4", tmp_path / "b.mp4", max_retries=3
+            )
+
+        assert mock_client.stream.call_count == 0
+        assert mock_sleep.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_404_video_fails_fast(self, tmp_path):
+        """A 4xx (other than 429) can never succeed on retry."""
+        import httpx
+        from tools.vision_tools import _download_video
+
+        mock_client = TestDownloadRetryClassification()._make_client_raising_status(404)
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _download_video(
+                "https://example.com/gone.mp4", tmp_path / "g.mp4", max_retries=3
+            )
+
+        assert mock_client.stream.call_count == 1
+        assert mock_sleep.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_transient_video_error_still_retries(self, tmp_path):
+        """5xx stays retryable — the fix must not disable legitimate retries."""
+        import httpx
+        from tools.vision_tools import _download_video
+
+        mock_client = TestDownloadRetryClassification()._make_client_raising_status(503)
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await _download_video(
+                "https://example.com/flaky.mp4", tmp_path / "f.mp4", max_retries=3
+            )
+
+        assert mock_client.stream.call_count == 3
+        assert mock_sleep.await_count == 2
+
+
 # ---------------------------------------------------------------------------
 # CPU-burst concurrency cap — a single turn (or several concurrent sessions in
 # one process) can launch dozens of vision_analyze calls at once. Only the

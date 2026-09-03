@@ -6195,6 +6195,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         session_id = provided_session_id or body_session_id or stored_session_id
+        continuation_session_id = provided_session_id
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
@@ -6257,10 +6258,10 @@ class APIServerAdapter(BasePlatformAdapter):
             return cached_response
 
         response_session_id = session_id
-        if not conversation_history and session_id:
+        if not conversation_history and continuation_session_id:
             try:
                 conversation_history = await self._conversation_history_for_session(
-                    session_id,
+                    continuation_session_id,
                     fail_closed=True,
                 )
             except Exception:

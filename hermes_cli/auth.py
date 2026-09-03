@@ -782,19 +782,27 @@ def _resolve_api_key_provider_secret(
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
-        from agent.credential_pool import load_pool
+        from agent.credential_pool import STATUS_EXHAUSTED, STATUS_OK, load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
-            # Prefer the pool's own selection (peek), but iterate the rest of
-            # the entries too so one malformed entry doesn't block a valid one.
+            # Prefer healthy entries.  Only explicitly exhausted entries may
+            # bypass pool availability so the real upstream 429/402 surfaces;
+            # dead and unknown states must never re-enter rotation here.
             candidates = []
             entry = pool.peek()
-            if entry is not None:
+            if entry is not None and getattr(entry, "last_status", None) in (
+                None,
+                STATUS_OK,
+            ):
                 candidates.append(entry)
             try:
-                for extra in pool.entries():
-                    if extra is not None and all(extra is not c for c in candidates):
-                        candidates.append(extra)
+                entries = pool.entries()
+                for status in (None, STATUS_OK, STATUS_EXHAUSTED):
+                    for extra in entries:
+                        if getattr(extra, "last_status", None) != status:
+                            continue
+                        if all(extra is not candidate for candidate in candidates):
+                            candidates.append(extra)
             except Exception:
                 pass
             for entry in candidates:

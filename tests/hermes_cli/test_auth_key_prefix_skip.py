@@ -19,6 +19,7 @@ The fix:
 
 import logging
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -48,7 +49,7 @@ def isolated_hermes_home(tmp_path, monkeypatch):
 
 def _write_env_file(home: Path, **kwargs) -> None:
     lines = [f"{k}={v}" for k, v in kwargs.items()]
-    (home / ".env").write_text("\n".join(lines) + "\n")
+    (home / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _mock_pool(*entries):
@@ -63,6 +64,7 @@ def _entry(token):
     e = MagicMock()
     e.access_token = token
     e.runtime_api_key = ""
+    e.last_status = None
     return e
 
 
@@ -87,6 +89,47 @@ class TestMalformedEnvKeySkipped:
         warnings = [r for r in caplog.records if "OPENROUTER_API_KEY" in r.getMessage()]
         assert warnings, "expected a WARNING naming the malformed env var"
         assert "sk-or-" in warnings[0].getMessage()
+
+    @pytest.mark.parametrize(
+        "status,expected_key,expected_source",
+        [
+            ("exhausted", "sk-or-v1-exhausted-key", "credential_pool:openrouter"),
+            ("dead", "", ""),
+        ],
+    )
+    def test_raw_pool_fallback_only_reuses_exhausted_entries(
+        self,
+        isolated_hermes_home,
+        status,
+        expected_key,
+        expected_source,
+    ):
+        """Exhausted keys may surface the upstream error; dead keys stay dead."""
+        from agent.credential_pool import CredentialPool, PooledCredential
+        from hermes_cli.auth import _resolve_api_key_provider_secret
+
+        entry = PooledCredential(
+            provider="openrouter",
+            id=f"{status}-entry",
+            label=status,
+            auth_type="api_key",
+            priority=0,
+            source="manual",
+            access_token=f"sk-or-v1-{status}-key",
+            last_status=status,
+            last_status_at=time.time(),
+            last_error_reset_at=time.time() + 3600,
+        )
+        pool = CredentialPool("openrouter", [entry])
+
+        with patch("agent.credential_pool.load_pool", return_value=pool):
+            key, source = _resolve_api_key_provider_secret(
+                provider_id="openrouter",
+                pconfig=_make_pconfig("openrouter"),
+            )
+
+        assert key == expected_key
+        assert source == expected_source
 
     def test_malformed_env_key_with_empty_pool_returns_empty(
         self, isolated_hermes_home, caplog

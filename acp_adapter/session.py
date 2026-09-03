@@ -514,10 +514,20 @@ class SessionManager:
         if db is None:
             return None
 
+        storage_session_id = session_id
         try:
-            row = db.get_session(session_id)
+            storage_session_id = db.resolve_resume_session_id(session_id) or session_id
         except Exception:
-            logger.debug("Failed to query DB for ACP session %s", session_id, exc_info=True)
+            logger.debug(
+                "Failed to resolve compression continuation for ACP session %s",
+                session_id,
+                exc_info=True,
+            )
+
+        try:
+            row = db.get_session(storage_session_id)
+        except Exception:
+            logger.debug("Failed to query DB for ACP session %s", storage_session_id, exc_info=True)
             return None
 
         if row is None:
@@ -553,15 +563,15 @@ class SessionManager:
         # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
             history = db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                storage_session_id, repair_alternation=True
             )
         except Exception:
-            logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
+            logger.warning("Failed to load messages for ACP session %s", storage_session_id, exc_info=True)
             history = []
 
         try:
             agent = self._make_agent(
-                session_id=session_id,
+                session_id=storage_session_id,
                 cwd=cwd,
                 model=model,
                 requested_provider=requested_provider,
@@ -569,11 +579,11 @@ class SessionManager:
                 api_mode=restored_api_mode,
             )
         except Exception:
-            logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
+            logger.warning("Failed to recreate agent for ACP session %s", storage_session_id, exc_info=True)
             return None
 
         state = SessionState(
-            session_id=session_id,
+            session_id=storage_session_id,
             agent=agent,
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
@@ -582,8 +592,13 @@ class SessionManager:
         )
         with self._lock:
             self._sessions[session_id] = state
-        _register_task_cwd(session_id, cwd)
-        logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
+        _register_task_cwd(storage_session_id, cwd)
+        logger.info(
+            "Restored ACP session %s as %s from DB (%d messages)",
+            session_id,
+            storage_session_id,
+            len(history),
+        )
         return state
 
     def _delete_persisted(self, session_id: str) -> bool:

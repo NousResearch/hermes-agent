@@ -561,6 +561,8 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
 - Renaming the bot's `@username` in BotFather is picked up automatically — Hermes follows the new handle for mention routing without a gateway restart. Collectible (Fragment) usernames that don't end in `bot` are supported too.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
+- Use `telegram.allowed_topics` as a forum-topic whitelist — when set, Hermes silently ignores messages from any other group/forum topic (DMs are never filtered). Telegram's General topic is normalized to topic ID `1`. Whitelist evaluation runs before `ignored_threads`.
+- Use `telegram.free_response_chats` / `telegram.free_response_topics` to bypass `require_mention` for a whole chat or a single forum topic only.
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Multiple Hermes bots in one group

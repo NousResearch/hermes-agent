@@ -153,6 +153,36 @@ class TestBuilder:
         assert callable(provider)
         assert provider() == "tok"
 
+    def test_configured_timeout_reaches_the_token_helper(self, monkeypatch):
+        """A provider may give a slow local token helper a larger budget."""
+        import agent.command_token_source as source_module
+
+        seen = {}
+
+        def _run(*_args, **kwargs):
+            seen["timeout"] = kwargs["timeout"]
+            return SimpleNamespace(returncode=0, stdout="token")
+
+        monkeypatch.setattr(source_module.subprocess, "run", _run)
+        provider = build_command_token_provider(
+            "ignored", "dbx", key_cmd_timeout_seconds=3.5
+        )
+
+        assert provider is not None
+        assert provider() == "token"
+        assert seen["timeout"] == 3.5
+
+    @pytest.mark.parametrize("invalid", [None, False, 0, -1, float("nan"), float("inf"), "slow"])
+    def test_invalid_configured_timeout_uses_the_safe_default(self, invalid):
+        from agent.command_token_source import _MINT_TIMEOUT_SECONDS
+
+        provider = build_command_token_provider(
+            "printf token", "dbx", key_cmd_timeout_seconds=invalid
+        )
+
+        assert provider is not None
+        assert provider._timeout_seconds == _MINT_TIMEOUT_SECONDS
+
 
 class TestResolutionYieldsACallable:
     """The integration contract: a callable reaches the wire client."""
@@ -177,6 +207,25 @@ class TestResolutionYieldsACallable:
         api_key = runtime["api_key"]
         assert callable(api_key), "key_cmd must resolve to a per-request callable"
         assert api_key() == "minted-token"
+
+    def test_runtime_provider_passes_the_configured_key_cmd_timeout(self, monkeypatch):
+        from hermes_cli import runtime_provider as rp
+
+        config = {
+            "providers": {
+                "dbx": {
+                    "base_url": "https://example.invalid/v1",
+                    "key_cmd": "printf minted-token",
+                    "key_cmd_timeout_seconds": 21,
+                }
+            }
+        }
+        monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+        runtime = rp.resolve_runtime_provider(requested="custom:dbx")
+
+        assert runtime["api_key"]._timeout_seconds == 21.0
 
     def test_explicit_api_key_still_wins(self, monkeypatch):
         """``--api-key`` stays the one-off recovery escape hatch."""
@@ -330,6 +379,18 @@ class TestAuxiliaryResolverHonoursKeyCmd:
         api_key = self._resolve(monkeypatch, {**self.BASE, "key_cmd": "printf minted-token"})
         assert callable(api_key), "auxiliary tasks must mint per request too"
         assert api_key() == "minted-token"
+
+    def test_auxiliary_provider_passes_the_configured_key_cmd_timeout(self, monkeypatch):
+        api_key = self._resolve(
+            monkeypatch,
+            {
+                **self.BASE,
+                "key_cmd": "printf minted-token",
+                "key_cmd_timeout_seconds": 21,
+            },
+        )
+
+        assert api_key._timeout_seconds == 21.0
 
     def test_key_cmd_beats_static_credentials(self, monkeypatch):
         """Precedence matches the runtime resolver, so both agree on one entry."""

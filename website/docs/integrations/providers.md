@@ -1313,11 +1313,14 @@ providers:
     base_url: "https://gateway.internal.example.com/v1"
     api_mode: chat_completions
     key_cmd: "my-auth-cli print-token --profile prod"
+    key_cmd_timeout_seconds: 30  # optional; defaults to 15
 ```
 
 Works with any helper that prints a token — `databricks auth token`, `gcloud auth print-access-token`, `az account get-access-token`, `vault read`, or Claude Code-style `apiKeyHelper` scripts.
 
 The command must print **only** the token on stdout: either bare, or as JSON with an `access_token` field (`expires_in` is honored; absolute `expiry`/`expiresOn` ISO timestamps too). Multi-line output is rejected rather than guessed at. If no expiry is advertised, the token is re-minted on a bounded window.
+
+`key_cmd_timeout_seconds` is an optional per-provider timeout for the command. It must be a finite positive number; omitted or invalid values safely use the default of 15 seconds.
 
 Precedence: an explicit `--api-key` flag still wins; otherwise `key_cmd` beats a static `api_key`/`key_env` on the same entry. The minted credential applies to the main agent turn and to auxiliary tasks (title generation, compression, vision, embedding) alike.
 

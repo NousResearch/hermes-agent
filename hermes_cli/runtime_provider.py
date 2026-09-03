@@ -866,6 +866,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     key_cmd = str(entry.get("key_cmd", "") or "").strip()
                     if key_cmd:
                         result["key_cmd"] = key_cmd
+                        result["key_cmd_timeout_seconds"] = entry.get(
+                            "key_cmd_timeout_seconds"
+                        )
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -1392,6 +1395,7 @@ def _resolve_named_custom_runtime(
         token_provider = build_command_token_provider(
             key_cmd,
             str(custom_provider.get("name", requested_provider) or "custom"),
+            custom_provider.get("key_cmd_timeout_seconds"),
         )
         if token_provider is not None:
             api_key = token_provider

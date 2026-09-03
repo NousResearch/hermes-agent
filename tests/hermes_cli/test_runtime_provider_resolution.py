@@ -1232,6 +1232,12 @@ class TestProviderEntryApiKeyEnvAlias:
         from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
         assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
 
+    def test_valid_fields_set_lists_key_cmd_timeout_seconds(self):
+        """The documented provider timeout must survive config validation."""
+        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
+
+        assert "key_cmd_timeout_seconds" in _VALID_CUSTOM_PROVIDER_FIELDS
+
     def test_extra_body_is_supported_schema(self):
         from hermes_cli.config import (
             _VALID_CUSTOM_PROVIDER_FIELDS,

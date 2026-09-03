@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import subprocess
 import threading
 import time
@@ -59,11 +60,23 @@ _MINT_TIMEOUT_SECONDS = 15
 _NO_TTL_REFRESH_SECONDS = 900.0
 
 
+def _key_cmd_timeout_seconds(value: object) -> float:
+    """Return a safe key-command timeout, defaulting invalid config to 15s."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return float(_MINT_TIMEOUT_SECONDS)
+    timeout = float(value)
+    return timeout if math.isfinite(timeout) and timeout > 0 else float(_MINT_TIMEOUT_SECONDS)
+
+
 class CommandTokenError(RuntimeError):
     """A ``key_cmd`` failed to produce a usable token."""
 
 
-def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
+def _mint(
+    command: str,
+    label: str,
+    timeout_seconds: float = _MINT_TIMEOUT_SECONDS,
+) -> tuple[str, Optional[float]]:
     """Run *command*, returning ``(token, ttl_seconds_or_None)``."""
     try:
         completed = subprocess.run(
@@ -71,12 +84,12 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=_MINT_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(
             f"key_cmd for provider {label!r} timed out after "
-            f"{_MINT_TIMEOUT_SECONDS}s"
+            f"{timeout_seconds:g}s"
         ) from exc
     except OSError as exc:
         raise CommandTokenError(
@@ -152,9 +165,15 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
 class CommandTokenSource:
     """Callable returning a bearer token, cached until shortly before expiry."""
 
-    def __init__(self, command: str, label: str = "custom") -> None:
+    def __init__(
+        self,
+        command: str,
+        label: str = "custom",
+        key_cmd_timeout_seconds: object = _MINT_TIMEOUT_SECONDS,
+    ) -> None:
         self._command = command
         self._label = label or "custom"
+        self._timeout_seconds = _key_cmd_timeout_seconds(key_cmd_timeout_seconds)
         self._lock = threading.Lock()
         self._token = ""
         self._expires_at: float = 0.0
@@ -163,7 +182,7 @@ class CommandTokenSource:
         with self._lock:
             if self._token and time.monotonic() < self._expires_at:
                 return self._token
-            token, ttl = _mint(self._command, self._label)
+            token, ttl = _mint(self._command, self._label, self._timeout_seconds)
             self._token = token
             self._expires_at = (
                 time.monotonic() + max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0)
@@ -182,9 +201,14 @@ class CommandTokenSource:
 def build_command_token_provider(
     key_cmd: str,
     provider_label: str = "custom",
+    key_cmd_timeout_seconds: object = _MINT_TIMEOUT_SECONDS,
 ) -> Optional[Callable[[], str]]:
-    """A per-request token provider for *key_cmd*, or ``None`` when unset."""
+    """Build a token provider for *key_cmd*, or ``None`` when unset.
+
+    ``key_cmd_timeout_seconds`` is a positive finite per-provider timeout;
+    absent or invalid values use the 15-second default.
+    """
     command = str(key_cmd or "").strip()
     if not command:
         return None
-    return CommandTokenSource(command, provider_label)
+    return CommandTokenSource(command, provider_label, key_cmd_timeout_seconds)

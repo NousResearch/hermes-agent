@@ -7218,7 +7218,9 @@ def resolve_provider_client(
             if custom_key_cmd:
                 from agent.command_token_source import build_command_token_provider
                 custom_key = build_command_token_provider(
-                    custom_key_cmd, custom_entry.get("name") or provider
+                    custom_key_cmd,
+                    custom_entry.get("name") or provider,
+                    custom_entry.get("key_cmd_timeout_seconds"),
                 ) or custom_key
             if not custom_key:
                 try:

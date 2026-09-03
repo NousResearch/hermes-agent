@@ -1706,7 +1706,7 @@ def _normalize_custom_provider_entry(
         # configs don't warn on every load.
         "provider",
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
-        "key_cmd",
+        "key_cmd", "key_cmd_timeout_seconds",
         "api_mode", "transport", "model", "default_model", "models",
         "models_discovered",
         "context_length", "rate_limit_delay",
@@ -2366,9 +2366,11 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
-    # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
+    # key_env, key_cmd, and key_cmd_timeout_seconds are read at runtime by
+    # runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
+    "key_cmd", "key_cmd_timeout_seconds",
 }
 
 # Fields that look like they should be inside custom_providers, not at root

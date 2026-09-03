@@ -607,7 +607,19 @@ class MemoryStore:
             if act in {"add", "replace"} and new_content:
                 scan_error = _scan_memory_content(new_content)
                 if scan_error:
-                    return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
+                    # Name the offending op AND spell out the blast radius.
+                    # Without this the model reads "Operation 3: Blocked",
+                    # assumes ops 1/2/4 landed, and moves on -- the other
+                    # facts are lost silently and only resurface as the agent
+                    # "forgetting" things sessions later.
+                    return self._batch_error(
+                        target,
+                        f"Operation {i + 1} of {len(operations)}: {scan_error} "
+                        f"Rewrite ONLY that entry (describe the location "
+                        f"without the literal path) and re-send the FULL "
+                        f"batch -- the other {len(operations) - 1} "
+                        f"operation(s) in this call were NOT saved either.",
+                    )
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)

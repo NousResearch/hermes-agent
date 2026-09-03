@@ -278,6 +278,35 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp._context_probed is False
 
 
+def test_new_session_reaps_mcp_orphans(tmp_path):
+    """/new must sweep MCP stdio orphans left by the ending session (#81880).
+
+    Long-lived hosts (desktop backend, `hermes chat` loops) rotate sessions
+    often without ever exiting the process, so nothing else sweeps
+    ``_orphan_stdio_pids`` between rotations.
+    """
+    cli = _prepare_cli_with_active_session(tmp_path)
+
+    with patch("tools.mcp_tool._kill_orphaned_mcp_children") as mock_sweep:
+        cli.process_command("/new")
+
+    mock_sweep.assert_called_once_with()
+
+
+def test_new_session_survives_mcp_sweep_failure(tmp_path):
+    """A broken MCP sweep must never break session rotation (best-effort)."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    with patch(
+        "tools.mcp_tool._kill_orphaned_mcp_children",
+        side_effect=RuntimeError("boom"),
+    ):
+        cli.process_command("/new")  # must not raise
+
+    assert cli.session_id != old_session_id
+
+
 def test_new_session_with_title(capsys):
     """new_session(title=...) creates a session and sets the title."""
     cli = _make_cli()

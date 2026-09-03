@@ -742,11 +742,18 @@ def _apply_display_count_guard(report: Dict[str, Any]) -> Dict[str, Any]:
     return report
 
 
+def _wayland_environment_context(report: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if report.get("platform") != "linux" or not os.environ.get("WAYLAND_DISPLAY"):
+        return None
+    return {"scope": "cli_process", "gateway_environment_checked": False}
+
+
 def _print_text_report(
     report: Dict[str, Any],
     color: bool,
     *,
     identity: Optional[Dict[str, Any]] = None,
+    environment: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Render the report in the same style as `cua-driver call health_report`
     would (one line per check + a summary footer).
@@ -797,6 +804,12 @@ def _print_text_report(
     elif cli_v and not mismatch:
         # Still show the resolved path; version already matches header.
         pass
+    if environment:
+        print(f"  {col_dim}environment: current CLI process{col_reset}")
+        print(
+            f"  {col_dim}gateway environment was not checked; active gateway "
+            f"computer_use sessions use that process environment{col_reset}"
+        )
     if mismatch:
         warn = col_yellow if color else ""
         print(
@@ -881,6 +894,7 @@ def run_doctor(
         return 2
 
     identity = _build_identity(binary, report)
+    environment = _wayland_environment_context(report)
 
     if json_output:
         # Additive envelope: preserve the upstream health_report keys and
@@ -888,12 +902,19 @@ def run_doctor(
         # that only read overall/checks keep working.
         payload = dict(report)
         payload["hermes_identity"] = identity
+        if environment:
+            payload["hermes_environment"] = environment
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
     else:
         if color is None:
             color = sys.stdout.isatty()
-        _print_text_report(report, color=bool(color), identity=identity)
+        _print_text_report(
+            report,
+            color=bool(color),
+            identity=identity,
+            environment=environment,
+        )
 
     overall = report.get("overall")
     if overall in ("degraded", "failed"):

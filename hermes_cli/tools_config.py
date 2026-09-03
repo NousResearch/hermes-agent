@@ -790,12 +790,11 @@ def _resolved_cua_driver_cmd() -> Optional[str]:
 
 
 def _cua_driver_env() -> dict:
-    """cua-driver child env with the Hermes telemetry policy applied.
+    """Return the shared cua-driver child environment.
 
-    Delegates to ``cua_backend.cua_driver_child_env`` (telemetry disabled by
-    default; user opt-in via ``computer_use.cua_telemetry``). Falls back to the
-    current environment if the helper can't be imported, so install/status
-    never break on a telemetry-helper error.
+    Delegates to ``cua_backend.cua_driver_child_env`` so install and status use
+    the same policy as runtime and doctor. Falls back to the current environment
+    if the helper cannot be imported.
     """
     try:
         from tools.computer_use.cua_backend import cua_driver_child_env

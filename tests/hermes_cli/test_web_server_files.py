@@ -375,3 +375,50 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+
+
+def test_listing_survives_a_dangling_symlink(forced_files_client):
+    """One unstat-able entry must not 500 the whole directory (dangling
+    symlinks like Steam's ~/.steampath are common in real homes)."""
+    client, root = forced_files_client
+    _seed_file(client, root, name="healthy.txt")
+    (root / "dangling").symlink_to(root / "no-such-target")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    entries = {entry["name"]: entry for entry in listing.json()["entries"]}
+
+    assert "healthy.txt" in entries
+    assert not entries["healthy.txt"].get("unavailable")
+    broken = entries["dangling"]
+    assert broken["unavailable"] is True
+    assert broken["is_directory"] is False
+    assert broken["size"] is None
+    assert broken["mime_type"] is None
+
+
+def test_listing_marks_a_jail_escaping_symlink_unavailable(forced_files_client, tmp_path):
+    """A symlink resolving outside the locked root is listed but unreadable —
+    previously its 403 killed the listing."""
+    client, root = forced_files_client
+    _seed_file(client, root, name="healthy.txt")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    (root / "escape").symlink_to(outside)
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+    entries = {entry["name"]: entry for entry in listing.json()["entries"]}
+
+    assert entries["escape"]["unavailable"] is True
+    assert not entries["healthy.txt"].get("unavailable")
+
+
+def test_direct_request_for_a_missing_path_still_raises(forced_files_client):
+    """Degradation is a listing behavior only: naming a vanished path directly
+    keeps the explicit error."""
+    client, root = forced_files_client
+    _seed_file(client, root, name="healthy.txt")
+
+    response = client.get("/api/files", params={"path": str(root / "gone")})
+    assert response.status_code == 404

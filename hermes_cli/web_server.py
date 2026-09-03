@@ -2769,6 +2769,36 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     }
 
 
+def _managed_dir_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+    """One row of a directory listing: ``_managed_file_entry``, degraded not raised.
+
+    A listing aggregates entries the caller never named, so one bad entry must
+    not fail the whole directory. A dangling symlink (stat -> ENOENT), an
+    entry deleted mid-scan, or a symlink whose resolution escapes the managed
+    root previously turned the entire ``/api/files`` response into a 500/403
+    that clients render as "workspace unreachable". Such entries now come back
+    marked ``unavailable`` with lstat-based metadata; direct single-path
+    requests keep the raising behavior.
+    """
+    try:
+        return _managed_file_entry(policy, target)
+    except HTTPException:
+        mtime = None
+        try:
+            mtime = target.lstat().st_mtime
+        except OSError:
+            pass
+        return {
+            "name": target.name or str(target),
+            "path": str(target),
+            "is_directory": False,
+            "size": None,
+            "mtime": mtime,
+            "mime_type": None,
+            "unavailable": True,
+        }
+
+
 def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     text = (data_url or "").strip()
     if not text.startswith("data:") or "," not in text:
@@ -2888,7 +2918,7 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
     try:
         with os.scandir(target) as scan:
             entries = [
-                _managed_file_entry(policy, Path(entry.path))
+                _managed_dir_entry(policy, Path(entry.path))
                 for entry in scan
                 if not _is_sensitive_path(Path(entry.path))
             ]

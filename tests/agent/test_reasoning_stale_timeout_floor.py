@@ -85,6 +85,12 @@ import pytest
     ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4.6", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # Z.AI GLM-5 series - GLM-5.3 always thinks; the Coding endpoint
+    # also reroutes glm-5.2 requests to the 5.3 backend under load.
+    ("glm-5.2", 300.0),
+    ("glm-5.3", 300.0),
+    ("zai/glm-5.3", 300.0),
+    ("glm-4.6", 300.0),
     # Thinking Machines Inkling — family entry covers -small and the
     # OpenRouter :free / :batch SKU suffixes (":" is a slug separator
     # in the right anchor, same as "-").
@@ -157,6 +163,23 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     base, implicit = agent._resolved_api_call_stale_timeout_base()
     assert base == 90.0
     assert implicit is True
+
+
+def test_pre_glm5_variants_keep_default():
+    """Older GLM variants without the always-thinking backend stay at None.
+
+    ``glm-5`` and ``glm-4.6`` are the thinking-capable families (per the
+    zai provider profile); ``glm-4-9b`` and other pre-4.6 slugs must not
+    inherit the floor - the right anchor requires ``glm-5`` or ``glm-4.6``
+    at the start of the slug.
+    """
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    assert get_reasoning_stale_timeout_floor("glm-4-9b") is None
+    assert get_reasoning_stale_timeout_floor("glm-4-flash") is None
+    # Start-of-slug anchor: a community model that merely mentions glm-5
+    # later in its name does not match.
+    assert get_reasoning_stale_timeout_floor("acme-glm-5-tuned") is None
 
 
 # ── stream-side mirror (the real builder lives in a worker thread) ────────

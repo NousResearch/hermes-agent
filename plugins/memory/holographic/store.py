@@ -485,9 +485,11 @@ class MemoryStore:
 
         Returns the entity_id.
         """
-        # Exact name match
+        # Exact name match — use COLLATE NOCASE to keep the documented
+        # case-insensitive contract while making '=' exact (LIKE treats _
+        # and % as wildcards, so 'test_entity' would also match 'testXentity').
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ? COLLATE NOCASE", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])

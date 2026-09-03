@@ -5304,7 +5304,7 @@ class AIAgent:
                 )
                 if not self.quiet_mode:
                     self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
-        _set_interrupt(False)
+        _set_interrupt(False, self._execution_thread_id)
 
     @classmethod
     def _tool_response_matches_todo_call(

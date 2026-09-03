@@ -904,6 +904,18 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
+    def test_hydration_clears_interrupt_for_execution_thread(self, agent):
+        """Hydration must clear the interrupt scoped to the agent's own
+        execution thread, not the calling thread (review point #3)."""
+        agent._execution_thread_id = 424242  # simulate a running agent thread
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        with patch("run_agent._set_interrupt") as mock_set_interrupt:
+            agent._hydrate_todo_store(history)
+        mock_set_interrupt.assert_called_once_with(False, 424242)
+
     def test_newer_live_revision_wins_over_history(self, agent):
         agent._todo_store.restore(
             [{"id": "db", "content": "Current", "status": "in_progress"}],

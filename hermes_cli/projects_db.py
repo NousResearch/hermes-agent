@@ -817,7 +817,14 @@ def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
     base = f"{slug}/{task_id}"
     if title:
         tslug = _BRANCH_SAFE_RE.sub("-", str(title).strip().lower()).strip("-")
-        tslug = tslug[:40].strip("-")
+        # Git rejects refs containing ``..``, ending in ``.``, or whose final
+        # path component ends in ``.lock``. Normalize only those dot forms so
+        # useful single dots (for example, version numbers) remain intact.
+        tslug = re.sub(r"\.{2,}", "-", tslug)
+        tslug = tslug[:40].strip("-.")
+        if tslug.endswith(".lock"):
+            stem = tslug[:-5].rstrip("-.")
+            tslug = f"{stem}-lock" if stem else "lock"
         if tslug:
             base = f"{base}-{tslug}"
     return base

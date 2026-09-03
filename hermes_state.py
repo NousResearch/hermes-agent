@@ -1402,6 +1402,116 @@ def resolve_journal_mode() -> str:
     return mode if mode in ("wal", "delete") else "wal"
 
 
+# ---------------------------------------------------------------------------
+# Cross-VM filesystem detection (virtiofs / 9p) — proactive WAL refusal
+# ---------------------------------------------------------------------------
+# Port of openclaw/openclaw#120597. Docker Desktop, OrbStack, Podman, and
+# similar VM-backed container runtimes expose host bind mounts to the guest
+# as ``fuse.virtiofs`` or ``9p`` filesystems. SQLite WAL requires all
+# database users to share the -shm file's memory on the same host; across a
+# VM boundary that guarantee silently breaks, and under sustained write
+# pressure the shared-memory cache fails WITHOUT raising — leaving
+# zero-filled pages that corrupt the database (upstream report: a 2.5 GB
+# agent DB with all-zero pages at byte 0, at exactly 1 GiB, and in the -wal
+# header). Because the failure is silent, the reactive marker-based
+# fallback below (_WAL_INCOMPAT_MARKERS) never fires — the mode must be
+# refused BEFORE the pragma.
+#
+# Detection is mount-table based (Linux ``/proc/self/mountinfo``): find the
+# longest mount-point prefix of the DB path and check its fstype. The
+# statfs fallback used upstream is unavailable here (os.statvfs carries no
+# fstype and Python has no portable statfs), so non-Linux hosts and
+# unreadable mount tables conservatively return False — behavior unchanged.
+_CROSS_VM_FSTYPES = frozenset({
+    "virtiofs", "fuse.virtiofs", "9p", "9p2000", "9p2000.l", "9p2000.u",
+})
+
+# Cache per resolved DB directory — the mount table doesn't change under a
+# running process often enough to justify re-parsing per connection, and
+# kanban_db.connect() opens on every operation.
+_cross_vm_fs_cache: Dict[str, bool] = {}
+_cross_vm_fs_cache_lock = threading.Lock()
+
+
+def _path_on_cross_vm_fs(path: str) -> bool:
+    """True when ``path`` resides on a virtiofs/9p (cross-VM) filesystem."""
+    try:
+        directory = os.path.dirname(os.path.abspath(path)) or "/"
+    except Exception:
+        return False
+    with _cross_vm_fs_cache_lock:
+        cached = _cross_vm_fs_cache.get(directory)
+    if cached is not None:
+        return cached
+    result = _detect_cross_vm_fs(directory)
+    with _cross_vm_fs_cache_lock:
+        _cross_vm_fs_cache[directory] = result
+    return result
+
+
+def _detect_cross_vm_fs(
+    directory: str,
+    mountinfo_path: str = "/proc/self/mountinfo",
+) -> bool:
+    """Parse ``mountinfo_path`` for the fstype owning ``directory``."""
+    if sys.platform != "linux":
+        return False
+    try:
+        with open(mountinfo_path, "r", encoding="utf-8",
+                  errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return False
+    best_len = -1
+    best_fstype = ""
+    for line in lines:
+        # mountinfo format: ... <mount point> ... - <fstype> <source> <opts>
+        try:
+            fields, _, tail = line.partition(" - ")
+            parts = fields.split()
+            if len(parts) < 5:
+                continue
+            mount_point = parts[4]
+            # Octal-escape decoding (\040 = space) per proc(5).
+            mount_point = (
+                mount_point.encode("latin-1", "ignore")
+                .decode("unicode_escape")
+                if "\\" in mount_point else mount_point
+            )
+            fstype = tail.split()[0] if tail else ""
+        except (IndexError, UnicodeDecodeError):
+            continue
+        if directory == mount_point or directory.startswith(
+            mount_point.rstrip("/") + "/"
+        ) or mount_point == "/":
+            if len(mount_point) > best_len:
+                best_len = len(mount_point)
+                best_fstype = fstype
+    return best_fstype.lower() in _CROSS_VM_FSTYPES
+
+
+# Dedup WARNING for the cross-VM filesystem WAL refusal.
+_cross_vm_warned_paths: set[str] = set()
+_cross_vm_warned_lock = threading.Lock()
+
+
+def _log_cross_vm_fs_once(db_label: str) -> None:
+    with _cross_vm_warned_lock:
+        if db_label in _cross_vm_warned_paths:
+            return
+        _cross_vm_warned_paths.add(db_label)
+    logger.warning(
+        "%s: database directory is on a cross-VM filesystem (virtiofs/9p — "
+        "typical for Docker Desktop / OrbStack / Podman host bind mounts). "
+        "SQLite WAL shared-memory is not coherent across the VM boundary and "
+        "can silently corrupt the database, so journal_mode=DELETE is used "
+        "instead. To restore WAL concurrency, move the database onto a "
+        "native volume (e.g. a named Docker volume) instead of a host bind "
+        "mount.",
+        db_label,
+    )
+
+
 class WalUnsupportedError(sqlite3.OperationalError):
     """Raised by :func:`apply_wal_with_fallback` when ``require_wal=True`` and
     the filesystem cannot provide WAL journal mode.
@@ -1533,6 +1643,28 @@ def apply_wal_with_fallback(
         and current_mode != "wal"
         and _database_has_content(conn)
     )
+
+    # Cross-VM filesystem (virtiofs/9p) proactive refusal: WAL over a VM
+    # boundary corrupts SILENTLY (zero-filled pages), so the reactive
+    # marker fallback in the except-branch below never gets a signal.
+    # Refuse to ENABLE WAL here; on-disk WAL databases were already
+    # returned above (never live-downgrade). See _path_on_cross_vm_fs.
+    try:
+        _db_row = conn.execute("PRAGMA database_list").fetchone()
+        _db_file = str(_db_row[2]) if _db_row and _db_row[2] else ""
+    except (sqlite3.OperationalError, IndexError, TypeError):
+        _db_file = ""
+    if _db_file and _path_on_cross_vm_fs(_db_file):
+        cross_vm_exc = WalUnsupportedError(
+            "journal_mode=WAL refused: database is on a cross-VM "
+            "filesystem (virtiofs/9p) where WAL shared-memory silently "
+            "corrupts"
+        )
+        if require_wal:
+            raise cross_vm_exc
+        _log_cross_vm_fs_once(db_label)
+        actual = _set_journal_mode_no_wait(conn, "DELETE")
+        return actual or "delete"
 
     try:
         # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the

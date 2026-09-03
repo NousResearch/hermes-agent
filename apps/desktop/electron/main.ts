@@ -372,6 +372,7 @@ import {
 import {
   compareApiUrl,
   parseCompareBehindCount,
+  parseCompareCommits,
   resolveBehindCount,
   resolveCommitLogSelection,
   shouldCountCommits
@@ -3019,9 +3020,11 @@ async function checkUpdates() {
     // flagging that as an update nudges the user into wiping their work.
     const tipsEqual = Boolean(currentSha && currentSha === targetSha)
 
-    const sshBehind = tipsEqual
-      ? 0
+    const compare = tipsEqual
+      ? { behind: 0, commits: [] }
       : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+
+    const sshBehind = compare.behind
 
     const upToDate = tipsEqual || sshBehind === 0
 
@@ -3033,7 +3036,9 @@ async function checkUpdates() {
       updateAvailable: !upToDate,
       currentSha,
       targetSha,
-      commits: [],
+      // The compare payload carries the same commit rows `readCommitLog` would
+      // produce; SSH installs get real release notes without ever touching SSH.
+      commits: upToDate ? [] : compare.commits,
       dirty: dirtyStr.length > 0,
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
@@ -3093,16 +3098,33 @@ async function checkUpdates() {
   // Recover the exact count a shallow clone can't compute: the GitHub compare
   // API knows the full graph regardless of local clone depth. Best-effort —
   // offline, rate-limited, or non-GitHub origins keep the honest null
-  // ("update available", no fabricated number).
+  // ("update available", no fabricated number). When it succeeds, also take
+  // the commit rows from the same payload.
+  let compareCommits = []
+
+  // Only consult the API when an update actually exists (behind === null,
+  // the only nonzero-update signal a shallow checkout can produce): a
+  // behind === 0 shallow checkout stays cleanly up-to-date even if the API
+  // is unreachable, instead of an error flipping it to "behind: null"
+  // (update, count unknown).
   if (behind === null) {
-    behind = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
+    const compare = await fetchCompareBehindCount({ currentSha, originUrl, targetSha })
+
+    behind = compare.behind
+    compareCommits = compare.commits
   }
 
   // behind === null means "update available, exact count unknown" (shallow
   // clone): still list what origin offers — resolveCommitLogSelection keeps
   // the shallow log to the fetched tip so the range walk can't enumerate the
   // contaminated ancestry — so "See what's new" stays useful and honest.
-  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
+  const localCommits = behind !== 0 ? await readCommitLog(updateRoot, branch, isShallow) : []
+
+  // Prefer the local walk in full clones. In shallow checkouts its output is
+  // useless for release notes (just the fetched tip commit, no behind-range),
+  // so substitute the compare-API rows when the API answered.
+  const commits =
+    isShallow && compareCommits.length > 0 ? compareCommits : behind !== 0 ? localCommits : []
 
   return {
     supported: true,
@@ -3122,13 +3144,21 @@ async function checkUpdates() {
 // Best-effort exact behind-count for graphs the local clone can't measure.
 // Delegates URL building + response parsing to update-count.ts (pure, unit
 // tested); this wrapper only does the bounded network call. Any failure —
-// offline, 4xx/5xx, rate limit, shape surprise — returns null so callers keep
-// the honest "update available, count unknown" state.
+// offline, 4xx/5xx, rate limit, shape surprise — returns
+// { behind: null, commits: [] } so callers keep the honest "update available,
+// count unknown" state with an empty changelog.
+//
+// When the call succeeds it also extracts the user-facing commit list
+// (`payload.commits`: same shape as `git log --pretty` output, newest first,
+// capped by the API at 250), so official-SSH installs — which never run
+// `readCommitLog` because fetching would risk an SSH prompt — can still show
+// real release notes in the "what's new" dialog instead of the empty
+// "Improvements and fixes" placeholder.
 async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
   const url = compareApiUrl({ currentSha, originUrl, targetSha })
 
   if (!url) {
-    return null
+    return { behind: null, commits: [] }
   }
 
   try {
@@ -3167,9 +3197,9 @@ async function fetchCompareBehindCount({ currentSha, originUrl, targetSha }) {
       req.on('error', reject)
     })
 
-    return parseCompareBehindCount(payload)
+    return { behind: parseCompareBehindCount(payload), commits: parseCompareCommits(payload) }
   } catch {
-    return null
+    return { behind: null, commits: [] }
   }
 }
 

@@ -89,4 +89,50 @@ function parseCompareBehindCount(payload) {
   return ahead
 }
 
-export { compareApiUrl, parseCompareBehindCount, resolveBehindCount, resolveCommitLogSelection, shouldCountCommits }
+// Extract the user-facing commit rows from the same compare payload.
+// `payload.commits` mirrors the fields `readCommitLog` emits (sha, summary,
+// author, at) plus a few extras, newest first, capped by GitHub at 250 rows —
+// the 250 cap is exactly why the update dialog's "+ N more changes" line can
+// exceed it. Any shape surprise returns [] so callers fall back to the local
+// changelog path instead of rendering garbage.
+function parseCompareCommits(payload) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.commits)) {
+    return []
+  }
+
+  return payload.commits.flatMap(commit => {
+    const sha =
+      typeof commit?.sha === 'string' && commit.sha
+        ? commit.sha
+        : typeof commit?.node_id === 'string' && commit.node_id
+          ? commit.node_id
+          : ''
+
+    const message = typeof commit?.commit?.message === 'string' ? commit.commit.message : ''
+    const summary = message.split(/\r?\n/, 1)[0]
+    const authorName = typeof commit?.commit?.author?.name === 'string' ? commit.commit.author.name : ''
+    const date = Date.parse(commit?.commit?.author?.date ?? '')
+
+    if (!sha || !summary || !Number.isFinite(date)) {
+      return []
+    }
+
+    return [
+      {
+        sha,
+        summary,
+        author: authorName,
+        at: date
+      }
+    ]
+  })
+}
+
+export {
+  compareApiUrl,
+  parseCompareBehindCount,
+  parseCompareCommits,
+  resolveBehindCount,
+  resolveCommitLogSelection,
+  shouldCountCommits
+}

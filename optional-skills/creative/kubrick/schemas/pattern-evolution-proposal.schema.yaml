@@ -1,0 +1,44 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://kubrick.zero-state.dev/schemas/pattern-evolution-proposal.schema.yaml
+title: Kubrick Pattern Evolution Proposal
+type: object
+additionalProperties: false
+required: [schema_version, proposal_id, pattern_id, evidence_receipts, proposed_changes, rationale, review]
+properties:
+  schema_version: {const: 1.0.0}
+  proposal_id: {type: string, minLength: 1}
+  pattern_id: {type: string, minLength: 1}
+  evidence_receipts: {type: array, minItems: 1, items: {type: string}}
+  proposed_changes:
+    type: object
+    additionalProperties: false
+    properties:
+      confidence_delta: {type: number, minimum: -0.2, maximum: 0.2}
+      add_misuse_risks: {type: array, items: {type: string}}
+      add_mutation_variables: {type: array, items: {type: string}}
+      lifecycle_action: {enum: [NONE, DEPRECATE, RETIRE]}
+  rationale: {type: array, minItems: 1, items: {type: string}}
+  review:
+    type: object
+    required: [status, reviewer, automatic_application_allowed]
+    properties:
+      status: {enum: [PROPOSED, APPROVED, REJECTED]}
+      reviewer: {type: [string, 'null']}
+      automatic_application_allowed: {const: false}
+  multi_signal_receipt_id: {type: string}
+  human_review_gate:
+    type: object
+    additionalProperties: true
+    properties:
+      required: {type: boolean}
+      reasons: {type: array, items: {type: string}}
+      automatic_application_allowed: {const: false}
+      large_confidence_change: {type: boolean}
+      structural_mutation: {type: boolean}
+  pattern_history:
+    type: object
+    additionalProperties: false
+    properties:
+      evidence_of_use: {type: array, items: {type: string}}
+      source_projects: {type: array, items: {type: string}}
+      outcome_confidence: {type: number, minimum: 0, maximum: 1}

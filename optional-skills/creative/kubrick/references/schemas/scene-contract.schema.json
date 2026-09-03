@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Scene Contract",
+  "type": "object",
+  "properties": {
+    "id": {"type": "string"},
+    "slugline": {"type": "string"},
+    "scene_objective": {"type": "string"},
+    "opposition": {"type": "string"},
+    "turn": {"type": "string"},
+    "exit_condition": {"type": "string"},
+    "irreversible_result": {"type": "string"},
+    "tactics": {"type": "array", "items": {"type": "string"}},
+    "continuity_requirements": {"type": "array", "items": {"type": "string"}},
+    "visual_anchor": {"type": ["string", "null"]},
+    "provenance": {"type": "string", "enum": ["OBSERVED", "INFERRED", "SPECULATIVE"]}
+  },
+  "required": ["id", "slugline", "scene_objective", "opposition", "turn", "exit_condition", "irreversible_result"]
+}

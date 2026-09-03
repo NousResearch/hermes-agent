@@ -1,0 +1,23 @@
+{
+  "pattern_id": "corporate_grid_enclosure_compliance",
+  "title": "Corporate Grid / Compliance Through Spatial Repetition",
+  "version": "0.11.2",
+  "domain": "contemporary",
+  "source_tier": "PRIMARY",
+  "source_status": "VALIDATED",
+  "source_refs": [{"author":"Corporate workplace and interface artifacts","title":"Open-plan offices, dashboards, compliance layouts, standardized workstations","date":"late 20th-21st century","cultural_context":"Contemporary institutional design"}],
+  "observed_structure": ["people or tasks occupy repeated cells", "exceptions are made visible through misalignment", "the grid continues operating after individual authority exits"],
+  "dramatic_operations": ["convert space into compliance", "expose institutional replacement of agency", "make deviation measurable"],
+  "transformation_grammars": ["enclosure", "individual-to-system"],
+  "cinematic_affordances": ["repeated desks or panels", "orthographic framing", "movement constrained to lanes", "one occupied cell left empty or misaligned"],
+  "applicable_genres": ["satire", "thriller", "science fiction", "drama"],
+  "applicable_formats": ["feature", "pilot", "episode", "single-frame"],
+  "cultural_scope": ["contemporary institutional artifacts; context must specify whose compliance is being represented"],
+  "misuse_risks": ["generic office dystopia", "symmetry equated automatically with evil", "workers reduced to decorative repetition"],
+  "mutation_requirements": {"required":true,"variables":["cell occupancy","alignment","lane access","central authority","exception visibility"]},
+  "transferable_structure": "repeated spatial units make institutional rules visible and turn individual deviation into measurable pressure",
+  "non_transferable_surface": "copying specific corporate logos, branded offices, or famous dystopian production design",
+  "production_cost": {"location_dependency":0.6,"prop_dependency":0.5,"lighting_dependency":0.3,"VFX_dependency":0.1},
+  "lexicon_links": ["square", "archons", "binding", "hermetic_seal"],
+  "confidence": 0.83
+}

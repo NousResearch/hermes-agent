@@ -1,0 +1,66 @@
+{
+  "pattern_id": "platform_attention_economy_gaze",
+  "title": "Platform Attention-Economy Gaze",
+  "version": "0.13.0",
+  "domain": "contemporary",
+  "source_tier": "SCHOLARLY",
+  "source_status": "TIME_SENSITIVE",
+  "time_sensitive": true,
+  "validity_window": {
+    "status": "active",
+    "reviewed": "2026-07-30",
+    "review_cadence_days": 180,
+    "expiry_policy": "revalidate platform norms before production use; deprecate when interface affordances materially change"
+  },
+  "source_refs": [
+    {
+      "author": "contemporary platform UX and media-studies corpus",
+      "title": "Attention metrics, infinite scroll, and gaze capture as social infrastructure",
+      "date": "2015-present",
+      "cultural_context": "global social platforms",
+      "provenance": "primary interface behaviors + scholarly media studies"
+    }
+  ],
+  "observed_structure": [
+    "a interface or crowd directs continuous looking toward a ranked surface",
+    "attention becomes a scarce resource that characters compete to capture or escape",
+    "visibility confers temporary authority that can reverse without warning"
+  ],
+  "dramatic_operations": [
+    "transfer power through who is watched",
+    "weaponize ranking and notification pressure",
+    "collapse private intention under public metrics"
+  ],
+  "transformation_grammars": ["gaze-transfer", "metric-as-pressure", "visibility-reversal"],
+  "cinematic_affordances": [
+    "screen glow as dual light against architectural light",
+    "faces lit only by ranked content",
+    "cut rhythm matching notification cadence",
+    "crowd formation that fractures when attention migrates"
+  ],
+  "applicable_genres": ["drama", "thriller", "satire", "documentary"],
+  "applicable_formats": ["feature", "episode", "short", "vertical video", "single-frame"],
+  "cultural_scope": [
+    "time-sensitive platform culture; do not universalize across regions or eras without provenance"
+  ],
+  "misuse_risks": [
+    "stale platform UI collage",
+    "naming brands as if they were eternal symbols",
+    "treating metrics as moral essence rather than pressure system"
+  ],
+  "mutation_requirements": {
+    "required": true,
+    "variables": ["who is watched", "metric visible or hidden", "private vs public surface", "device scale", "crowd density"]
+  },
+  "transferable_structure": "authority and shame migrate with directed attention under a ranking system",
+  "non_transferable_surface": "specific logos, UI skins, or celebrity likenesses without clearance",
+  "production_cost": {
+    "location_dependency": 0.2,
+    "prop_dependency": 0.3,
+    "lighting_dependency": 0.4,
+    "VFX_dependency": 0.2
+  },
+  "lexicon_links": ["panopticon", "egregore", "witness"],
+  "confidence": 0.74,
+  "provenance_notes": "Memetic/cultural signal pack with explicit time-sensitive status; revalidate before each production cycle."
+}

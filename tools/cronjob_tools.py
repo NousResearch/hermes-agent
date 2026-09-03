@@ -1531,6 +1531,7 @@ def cronjob(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    allow_messaging: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
     task_id: str = None,
@@ -1649,6 +1650,7 @@ def cronjob(
                     attach_to_session=attach_to_session,
                     monitor_script=_normalize_optional_job_value(monitor_script),
                     monitor_url=_normalize_optional_job_value(monitor_url),
+                    allow_messaging=bool(allow_messaging),
                     # reasoning_effort reaches here from the CLI
                     # (hermes cron create --reasoning-effort) ONLY — it is
                     # deliberately absent from CRONJOB_SCHEMA and the model
@@ -1969,6 +1971,8 @@ def cronjob(
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
+            if allow_messaging is not None:
+                updates["allow_messaging"] = bool(allow_messaging)
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
             if workdir is not None:
@@ -2098,6 +2102,10 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "items": {"type": "string"},
                 "description": "Optional toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\"]) — cuts token overhead. Infer from the prompt. Omit for all default tools. On update, [] clears."
             },
+            "allow_messaging": {
+                "type": "boolean",
+                "description": "When true, this cron job may send multiple native messages through send_message to its bound origin only. Default false. After those sends, return [SILENT] so the scheduler does not add a duplicate summary."
+            },
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute existing path to run the job from: injects that directory's AGENTS.md/context files and anchors terminal/file tools there. On update, '' clears."
@@ -2175,6 +2183,7 @@ def _cronjob_handler(args, **kw):
         attach_to_session=args.get("attach_to_session"),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
+        allow_messaging=args.get("allow_messaging"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
     )

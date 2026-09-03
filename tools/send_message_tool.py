@@ -237,6 +237,10 @@ SEND_MESSAGE_SCHEMA = {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
             },
+            "message_key": {
+                "type": "string",
+                "description": "Required for opted-in cron jobs. Stable per-run key used to send multiple distinct messages without duplicates on retry. Example: automatic-action:reply-sharon."
+            },
             "emoji": {
                 "type": "string",
                 "description": "For action='react': the emoji to react with (e.g. '❤️'). On iMessage, ❤️👍👎😂‼️❓ render as native tapbacks; other emoji use custom-emoji reactions."
@@ -263,6 +267,10 @@ def send_message_tool(args, **kw):
 
     if action == "unreact":
         return _handle_react(args, remove=True)
+
+    cron_gate = _maybe_handle_cron_outbound(args)
+    if cron_gate is not None:
+        return cron_gate
 
     return _handle_send(args)
 
@@ -812,8 +820,102 @@ def _get_cron_auto_delivery_target():
     }
 
 
+def _maybe_handle_cron_outbound(args):
+    """Enforce origin-only native sends for opted-in cron jobs."""
+    from cron import outbound as cron_outbound
+    from gateway.session_context import get_session_env
+
+    cron_session = get_session_env("HERMES_CRON_SESSION", "")
+    if cron_session != "1":
+        return None
+    if not cron_outbound.is_cron_messaging_session():
+        return json.dumps(_error(
+            "This cron job is not opted in to native send_message. "
+            "Set allow_messaging=true on the job."
+        ))
+
+    target = str(args.get("target") or "origin").strip().lower()
+    if target not in {"", "origin"}:
+        return json.dumps(_error(
+            "Opted-in cron jobs may send only to target='origin'."
+        ))
+
+    message = args.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return json.dumps(_error("message is required"))
+
+    try:
+        message_key = cron_outbound.normalize_message_key(args.get("message_key"))
+    except ValueError as exc:
+        return json.dumps(_error(str(exc)))
+
+    job_id = cron_outbound.current_cron_job_id()
+    run_id = cron_outbound.current_cron_run_id()
+    origin = _get_cron_auto_delivery_target()
+    if not job_id or not run_id or not origin:
+        return json.dumps(_error(
+            "Cron outbound send is missing the job, run, or origin binding."
+        ))
+
+    try:
+        claim = cron_outbound.claim_or_reuse(
+            job_id=job_id,
+            run_id=run_id,
+            message_key=message_key,
+            target="origin",
+            body=message,
+            platform=origin["platform"],
+            chat_id=str(origin["chat_id"]),
+            thread_id=origin.get("thread_id"),
+        )
+    except ValueError as exc:
+        return json.dumps(_error(str(exc)))
+
+    if claim["action"] == "reuse":
+        return cron_outbound.dumps(cron_outbound.reuse_payload(claim["record"]))
+
+    try:
+        raw = _handle_send({
+            "target": (
+                f"{origin['platform']}:{origin['chat_id']}"
+                + (f":{origin['thread_id']}" if origin.get("thread_id") else "")
+            ),
+            "message": message,
+        })
+    except Exception as exc:
+        record = cron_outbound.mark_result(
+            job_id=job_id,
+            run_id=run_id,
+            message_key=message_key,
+            status="ambiguous",
+            error=f"send engine raised {type(exc).__name__}",
+        )
+        return cron_outbound.dumps(cron_outbound.success_payload(record))
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        parsed = raw
+    classified = cron_outbound.classify_send_result(parsed)
+    record = cron_outbound.mark_result(
+        job_id=job_id,
+        run_id=run_id,
+        message_key=message_key,
+        status=classified["status"],
+        transport_message_id=classified.get("transport_message_id"),
+        error=classified.get("error"),
+    )
+    payload = cron_outbound.success_payload(record)
+    if classified.get("error") and not payload.get("error"):
+        payload["error"] = classified["error"]
+    return cron_outbound.dumps(payload)
+
+
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):
     """Skip redundant cron send_message calls when the scheduler will auto-deliver there."""
+    from cron.outbound import is_cron_messaging_session
+
+    if is_cron_messaging_session():
+        return None
     auto_target = _get_cron_auto_delivery_target()
     if not auto_target:
         return None
@@ -2363,7 +2465,14 @@ def _check_send_message():
     summary), which is the canonical pattern for any worker that needs to
     reply with more than the ~200-char first-line truncation the kanban
     notifier applies.
+    Also available to opted-in cron jobs. ``HERMES_CRON_ALLOW_MESSAGING=1``
+    is set only for that job's isolated run, so the tool remains hidden
+    from ordinary cron, CLI, and delegated-agent sessions.
     """
+    from cron.outbound import is_cron_messaging_session
+
+    if is_cron_messaging_session():
+        return True
     if os.environ.get("HERMES_KANBAN_TASK"):
         return True
     from gateway.session_context import get_session_env
@@ -2484,16 +2593,19 @@ async def _send_yuanbao(chat_id, message, media_files=None):
 
 
 # --- Registry ---
-from tools.registry import tool_error
+from tools.registry import registry, tool_error
 
-# NOTE: ``send_message`` is intentionally NOT registered as an agent-callable
-# model tool. The agent should not decide on its own to fire off cross-platform
-# messages or reactions. The send engine in this module (``_send_to_platform``,
-# ``_send_via_adapter``, ``_parse_target_ref``, the per-platform ``_send_*``
-# helpers) remains the shared transport used by:
-#   - cron delivery (cron/scheduler.py)
-#   - the ``hermes send`` CLI command (hermes_cli/send_cmd.py)
-#   - the gateway kanban notifier (dashboard-toggled, outside agent control)
-#   - the standalone MCP server (mcp_serve.py), which is an opt-in surface
-# Those callers import the helpers directly; none of them need the registry
-# entry.
+# HERMES-022: register send_message only as an explicit opt-in toolset.
+# Ordinary CLI, Telegram, API, ACP, webhook, delegated, and default cron
+# sessions still do not receive it. Cron jobs receive it only when
+# ``allow_messaging=true`` and the scheduler removes ``messaging`` from
+# the per-job denylist.
+registry.register(
+    name="send_message",
+    toolset="messaging",
+    schema=SEND_MESSAGE_SCHEMA,
+    handler=send_message_tool,
+    check_fn=_check_send_message,
+    description="Send a native message through the active Hermes adapter.",
+    emoji="📨",
+)

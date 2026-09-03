@@ -1616,6 +1616,13 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
         assert "Check for updates" in result
+        assert "do NOT use send_message" in result
+
+    def test_opted_in_job_gets_native_send_guidance(self):
+        result = _build_job_prompt({"prompt": "Check for updates", "allow_messaging": True})
+        assert "[SILENT]" in result
+        assert "target='origin'" in result
+        assert "do NOT use send_message" not in result
 
 
 class TestParseWakeGate:

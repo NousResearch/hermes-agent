@@ -1078,6 +1078,16 @@ class TestEnabledToolsets:
         assert job["enabled_toolsets"] == ["web", "terminal"]
 
 
+class TestAllowMessaging:
+    def test_allow_messaging_default_false(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        assert job["allow_messaging"] is False
+
+    def test_allow_messaging_stored(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", allow_messaging=True)
+        assert job["allow_messaging"] is True
+
+
 class TestMarkJobRunConcurrency:
     """Regression tests for concurrent parallel job state writes.
 

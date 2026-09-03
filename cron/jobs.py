@@ -2349,6 +2349,7 @@ def create_job(
     attach_to_session: Optional[bool] = None,
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
+    allow_messaging: bool = False,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -2574,6 +2575,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "allow_messaging": bool(allow_messaging),
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the

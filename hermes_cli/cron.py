@@ -802,6 +802,7 @@ def cron_create(args):
         no_agent=getattr(args, "no_agent", False) or None,
         monitor_script=getattr(args, "monitor_script", None),
         monitor_url=getattr(args, "monitor_url", None),
+        allow_messaging=getattr(args, "allow_messaging", None),
         continuity=getattr(args, "continuity", None),
         reasoning_effort=getattr(args, "reasoning_effort", None),
     )
@@ -878,6 +879,7 @@ def cron_edit(args):
         no_agent=getattr(args, "no_agent", None),
         monitor_script=getattr(args, "monitor_script", None),
         monitor_url=getattr(args, "monitor_url", None),
+        allow_messaging=getattr(args, "allow_messaging", None),
         continuity=getattr(args, "continuity", None),
         reasoning_effort=getattr(args, "reasoning_effort", None),
     )

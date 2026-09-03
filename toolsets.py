@@ -272,6 +272,12 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "messaging": {
+        "description": "Native outbound send_message. Default-off. Cron jobs receive it only with allow_messaging=true.",
+        "tools": ["send_message"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
@@ -415,10 +421,10 @@ TOOLSETS = {
     # ==========================================================================
     # Full Hermes toolsets (CLI + messaging platforms)
     #
-    # All platforms share the same core tools. Note: agents do NOT get an
-    # agent-callable send_message tool — outbound platform messaging is handled
-    # outside the agent loop (cron delivery, the gateway kanban notifier, and
-    # the `hermes send` CLI), not by the model deciding to send on its own.
+    # All platforms share the same core tools. send_message lives in the
+    # default-off ``messaging`` toolset and is never part of _HERMES_CORE_TOOLS.
+    # Cron jobs receive it only through an explicit per-job allow_messaging
+    # opt-in. Other outbound senders remain outside the agent loop.
     # ==========================================================================
 
     "hermes-acp": {

@@ -866,6 +866,28 @@ You can also list gitignored files to copy into worktrees via `.worktreeinclude`
 node_modules/
 ```
 
+## Git Commit Identity
+
+Choose the name and email on commits the agent makes — separate from your `~/.gitconfig`:
+
+```yaml
+git:
+  identity:
+    name: "Jane Doe"
+    email: "jane@users.noreply.github.com"
+```
+
+When set, Hermes injects `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` and `GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` into every terminal subprocess (local and sandbox backends alike) and the Desktop review-pane commit path. Every commit the agent makes — in any repo, on any backend — carries the identity you chose, and the model never needs to run `git config user.email` itself.
+
+Details:
+
+- **Off by default.** With no `git.identity` configured, nothing is injected and git's normal config resolution applies unchanged.
+- **Your explicit exports win.** If `GIT_AUTHOR_NAME` (or any of the four vars) is already set in the environment, Hermes leaves it alone.
+- **Name and email are independent** — set only `email` to keep the repo-configured name.
+- Git's env vars take precedence over repo-local and global `user.name`/`user.email`; that's the point — the configured identity is authoritative for agent-spawned processes.
+
+Tip: use your GitHub noreply address (`<id>+<login>@users.noreply.github.com`) so commits link to your account without exposing your real email.
+
 ## Context Compression
 
 Hermes automatically compresses long conversations to stay within your model's context window. The compression summarizer is a separate LLM call — you can point it at any provider or endpoint.

@@ -410,6 +410,21 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Git identity for agent-made commits. When set, Hermes injects
+    # GIT_AUTHOR_NAME/EMAIL and GIT_COMMITTER_NAME/EMAIL into every terminal
+    # subprocess (local + sandbox backends) and the Desktop review-pane
+    # commit path, so commits the agent makes are attributed to the identity
+    # YOU chose — separate from whatever ~/.gitconfig holds, and without the
+    # model ever running `git config user.email` itself.
+    # Inspired by Amp's orb git-identity model ("No Mailmap Required").
+    # Empty (default) = no injection; git's normal config resolution applies.
+    "git": {
+        "identity": {
+            "name": "",   # e.g. "Jane Doe"
+            "email": "",  # e.g. "jane@users.noreply.github.com"
+        },
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

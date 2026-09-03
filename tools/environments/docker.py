@@ -27,6 +27,7 @@ from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.local import (
     _HERMES_PROVIDER_ENV_BLOCKLIST,
     _is_hermes_internal_secret,
+    apply_git_identity_env,
 )
 
 logger = logging.getLogger(__name__)
@@ -1594,6 +1595,10 @@ class DockerEnvironment(BaseEnvironment):
         passthrough_env, unset_names = self._resolve_passthrough_env()
         exec_env: dict[str, str] = dict(self._env)
         exec_env.update(passthrough_env)
+        # Configured git identity rides into the container's login snapshot so
+        # commits made inside the sandbox carry the same authorship as local
+        # ones (config.yaml `git.identity`).
+        apply_git_identity_env(exec_env)
         for name in unset_names:
             exec_env.pop(name, None)
         self._init_unset_passthrough_names = tuple(sorted(unset_names))

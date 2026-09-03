@@ -41,6 +41,16 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
     — it would just hang the request until the timeout. Failing fast surfaces
     the real auth error in the toast instead."""
     try:
+        env = noninteractive_git_env()
+        try:
+            from tools.environments.local import apply_git_identity_env
+
+            # Desktop review-pane commits honor config.yaml `git.identity`
+            # exactly like agent terminal commits do (one identity policy,
+            # every commit surface).
+            apply_git_identity_env(env)
+        except Exception:
+            pass
         proc = subprocess.run(
             ["git", *harden_git_argv(args)],
             cwd=cwd,
@@ -48,7 +58,7 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
             text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
             stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return 1, "", "git invocation failed"

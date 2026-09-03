@@ -687,6 +687,71 @@ def _inject_session_context_env(env: dict) -> None:
             env.pop(var_name, None)
 
 
+#: Env keys git consults for commit authorship, in the order git documents
+#: them. Set from ``git.identity`` config so agent-made commits carry the
+#: identity the user chose — instead of whatever ``~/.gitconfig`` the host
+#: happens to have, or (worse) an identity the model invents with
+#: ``git config user.email`` mid-session (#72556, #78374).
+_GIT_IDENTITY_NAME_KEYS = ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME")
+_GIT_IDENTITY_EMAIL_KEYS = ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL")
+
+
+def _read_git_identity_config() -> tuple[str, str]:
+    """Return ``(name, email)`` from config.yaml ``git.identity``.
+
+    Best-effort — any config failure returns empty strings so terminal
+    execution never breaks because the config file is unreadable.
+    Values are clamped to a single line: git env vars with embedded
+    newlines would corrupt the commit object header.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        git_cfg = cfg.get("git") or {}
+        ident = git_cfg.get("identity") or {}
+        if not isinstance(ident, dict):
+            return "", ""
+        name = str(ident.get("name") or "").splitlines()[0].strip() if ident.get("name") else ""
+        email = str(ident.get("email") or "").splitlines()[0].strip() if ident.get("email") else ""
+        return name, email
+    except Exception:
+        return "", ""
+
+
+def apply_git_identity_env(env: dict) -> None:
+    """Inject configured git identity into a subprocess env, in place.
+
+    Ported from Amp's orb git-identity model ("No Mailmap Required",
+    Aug 2026): the harness sets ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` from
+    the user's chosen identity so every commit the agent makes is
+    attributed the way the user wants, without the agent ever running
+    ``git config``.
+
+    Rules:
+
+    * No-op unless ``git.identity.name`` and/or ``git.identity.email`` is
+      set in config.yaml — fresh installs behave exactly as before.
+    * Never overrides a key already present in *env*: an explicit
+      ``GIT_AUTHOR_NAME`` exported by the user (or bound by a caller) wins.
+    * Name and email are applied independently, so setting only
+      ``git.identity.email`` still merges with the repo-config name.
+
+    Note git's own precedence: these env vars beat repo-local and global
+    ``user.name`` / ``user.email``. That is the point — the configured
+    identity is authoritative for agent-spawned processes.
+    """
+    name, email = _read_git_identity_config()
+    if name:
+        for key in _GIT_IDENTITY_NAME_KEYS:
+            if not env.get(key):
+                env[key] = name
+    if email:
+        for key in _GIT_IDENTITY_EMAIL_KEYS:
+            if not env.get(key):
+                env[key] = email
+
+
 def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment."""
     try:
@@ -767,6 +832,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         sanitized[path_key] = _prepend_hermes_bin_dir(sanitized.get(path_key, ""))
 
     _apply_windows_msys_bash_env_defaults(sanitized)
+
+    apply_git_identity_env(sanitized)
 
     sanitized = _scrub_delegated_child_kanban_env(sanitized)
 
@@ -1586,6 +1653,8 @@ def _make_run_env(env: dict) -> dict:
     _strip_hermes_owned_pythonpath_and_runtime_markers(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
+
+    apply_git_identity_env(run_env)
 
     run_env = _scrub_delegated_child_kanban_env(run_env)
 

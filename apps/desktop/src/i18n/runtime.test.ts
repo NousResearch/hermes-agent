@@ -59,6 +59,17 @@ describe('desktop i18n runtime translator', () => {
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
   })
 
+  it('localizes the browser real-profile setting instead of falling back to English', () => {
+    const field = 'browser.use_real_profile'
+
+    expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('使用我的真实浏览器配置文件')
+    expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toContain('真实登录状态')
+  })
+
+  it('localizes the browser settings section title', () => {
+    expect(zh.settings.sections.browser).toBe('浏览器')
+  })
+
   it('falls back to English when the active locale cannot resolve a key', () => {
     const boot = TRANSLATIONS.ja.boot as { ready?: string }
     const originalReady = boot.ready

@@ -70,6 +70,7 @@ _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
+_STARTUP_RESTART_DELAY_MS = 60_000
 
 
 def _schtasks_encoding() -> str:
@@ -501,7 +502,7 @@ def _build_gateway_vbs_script(
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp",
+        "Dim sh, env, existing_pp, exit_code",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
@@ -518,34 +519,47 @@ def _build_gateway_vbs_script(
         f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
-        # Window style 0 = hidden; bWaitOnReturn False = detached/async. The
-        # console python's one console is created hidden and inherited by all
-        # descendants, so nothing ever flashes.
-        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+        # Window style 0 = hidden; bWaitOnReturn True keeps the launcher alive
+        # for the lifetime of the gateway. Scheduled Task can therefore observe
+        # a later crash and apply RestartOnFailure. Propagating the child's exit
+        # code also distinguishes an intentional, clean stop from a failure.
+        f"exit_code = sh.Run({_quote_vbs_string(command_line)}, 0, True)",
+        "WScript.Quit exit_code",
     ]
     return "\r\n".join(lines) + "\r\n"
 
 
 def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny .vbs that goes in the Startup folder and chains hidden.
+    """Build the hidden Startup-folder watchdog.
 
     Defense-in-depth: bail out silently if the target script is gone. Test
     fixtures historically wrote Startup entries pointing at pytest tmp_path
     directories that vanish after the test session. Without the existence
     guard, every subsequent Windows login could attempt a stale launcher. The
     check + ``WScript.Quit 0`` keeps that case silent.
+
+    The inner launcher waits for the gateway and returns its exit code. A clean
+    exit means the user intentionally stopped/restarted the gateway, so this
+    watchdog exits too. A non-zero exit means an unexpected termination; retry
+    after a bounded delay. This gives machines that cannot register a Scheduled
+    Task the same practical crash recovery without spawning duplicate gateways.
     """
     target = str(script_path.with_suffix(".vbs"))
     command = subprocess.list2cmdline(["wscript.exe", target])
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim fso, sh, target",
+        "Dim fso, sh, target, command, exit_code",
         f"target = {_quote_vbs_string(target)}",
         'Set fso = CreateObject("Scripting.FileSystemObject")',
         "If Not fso.FileExists(target) Then WScript.Quit 0",
         'Set sh = CreateObject("WScript.Shell")',
-        f"sh.Run {_quote_vbs_string(command)}, 0, False",
+        f"command = {_quote_vbs_string(command)}",
+        "Do",
+        "  exit_code = sh.Run(command, 0, True)",
+        "  If exit_code = 0 Then WScript.Quit 0",
+        f"  WScript.Sleep {_STARTUP_RESTART_DELAY_MS}",
+        "Loop",
     ]
     return "\r\n".join(lines) + "\r\n"
 

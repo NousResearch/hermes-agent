@@ -314,9 +314,8 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
-def test_gateway_vbs_script_is_console_less(monkeypatch):
-    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
-    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+def test_gateway_vbs_script_is_console_less_and_reports_child_exit(monkeypatch):
+    """The task launcher stays hidden and reports gateway failure to Scheduler."""
     monkeypatch.setattr(
         gateway_windows,
         "_resolve_detached_python",
@@ -333,10 +332,23 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window, wait for the gateway
+    assert "WScript.Quit exit_code" in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
+    assert content.endswith("\r\n")
+
+
+def test_startup_launcher_restarts_only_after_gateway_failure(tmp_path):
+    """The non-admin Startup fallback supervises crashes but honors clean stops."""
+    content = gateway_windows._build_startup_launcher(tmp_path / "Hermes_Gateway.cmd")
+
+    assert "Do\r\n" in content
+    assert "exit_code = sh.Run(command, 0, True)" in content
+    assert "If exit_code = 0 Then WScript.Quit 0" in content
+    assert f"WScript.Sleep {gateway_windows._STARTUP_RESTART_DELAY_MS}" in content
+    assert "Loop\r\n" in content
     assert content.endswith("\r\n")
 
 
@@ -362,7 +374,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
 
 
 

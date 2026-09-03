@@ -14,6 +14,7 @@ import pytest
 
 from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
+    MICRO_SUMMARY_PREFIX,
     SUMMARY_PREFIX,
     _HISTORICAL_SUMMARY_PREFIXES,
     _MERGED_PRIOR_CONTEXT_HEADER,
@@ -169,6 +170,103 @@ class TestCompactionPreview:
 
         assert row["preview"] == "test the browser controller"
 
+    def test_header_led_micro_carrier_uses_canonical_splitter(self, db):
+        carrier = (
+            f"  {_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "test the browser controller\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{MICRO_SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold tool work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        db.create_session(session_id="s1", source="cli", model="m")
+        db.append_message("s1", role="user", content=carrier)
+
+        (row,) = db.list_sessions_rich(limit=10)
+
+        assert row["preview"] == "test the browser controller"
+
+    def test_header_led_carrier_with_quoted_prefix_delimiter_remains_eligible(
+        self,
+        db,
+    ):
+        authentic_prior = (
+            f"{_MERGED_SUMMARY_DELIMITER}\n"
+            f"{SUMMARY_PREFIX}\n"
+            "quoted summary-shaped evidence in authentic prior\n"
+            "test the browser controller"
+        )
+        carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n{authentic_prior}\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{MICRO_SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold tool work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        db.create_session(session_id="s1", source="cli", model="m")
+        db.append_message("s1", role="user", content=carrier)
+        db.append_message("s1", role="user", content="later unrelated user turn")
+
+        (row,) = db.list_sessions_rich(limit=10)
+
+        assert row["preview"].startswith("[END OF PRIOR CONTEXT")
+        assert "later unrelated" not in row["preview"]
+
+        (active_row,) = db.list_sessions_rich(
+            limit=10,
+            order_by_last_active=True,
+        )
+        assert active_row["preview"].startswith("[END OF PRIOR CONTEXT")
+        assert "later unrelated" not in active_row["preview"]
+
+    def test_pure_standalone_micro_handoff_does_not_block_later_preview(self, db):
+        handoff = (
+            f"{MICRO_SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold tool work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        db.create_session(session_id="s1", source="cli", model="m")
+        db.append_message("s1", role="user", content=handoff)
+        db.append_message("s1", role="user", content="later real user preview")
+
+        (row,) = db.list_sessions_rich(limit=10)
+
+        assert row["preview"] == "later real user preview"
+
+    def test_invalid_header_led_lookalike_keeps_raw_preview_shaping(self, db):
+        carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "test the browser controller\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            "not a canonical compaction summary"
+        )
+        db.create_session(session_id="s1", source="cli", model="m")
+        db.append_message("s1", role="user", content=carrier)
+
+        (row,) = db.list_sessions_rich(limit=10)
+
+        raw_shaping = carrier.strip().replace("\n", " ").replace("\r", " ")
+        assert row["preview"] == raw_shaping[:60] + "..."
+
+    def test_header_led_multimodal_content_is_not_decoded_for_preview(self, db):
+        carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "test the browser controller\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{MICRO_SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold tool work"
+        )
+        db.create_session(session_id="s1", source="cli", model="m")
+        db.append_message(
+            "s1",
+            role="user",
+            content=[{"type": "text", "text": carrier}],
+        )
+
+        (row,) = db.list_sessions_rich(limit=10)
+
+        assert row["preview"] == ""
+
     def test_empty_merged_carrier_does_not_block_later_user_preview(self, db):
         carrier = (
             f"{_MERGED_PRIOR_CONTEXT_HEADER}\n\n"
@@ -210,5 +308,3 @@ class TestSkillScaffoldedSessionLookup:
         for i in range(3):
             _seed(db, f"s{i}", message, title=f"Title {i}")
         assert len(db.list_skill_scaffolded_sessions(limit=2)) == 2
-
-

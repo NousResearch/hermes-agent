@@ -6,7 +6,34 @@ parameter correctly.  Inspired by Claude Code's /compact <focus>.
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor
+from agent.context_compressor import (
+    CURRENT_SUBTASK_HEADING,
+    ContextCompressor,
+    GOVERNING_OUTCOME_HEADING,
+    HISTORICAL_TASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
+
+
+def _valid_user_summary(content: str) -> str:
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked for the current topic to be explained.
+
+{GOVERNING_OUTCOME_HEADING}
+Explain the topic requested by the user.
+
+{CURRENT_SUBTASK_HEADING}
+Summarize the relevant information.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Provide the requested explanation.
+
+## Critical Context
+{content}"""
 
 
 def _make_compressor():
@@ -50,7 +77,9 @@ def test_focus_topic_injected_into_summary_prompt():
         captured_prompt["messages"] = kwargs["messages"]
         resp = MagicMock()
         resp.choices = [MagicMock()]
-        resp.choices[0].message.content = "## Goal\nUnderstand DB schema."
+        resp.choices[0].message.content = _valid_user_summary(
+            "Understand DB schema."
+        )
         return resp
 
     with patch("agent.context_compressor.call_llm", mock_call_llm):
@@ -77,7 +106,7 @@ def test_no_focus_topic_no_injection():
         captured_prompt["messages"] = kwargs["messages"]
         resp = MagicMock()
         resp.choices = [MagicMock()]
-        resp.choices[0].message.content = "## Goal\nGreeting."
+        resp.choices[0].message.content = _valid_user_summary("Greeting.")
         return resp
 
     with patch("agent.context_compressor.call_llm", mock_call_llm):
@@ -85,7 +114,6 @@ def test_no_focus_topic_no_injection():
 
     prompt_text = captured_prompt["messages"][0]["content"]
     assert "FOCUS TOPIC" not in prompt_text
-
 
 
 

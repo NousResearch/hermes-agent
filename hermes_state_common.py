@@ -21,7 +21,9 @@ from agent.skill_commands import (
     describe_skill_invocation,
 )
 from agent.context_compressor import (
+    ContextCompressor,
     LEGACY_SUMMARY_PREFIX,
+    MICRO_SUMMARY_PREFIX,
     SUMMARY_PREFIX,
     _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER,
@@ -97,6 +99,7 @@ def _sql_starts_with(expression: str, prefixes: tuple[str, ...]) -> str:
 _PREVIEW_LONG_FORM_PREFIX = SUMMARY_PREFIX.split("Do NOT answer", 1)[0]
 _PREVIEW_SUMMARY_PREFIXES = (
     _PREVIEW_LONG_FORM_PREFIX,
+    MICRO_SUMMARY_PREFIX,
     LEGACY_SUMMARY_PREFIX,
 )
 _PREVIEW_STANDALONE_SUMMARY_SQL = _sql_starts_with(
@@ -110,6 +113,20 @@ _PREVIEW_MERGED_SUMMARY_SQL = (
     f"(INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) > 0"
     f" AND {_sql_starts_with(_PREVIEW_MERGED_AFTER_SQL, _PREVIEW_SUMMARY_PREFIXES)})"
 )
+_PREVIEW_LATER_QUALIFIED_MERGED_SQL = (
+    "EXISTS (WITH RECURSIVE delimiter_suffix(depth, suffix) AS ("
+    f" SELECT 1, {_PREVIEW_MERGED_AFTER_SQL}"
+    f" WHERE INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) > 0"
+    " UNION ALL"
+    " SELECT depth + 1,"
+    f" SUBSTR(suffix, INSTR(suffix, {_sql_literal(_MERGED_SUMMARY_DELIMITER)})"
+    f" + {len(_MERGED_SUMMARY_DELIMITER)})"
+    " FROM delimiter_suffix"
+    f" WHERE INSTR(suffix, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) > 0"
+    ") SELECT 1 FROM delimiter_suffix"
+    f" WHERE depth > 1 AND {_sql_starts_with('suffix', _PREVIEW_SUMMARY_PREFIXES)}"
+    " LIMIT 1)"
+)
 _PREVIEW_MERGED_PRIOR_SQL = _sql_trim_whitespace(
     f"SUBSTR(m.content, 1, INSTR(m.content, {_sql_literal(_MERGED_SUMMARY_DELIMITER)}) - 1)"
 )
@@ -121,6 +138,12 @@ _PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL = (
     f" {len(_MERGED_PRIOR_CONTEXT_HEADER)}) = {_sql_literal(_MERGED_PRIOR_CONTEXT_HEADER)}"
     f" THEN {_sql_ltrim_whitespace(f'SUBSTR({_PREVIEW_MERGED_PRIOR_LTRIMMED_SQL}, {len(_MERGED_PRIOR_CONTEXT_HEADER) + 1})')}"
     f" ELSE {_PREVIEW_MERGED_PRIOR_SQL} END"
+)
+_PREVIEW_HEADER_LED_PLAIN_TEXT_SQL = (
+    f"(TYPEOF(m.content) = 'text'"
+    f" AND SUBSTR({_sql_ltrim_whitespace('m.content')}, 1,"
+    f" {len(_MERGED_PRIOR_CONTEXT_HEADER)})"
+    f" = {_sql_literal(_MERGED_PRIOR_CONTEXT_HEADER)})"
 )
 _PREVIEW_FORCE_USER_REMAINDER_SQL = (
     f"SUBSTR(m.content, INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)})"
@@ -136,7 +159,9 @@ _PREVIEW_ELIGIBLE_SQL = (
     f" AND INSTR(m.content, {_sql_literal(_SUMMARY_END_MARKER)}) > 0"
     f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_FORCE_USER_REMAINDER_SQL)}) > 0)"
     f" OR ({_PREVIEW_MERGED_SUMMARY_SQL}"
-    f" AND LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0))"
+    f" AND (LENGTH({_sql_trim_whitespace(_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL)}) > 0"
+    f" OR ({_PREVIEW_HEADER_LED_PLAIN_TEXT_SQL}"
+    f" AND {_PREVIEW_LATER_QUALIFIED_MERGED_SQL}))))"
 )
 
 
@@ -145,7 +170,9 @@ _PREVIEW_ELIGIBLE_SQL = (
 # the budget, else head + tail (where the typed instruction lands) spliced
 # around SKILL_EXCERPT_JOINT.
 _PREVIEW_RAW_SELECT = (
-    f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL}"
+    f"CASE WHEN {_PREVIEW_HEADER_LED_PLAIN_TEXT_SQL}"
+    " THEN m.content"
+    f" WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL}"
     f" THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
     f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL}"
     f" THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
@@ -165,6 +192,20 @@ def _shape_preview(raw: Any) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
+
+    # SQL passes the complete value only for plain-text, header-led carriers.
+    # Let the compressor's canonical splitter decide whether the framing is
+    # valid; an unrecognized lookalike keeps the exact pre-existing raw shaping
+    # path instead of being promoted by a second delimiter heuristic here.
+    if isinstance(raw, str) and text.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+        split = ContextCompressor._split_header_led_merged_handoff(text)
+        if split is not None:
+            prior, _summary = split
+            if prior is None:
+                return ""
+            if isinstance(prior, str):
+                text = prior.strip()
+
     text = text.replace("\n", " ").replace("\r", " ")
     described = describe_skill_invocation(text)
     text = described if described is not None else text.split(SKILL_EXCERPT_JOINT)[0]

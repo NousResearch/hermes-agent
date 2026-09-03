@@ -15,7 +15,14 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import hermes_time
-from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
+from agent.context_compressor import (
+    CURRENT_SUBTASK_HEADING,
+    ContextCompressor,
+    GOVERNING_OUTCOME_HEADING,
+    HISTORICAL_TASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
 
 
 def _compressor() -> ContextCompressor:
@@ -34,6 +41,26 @@ def _response(content: str):
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = content
     return mock_response
+
+
+def _valid_user_summary(content: str) -> str:
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked: 'do the first thing' and then 'do the second thing'.
+
+{GOVERNING_OUTCOME_HEADING}
+Complete both requested actions.
+
+{CURRENT_SUBTASK_HEADING}
+Complete the second requested action.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Finish the second requested action.
+
+## Critical Context
+{content}"""
 
 
 def _turns():
@@ -60,7 +87,8 @@ def test_clock_failure_omits_rule_but_compaction_still_runs():
         raise RuntimeError("clock unavailable")
 
     with patch.object(hermes_time, "now", _boom), patch(
-        "agent.context_compressor.call_llm", return_value=_response("summary")
+        "agent.context_compressor.call_llm",
+        return_value=_response(_valid_user_summary("summary")),
     ) as mock_call:
         result = compressor._generate_summary(_turns())
 
@@ -78,7 +106,8 @@ def test_anchoring_rule_uses_date_from_hermes_time_now():
     compressor = _compressor()
     fixed = datetime(2025, 12, 31, 23, 30, tzinfo=timezone.utc)
     with patch.object(hermes_time, "now", lambda: fixed), patch(
-        "agent.context_compressor.call_llm", return_value=_response("summary")
+        "agent.context_compressor.call_llm",
+        return_value=_response(_valid_user_summary("summary")),
     ) as mock_call:
         compressor._generate_summary(_turns())
 

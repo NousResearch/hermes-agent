@@ -6239,18 +6239,22 @@ def edit_completed_task_result(
                 )
         _ev_lines = (handoff_summary or "").strip().splitlines()
         ev_summary = _ev_lines[0][:400] if _ev_lines else ""
+        changed_fields = ["result", "summary"] + (
+            ["metadata"] if metadata is not None else []
+        )
         _append_event(
             conn, task_id, "edited",
             {
-                "fields": (
-                    ["result", "summary"]
-                    + (["metadata"] if metadata is not None else [])
-                ),
+                "fields": changed_fields,
                 "result_len": len(result) if result else 0,
                 "summary": ev_summary or None,
             },
             run_id=run_id,
         )
+    # Task-mutation observer (RFC #58548), fired AFTER the edit txn has
+    # committed — result/summary are user-facing task fields, same class as
+    # assign_task/set_model_override/set_reasoning_effort.
+    notify_task_updated(conn, task_id, changed_fields)
     return True
 
 

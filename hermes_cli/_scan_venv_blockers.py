@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from pathlib import PureWindowsPath
 from typing import NoReturn
@@ -234,6 +235,53 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     return looks_like_gateway_command_line(cmdline)
 
 
+def _is_stale_update_holder(cmdline: str) -> bool:
+    """True when *cmdline* is a leftover ``hermes update`` holding the venv.
+
+    A previous Desktop hand-off that stalled (#102283) leaves
+    ``python -m hermes_cli.main update --yes --gateway --force`` alive.
+    That zombie is reported as ``venv-blocked`` on the next Update click
+    until the user force-kills it. The next preflight can reap it: it is
+    the updater itself, not an operator REPL or a live user session.
+
+    Uses ``_hermes_holder_subcommand`` (token-based) so ``--branch update``
+    or a skill named update cannot forge the match.
+    """
+    try:
+        from hermes_cli.update_cmd import _hermes_holder_subcommand  # noqa: PLC0415
+    except Exception:
+        return False
+    return _hermes_holder_subcommand(cmdline) == "update"
+
+
+def _reap_stale_update_holder(pid: int) -> bool:
+    """Terminate a leftover ``hermes update`` tree. True when *pid* is gone."""
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        import psutil  # noqa: PLC0415
+
+        process = psutil.Process(pid)
+        children = process.children(recursive=True)
+        targets = [*reversed(children), process]
+        for target in targets:
+            try:
+                target.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _gone, alive = psutil.wait_procs(targets, timeout=3)
+        for target in alive:
+            try:
+                target.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if alive:
+            psutil.wait_procs(alive, timeout=2)
+        return not psutil.pid_exists(pid)
+    except Exception:
+        return False
+
+
 def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
     """Return True when *pid* is a Hermes backend the CLI updater can stop.
 
@@ -369,11 +417,18 @@ def main() -> None:
 
     processes = []
     exempted_gateways = 0
+    reaped_stale_updates = 0
     deferred_entries: list[dict] = []
     for pid, name, cmdline in matches:
         if _is_pausable_gateway(cmdline):
             exempted_gateways += 1
             continue
+        if _is_stale_update_holder(cmdline):
+            # A leftover hand-off ``hermes update`` is the #102283 zombie:
+            # reap it so the next Desktop Update is not venv-blocked.
+            if _reap_stale_update_holder(int(pid)):
+                reaped_stale_updates += 1
+                continue
         deferred_entry = _updater_owned_backend_entry(pid, cmdline)
         if deferred_entry is not None:
             # Ledger-verified serve/dashboard backend the CLI updater's own
@@ -399,6 +454,7 @@ def main() -> None:
         # Diagnostic only: gateway processes present but not counted as
         # blockers because the downstream updater pauses them itself.
         "pausable_gateways": exempted_gateways,
+        "reaped_stale_updates": reaped_stale_updates,
         # Diagnostic only: ledger-verified serve/dashboard backends deferred
         # to the updater's stop/relaunch rungs (#98336).
         "deferred_backends": len(deferred_entries),

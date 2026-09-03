@@ -117,6 +117,58 @@ class TestReasoningCommand:
             "effort": effort,
         }
 
+    @pytest.mark.asyncio
+    async def test_reasoning_full_and_clamp_persist_per_platform(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("display: {}\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+
+        full_reply = await runner._handle_reasoning_command(
+            _make_event("/reasoning full")
+        )
+        full_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert full_config["display"]["platforms"]["telegram"]["reasoning_full"] is True
+        assert "FULL" in full_reply
+
+        clamp_reply = await runner._handle_reasoning_command(
+            _make_event("/reasoning clamp")
+        )
+        clamp_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert clamp_config["display"]["platforms"]["telegram"]["reasoning_full"] is False
+        assert "CLAMPED" in clamp_reply
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("argument", "expected"),
+        [
+            ("all", True),
+            ("collapse", False),
+            ("short", False),
+        ],
+    )
+    async def test_reasoning_recap_aliases_persist_per_platform(
+        self, tmp_path, monkeypatch, argument, expected
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("display: {}\n", encoding="utf-8")
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        await runner._handle_reasoning_command(
+            _make_event(f"/reasoning {argument}")
+        )
+
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert config["display"]["platforms"]["telegram"]["reasoning_full"] is expected
+
 
     def test_resolve_session_reasoning_prefers_session_override(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -217,4 +269,3 @@ class TestLoadShowReasoningCoercion:
             tmp_path, monkeypatch,
             'display:\n  show_reasoning: true\n',
         ) is True
-

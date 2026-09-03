@@ -85,7 +85,7 @@ class TestReasoningChoicePicker:
         from hermes_constants import VALID_REASONING_EFFORTS
         assert values[0] == "none"
         assert values[1:1 + len(VALID_REASONING_EFFORTS)] == list(VALID_REASONING_EFFORTS)
-        assert values[-3:] == ["reset", "show", "hide"]
+        assert values[-5:] == ["reset", "show", "hide", "full", "clamp"]
 
 
     @pytest.mark.asyncio
@@ -106,6 +106,23 @@ class TestReasoningChoicePicker:
         assert "ultra" in reply
         override = runner._session_reasoning_overrides.get(session_key)
         assert override == {"enabled": True, "effort": "ultra"}
+
+    @pytest.mark.asyncio
+    async def test_picker_full_selection_persists_platform_recap_mode(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event("/reasoning")
+
+        await runner._handle_reasoning_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        reply = await on_choice(event.source.chat_id, "full")
+
+        config = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert config["display"]["platforms"]["telegram"]["reasoning_full"] is True
+        assert "FULL" in reply
 
 
 class TestFastChoicePicker:
@@ -143,5 +160,4 @@ class TestFastChoicePicker:
         assert runner._service_tier == "priority"
         assert runner._session_service_tier_overrides
         assert not (tmp_path / "config.yaml").exists()
-
 

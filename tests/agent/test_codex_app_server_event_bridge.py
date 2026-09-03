@@ -250,12 +250,42 @@ class TestToolProgressDispatch:
 
 
 class TestAgentMessageInterimDispatch:
-    def test_completed_agent_message_emits_interim(self):
+    def test_completed_final_answer_is_not_replayed_as_interim(self):
+        """The terminal answer already owns the normal final-delivery path.
+
+        Replaying it through the interim callback makes native draft transports
+        show the same answer once as a draft/commentary message and again when
+        the turn finalizes.
+        """
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-final",
+            "phase": "final_answer",
+            "text": "The fix is ready.",
+        }))
+        agent._emit_interim_assistant_message.assert_not_called()
+
+    def test_completed_commentary_message_emits_interim(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
         bridge(_item_completed({
             "type": "agentMessage",
             "id": "am-1",
+            "phase": "commentary",
+            "text": "I'll check the config first.",
+        }))
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "I'll check the config first."}
+        )
+
+    def test_completed_legacy_message_without_phase_stays_interim(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({
+            "type": "agentMessage",
+            "id": "am-legacy",
             "text": "I'll check the config first.",
         }))
         agent._emit_interim_assistant_message.assert_called_once_with(

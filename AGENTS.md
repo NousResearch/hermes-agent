@@ -1534,8 +1534,16 @@ re-creates a duplicate or a frozen stream:
    exists. A sealed native stream is a regular message — `chat.update` on it
    works (live-verified).
 
-Contract tests: `tests/gateway/test_stream_final_contract.py` (all four
-invariants, mutation-checked). Slack streaming API ground truth (live-probed,
+5. **Codex message phases have one delivery owner.** Completed commentary
+   `agentMessage` items remain interim candidates because a later tool may
+   still follow. A completed `phase=final_answer` item is terminal, so its
+   deltas may animate the draft but the item itself must bypass the interim
+   callback and let the turn finalizer persist the answer once. Phase-less
+   items stay on the legacy interim path.
+
+Contract tests: `tests/gateway/test_stream_final_contract.py` (the first four,
+mutation-checked) plus `tests/agent/test_codex_app_server_event_bridge.py` for
+phase-aware routing. Slack streaming API ground truth (live-probed,
 also encoded in connector comments/tests): `chat.*Stream` speaks STANDARD
 markdown, not mrkdwn; `stopStream.markdown_text` APPENDS (never replaces);
 `startStream`/`stopStream` are rate-limit Tier 2 (~20/min).

@@ -350,7 +350,8 @@ def _record_codex_app_server_compaction(
 # callbacks the standard runtime fires:
 #   - tool_progress_callback("tool.started"|"tool.completed", name, ...)
 #   - _fire_stream_delta(text) for streaming agentMessage chunks
-#   - _emit_interim_assistant_message({...}) for completed agentMessages
+#   - _emit_interim_assistant_message({...}) for completed non-final
+#     agentMessages
 # ---------------------------------------------------------------------------
 
 # Codex item types that map to a Hermes tool_call in the projector (and
@@ -509,7 +510,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
       * ``item/agentMessage/delta`` → ``_fire_stream_delta(text)`` so chat
         adapters can render the assistant's reply as it streams.
       * ``item/reasoning/delta`` → ``_fire_reasoning_delta(text)``
-      * ``item/completed`` for ``agentMessage`` →
+      * ``item/completed`` for a non-final ``agentMessage`` →
         ``_emit_interim_assistant_message({"role": "assistant",
         "content": text})``. The gateway's ``already_streamed`` check
         dedupes against any text the stream-delta callback already
@@ -635,6 +636,16 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     def _fire_agent_message_completed(item: dict) -> None:
         text = item.get("text") or ""
         if not isinstance(text, str) or not text.strip():
+            return
+        # A phase=final_answer item is the turn's authoritative terminal
+        # response. Its deltas have already reached the streaming callback,
+        # and run_codex_app_server_turn returns the same text to the normal
+        # finalizer. Replaying the completed item through the interim lane
+        # gives native-draft transports two visible owners for one answer.
+        # Missing phases remain interim-compatible with older app-server
+        # versions, which did not distinguish commentary from final answers.
+        phase = item.get("phase")
+        if isinstance(phase, str) and phase.strip().lower() == "final_answer":
             return
         # display.show_commentary=false — mid-turn narration stays off the
         # visible interim path on this runtime too (same contract as the

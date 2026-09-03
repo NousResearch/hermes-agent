@@ -68,6 +68,21 @@ def _build_preloaded_skills_prompt(skills: object = None) -> str | None:
     return skills_prompt or None
 
 
+def _build_oneshot_system_prompt(
+    cfg: dict, skills_prompt: str | None = None
+) -> str | None:
+    """Compose the one-shot overlay with normal CLI/gateway precedence."""
+    from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
+
+    configured_prompt = os.getenv(
+        "HERMES_EPHEMERAL_SYSTEM_PROMPT", ""
+    ) or resolve_ephemeral_system_prompt_from_config(cfg)
+    return (
+        "\n\n".join(part for part in (configured_prompt, skills_prompt) if part).strip()
+        or None
+    )
+
+
 def _configured_mcp_servers() -> tuple[set[str], set[str]]:
     """``(enabled, disabled)`` MCP server names from config; both empty on any error."""
     try:
@@ -380,6 +395,7 @@ def _run_agent(
     ensure_mcp_discovery_before_agent_build(logger=logging.getLogger(__name__), single_query=True)
 
     skills_prompt = _build_preloaded_skills_prompt(skills)
+    ephemeral_prompt = _build_oneshot_system_prompt(cfg, skills_prompt)
 
     session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
@@ -399,7 +415,7 @@ def _run_agent(
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
-            ephemeral_system_prompt=skills_prompt,
+            ephemeral_system_prompt=ephemeral_prompt,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.

@@ -1357,6 +1357,16 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
     try:
         import curses
 
+        from hermes_cli.curses_ui import (
+            NAV_CANCEL,
+            NAV_DOWN,
+            NAV_INTERRUPT,
+            NAV_SELECT,
+            NAV_UP,
+            _decode_menu_key,
+            flush_stdin,
+        )
+
         result_holder = [None]
 
         # Layout: [arrow 3] [title/preview flexible] [status 5] [msgs 5]
@@ -1581,38 +1591,24 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
                             flash = "Delete failed."
                     continue
 
-                if key in {curses.KEY_UP,}:
-                    if filtered:
-                        cursor = (cursor - 1) % len(filtered)
-                elif key in {curses.KEY_DOWN,}:
-                    if filtered:
-                        cursor = (cursor + 1) % len(filtered)
-                elif key in {curses.KEY_ENTER, 10, 13}:
-                    if filtered:
-                        result_holder[0] = filtered[cursor]["id"]
-                    return
-                elif key == 27:  # Esc
-                    if search_text:
-                        # First Esc clears the search
-                        search_text = ""
-                        filtered = list(sessions)
-                        cursor = 0
-                        scroll_offset = 0
-                    else:
-                        # Second Esc exits
-                        return
-                elif key in {curses.KEY_BACKSPACE, 127, 8}:
+                if key in {curses.KEY_BACKSPACE, 127, 8}:
                     if search_text:
                         search_text = search_text[:-1]
-                        if search_text:
-                            filtered = [s for s in sessions if _match(s, search_text)]
-                        else:
-                            filtered = list(sessions)
+                        filtered = (
+                            [s for s in sessions if _match(s, search_text)]
+                            if search_text
+                            else list(sessions)
+                        )
                         cursor = 0
                         scroll_offset = 0
-                elif key == ord("q") and not search_text:
-                    return
-                elif (
+                    continue
+
+                if key in {14, 16}:  # Ctrl+N (down) / Ctrl+P (up)
+                    if filtered:
+                        cursor = (cursor + (1 if key == 14 else -1)) % len(filtered)
+                    continue
+
+                if (
                     key == ord("d")
                     and not search_text
                     and session_db is not None
@@ -1621,16 +1617,47 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
                     # 'd' only acts as delete when the filter is empty —
                     # while a search is active it types into the query below.
                     confirm_delete = filtered[cursor]
-                elif 32 <= key <= 126:
+                    continue
+
+                if 32 <= key <= 126 and (
+                    search_text or key not in {ord("q"), ord("j"), ord("k")}
+                ):
                     # Printable character → add to search filter
                     search_text += chr(key)
                     filtered = [s for s in sessions if _match(s, search_text)]
                     cursor = 0
                     scroll_offset = 0
+                    continue
 
-        curses.wrapper(_curses_browse)
+                # Delegate navigation, selection, and escape decoding to curses_ui
+                action = _decode_menu_key(stdscr, key)
+                if action == NAV_UP:
+                    if filtered:
+                        cursor = (cursor - 1) % len(filtered)
+                elif action == NAV_DOWN:
+                    if filtered:
+                        cursor = (cursor + 1) % len(filtered)
+                elif action == NAV_SELECT:
+                    if filtered:
+                        result_holder[0] = filtered[cursor]["id"]
+                    return
+                elif action in (NAV_CANCEL, NAV_INTERRUPT):
+                    if search_text:
+                        search_text = ""
+                        filtered = list(sessions)
+                        cursor = 0
+                        scroll_offset = 0
+                    else:
+                        return
+
+        try:
+            curses.wrapper(_curses_browse)
+        finally:
+            flush_stdin()
         return result_holder[0]
 
+    except (KeyboardInterrupt, EOFError):
+        return None
     except Exception:
         pass
 

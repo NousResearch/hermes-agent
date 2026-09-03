@@ -253,6 +253,66 @@ def test_board_metadata_loses_exporter_local_paths(kanban_root, tmp_path):
     assert meta["project_id"] is None
 
 
+def test_board_review_contract_protects_completion_after_round_trip(
+    kanban_root, tmp_path
+):
+    contract = {
+        "schema": 1,
+        "required_criteria": ["duration-hours"],
+        "require_commit": True,
+    }
+    kb.create_board("alpha", name="Alpha Board")
+    kb.write_board_metadata("alpha", review_contract=contract)
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    result = kt.import_board(archive)
+    imported = result["board"]
+    assert kb.read_board_metadata(imported)["review_contract"] == contract
+
+    with kb.connect_closing(board=imported) as conn:
+        task_id = kb.create_task(conn, title="Validate duration hours", assignee="builder")
+        implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+        assert review is not None
+
+        with pytest.raises(kb.ReviewCompletionRejected):
+            kb.complete_task(
+                conn,
+                task_id,
+                summary="Approved despite contradictory structured evidence.",
+                metadata={
+                    "review_schema": 1,
+                    "review_outcome": "approved",
+                    "commit": "a" * 40,
+                    "acceptance": [
+                        {
+                            "criterion_id": "duration-hours",
+                            "status": "PASS",
+                            "evidence": "browser check",
+                        }
+                    ],
+                    "reviewer_checks_failed": [],
+                    "unresolved_findings": [],
+                    "untested_required": [],
+                    "approved": False,
+                },
+                expected_run_id=review.current_run_id,
+                board=imported,
+            )
+
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "running"
+
+
 # ---------------------------------------------------------------------------
 # Import never overwrites
 # ---------------------------------------------------------------------------

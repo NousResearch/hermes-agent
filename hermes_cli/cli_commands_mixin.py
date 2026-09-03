@@ -1210,6 +1210,7 @@ class CLICommandsMixin:
         self._resumed = True
         self._pending_title = None
         _sync_process_session_id(target_id)
+        self._update_terminal_title(session_title=session_meta.get("title") or "")
 
         # Load conversation history (strip transcript-only metadata entries).
         # repair_alternation: this /resume feeds LIVE REPLAY — ``restored``
@@ -1593,6 +1594,7 @@ class CLICommandsMixin:
         self._pending_title = None
         self._resumed = True  # Prevents auto-title generation
         _sync_process_session_id(new_session_id)
+        self._update_terminal_title(session_title=branch_title)
 
         # Sync the agent
         if self.agent:
@@ -2439,11 +2441,12 @@ class CLICommandsMixin:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
+                    label = self._response_panel_label(label)
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
                         _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                        title=f"[{_resp_color} bold]{_escape(label)} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
                         style=_resp_text,

@@ -465,6 +465,7 @@ class CLIAgentSetupMixin:
                         f"[bold red]Cannot resume session:[/] {_escape(resume_limit_error)}"
                     )
                 return False
+            self._update_terminal_title(session_title=session_meta.get("title") or "")
             restored = self._session_db.get_messages_as_conversation(
                 self.session_id, repair_alternation=True
             )
@@ -598,6 +599,14 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # The shared turn prologue now creates session titles before the
+            # model runs. Keep the classic CLI's tab current by passing its
+            # UI-thread-safe writer to that common title callback.
+            _title_session_id = self.session_id
+            self.agent._on_session_title = lambda title, _source: self._update_terminal_title(
+                session_title=title,
+                expected_session_id=_title_session_id,
+            )
             # Hydrate credits notices at session OPEN (parity with the TUI), so a
             # depletion / usage-band warning shows before the first message. The
             # notice_callback is bound above → _on_notice renders the line. Idempotent
@@ -723,6 +732,7 @@ class CLIAgentSetupMixin:
             )
             return False
 
+        self._update_terminal_title(session_title=session_meta.get("title") or "")
         model_history, display_history = self._session_db.get_resume_conversations(self.session_id)
         restored = model_history
         if restored:

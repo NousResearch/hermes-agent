@@ -77,11 +77,11 @@ def _schtasks_encoding() -> str:
 
     On localized Windows (e.g. Chinese), ``schtasks`` emits text in the OEM/ANSI
     code page rather than UTF-8. Decoding with the wrong codec raised
-    ``UnicodeDecodeError`` inside ``subprocess``' reader threads. Prefer the
-    locale's preferred encoding and fall back to UTF-8.
+    ``UnicodeDecodeError`` inside ``subprocess``' reader threads. Use the locale
+    encoding without honoring Python UTF-8 Mode, and fall back to UTF-8.
     """
     try:
-        return locale.getpreferredencoding(False) or "utf-8"
+        return locale.getencoding() or "utf-8"
     except Exception:
         return "utf-8"
 

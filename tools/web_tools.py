@@ -530,6 +530,185 @@ def _policy_blocked_result(result: dict) -> bool:
     return "blocked by website policy" in str(result.get("error") or "").lower()
 
 
+def _extract_match_key(url: Any, *, loose: bool = False) -> str:
+    """Canonical key for pairing a backend extract result with a requested URL.
+
+    Both sides run through ``normalize_url_for_request`` first so an IDN host
+    or a non-ASCII path compares in the same alphabet no matter which side
+    spelled it out. The key then drops only differences that cannot change
+    WHICH document was fetched: scheme/host case, userinfo, a default port,
+    trailing slashes on the path (``/a/`` and ``/a`` are the same document on
+    practically every site, and backends echo the slash inconsistently), and
+    the fragment (never sent to the server). The query stays verbatim —
+    ``?page=2`` IS a different page.
+
+    ``loose=True`` additionally drops the scheme and a leading ``www.``, for
+    the second pairing pass where a backend reports the post-redirect URL
+    (http→https, apex→www) instead of the string it was handed.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return ""
+    raw = url.strip()
+    try:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(normalize_url_for_request(raw))
+        scheme = parsed.scheme.lower()
+        host = (parsed.hostname or "").lower()  # .hostname drops any userinfo
+        if loose and host.startswith("www."):
+            host = host[4:]
+        try:
+            port = parsed.port
+        except ValueError:  # malformed port: keep it out of the key entirely
+            port = None
+        if port is not None and port == {"http": 80, "https": 443}.get(scheme):
+            port = None  # an explicit default port addresses the same page
+        path = parsed.path.rstrip("/")
+        key = "".join((
+            "" if loose else f"{scheme}://",
+            host,
+            f":{port}" if port is not None else "",
+            path,
+            f"?{parsed.query}" if parsed.query else "",
+        ))
+        # A string we cannot decompose (no host, no path) would collapse to a
+        # bare "://" and match every other such string; fall back to the
+        # literal, which at least only matches itself.
+        return key if (host or path) else raw.lower()
+    except Exception:  # noqa: BLE001 — an unparseable URL still needs a key
+        return raw.lower()
+
+
+def _associate_extract_results(requested_urls: list, results: list) -> list:
+    """Pair each backend extract result with the URL that was REQUESTED.
+
+    Returns exactly ``len(requested_urls)`` entries, in requested order.
+    Pairing is by URL and never by list position: Tavily and Parallel append
+    their failures AFTER their successes, Exa omits URLs it could not fetch,
+    the keyless ring inherits both shapes, and a rescued batch comes back in
+    ring-vendor order. Positional pairing therefore stored one page's text
+    under another URL's cache key and served it for the whole TTL.
+
+    Exact keys are matched first, then loose ones (scheme- and
+    ``www.``-insensitive) over what is left, so an exact match always beats a
+    fuzzy one. If exactly one requested URL and exactly one result remain
+    unpaired after both passes they are paired: a backend that followed a
+    redirect or canonicalized the URL reports the final one, and there is
+    nothing else it could belong to. Several leftovers are never guessed at.
+
+    Requested URLs left without a result get the dispatcher's existing "no
+    result" error entry. Results matching no requested URL are dropped —
+    attaching one to some other URL is exactly the bug this prevents.
+    Paired entries are returned as-is, so the backend-reported ``url``
+    (post-redirect) stays visible to the caller.
+    """
+    entries: List[Dict[str, Any]] = []
+    # key → entry indices, in the order the backend returned them. Both the
+    # entry's own ``url`` and its ``metadata.sourceURL`` are indexed: Firecrawl
+    # puts the final (post-redirect) URL in both, while Keenable reports the
+    # fetched URL in ``url`` and the REQUESTED one in ``metadata.sourceURL``.
+    exact_keys: Dict[str, List[int]] = {}
+    loose_keys: Dict[str, List[int]] = {}
+    for entry in results:
+        if not isinstance(entry, dict):
+            logger.debug("web_extract: ignoring non-dict backend result %r", entry)
+            continue
+        index = len(entries)
+        entries.append(entry)
+        url_fields = [entry.get("url")]
+        meta = entry.get("metadata")
+        if isinstance(meta, dict):  # metadata is not always a dict in the wild
+            url_fields.append(meta.get("sourceURL"))
+        for candidate in url_fields:
+            for loose, key_map in ((False, exact_keys), (True, loose_keys)):
+                key = _extract_match_key(candidate, loose=loose)
+                if key and index not in key_map.setdefault(key, []):
+                    key_map[key].append(index)
+
+    paired: Dict[int, Dict[str, Any]] = {}
+    claimed: set[int] = set()  # entry indices taken by an EARLIER tier
+    # Entries that matched a requested URL but lost to a better candidate for
+    # it (the keyless stub next to the real document). They belong to THAT
+    # URL: never a candidate for a later tier, never a leftover for the
+    # residual pairing below, and not worth a "matches none of the requested
+    # URLs" warning.
+    superseded: set[int] = set()
+    for loose, key_map in ((False, exact_keys), (True, loose_keys)):
+        tier_claimed: set[int] = set()
+        for position, url in enumerate(requested_urls):
+            if position in paired:
+                continue
+            candidates = [
+                i
+                for i in key_map.get(_extract_match_key(url, loose=loose), ())
+                if i not in claimed and i not in superseded
+            ]
+            if not candidates:
+                continue
+            # Prefer a real document over an error stub: the keyless Tavily and
+            # Parallel normalizers append a "no content returned" stub for any
+            # requested URL string they did not see echoed back verbatim, so a
+            # cosmetically rewritten URL yields BOTH a document and a stub for
+            # the same page. The document is the backend's real answer.
+            chosen = next(
+                (
+                    i
+                    for i in candidates
+                    if not entries[i].get("error")
+                    and (entries[i].get("raw_content") or entries[i].get("content"))
+                ),
+                candidates[0],
+            )
+            if len(candidates) > 1:
+                logger.debug(
+                    "web_extract: %d backend results matched %s; keeping %r and "
+                    "skipping the rest",
+                    len(candidates), url, entries[chosen].get("url"),
+                )
+                superseded.update(i for i in candidates if i != chosen)
+            paired[position] = entries[chosen]
+            # Claimed only at the END of the tier: duplicate requested URLs
+            # ([A, A], or A and A/) legitimately share one document, so an
+            # entry must stay available to the rest of its own tier.
+            tier_claimed.add(chosen)
+        claimed |= tier_claimed
+
+    unpaired = [p for p in range(len(requested_urls)) if p not in paired]
+    leftover = [
+        i for i in range(len(entries)) if i not in claimed and i not in superseded
+    ]
+    if len(unpaired) == 1 and len(leftover) == 1:
+        position, index = unpaired[0], leftover[0]
+        logger.info(
+            "web_extract: pairing the only unmatched result (%s) with the only "
+            "unmatched requested URL (%s) — the backend reported a redirected "
+            "or canonicalized URL",
+            entries[index].get("url"), requested_urls[position],
+        )
+        paired[position] = entries[index]
+        claimed.add(index)
+
+    for index, entry in enumerate(entries):
+        if index not in claimed and index not in superseded:
+            logger.warning(
+                "web_extract: dropping backend result for %s — it matches none "
+                "of the requested URLs",
+                entry.get("url"),
+            )
+    associated: List[Dict[str, Any]] = []
+    for position, url in enumerate(requested_urls):
+        entry = paired.get(position)
+        if entry is None:
+            entry = {
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": "Extract backend returned no result for this URL",
+            }
+        associated.append(entry)
+    return associated
+
+
 def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     """One-shot keyless-ring rescue for a failed keyed/configured extract.
 
@@ -1071,9 +1250,12 @@ async def web_extract_tool(
     Security: URLs are checked for embedded secrets before fetching.
 
     Returns:
-        str: JSON string with a ``results`` list; each entry has
-             ``url``, ``title``, ``content``, ``error``. ``content`` is the
-             (possibly truncated) clean page text.
+        str: JSON string with a ``results`` list holding exactly one entry per
+             input URL, in input order; each entry has ``url``, ``title``,
+             ``content``, ``error``. ``content`` is the (possibly truncated)
+             clean page text. ``url`` is the URL the backend reports for the
+             page — after any redirect or canonicalization — so it can differ
+             from the requested string.
 
     Raises:
         Exception: If extraction fails or API key is not set
@@ -1342,16 +1524,28 @@ async def web_extract_tool(
                             _rescue_extract, provider.name, fetch_urls, results
                         )
 
+                # Pair every returned document with the URL that was actually
+                # requested. Tavily and Parallel append their failures after
+                # their successes, Exa omits URLs it could not fetch, the
+                # keyless ring inherits both shapes, and a rescued batch comes
+                # back in ring-vendor order — so list position means nothing.
+                # Pairing positionally cached one page's text under another
+                # URL's key and served it for the whole TTL. Placed after the
+                # whole try/except/else so provider AND rescued results go
+                # through the same association.
+                results = _associate_extract_results(fetch_urls, results)
+
                 # Cache each successful fetch's full clean text for TTL reuse
                 # (best-effort; oversized pages are skipped by the cache).
+                # Keyed on the REQUESTED url — that is the string a later call
+                # looks the entry up by, and association above guarantees this
+                # entry is that URL's page.
                 # NEVER cache a rescue-served batch: it came from a ring
                 # vendor, not the chosen backend, and caching it would make
                 # the one-shot rescue sticky for a whole TTL — the next call
                 # must attempt the chosen backend again.
                 if not _extract_rescued:
-                    for fetched_pos, fetched in enumerate(results):
-                        if fetched_pos >= len(fetch_urls):
-                            break
+                    for fetched_url, fetched in zip(fetch_urls, results):
                         if fetched.get("error"):
                             continue
                         _content = (
@@ -1359,7 +1553,7 @@ async def web_extract_tool(
                         )
                         if _content:
                             _extract_cache_put(
-                                fetch_urls[fetched_pos],
+                                fetched_url,
                                 _content,
                                 title=fetched.get("title", ""),
                                 format=format,
@@ -1368,26 +1562,21 @@ async def web_extract_tool(
 
                 # Merge fetched results back with cache hits, restoring the
                 # safe_urls order the downstream reconstruction expects.
+                # ``results`` now holds exactly one entry per fetch_urls
+                # element, in that order, so each fetched position maps
+                # straight onto the safe_urls position it came from.
                 if cached_results:
                     merged: List[Dict[str, Any]] = [None] * len(safe_urls)  # type: ignore[list-item]
                     for position, hit in cached_results.items():
                         merged[position] = hit
                     for fetched_pos, position in enumerate(fetch_positions):
-                        merged[position] = (
-                            results[fetched_pos]
-                            if fetched_pos < len(results)
-                            else {
-                                "url": safe_urls[position],
-                                "title": "",
-                                "content": "",
-                                "error": "Extract backend returned no result for this URL",
-                            }
-                        )
+                        merged[position] = results[fetched_pos]
                     results = merged
 
         # Reconstruct the original input order across invalid, blocked, and
-        # provider-processed entries. Providers are expected to preserve the
-        # order of the safe URL list they receive.
+        # provider-processed entries. ``results`` holds exactly one entry per
+        # safe URL, in safe_urls order — cache hits and backend results were
+        # paired to their requested URL above, never by list position.
         if invalid_urls or ssrf_blocked:
             safe_results = {
                 index: (

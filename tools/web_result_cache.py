@@ -51,6 +51,14 @@ _INDEX_FILENAME = "extract-index.json"
 # Cap index growth; oldest entries evicted past this.
 _INDEX_MAX_ENTRIES = 500
 
+# Extract-cache key version. Bump when the MEANING of a stored entry changes
+# and every existing entry has to be retired at once: old digests simply stop
+# being reachable, so a stale entry reads as a miss (its file lingers exactly
+# like an expired entry's — cache/web has no file-level pruning).
+# v2: entries written before web_extract paired backend results to the URL
+# that was requested could hold a DIFFERENT page's text under this key.
+_EXTRACT_CACHE_KEY_VERSION = "v2"
+
 
 def _web_config() -> dict:
     try:
@@ -250,7 +258,9 @@ def _save_index(index: dict) -> None:
 def _url_digest(url: str, format: Optional[str], provider: str = "") -> str:
     # format AND provider participate in the key: an html extract is not a
     # markdown one, and one backend's rendering of a page is not another's.
-    raw = f"{url}\n{format or 'markdown'}\n{provider or ''}"
+    # The trailing key version retires every pre-v2 entry at once (see
+    # _EXTRACT_CACHE_KEY_VERSION).
+    raw = f"{url}\n{format or 'markdown'}\n{provider or ''}\n{_EXTRACT_CACHE_KEY_VERSION}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 

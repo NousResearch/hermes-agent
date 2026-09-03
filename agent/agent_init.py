@@ -490,6 +490,71 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _custom_provider_reasoning_replay_field_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Resolve an explicitly configured structured-reasoning replay field."""
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
+        return None
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    fallback: Optional[str] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        replay_field = entry.get("reasoning_replay_field")
+        if isinstance(replay_field, str):
+            replay_field = replay_field.strip().lower()
+        if replay_field not in {
+            "auto",
+            "reasoning",
+            "reasoning_content",
+            "none",
+        }:
+            continue
+        if _custom_provider_model_matches(model, entry):
+            if entry.get("model") or entry.get("models"):
+                return replay_field
+            if fallback is None:
+                fallback = replay_field
+
+    return fallback
+
+
+def _configure_custom_provider_reasoning_replay(
+    agent, custom_providers: List[Dict[str, Any]]
+) -> None:
+    replay_field = _custom_provider_reasoning_replay_field_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if replay_field is not None:
+        agent._reasoning_replay_field = replay_field
+
+
 def _normalize_run_budget_seconds(value) -> Optional[float]:
     """Normalize a wall-clock run budget value to a positive float or None.
 
@@ -967,6 +1032,9 @@ def init_agent(
     # Read once at init; switch_model / try_activate_fallback / restore
     # keep it in sync with the active provider.
     agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # Structured reasoning replay is route-scoped and opt-in on a matching
+    # custom provider (or fallback entry), never a global model toggle.
+    agent._reasoning_replay_field = None
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
@@ -2654,6 +2722,7 @@ def init_agent(
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
+    _configure_custom_provider_reasoning_replay(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
@@ -2871,6 +2940,9 @@ def init_agent(
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
             tail_mode=compression_tail_mode,
+            replay_historical_reasoning=bool(
+                agent._reasoning_replay_field_for_api()
+            ),
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -3228,6 +3300,7 @@ def init_agent(
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_replay_field": getattr(agent, "_reasoning_replay_field", None),
         # Context engine state that _try_activate_fallback() overwrites.
         # Use getattr for model/base_url/api_key/provider since plugin
         # engines may not have these (they're ContextCompressor-specific).

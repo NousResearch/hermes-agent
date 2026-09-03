@@ -453,6 +453,33 @@ class TestLoadTranscriptDBOnly:
         assert result[1]["content"] == "db-a"
 
 
+class TestGatewayReasoningRoutePersistence:
+    def test_append_transcript_message_round_trips_reasoning_route(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+        session_id = "reasoning-route-session"
+        db.create_session(session_id=session_id, source="gateway", model="m")
+
+        store._append_transcript_message(
+            session_id,
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning": "private trace",
+                "_reasoning_route": "a" * 64,
+            },
+        )
+
+        replayed = db.get_messages_as_conversation(session_id)
+        assert replayed[0]["reasoning"] == "private trace"
+        assert replayed[0]["_reasoning_route"] == "a" * 64
+        db.close()
+
+
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""
 

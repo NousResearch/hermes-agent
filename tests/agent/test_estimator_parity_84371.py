@@ -78,6 +78,48 @@ class TestWireTruthPredicate:
             "", "mistral", "mistral-large", "https://api.mistral.ai"
         ) is False
 
+    def test_effective_soft_replay_carrier_ships_it(self):
+        assert stale_thinking_reaches_wire(
+            "chat_completions",
+            "custom:vllm",
+            "Qwen/Qwen3.8-27B",
+            "http://inference.internal:8000/v1",
+            reasoning_replay_field="reasoning",
+        ) is True
+
+    def test_disabled_soft_replay_does_not_ship_it(self):
+        assert stale_thinking_reaches_wire(
+            "chat_completions",
+            "custom:local",
+            "model",
+            "http://localhost:8080/v1",
+            reasoning_replay_field=None,
+        ) is False
+
+    def test_codex_ignores_soft_replay_carrier(self):
+        assert stale_thinking_reaches_wire(
+            "codex_responses",
+            "custom:vllm",
+            "model",
+            "http://localhost:8000/v1",
+            reasoning_replay_field="reasoning",
+        ) is False
+
+    def test_turn_context_uses_effective_soft_replay_carrier(self):
+        from types import SimpleNamespace
+
+        from agent.turn_context import _agent_stale_thinking_on_wire
+
+        agent = SimpleNamespace(
+            api_mode="chat_completions",
+            provider="custom:vllm",
+            model="model",
+            base_url="http://inference.internal:8000/v1",
+            api_key="",
+            _reasoning_replay_field="reasoning",
+        )
+        assert _agent_stale_thinking_on_wire(agent) is True
+
 
 class TestEstimatorParity:
     """Trigger-fires must imply the walk finds a compactable middle."""

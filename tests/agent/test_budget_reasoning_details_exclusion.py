@@ -9,6 +9,7 @@ still counting actual thinking TEXT when it is not already carried by
 """
 
 from agent.context_compressor import (
+    ContextCompressor,
     _estimate_msg_budget_tokens,
     _reasoning_details_text_chars,
 )
@@ -85,6 +86,49 @@ class TestBudgetExcludesReasoningDetailsEnvelope:
             _estimate_msg_budget_tokens(loaded) - _estimate_msg_budget_tokens(base)
             > 4_000
         )
+
+
+def test_historical_reasoning_replay_is_charged_once_in_tail_budget():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "start"},
+    ]
+    for index in range(20):
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": f"answer {index}",
+                    "reasoning": "r" * 4_000,
+                    "reasoning_content": "r" * 4_000,
+                },
+                {"role": "user", "content": f"question {index} " * 50},
+            ]
+        )
+
+    strict = ContextCompressor(model="test", quiet_mode=True)
+    strict.tail_token_budget = 3_000
+    replay = ContextCompressor(
+        model="test", quiet_mode=True, replay_historical_reasoning=True
+    )
+    replay.tail_token_budget = 3_000
+
+    strict_cut = strict._find_tail_cut_by_tokens(messages, head_end=1)
+    replay_cut = replay._find_tail_cut_by_tokens(messages, head_end=1)
+
+    assert replay_cut > strict_cut
+    one_alias = _estimate_msg_budget_tokens(
+        {"role": "assistant", "content": "x", "reasoning": "r" * 4_000}
+    )
+    both_aliases = _estimate_msg_budget_tokens(
+        {
+            "role": "assistant",
+            "content": "x",
+            "reasoning": "r" * 4_000,
+            "reasoning_content": "r" * 4_000,
+        }
+    )
+    assert abs(one_alias - both_aliases) < 10
 
 
 class TestReasoningDetailsTextChars:

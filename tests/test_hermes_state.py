@@ -725,6 +725,7 @@ class TestMessageStorage:
             content=None,
             tool_calls=[{"function": {"name": "cronjob", "arguments": "{}"}, "id": "c1", "type": "function"}],
             reasoning="I should call the cronjob tool to schedule this.",
+            reasoning_route="a" * 64,
         )
         db.append_message("s1", role="tool", content='{"job_id": "abc"}', tool_call_id="c1")
 
@@ -734,6 +735,7 @@ class TestMessageStorage:
         assistant = conv[1]
         assert assistant["role"] == "assistant"
         assert assistant.get("reasoning") == "I should call the cronjob tool to schedule this."
+        assert assistant.get("_reasoning_route") == "a" * 64
         # user and tool messages must NOT carry reasoning
         assert "reasoning" not in conv[0]
         assert "reasoning" not in conv[2]

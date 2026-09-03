@@ -3487,12 +3487,14 @@ class ContextCompressor(ContextEngine):
         proactive_prune_min_reclaim_tokens: int = 4096,
         min_tail_user_messages: int = 1,
         tail_mode: str = "lean",
+        replay_historical_reasoning: bool = False,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.api_mode = api_mode
+        self.replay_historical_reasoning = bool(replay_historical_reasoning)
         # Lean tail mode (#compaction-v2): "lean" = small clamped recency
         # tail + verbatim-user-message summary section + recovery pointers;
         # "legacy" = 0.20*window tail (shipping behavior).
@@ -6987,6 +6989,11 @@ This compaction should PRIORITISE preserving all information related to the focu
                 getattr(self, "provider", "") or "",
                 getattr(self, "model", "") or "",
                 getattr(self, "base_url", "") or "",
+                reasoning_replay_field=(
+                    "reasoning"
+                    if getattr(self, "replay_historical_reasoning", False)
+                    else None
+                ),
             )
         except Exception:
             return False

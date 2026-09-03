@@ -161,6 +161,21 @@ class TestOriginalUrlDetection:
 
 
 class TestPlainFallbackUnchanged:
+    def test_explicit_reasoning_replay_field_follows_fallback(self):
+        fbs = [{
+            "provider": "custom",
+            "model": "Qwen/Qwen3.8-27B",
+            "base_url": "http://127.0.0.1:18080/v1",
+            "api_key": "k",
+            "reasoning_replay_field": "Reasoning",
+        }]
+        agent = _make_agent(fallback_model=fbs)
+
+        _activate(agent, "http://127.0.0.1:18080/v1", "Qwen/Qwen3.8-27B")
+
+        assert agent._reasoning_replay_field == "reasoning"
+        assert agent.context_compressor.replay_historical_reasoning is True
+
     def test_plain_openrouter_fallback_stays_chat_completions(self):
         fbs = [{
             "provider": "openrouter",

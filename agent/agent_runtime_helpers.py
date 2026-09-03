@@ -1486,6 +1486,12 @@ def try_recover_primary_transport(
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent._reasoning_replay_field = rt.get("reasoning_replay_field")
+        _compressor = getattr(agent, "context_compressor", None)
+        if _compressor is not None:
+            _compressor.replay_historical_reasoning = bool(
+                reasoning_replay_field_for_api(agent)
+            )
         agent.request_overrides = dict(rt.get("request_overrides") or {})
 
         if agent.api_mode == "anthropic_messages":
@@ -1760,6 +1766,12 @@ def restore_primary_runtime(agent) -> bool:
             if isinstance(raw_capabilities, dict):
                 agent.runtime_capabilities = dict(raw_capabilities)
         agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+        agent._reasoning_replay_field = rt.get("reasoning_replay_field")
+        _compressor = getattr(agent, "context_compressor", None)
+        if _compressor is not None:
+            _compressor.replay_historical_reasoning = bool(
+                reasoning_replay_field_for_api(agent)
+            )
         agent.request_overrides = dict(rt.get("request_overrides") or {})
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent._use_prompt_caching = rt["use_prompt_caching"]
@@ -3082,6 +3094,7 @@ def switch_model(
             "_is_anthropic_oauth",
             "_config_context_length",
             "_reasoning_echo_flag",
+            "_reasoning_replay_field",
             "runtime_capabilities",
         )
     }
@@ -3095,6 +3108,10 @@ def switch_model(
     _snapshot["_credential_pool_entry_id"] = getattr(
         agent, "_credential_pool_entry_id", _MISSING
     )
+    _snapshot_compressor = getattr(agent, "context_compressor", None)
+    _snapshot_compressor_replay = getattr(
+        _snapshot_compressor, "replay_historical_reasoning", _MISSING
+    )
 
     def _restore_snapshot() -> None:
         for _name, _value in _snapshot.items():
@@ -3103,6 +3120,16 @@ def switch_model(
                 continue
             try:
                 setattr(agent, _name, _value)
+            except Exception:  # noqa: BLE001
+                pass
+        if (
+            _snapshot_compressor is not None
+            and _snapshot_compressor_replay is not _MISSING
+        ):
+            try:
+                _snapshot_compressor.replay_historical_reasoning = (
+                    _snapshot_compressor_replay
+                )
             except Exception:  # noqa: BLE001
                 pass
 
@@ -3116,9 +3143,9 @@ def switch_model(
         agent.model = new_model
         agent.provider = new_provider
         agent.requested_provider = new_provider
-        # Re-read reasoning_echo from config so the flag reflects the new
-        # primary model's setting (see _reasoning_echo_opt_in).
+        # Re-read per-provider replay policy from config for the new runtime.
         agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+        agent._reasoning_replay_field = None
         # Use the new base_url when provided. When it's empty AND the
         # provider is actually changing, do NOT fall back to the current
         # (old provider's) URL — that silently pairs the new provider label
@@ -3144,6 +3171,22 @@ def switch_model(
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
+        # Re-resolve route-scoped structured-reasoning replay after the new
+        # provider, model, and base URL are all active.
+        try:
+            from agent.agent_init import _configure_custom_provider_reasoning_replay
+            from hermes_cli.config import get_compatible_custom_providers
+
+            _configure_custom_provider_reasoning_replay(
+                agent, get_compatible_custom_providers()
+            )
+        except Exception:
+            pass
+        _compressor = getattr(agent, "context_compressor", None)
+        if _compressor is not None:
+            _compressor.replay_historical_reasoning = bool(
+                reasoning_replay_field_for_api(agent)
+            )
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -3426,6 +3469,7 @@ def switch_model(
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_replay_field": getattr(agent, "_reasoning_replay_field", None),
         # Request-level overrides (extra_body etc.) must travel with the
         # switched-to identity; without this, a post-switch transport
         # recovery or fallback restore would resurrect the PRE-switch
@@ -4858,22 +4902,200 @@ def intent_ack_continuation_enabled(agent) -> bool:
 
 
 
-def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
+def reasoning_replay_field_for_api(agent) -> str | None:
+    """Return the session-stable soft-replay carrier for the active route.
+
+    Explicit remote carriers never trigger capability probes.  Automatic mode
+    probes only loopback custom/self-hosted endpoints; the first verdict for a
+    route is pinned so a transient detector result cannot mutate an established
+    prompt-cache prefix or desynchronize compressor trigger and tail walks.
+    """
+    from agent.message_sanitization import (
+        _is_loopback_reasoning_route,
+        resolve_reasoning_replay_field,
+    )
+
+    configured = getattr(agent, "_reasoning_replay_field", None)
+    mode = configured.strip().lower() if isinstance(configured, str) else "auto"
+    route = {
+        "provider": getattr(agent, "provider", ""),
+        "model": getattr(agent, "model", ""),
+        "base_url": getattr(agent, "base_url", ""),
+        "api_mode": getattr(agent, "api_mode", ""),
+    }
+    cache_key = (
+        mode,
+        *reasoning_route_identity(
+            route["provider"],
+            route["model"],
+            route["base_url"],
+            route["api_mode"],
+        ),
+    )
+    cached = getattr(agent, "_reasoning_replay_effective_cache", None)
+    if not isinstance(cached, dict):
+        cached = {}
+        agent._reasoning_replay_effective_cache = cached
+    if cache_key in cached:
+        return cached[cache_key]
+
+    def resolved(value: str | None) -> str | None:
+        cached[cache_key] = value
+        return value
+
+    effective = resolve_reasoning_replay_field(configured, **route)
+    if mode != "auto" or effective is not None:
+        return resolved(effective)
+
+    provider_lower = str(route["provider"] or "").strip().lower()
+    if not (
+        provider_lower == "custom"
+        or provider_lower.startswith("custom:")
+        or provider_lower
+        in {"local", "llamacpp", "lm-studio", "ollama", "vllm"}
+    ):
+        return resolved(None)
+    if not _is_loopback_reasoning_route(route["base_url"]):
+        return resolved(None)
+
+    try:
+        from agent.model_metadata import detect_local_server_type
+
+        detected = detect_local_server_type(
+            route["base_url"], api_key=getattr(agent, "api_key", "") or ""
+        )
+    except Exception:
+        detected = None
+    return resolved(
+        resolve_reasoning_replay_field(
+            configured, detected_server_type=detected, **route
+        )
+    )
+
+
+def reasoning_route_identity(
+    provider: Any, model: Any, base_url: Any, api_mode: Any = ""
+) -> tuple[str, str, str, str]:
+    """Return a stable reasoning-provenance identity for a provider route."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    raw_url = str(base_url or "").strip().rstrip("/")
+    try:
+        parts = urlsplit(raw_url)
+        normalized_url = urlunsplit(
+            (
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip("/"),
+                parts.query,
+                parts.fragment,
+            )
+        )
+    except (TypeError, ValueError):
+        normalized_url = raw_url
+    return (
+        str(provider or "").strip().lower(),
+        str(model or "").strip(),
+        normalized_url,
+        str(api_mode or "").strip().lower(),
+    )
+
+
+def reasoning_api_route_identity(agent) -> tuple[str, str, str, str]:
+    """Return the active agent route used for reasoning provenance."""
+    return reasoning_route_identity(
+        getattr(agent, "provider", ""),
+        getattr(agent, "model", ""),
+        getattr(agent, "base_url", ""),
+        getattr(agent, "api_mode", ""),
+    )
+
+
+def reasoning_route_fingerprint(
+    provider: Any, model: Any, base_url: Any, api_mode: Any = ""
+) -> str:
+    """Return a non-secret persistent fingerprint for reasoning provenance."""
+    import hashlib
+    import json
+
+    route = reasoning_route_identity(provider, model, base_url, api_mode)
+    payload = json.dumps(route, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def copy_reasoning_content_for_api(
+    agent,
+    source_msg: dict,
+    api_msg: dict,
+    *,
+    retain_route_provenance: bool = False,
+) -> None:
     """Copy provider-facing reasoning fields onto an API replay message.
 
     Forwarder — the strip-vs-repad POLICY is owned by
     ``agent.message_sanitization.apply_reasoning_content_policy`` (audit F4);
-    this only supplies the agent's cached provider-direction flag.
+    this only supplies the agent's cached provider-direction flag. The route
+    marker is stripped by default, or may be retained temporarily until an
+    optional context-selection hook has finished replacing request messages.
     """
     from agent.message_sanitization import apply_reasoning_content_policy
 
+    provenance = source_msg.get("_reasoning_route")
+    has_provenance = isinstance(provenance, str) and bool(provenance)
+    current_fingerprint = reasoning_route_fingerprint(
+        getattr(agent, "provider", ""),
+        getattr(agent, "model", ""),
+        getattr(agent, "base_url", ""),
+        getattr(agent, "api_mode", ""),
+    )
+    unknown_or_foreign_provenance = (
+        not has_provenance or provenance != current_fingerprint
+    )
+    needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+
+    # Anthropic's signed thinking sidecar is provider-specific replay state, not
+    # a generic message field. Assistant role, matching route provenance, and
+    # the native Anthropic Messages adapter are all required to consume it.
+    # Every other path fails closed, including direct summary calls that bypass
+    # ChatCompletionsTransport's schema sanitizer.
+    if (
+        unknown_or_foreign_provenance
+        or source_msg.get("role") != "assistant"
+        or str(getattr(agent, "api_mode", "") or "").strip().lower()
+        != "anthropic_messages"
+    ):
+        api_msg.pop("anthropic_content_blocks", None)
+
+    if unknown_or_foreign_provenance:
+        api_msg.pop("_reasoning_route", None)
+        api_msg.pop("reasoning", None)
+        api_msg.pop("reasoning_content", None)
+        api_msg.pop("reasoning_details", None)
+        if needs_thinking_pad:
+            # Preserve the destination provider's structural requirement
+            # without forwarding any unknown-origin hidden trace. Use a
+            # synthetic source so callers that build ``api_msg`` selectively
+            # (without the role field) still receive the required pad.
+            apply_reasoning_content_policy(
+                {"role": source_msg.get("role")}, api_msg, True
+            )
+        return
+
+    if retain_route_provenance:
+        api_msg["_reasoning_route"] = provenance
+    else:
+        api_msg.pop("_reasoning_route", None)
+
     apply_reasoning_content_policy(
-        source_msg, api_msg, agent._needs_thinking_reasoning_pad()
+        source_msg,
+        api_msg,
+        needs_thinking_pad,
+        reasoning_replay_field=reasoning_replay_field_for_api(agent),
     )
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+    """Reconcile provider-facing reasoning fields for the active provider.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
     provider is active.  A mid-conversation fallback can then switch providers,
@@ -4903,8 +5125,26 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     """
     from agent.message_sanitization import reapply_reasoning_echo
 
+    needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+    replay_field = reasoning_replay_field_for_api(agent)
+    current_route = (
+        *reasoning_api_route_identity(agent),
+        needs_thinking_pad,
+        replay_field,
+    )
+    prior_route = getattr(agent, "_reasoning_replay_api_route", None)
+    provider_boundary = (
+        prior_route is not None and prior_route != current_route
+    ) or (
+        prior_route is None and bool(getattr(agent, "_fallback_activated", False))
+    )
+    agent._reasoning_replay_api_route = current_route
+
     return reapply_reasoning_echo(
-        api_messages, agent._needs_thinking_reasoning_pad()
+        api_messages,
+        needs_thinking_pad,
+        reasoning_replay_field=replay_field,
+        provider_boundary=provider_boundary,
     )
 
 

@@ -1661,6 +1661,8 @@ def _prepare_resume_pending_message(
 #     dropping it can degrade performance."  Required for prefix cache hits.
 #   * ``finish_reason``: informational; cheap to keep so transcripts replay
 #     identically across CLI and gateway.
+#   * ``_reasoning_route``: internal SHA-256 provenance used to prevent hidden
+#     reasoning from crossing provider routes. Removed before transport.
 _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "reasoning",
     "reasoning_content",
@@ -1668,6 +1670,7 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "codex_reasoning_items",
     "codex_message_items",
     "finish_reason",
+    "_reasoning_route",
 )
 
 

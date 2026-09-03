@@ -847,6 +847,75 @@ _REASONING_ECHO_RULES: tuple = (
 )
 
 
+# Loopback classification and its edge-case policy are adapted from PR #87123
+# by glitchbunny0.  Automatic carrier selection remains narrower here: server
+# identity alone is not enough except for llama.cpp's demonstrated
+# --reasoning-preserve / reasoning_content contract.
+def _is_loopback_reasoning_route(base_url: Any) -> bool:
+    import ipaddress
+
+    from utils import base_url_hostname
+
+    host = base_url_hostname(base_url)
+    if not host:
+        return False
+    host = host.strip().lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return bool(
+        address.is_loopback
+        or address.is_unspecified
+        or (mapped is not None and (mapped.is_loopback or mapped.is_unspecified))
+    )
+
+
+def resolve_reasoning_replay_field(
+    configured_mode: Any,
+    *,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    api_mode: Any,
+    detected_server_type: Any = None,
+) -> "str | None":
+    """Resolve the soft-replay wire carrier for one provider route.
+
+    Explicit carriers work on custom/self-hosted Chat Completions routes,
+    including remote endpoints.  Omission is ``auto`` and enables only a
+    directly evidenced loopback llama.cpp contract.  ``none`` and ambiguous
+    routes fail closed.  Require-side echo protocols are handled separately.
+    """
+    mode = configured_mode.strip().lower() if isinstance(configured_mode, str) else "auto"
+    transport = str(api_mode or "").strip().lower()
+    if transport not in {"", "chat_completions", "openai"}:
+        return None
+    if needs_reasoning_echo(provider, model, base_url):
+        return None
+    if mode == "none":
+        return None
+
+    provider_lower = str(provider or "").strip().lower()
+    self_hosted = (
+        provider_lower == "custom"
+        or provider_lower.startswith("custom:")
+        or provider_lower in {"local", "llamacpp", "lm-studio", "ollama", "vllm"}
+    )
+    if not self_hosted:
+        return None
+    if mode in {"reasoning", "reasoning_content"}:
+        return mode
+    if mode != "auto" or not _is_loopback_reasoning_route(base_url):
+        return None
+    if str(detected_server_type or "").strip().lower() == "llamacpp":
+        return "reasoning_content"
+    return None
+
+
 def _family_rule(family: str) -> tuple:
     for rule in _REASONING_ECHO_RULES:
         if rule[0] == family:
@@ -895,7 +964,12 @@ def needs_reasoning_echo(provider: Any, model: Any, base_url: Any) -> bool:
 
 
 def stale_thinking_reaches_wire(
-    api_mode: Any, provider: Any, model: Any, base_url: Any
+    api_mode: Any,
+    provider: Any,
+    model: Any,
+    base_url: Any,
+    *,
+    reasoning_replay_field: Any = None,
 ) -> bool:
     """True when stale assistant ``reasoning``/``reasoning_content`` text is
     actually replayed on the wire for the active route.
@@ -919,19 +993,61 @@ def stale_thinking_reaches_wire(
     """
     if (api_mode or "") == "codex_responses":
         return False
-    return needs_reasoning_echo(provider, model, base_url)
+    return (
+        needs_reasoning_echo(provider, model, base_url)
+        or reasoning_replay_field in {"reasoning", "reasoning_content"}
+    )
 
 
 def apply_reasoning_content_policy(
-    source_msg: dict, api_msg: dict, needs_thinking_pad: bool
+    source_msg: dict,
+    api_msg: dict,
+    needs_thinking_pad: bool,
+    reasoning_replay_field: str | None = None,
 ) -> None:
     """Copy provider-facing reasoning fields onto an API replay message.
 
     ``needs_thinking_pad`` is the require-side flag (see
     ``needs_reasoning_echo`` / the agent's cached
-    ``_needs_thinking_reasoning_pad``). Mutates ``api_msg`` in place.
+    ``_needs_thinking_reasoning_pad``). ``reasoning_replay_field`` selects an
+    opt-in soft replay carrier for endpoints that consume historical reasoning
+    without requiring fabricated pads. Mutates ``api_msg`` in place.
     """
     if source_msg.get("role") != "assistant":
+        return
+
+    if reasoning_replay_field == "reasoning_content":
+        normalized_reasoning = source_msg.get("reasoning")
+        existing = source_msg.get("reasoning_content")
+        replay = (
+            existing
+            if isinstance(existing, str) and existing.strip()
+            else normalized_reasoning
+            if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+            else None
+        )
+        api_msg.pop("reasoning", None)
+        if replay is None:
+            api_msg.pop("reasoning_content", None)
+        else:
+            api_msg["reasoning_content"] = replay
+        return
+
+    if reasoning_replay_field == "reasoning":
+        normalized_reasoning = source_msg.get("reasoning")
+        existing = source_msg.get("reasoning_content")
+        replay = (
+            normalized_reasoning
+            if isinstance(normalized_reasoning, str) and normalized_reasoning.strip()
+            else existing
+            if isinstance(existing, str) and existing.strip()
+            else None
+        )
+        api_msg.pop("reasoning_content", None)
+        if replay is None:
+            api_msg.pop("reasoning", None)
+        else:
+            api_msg["reasoning"] = replay
         return
 
     # 1. Explicit reasoning_content already set.
@@ -1013,52 +1129,58 @@ def apply_reasoning_content_policy(
     api_msg.pop("reasoning_content", None)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
-    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
+def reapply_reasoning_echo(
+    api_messages: list,
+    needs_thinking_pad: bool,
+    reasoning_replay_field: str | None = None,
+    provider_boundary: bool = False,
+) -> int:
+    """Reconcile provider-facing reasoning fields for the active provider.
 
-    ``api_messages`` is built once, before the retry loop, while the *primary*
-    provider is active.  A mid-conversation fallback can then switch providers,
-    so the reasoning fields baked into ``api_messages`` are shaped for the
-    *prior* provider and must be reconciled against the *current* one:
-
-    * Switching TO a require-side provider (DeepSeek / Kimi / MiMo thinking
-      mode): assistant turns built when the prior provider did NOT need the
-      echo-back go out without ``reasoning_content`` and the new provider
-      rejects them with HTTP 400 ("The reasoning_content in the thinking mode
-      must be passed back").  Re-apply the pad.
-
-    * Switching TO a strict provider that rejects the field (Mistral,
-      Cerebras, Groq, SambaNova, …): assistant turns built under a reasoning
-      primary carry a ``reasoning_content`` pad (often a single space ``" "``),
-      and the strict provider rejects it with HTTP 400/422 ("Extra inputs are
-      not permitted").  Strip the field.  This is the exact cross-provider
-      fallback bug from #45655 — a DeepSeek primary pads history with ``" "``,
-      the request falls back to Mistral, and Mistral 422s on the stale pad.
-
-    Calling this immediately before building the request kwargs reconciles the
-    fields against the *current* provider.  It is idempotent and safe to call
-    every iteration; it covers every fallback path.
-
-    Returns the number of assistant turns whose reasoning_content was added or
-    removed.
+    ``api_messages`` is built once before the retry loop. Canonical source
+    history is intentionally not imported here: a fallback may target a
+    different provider/model, and forwarding another model's hidden trace would
+    be a cross-provider privacy leak. Primary restoration rebuilds a fresh wire
+    message list from canonical history on the next request instead. The
+    ``provider_boundary`` means the already-built messages came from a different
+    provider. In that case structured carriers and provider-specific hidden
+    blocks are discarded before the destination policy is applied, so one
+    provider's hidden trace cannot be forwarded to another opt-in replay route.
+    The operation is idempotent and returns the number of assistant turns
+    changed.
     """
     changed = 0
     for api_msg in api_messages:
-        if api_msg.get("role") != "assistant":
+        if not isinstance(api_msg, dict) or api_msg.get("role") != "assistant":
             continue
-        if needs_thinking_pad:
-            if api_msg.get("reasoning_content"):
-                continue
-            apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad)
-            if api_msg.get("reasoning_content"):
-                changed += 1
+        before = dict(api_msg)
+        if provider_boundary:
+            api_msg.pop("reasoning_content", None)
+            api_msg.pop("reasoning", None)
+            api_msg.pop("reasoning_details", None)
+            api_msg.pop("anthropic_content_blocks", None)
+        source_msg = api_msg
+        if provider_boundary and needs_thinking_pad:
+            apply_reasoning_content_policy(
+                source_msg, api_msg, needs_thinking_pad=True
+            )
+        elif reasoning_replay_field in {"reasoning", "reasoning_content"}:
+            apply_reasoning_content_policy(
+                source_msg,
+                api_msg,
+                needs_thinking_pad=False,
+                reasoning_replay_field=reasoning_replay_field,
+            )
+        elif needs_thinking_pad:
+            if not api_msg.get("reasoning_content"):
+                apply_reasoning_content_policy(
+                    api_msg, api_msg, needs_thinking_pad
+                )
         else:
-            # Strict provider — strip any stale reasoning_content pad left
-            # over from a reasoning primary so the fallback request doesn't
-            # 400/422 on it.
-            if "reasoning_content" in api_msg:
-                api_msg.pop("reasoning_content", None)
-                changed += 1
+            api_msg.pop("reasoning_content", None)
+            api_msg.pop("reasoning", None)
+        if api_msg != before:
+            changed += 1
     return changed
 
 

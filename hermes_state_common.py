@@ -494,6 +494,7 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning TEXT,
     reasoning_content TEXT,
     reasoning_details TEXT,
+    _reasoning_route TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,

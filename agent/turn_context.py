@@ -116,6 +116,7 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     ``True`` — the conservative full charge.
     """
     try:
+        from agent.agent_runtime_helpers import reasoning_replay_field_for_api
         from agent.message_sanitization import stale_thinking_reaches_wire
 
         return stale_thinking_reaches_wire(
@@ -123,6 +124,7 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
             getattr(agent, "provider", "") or "",
             getattr(agent, "model", "") or "",
             getattr(agent, "base_url", "") or "",
+            reasoning_replay_field=reasoning_replay_field_for_api(agent),
         )
     except Exception:
         return True

@@ -23428,13 +23428,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
-            # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
+            # Emit agent:end hook (full response; honor in-place mutations)
+            _hook_ctx_end = {
                 **hook_ctx,
-                "response": (response or "")[:500],
+                "response": response or "",
                 "model": agent_result.get("model", ""),
                 "provider": agent_result.get("provider", ""),
-            })
+            }
+            await self.hooks.emit("agent:end", _hook_ctx_end)
+            _new_response = _hook_ctx_end.get("response")
+            if isinstance(_new_response, str) and _new_response != (response or ""):
+                response = _new_response
+            elif _new_response is not None and not isinstance(_new_response, str):
+                print(
+                    f"[hooks] agent:end 'response' must be str, got "
+                    f"{type(_new_response).__name__}; ignoring mutation",
+                    flush=True,
+                )
             
             # Check for pending process watchers (check_interval on background processes)
             try:

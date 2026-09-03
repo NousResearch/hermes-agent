@@ -1269,6 +1269,7 @@ export function groupSpeakerLabel(name?: null | string) {
   const scoped = Array.isArray(roster)
     ? roster.filter(bot => bot?.name === trimmed && !(trimmed.toLowerCase() === 'default' && !isLocalDefaultRow(bot)))
     : []
+
   const unique = scoped.length === 1 ? scoped[0] : null
 
   if (unique) {

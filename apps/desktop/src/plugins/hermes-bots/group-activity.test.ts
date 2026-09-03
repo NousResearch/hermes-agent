@@ -293,6 +293,7 @@ describe('feed shape', () => {
     const events = feed(room, 'Scoped activity').filter(
       event => typeof event.member === 'string' && event.member !== 'You'
     )
+
     const labels = events.map(event => room.activity.groupActivityLabel(event))
 
     expect(events.length).toBeGreaterThan(0)

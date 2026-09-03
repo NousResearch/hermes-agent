@@ -9,8 +9,8 @@
 
 import { atom } from '@hermes/plugin-sdk'
 
-import { groupMemberKey } from './group-membership'
 import { $groupChats, groupSpeakerLabel } from './group-chat'
+import { groupMemberKey } from './group-membership'
 import type { GroupActivityEvent, GroupActivityKind, GroupMember } from './types'
 
 // ── group activity feed ─────────────────────────────────────────────────────
@@ -74,7 +74,11 @@ export function currentGroupActivity(group: string) {
  *  (route-qualified, e.g. `local::default`) when the recorder knows the
  *  member descriptor, else the member name it was given. Raw names stay
  *  as-is — groupSpeakerLabel resolves both forms, and 'You' passes
- *  through untouched. */
+ *  through untouched.
+ *
+ *  NOT for display strings that feed raw-name helpers (the clarify /
+ *  approval card's `member` badge): those carry the plain name and match
+ *  their member through `memberKey` instead. */
 export function groupActivityMemberId(member: GroupMember, name?: null | string) {
   const key = groupMemberKey(member)
 

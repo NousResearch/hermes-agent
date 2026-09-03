@@ -457,7 +457,12 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
   const base = {
     requestId,
     group,
-    member: groupActivityMemberId(member),
+    // Display badge: the plain profile name — the card renders this through
+    // raw-name helpers (botHandle) and matches its member via `memberKey`,
+    // so the route-qualified working key would leak as a visible
+    // `cloud::default` label. Activity rows use the working key; this is
+    // the one place that deliberately stays raw.
+    member: member.name,
     memberKey: groupMemberKey(member),
     // approval.respond keys on the session, not just the request — carry the
     // runtime id the snapshot came from.

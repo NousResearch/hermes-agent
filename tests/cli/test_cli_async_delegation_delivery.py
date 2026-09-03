@@ -225,6 +225,89 @@ def test_cli_ack_failure_releases_claim_then_replay_acks_without_reprinting(monk
     assert acknowledged == [(event, "retry-claim")]
 
 
+def test_cli_legacy_append_ack_replay_is_accepted_once_per_process(monkeypatch):
+    """Embedded append-only DBs cannot replay an accepted completion visibly."""
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    cli.conversation_history = []
+    writes = []
+    visible = []
+    released = []
+    acknowledged = []
+    cli.__dict__["_session_db"] = type("LegacyDb", (), {
+        "append_message": lambda _self, *args, **kwargs: writes.append((args, kwargs)),
+    })()
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "legacy-ack-retry",
+        "session_key": "visible-session",
+    }
+
+    class FakeRegistry:
+        def drain_notifications(self, **_kwargs):
+            return [(event, "completion payload")]
+
+    claims = iter(("first-claim", "retry-claim"))
+
+    def complete(_event, claim):
+        if claim == "first-claim":
+            raise OSError("ack unavailable")
+        acknowledged.append((_event, claim))
+
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: next(claims))
+    monkeypatch.setattr("tools.async_delegation.release_event_delivery", lambda *args: released.append(args))
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", complete)
+    monkeypatch.setattr("cli._cli_visible_print", visible.append)
+
+    cli._drain_process_notifications("cli-idle")
+    replay_cli = HermesCLI.__new__(HermesCLI)
+    replay_cli.session_id = "visible-session"
+    replay_cli.__dict__["_session_db"] = cli._session_db
+    replay_cli._pending_input = queue.Queue()
+    replay_cli.conversation_history = []
+    replay_cli._drain_process_notifications("cli-idle")
+
+    assert len(writes) == 1
+    assert len(cli.conversation_history) == 1
+    assert visible == ["completion payload"]
+    assert released == [(event, "first-claim")]
+    assert acknowledged == [(event, "retry-claim")]
+    assert cli._pending_input.empty()
+    assert replay_cli._pending_input.empty()
+
+
+def test_cli_legacy_empty_delegation_ids_do_not_suppress_unrelated_events(monkeypatch):
+    """Only a non-empty delegation id may activate the legacy replay guard."""
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    writes = []
+    visible = []
+    cli.__dict__["_session_db"] = type("LegacyDb", (), {
+        "append_message": lambda _self, *args, **kwargs: writes.append((args, kwargs)),
+    })()
+    events = [
+        {"type": "async_delegation", "delegation_id": "", "session_key": "visible-session"},
+        {"type": "async_delegation", "session_key": "visible-session"},
+    ]
+
+    class FakeRegistry:
+        def drain_notifications(self, **_kwargs):
+            return [(event, f"completion {index}") for index, event in enumerate(events)]
+
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda event, *_args: event)
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *_args: None)
+    monkeypatch.setattr("cli._cli_visible_print", visible.append)
+
+    cli._drain_process_notifications("cli-idle")
+
+    assert len(writes) == 2
+    assert visible == ["completion 0", "completion 1"]
+
+
 def test_cli_releases_claim_when_durable_delivery_fails(monkeypatch):
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"

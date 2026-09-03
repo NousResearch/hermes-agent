@@ -2129,6 +2129,13 @@ class HermesACPAgent(acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        # Advance the internal persistence tip before any updated history/model
+        # metadata is saved. The ACP session id stays a stable client handle,
+        # while agent.session_id can roll from parent -> child -> grandchild.
+        post_turn_hermes_id = getattr(state.agent, "session_id", None)
+        if post_turn_hermes_id:
+            state.persistence_session_id = post_turn_hermes_id
+
         if result.get("messages"):
             state.history = result["messages"]
             # Persist updated history so sessions survive process restarts.
@@ -2138,7 +2145,6 @@ class HermesACPAgent(acp.Agent):
         # DB head moved during the turn, emit a session_info_update carrying
         # _meta.hermes.sessionProvenance so ACP clients can render the boundary
         # and keep old/new ids in lineage. The ACP session_id is unchanged.
-        post_turn_hermes_id = getattr(state.agent, "session_id", None)
         if (
             conn
             and post_turn_hermes_id

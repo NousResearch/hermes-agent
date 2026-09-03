@@ -245,6 +245,63 @@ async def test_acp_model_switch_persists_to_rollover_child_not_stable_parent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("switch_path", ("slash", "protocol"))
+async def test_acp_prompt_moves_persistence_tip_before_grandchild_model_switch(
+    monkeypatch, tmp_path, switch_path,
+):
+    """A turn rollover must move durable ACP writes and later switches to its tip."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("acp-parent", source="acp", model="parent-model", model_config={"cwd": "/parent"})
+    assert TurnBoundaryRollover(db).mark_pending("acp-parent", threshold_tokens=1) is True
+    child_id = TurnBoundaryRollover(db).adopt_at_turn_boundary("acp-parent", active_work=False)
+    assert child_id
+    db.update_session_meta(child_id, json.dumps({"cwd": "/child"}), "child-model")
+
+    class _Agent:
+        model = "factory-model"
+        provider = "factory-provider"
+
+    manager = SessionManager(agent_factory=_Agent, db=db)
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.get_session("acp-parent")
+    assert state is not None
+
+    class RolloverAgent(FakeAgent):
+        session_id = child_id
+
+        def run_conversation(self, **kwargs):
+            assert TurnBoundaryRollover(db).mark_pending(child_id, threshold_tokens=1) is True
+            grandchild_id = TurnBoundaryRollover(db).adopt_at_turn_boundary(child_id, active_work=False)
+            assert grandchild_id
+            self.session_id = grandchild_id
+            return {"final_response": "rolled", "messages": [{"role": "assistant", "content": "rolled"}]}
+
+    state.agent = RolloverAgent()
+    await acp_agent.prompt(
+        session_id="acp-parent",
+        prompt=[TextContentBlock(type="text", text="continue")],
+    )
+    grandchild_id = state.agent.session_id
+    assert state.persistence_session_id == grandchild_id
+
+    if switch_path == "slash":
+        assert "Model switched to: next-model" in acp_agent._cmd_model("next-model", state)
+    else:
+        assert await acp_agent.set_session_model("next-model", "acp-parent") is not None
+
+    assert db.get_session(child_id)["model"] == "child-model"
+    assert db.get_session(grandchild_id)["model"] == "next-model"
+    restarted = SessionManager(agent_factory=_Agent, db=db).get_session("acp-parent")
+    assert restarted is not None
+    assert restarted.model == "next-model"
+    assert [message["content"] for message in restarted.history] == ["rolled"]
+
+
+@pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()
     state.is_running = True

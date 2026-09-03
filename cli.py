@@ -3927,6 +3927,9 @@ def _prepend_note_to_message(message, note: str):
     return message
 
 
+_LEGACY_ASYNC_DELEGATION_ACCEPTANCE_REGISTRY: set[str] = set()
+
+
 def _cli_visible_print(text: str = "") -> None:
     """Print normally unless prompt_toolkit owns the live terminal.
 
@@ -13623,11 +13626,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             db = getattr(self, "_session_db", None)
             append_delivery = getattr(db, "append_message", None)
             append_once = getattr(db, "append_async_delegation_completion", None)
-            inserted = not callable(append_once)
+            delegation_id = str(event.get("delegation_id") or "")
+            # Lightweight embedded DB stand-ins predate the durable transactional
+            # identity seam. Keep a process-local acceptance record for those
+            # append-only implementations only: it closes the ack-failure replay
+            # window without claiming cross-process exactly-once semantics.
+            legacy_replay_accepted = (
+                not callable(append_once)
+                and bool(delegation_id)
+                and delegation_id in _LEGACY_ASYNC_DELEGATION_ACCEPTANCE_REGISTRY
+            )
+            inserted = not callable(append_once) and not legacy_replay_accepted
             if event.get("type") == "async_delegation" and (
                 callable(append_once) or callable(append_delivery)
-            ):
-                metadata = {"delegation_id": str(event.get("delegation_id") or "")}
+            ) and not legacy_replay_accepted:
+                metadata = {"delegation_id": delegation_id}
                 try:
                     if callable(append_once):
                         append_result = append_once(
@@ -13677,12 +13690,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # not a queued synthetic prompt/model turn.
                     if not callable(append_once) or inserted:
                         _cli_visible_print(synthetic_message)
+                    # Register only after durable, live, and visible acceptance.
+                    # An append/display failure must remain retryable.
+                    if not callable(append_once) and delegation_id:
+                        _LEGACY_ASYNC_DELEGATION_ACCEPTANCE_REGISTRY.add(delegation_id)
                 except Exception:
                     # Leave retryable failures pending.  Ack follows durable,
                     # live-history, and visible-display acceptance only.
                     release_event_delivery(event, claim)
                     continue
-            else:
+            elif not legacy_replay_accepted:
                 self._pending_input.put(synthetic_message)
                 _cli_visible_print(synthetic_message)
             try:
@@ -13691,6 +13708,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # Durable/live/display acceptance succeeded, but a failed ack
                 # must immediately release the claim for a safe replay.
                 release_event_delivery(event, claim)
+            else:
+                # The registry bridges only the outstanding ack window. Once
+                # acknowledgement succeeds, forget it so an unrelated future
+                # legacy event with a reused/empty identity is never suppressed.
+                if not callable(append_once) and delegation_id:
+                    _LEGACY_ASYNC_DELEGATION_ACCEPTANCE_REGISTRY.discard(delegation_id)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.

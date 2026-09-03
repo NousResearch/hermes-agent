@@ -709,3 +709,74 @@ class TestMultiplexProfileScope:
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
 
+
+
+async def _mock_session_post(session, status=200, payload=None):
+    """Helper: patch ``session.post`` to return an async context manager
+    whose ``status``/``json``/``text`` are pre-configured."""
+    resp = AsyncMock()
+    resp.status = status
+    resp.json = AsyncMock(return_value=payload or {})
+    resp.text = AsyncMock(return_value="")
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    session.post = MagicMock(return_value=cm)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_accepts_extract_media_tuple_shape(tmp_path):
+    """extract_media returns (path, is_voice) tuples; the standalone sender must
+    unpack media[0] instead of treating a non-dict media item as a raw path,
+    which previously made os.path.exists(tuple) raise TypeError."""
+    from plugins.platforms.mattermost.adapter import _standalone_send
+    from types import SimpleNamespace
+
+    audio = tmp_path / "voice.ogg"
+    audio.write_bytes(b"FAKEOGG")
+
+    pconfig = SimpleNamespace(
+        token="mm-tok",
+        extra={"url": "https://mm.example.com"},
+    )
+
+    import gateway.platforms.base as base_mod
+    with patch.object(base_mod, "resolve_proxy_url", return_value=None), \
+         patch.object(base_mod, "proxy_kwargs_for_aiohttp", return_value=({}, {})), \
+         patch("aiohttp.ClientSession") as _Session:
+        session = AsyncMock()
+        session.post = MagicMock()
+        # Upload response: file_infos with an id.
+        upload_cm = AsyncMock()
+        up_resp = AsyncMock()
+        up_resp.status = 200
+        up_resp.json = AsyncMock(return_value={"file_infos": [{"id": "F1"}]})
+        up_resp.text = AsyncMock(return_value="")
+        upload_cm.__aenter__ = AsyncMock(return_value=up_resp)
+        upload_cm.__aexit__ = AsyncMock(return_value=False)
+        # Post response: id.
+        post_cm = AsyncMock()
+        post_resp = AsyncMock()
+        post_resp.status = 200
+        post_resp.json = AsyncMock(return_value={"id": "post9"})
+        post_resp.text = AsyncMock(return_value="")
+        post_cm.__aenter__ = AsyncMock(return_value=post_resp)
+        post_cm.__aexit__ = AsyncMock(return_value=False)
+        session.post = MagicMock(side_effect=[upload_cm, post_cm])
+        _Session.return_value.__aenter__ = AsyncMock(return_value=session)
+        _Session.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await _standalone_send(
+            pconfig,
+            "ch_1",
+            "hello",
+            media_files=[(str(audio), True)],  # (path, is_voice) tuple
+        )
+
+    assert result.get("success") is True
+    assert result.get("message_id") == "post9"
+    # The first (upload) call must have carried the channel_id + file.
+    assert session.post.call_count == 2
+    upload_args = session.post.call_args_list[0]
+    assert upload_args[0][0] == "https://mm.example.com/api/v4/files"

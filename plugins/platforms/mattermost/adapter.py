@@ -1098,7 +1098,13 @@ async def _standalone_send(
             # 1. Upload media (if any) and collect file_ids.
             file_ids: List[str] = []
             for media in media_files:
-                file_path = media.get("path") if isinstance(media, dict) else media
+                if isinstance(media, dict):
+                    file_path = media.get("path")
+                elif isinstance(media, (tuple, list)) and len(media) >= 1:
+                    # extract_media returns (path, is_voice) tuples
+                    file_path = media[0]
+                else:
+                    file_path = media
                 if not file_path or not os.path.exists(file_path):
                     continue
                 form = aiohttp.FormData()

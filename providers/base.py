@@ -49,6 +49,16 @@ class ProviderProfile:
     description: str = ""        # e.g. "GMI Cloud (multi-model direct API)" — picker subtitle
     signup_url: str = ""         # e.g. "https://www.gmicloud.ai/" — shown during setup
 
+    # group: fold this provider under one collapsed row in the interactive
+    # pickers, as ("group_id", "Group Label", "group description").  DISPLAY
+    # ONLY — see PROVIDER_GROUPS in hermes_cli/models.py.  Vendors exposing
+    # several slugs (one per endpoint / tier / auth method) declare the same
+    # group_id on each profile and get a "Label ▸" row with a member
+    # sub-picker instead of N top-level rows.  Naming an existing group_id
+    # joins that group; label/description are then taken from the existing
+    # entry.  Empty (the default) leaves the provider as its own row.
+    group: tuple = ()
+
     # ── Auth & endpoints ─────────────────────────────────────
     env_vars: tuple = ()
     base_url: str = ""

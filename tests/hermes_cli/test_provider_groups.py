@@ -6,9 +6,12 @@ These are invariant tests, not catalog snapshots: they assert how
 vendors, which is expected to change over time.
 """
 
+from types import SimpleNamespace
+
 from hermes_cli.models import (
     CANONICAL_PROVIDERS,
     PROVIDER_GROUPS,
+    fold_profile_groups,
     group_providers,
     provider_group_for_slug,
 )
@@ -35,6 +38,46 @@ def test_reverse_index_matches_groups():
     assert provider_group_for_slug("") == ""
 
 
+
+
+def _profile(name, group=()):
+    return SimpleNamespace(name=name, group=group)
+
+
+def test_profile_declared_group_creates_a_group_row():
+    """A provider plugin can declare its own group via ProviderProfile.group."""
+    groups = {}
+    profiles = [
+        _profile("acme-eu", ("acme", "Acme", "EU & US endpoints")),
+        _profile("acme-us", ("acme", "Acme", "EU & US endpoints")),
+    ]
+    fold_profile_groups(profiles, {"acme-eu", "acme-us"}, groups)
+    assert groups == {"acme": ("Acme", "EU & US endpoints", ["acme-eu", "acme-us"])}
+
+
+def test_profile_declared_group_joins_an_existing_group():
+    """Naming an existing group_id appends to it, keeping its label/description."""
+    groups = {"qwen": ("Qwen", "Qwen endpoints", ["alibaba"])}
+    fold_profile_groups(
+        [_profile("acme-eu", ("qwen", "Ignored", "Ignored"))], {"acme-eu"}, groups
+    )
+    assert groups["qwen"] == ("Qwen", "Qwen endpoints", ["alibaba", "acme-eu"])
+
+
+def test_profile_declared_group_skips_bad_or_absent_declarations():
+    """Malformed declarations and non-canonical slugs never reach the picker."""
+    groups = {}
+    fold_profile_groups(
+        [
+            _profile("no-group"),
+            _profile("short-tuple", ("acme",)),
+            _profile("blank-id", ("", "Acme", "desc")),
+            _profile("not-canonical", ("acme", "Acme", "desc")),
+        ],
+        {"no-group", "short-tuple", "blank-id"},
+        groups,
+    )
+    assert groups == {}
 
 
 def test_multi_member_group_folds_to_one_row():

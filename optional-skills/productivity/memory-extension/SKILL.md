@@ -1,7 +1,7 @@
 ---
 name: memory-extension
 description: "Extend Hermes memory: index + on-demand detail files."
-version: 1.2.0
+version: 1.3.0
 author: Franck Iribaren (misstyka), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -28,8 +28,8 @@ Extends Hermes memory (`MEMORY.md` / `USER.md`) into an **index + detail files**
 
 ## Prerequisites
 
-- No external dependencies. The consistency script needs `bash` (git-bash/MSYS on Windows, default on macOS/Linux).
-- `$HERMES_HOME` resolves to the active profile's home (default `~/.hermes`). The script falls back to `$HOME/.hermes` when the variable is unset.
+- No external dependencies. The consistency script needs `bash` (git-bash/MSYS on Windows, default on macOS/Linux). The LLM contradiction script needs `python3` and, for the API pass, a configured provider in `config.yaml`/`auth.json` (any OpenAI-compatible provider works; it reads the default model + token, no manual key management).
+- `$HERMES_HOME` resolves to the active profile's home (default `~/.hermes`). The scripts fall back to `$HOME/.hermes` when the variable is unset.
 
 ## How to Run
 
@@ -41,13 +41,16 @@ cp SKILL.md "$HERMES_HOME/memories/extended/README.md"
 # skill-dir-relative and do not resolve from memories/extended/ — treat them
 # as pointers back to the skill directory.
 
-# 2. Install the consistency script (recommended)
+# 2. Install the consistency + contradiction scripts (recommended)
 mkdir -p "$HERMES_HOME/scripts"
-cp scripts/check-memory-coherence.sh "$HERMES_HOME/scripts/"
+cp scripts/check-memory-coherence.sh scripts/check-memory-contradictions.sh scripts/check-memory-contradictions-llm.py "$HERMES_HOME/scripts/"
 
 # 3. Rewrite MEMORY.md with title-only entries → see extended/<file>.md
 # 4. Verify index ↔ files coherence
 bash "$HERMES_HOME/scripts/check-memory-coherence.sh" "$HERMES_HOME"
+# 5. (Optional) Detect semantic contradictions — deterministic pass, then LLM pass
+bash "$HERMES_HOME/scripts/check-memory-contradictions.sh" "$HERMES_HOME"
+python "$HERMES_HOME/scripts/check-memory-contradictions-llm.py" "$HERMES_HOME"
 ```
 
 ## Quick Reference
@@ -58,6 +61,8 @@ bash "$HERMES_HOME/scripts/check-memory-coherence.sh" "$HERMES_HOME"
 | Detail (read on demand) | `$HERMES_HOME/memories/extended/*.md` |
 | System guide (copy of this file) | `memories/extended/README.md` |
 | Coherence check | `bash $HERMES_HOME/scripts/check-memory-coherence.sh "$HERMES_HOME"` |
+| Contradiction scan (deterministic) | `bash $HERMES_HOME/scripts/check-memory-contradictions.sh "$HERMES_HOME"` |
+| Contradiction scan (LLM) | `python $HERMES_HOME/scripts/check-memory-contradictions-llm.py "$HERMES_HOME"` |
 
 Index line format: `Topic — one-line hint → see extended/<file>.md`
 
@@ -70,6 +75,26 @@ Index line format: `Topic — one-line hint → see extended/<file>.md`
 5. **Share files across memories when useful** (e.g. one `google-cloud.md` used by both `MEMORY.md` and `USER.md`).
 6. **Use accent-free, space-free filenames** (`ecriture.md`, not `écriture.md`) — accents break under MSYS/Windows.
 7. **When the index saturates**, consolidate: merge same-theme short entries into one `extended/<theme>.md` (or `divers.md`), replace N lines with 1, and audit weekly with the coherence script.
+
+## Contradiction Detection
+
+Structural coherence (above) does not catch **semantic contradictions**: two facts that cannot both be true (e.g. "OS: Windows 11" vs "OS: Windows 10", "never launch X" vs "launch X for tests", two versions of the same tool, two dates for the same event). Two complementary passes:
+
+**Pass 1 — deterministic (free, < 1 s):** `scripts/check-memory-contradictions.sh` flags duplicate keys with different values, strong negations, multiple versions, multiple dates. It is a filter, not a verdict — expect false positives.
+
+```bash
+bash scripts/check-memory-contradictions.sh "$HERMES_HOME"
+```
+
+**Pass 2 — LLM (default provider, direct API):** `scripts/check-memory-contradictions-llm.py` sends the memory in overlapping chunks (peak-hour latency → automatic retries on 524/520/503/429) and writes `$HERMES_HOME/memories/contradictions-report.md`. It reads the default model + token from `config.yaml`/`auth.json` — no manual key management.
+
+```bash
+python scripts/check-memory-contradictions-llm.py "$HERMES_HOME"
+```
+
+**Resolution is human-only.** The scripts detect and report; the user (or the agent with the user) decides which version is true, then edits `extended/` or the index. The scripts never edit memory files. After a fix, re-run pass 2 → green report.
+
+**Recommended weekly cron:** run pass 2 each week and review the report (or push it to a messaging channel).
 
 ## Pitfalls
 
@@ -88,6 +113,8 @@ bash "$HERMES_HOME/scripts/check-memory-coherence.sh" "$HERMES_HOME"
 # Expected: "OK: N extended/ file(s), all referenced"
 ```
 
+Contradiction scans (see above): pass 1 exits 1 with candidates; pass 2 exits 1 with a report, 0 when clean.
+
 Manual checklist:
 - [ ] Every `extended/*.md` (except `README.md`) is referenced in `MEMORY.md` or `USER.md`
 - [ ] Every `→ see extended/<file>.md` line points to an existing file
@@ -98,3 +125,5 @@ Manual checklist:
 
 - `references/local-model-pitfalls.md` — known bugs of local models (< 10B) with this system; safety rules to avoid hallucinated file state.
 - `scripts/check-memory-coherence.sh` — automatic orphan + dangling-reference detection.
+- `scripts/check-memory-contradictions.sh` — deterministic contradiction filter (duplicate keys, negations, versions, dates).
+- `scripts/check-memory-contradictions-llm.py` — LLM contradiction pass (default provider, direct API) → `contradictions-report.md`.

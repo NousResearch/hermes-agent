@@ -2,6 +2,9 @@
 
 Covers the SKILL.md contract and the check-memory-coherence.sh script logic:
 orphan detection, dangling-reference detection, and clean-state exit.
+Also covers the contradiction-detection scripts: deterministic pass 1
+(duplicate keys, negations, versions, dates) and LLM pass 2 (dry-run only,
+no network).
 """
 
 import re
@@ -15,6 +18,8 @@ import yaml
 
 SKILL_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "productivity" / "memory-extension"
 SCRIPT = SKILL_DIR / "scripts" / "check-memory-coherence.sh"
+SCRIPT_CONTRADICT = SKILL_DIR / "scripts" / "check-memory-contradictions.sh"
+SCRIPT_LLM = SKILL_DIR / "scripts" / "check-memory-contradictions-llm.py"
 
 
 def _bash_binary():
@@ -155,3 +160,88 @@ class TestCoherenceScript:
         r = _run_script(fake_home)
         assert r.returncode == 1
         assert "no index" in r.stdout.lower()
+
+
+def _run_contradict(home: Path) -> subprocess.CompletedProcess:
+    assert BASH, "no working bash binary found"
+    return subprocess.run(
+        [BASH, str(SCRIPT_CONTRADICT), str(home)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.skipif(BASH is None, reason="no working bash binary found")
+class TestContradictionScript:
+    def test_clean_state_exits_zero(self, fake_home):
+        r = _run_contradict(fake_home)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "no contradiction candidate" in r.stdout.lower()
+
+    def test_detects_duplicate_key_different_values(self, fake_home):
+        mem = fake_home / "memories" / "MEMORY.md"
+        mem.write_text(
+            "Model default: deepseek-flash\n"
+            "Model default: claude-sonnet\n",
+            encoding="utf-8",
+        )
+        r = _run_contradict(fake_home)
+        assert r.returncode == 1
+        assert "duplicate key" in r.stdout.lower()
+
+    def test_detects_strong_negation(self, fake_home):
+        mem = fake_home / "memories" / "MEMORY.md"
+        mem.write_text(
+            "LM Studio: never launch it.\n",
+            encoding="utf-8",
+        )
+        r = _run_contradict(fake_home)
+        assert r.returncode == 1
+        assert "strong negation" in r.stdout.lower()
+
+    def test_detects_multiple_versions(self, fake_home):
+        mem = fake_home / "memories" / "MEMORY.md"
+        mem.write_text(
+            "ComfyUI v0.33.1 installed\n"
+            "ComfyUI v0.32.0 installed\n",
+            encoding="utf-8",
+        )
+        r = _run_contradict(fake_home)
+        assert r.returncode == 1
+        assert "multiple versions" in r.stdout.lower()
+
+    def test_detects_multiple_dates(self, fake_home):
+        mem = fake_home / "memories" / "MEMORY.md"
+        mem.write_text(
+            "Event on 01/01/2026 and 02/02/2026\n",
+            encoding="utf-8",
+        )
+        r = _run_contradict(fake_home)
+        assert r.returncode == 1
+        assert "multiple dates" in r.stdout.lower()
+
+
+class TestContradictionLLMScript:
+    def test_dry_run_no_network(self, fake_home):
+        """--dry-run must not call the API and must exit 0."""
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT_LLM), str(fake_home), "--dry-run"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "dry-run" in r.stdout.lower()
+
+    def test_missing_memory_reports_error(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        r = subprocess.run(
+            [sys.executable, str(SCRIPT_LLM), str(empty), "--dry-run"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert r.returncode != 0
+        assert "no memory" in (r.stdout + r.stderr).lower()

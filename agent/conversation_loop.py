@@ -5831,6 +5831,41 @@ def run_conversation(
                         agent._buffer_vprint(
                             f"      Did you mean '{_suggestion}'?  Re-pick it with `hermes model`."
                         )
+                    else:
+                        # Actionable hint for a 404 on a model that IS in our
+                        # curated catalogue.  The id is well-formed (carries
+                        # vendor/ prefix, matches a known curated entry) but
+                        # the provider says it doesn't exist — that is the
+                        # stale-catalog / retired-model class (issue #96276:
+                        # ``stealth/ox-alpha`` was recommended by the picker,
+                        # then the provider dropped it).  Tell the user the
+                        # real cause and the fix path (refresh + repick).
+                        # Gated to avoid conflicting with the prefix-suggestion
+                        # branch above — that already covered the typo case.
+                        try:
+                            from hermes_cli.model_normalize import (
+                                is_model_in_curated_catalog,
+                            )
+
+                            _in_catalog = is_model_in_curated_catalog(_provider, _model)
+                        except Exception:
+                            _in_catalog = False
+                        if _in_catalog:
+                            agent._buffer_vprint(
+                                f"   💡 Model '{_model}' is in Hermes' curated catalogue for provider {_provider}, "
+                                f"but the provider returned 404 saying it does not exist."
+                            )
+                            agent._buffer_vprint(
+                                "      The model may have been retired or renamed on the provider side."
+                            )
+                            agent._buffer_vprint(
+                                "      Try: `/model --refresh` to reload the live catalog, then `/model` to pick another."
+                            )
+                            if agent._has_pending_fallback():
+                                agent._buffer_vprint(
+                                    "      Hermes will try the configured fallback model automatically — "
+                                    "this hint is shown in case the fallback chain is exhausted."
+                                )
 
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested:

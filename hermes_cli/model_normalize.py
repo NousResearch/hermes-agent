@@ -421,6 +421,63 @@ def suggest_prefixed_model_id(provider: str, model_name: str) -> Optional[str]:
     return repaired if repaired != name else None
 
 
+def is_model_in_curated_catalog(provider: str, model_name: str) -> bool:
+    """Return True when *model_name* matches a known entry in the curated catalogue.
+
+    The diagnostic counterpart to :func:`suggest_prefixed_model_id`. Used to
+    disambiguate the failure mode behind a provider's 404: a model id that
+    IS in our curated ``_PROVIDER_MODELS[provider]`` list (so it WAS a
+    supported pick recently) but which the upstream provider now says does
+    not exist means the catalog has drifted — the provider retired or
+    renamed the model. That's a different fix than a typo: the user needs
+    to refresh the picker, not re-type the name.
+
+    Handles both catalog shapes that the curated ``_PROVIDER_MODELS`` uses:
+
+      * **Aggregator / Nous-Portal style** — vendor-prefixed ids
+        (``anthropic/claude-fable-5``).  Issue #96276 was reported here.
+      * **Native-provider style** — bare ids (``claude-fable-5``,
+        ``gpt-5.4``) where the provider hosts the model directly.  Same
+        failure mode applies when the provider deprecates the model, so
+        a 404 on a bare id that matches a curated entry is also the
+        stale-catalog class.
+
+    Returns ``False`` when:
+
+      * the model name is blank;
+      * the provider has no curated catalogue (custom/local endpoints);
+      * the model is genuinely not in our curated list for this provider
+        (the user typed a hand-rolled id we never curated).
+
+    Never raises — a malformed provider/model string is treated as "not in
+    catalogue" so the caller can stay silent rather than mis-diagnose.
+    """
+    name = (model_name or "").strip()
+    if not name:
+        return False
+    try:
+        canonical = _normalize_provider_alias(provider)
+    except Exception:
+        return False
+    try:
+        from hermes_cli.models import _PROVIDER_MODELS
+    except Exception:
+        return False
+    catalogue = _PROVIDER_MODELS.get(canonical) or []
+    # Exact match (handles vendor-prefixed ids like ``anthropic/claude-fable-5``
+    # used by aggregators / Nous Portal — issue #96276).
+    if name in catalogue:
+        return True
+    # Bare-id match for native-provider catalogs where the catalogue entry is
+    # also bare (``claude-fable-5``, ``gpt-5.4``, ``deepseek-v4-flash``).
+    # Guard: only meaningful when the model has no ``/`` (a prefixed id
+    # already matched in the exact-match branch above or genuinely isn't in
+    # the catalogue).
+    if "/" not in name and name in catalogue:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Main normalisation entry point
 # ---------------------------------------------------------------------------

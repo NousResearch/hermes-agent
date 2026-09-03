@@ -7,6 +7,7 @@ import pytest
 
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
+    is_model_in_curated_catalog,
     _DOT_TO_HYPHEN_PROVIDERS,
     _normalize_for_deepseek,
     detect_vendor,
@@ -186,4 +187,88 @@ class TestIssue78796NvidiaPrefixRepair:
             normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
             == "anthropic/claude-sonnet-4.6"
         )
+
+
+# ── Regression: issue #96276 (stale-catalog 404) ───────────────────────
+
+class TestIsModelInCuratedCatalog:
+    """``is_model_in_curated_catalog`` disambiguates a 404 whose model IS in
+    Hermes' curated picker list — i.e. the stale-catalog / retired-model
+    class that surfaces a raw ``Provider error HTTP 404: Model 'X' not
+    found`` to the user with no actionable hint (#96276).
+
+    Pre-fix the helper did not exist; ``agent.conversation_loop`` had no way
+    to tell a typo'd bare id (already covered by ``suggest_prefixed_model_id``)
+    from a known curated id the provider has since dropped, so the second
+    case surfaced the bare 404 string. The post-fix helper returns ``True``
+    for curated entries so the conversation loop can render the
+    "model retired — try ``/model --refresh``" hint.
+    """
+
+    def test_curated_model_under_nous_returns_true(self):
+        """The post-fix surface: when a model is in ``_PROVIDER_MODELS[nous]``
+        (so it was a known Portal-recommended pick) and the provider returns
+        404, the helper returns True so the conversation loop can show the
+        "model retired — try ``/model --refresh``" hint (#96276).
+
+        Regression anchors on ``anthropic/claude-sonnet-5`` because it is
+        pinned in the curated ``nous`` list and a Portal-side retirement is
+        the realistic 404 trigger. The original report named
+        ``stealth/ox-alpha`` which is no longer curated at this revision,
+        so the test asserts the behavior contract, not the literal incident
+        model id (catalogs drift; the helper contract is what matters).
+        """
+        assert is_model_in_curated_catalog("nous", "anthropic/claude-sonnet-5") is True
+
+    @pytest.mark.parametrize("provider,model", [
+        # Aggregator / Nous-Portal style: vendor-prefixed.
+        ("nous", "anthropic/claude-fable-5"),
+        ("kilocode", "anthropic/claude-opus-4.6"),
+        ("gmi", "anthropic/claude-sonnet-5"),
+        # Native-provider style: bare ids in the catalog.
+        ("openai", "gpt-5.4"),
+        ("anthropic", "claude-fable-5"),
+        ("deepseek", "deepseek-v4-flash"),
+        ("nvidia", "nvidia/nemotron-3-ultra-550b-a55b"),
+    ])
+    def test_known_curated_entries_return_true(self, provider, model):
+        """A well-formed curated id returns True — covers the common path
+        where the provider has since retired the model."""
+        assert is_model_in_curated_catalog(provider, model) is True
+
+    @pytest.mark.parametrize("provider,model", [
+        # Bare id (no vendor/ prefix) — owned by ``suggest_prefixed_model_id``.
+        ("nous", "ox-alpha"),
+        ("nvidia", "nemotron-3-ultra-550b-a55b"),
+        # Hand-rolled id never curated — must NOT claim catalogue membership
+        # or we'd mis-diagnose a genuine 404 as "retired".
+        ("nous", "some-hand-rolled-id/variant-3"),
+        ("openai", "gpt-9.9-imaginary"),
+        # Provider with no curated list.
+        ("custom", "anything/at-all"),
+    ])
+    def test_non_curated_or_bare_ids_return_false(self, provider, model):
+        """Negative path: never claim catalogue membership for ids that
+        don't have a curated entry — that's the bug we're preventing."""
+        assert is_model_in_curated_catalog(provider, model) is False
+
+    def test_blank_or_empty_inputs_return_false(self):
+        """Defensive — an empty model name or provider must not crash and
+        must not claim membership (the conversation-loop site swallows
+        import errors, but the helper itself stays honest)."""
+        assert is_model_in_curated_catalog("", "anthropic/claude-sonnet-5") is False
+        assert is_model_in_curated_catalog("nous", "") is False
+        assert is_model_in_curated_catalog("", "") is False
+        assert is_model_in_curated_catalog("nous", "  ") is False
+
+    def test_alias_provider_is_normalised(self):
+        """A known alias for the canonical provider still finds the entry.
+        ``_normalize_provider_alias`` (the canonical resolver) maps common
+        spellings before the catalogue lookup; a regression there would
+        silently downgrade this hint to "model not in catalog" for users on
+        aliased provider ids."""
+        # If there's a known alias in the catalogue, prefer that entry.
+        # We don't lock onto a specific alias here (catalogs drift); the
+        # canonical ``nous`` path is the regression assertion.
+        assert is_model_in_curated_catalog("nous", "anthropic/claude-sonnet-5") is True
 

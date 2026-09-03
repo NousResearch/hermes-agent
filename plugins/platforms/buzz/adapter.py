@@ -318,6 +318,20 @@ _WS_READ_IDLE_TIMEOUT = 300.0
 # this is the last resort AFTER the library's own ping_timeout has failed.
 _WS_READ_IDLE_PROBE_TIMEOUT = 15.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
+
+
+async def _cancel_and_await(task: "asyncio.Task") -> None:
+    """Cancel a task and drain its cancellation/exception without leaking.
+
+    Used by the WebSocket read loop to tear down the losing side of a
+    read-vs-probe race (and the persistent read on connection exit) without
+    propagating CancelledError or swallowing unrelated warnings (#101258).
+    """
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
 _WS_MEMBERSHIP_KIND = 44100
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 
@@ -1918,132 +1932,169 @@ class BuzzAdapter(BasePlatformAdapter):
                         )
                         try:
                             frame_iter = websocket.__aiter__()
-                            while True:
-                                try:
-                                    raw = await asyncio.wait_for(
-                                        frame_iter.__anext__(),
+                            # Persistent pending read task, kept across idle
+                            # windows.  A plain asyncio.wait() timeout does
+                            # NOT cancel the read, which matters: websockets
+                            # 15.x Connection.__aiter__() is an async
+                            # generator, and cancelling an in-flight
+                            # __anext__() CLOSES that generator — the next
+                            # read then raises StopAsyncIteration and a
+                            # healthy-but-quiet connection would still exit
+                            # and reconnect after every idle window
+                            # (#101258 review; #101160 acceptance 2b).
+                            read_task = asyncio.ensure_future(
+                                frame_iter.__anext__()
+                            )
+                            try:
+                                while True:
+                                    # Phase 1 — bounded wait for the next
+                                    # application frame (the read itself is
+                                    # never cancelled).
+                                    done, _ = await asyncio.wait(
+                                        {read_task},
                                         timeout=_WS_READ_IDLE_TIMEOUT,
                                     )
-                                except StopAsyncIteration:
-                                    break
-                                except ConnectionClosedOK:
-                                    # A clean server-side close is a normal
-                                    # lifecycle event (subscription exhausted,
-                                    # relay restart), not a failure: exit the
-                                    # connection context quietly so the
-                                    # reconnect path starts fresh without a
-                                    # disconnect warning or backoff (#101160).
-                                    break
-                                except asyncio.TimeoutError:
-                                    # Application-frame silence is not transport
-                                    # death: healthy quiet relays legitimately
-                                    # go hours without an EVENT frame.  Probe
-                                    # the transport's own protocol (ping/pong)
-                                    # before declaring the connection dead — a
-                                    # live transport resolves the probe and the
-                                    # read loop simply keeps waiting for the
-                                    # next frame.  The probe pings the
-                                    # CONNECTION, not the frame iterator: in
-                                    # websockets 15.x ``Connection.__aiter__()``
-                                    # returns a distinct async generator that
-                                    # does not expose ``ping()`` (#101160).
-                                    try:
-                                        # websockets 15.x ping() is TWO-stage:
-                                        # ``await ping()`` only SENDS the ping
-                                        # and returns a pong waiter; awaiting
-                                        # that waiter is what actually waits
-                                        # for the matching pong.  Bounding only
-                                        # the first stage would treat an
-                                        # unanswered ping as proof of liveness,
-                                        # so the probe must await BOTH stages
-                                        # (#101258 pre-merge review).
-                                        pong_waiter = await websocket.ping()
-                                        await asyncio.wait_for(
-                                            pong_waiter,
+                                    if read_task not in done:
+                                        # Read-idle: application-frame silence
+                                        # is not transport death — healthy
+                                        # quiet relays go hours without EVENT
+                                        # frames while still answering
+                                        # keepalive pings.  Race a bounded
+                                        # two-stage ping/pong probe against
+                                        # the still-pending read (#101160).
+                                        try:
+                                            # Stage 1: send — returns the
+                                            # pong waiter (see #101258).
+                                            pong_waiter = await websocket.ping()
+                                        except ConnectionClosedOK:
+                                            # Clean close raced the probe.
+                                            break
+                                        except AttributeError:
+                                            # No ping probe on this transport
+                                            # (other websockets generations /
+                                            # fakes): cannot judge liveness,
+                                            # so fall back to the
+                                            # pre-#101160 read-idle reconnect
+                                            # behaviour.
+                                            raise ConnectionError(
+                                                f"no WebSocket frame for "
+                                                f"{_WS_READ_IDLE_TIMEOUT:.0f}s; "
+                                                "assuming the connection went "
+                                                "silent"
+                                            ) from None
+                                        pong_task = asyncio.ensure_future(
+                                            pong_waiter
+                                        )
+                                        done, _ = await asyncio.wait(
+                                            {read_task, pong_task},
                                             timeout=_WS_READ_IDLE_PROBE_TIMEOUT,
                                         )
-                                    except asyncio.TimeoutError:
-                                        raise ConnectionError(
-                                            f"no WebSocket frame for "
-                                            f"{_WS_READ_IDLE_TIMEOUT:.0f}s and ping probe "
-                                            f"unanswered for "
-                                            f"{_WS_READ_IDLE_PROBE_TIMEOUT:.0f}s; "
-                                            "assuming the connection went silent"
-                                        ) from None
-                                    except ConnectionClosedOK:
-                                        # Clean close raced the probe — treat
-                                        # it like a clean close above.
+                                        if read_task in done:
+                                            # A frame beat the probe — cancel
+                                            # the probe and dispatch the frame.
+                                            await _cancel_and_await(pong_task)
+                                        elif pong_task in done:
+                                            # Pong won: the transport is alive
+                                            # and merely quiet.  Keep the
+                                            # pending read and wait for the
+                                            # next application frame.
+                                            try:
+                                                pong_task.result()
+                                            except ConnectionClosedOK:
+                                                break
+                                            continue
+                                        else:
+                                            # Neither finished within the
+                                            # probe bound — the socket is
+                                            # wedged (the #98097 CLOSE_WAIT
+                                            # shape): take the reconnect path.
+                                            await _cancel_and_await(read_task)
+                                            await _cancel_and_await(pong_task)
+                                            raise ConnectionError(
+                                                f"no WebSocket frame for "
+                                                f"{_WS_READ_IDLE_TIMEOUT:.0f}s "
+                                                f"and ping probe unanswered for "
+                                                f"{_WS_READ_IDLE_PROBE_TIMEOUT:.0f}s; "
+                                                "assuming the connection went "
+                                                "silent"
+                                            ) from None
+                                    try:
+                                        raw = read_task.result()
+                                    except StopAsyncIteration:
+                                        # Clean close / iterator exhaustion.
                                         break
-                                    except AttributeError:
-                                        # The transport implementation does not
-                                        # expose a ping probe (different
-                                        # websockets generation / fake in
-                                        # tests): we cannot judge liveness, so
-                                        # fall back to the pre-#101160 read-idle
-                                        # behaviour and force the reconnect
-                                        # path.
-                                        raise ConnectionError(
-                                            f"no WebSocket frame for "
-                                            f"{_WS_READ_IDLE_TIMEOUT:.0f}s; "
-                                            "assuming the connection went silent"
-                                        ) from None
-                                    # Probe answered: the transport is alive and
-                                    # merely quiet — skip frame processing and
-                                    # keep waiting for the next application
-                                    # frame instead of declaring death.
-                                    continue
-                                try:
-                                    message = json.loads(raw)
-                                except (ValueError, TypeError):
-                                    logger.warning("Buzz: ignoring malformed WebSocket frame")
-                                    continue
-                                if not isinstance(message, list) or not message:
-                                    continue
-                                if message[0] == "EVENT" and len(message) >= 3:
-                                    subscription_id = str(message[1])
-                                    event = message[2]
-                                    if not isinstance(event, dict):
-                                        continue
-                                    if subscription_id == _WS_MEMBERSHIP_SUB_ID:
-                                        await self._handle_membership_event(websocket, subscriptions, event)
-                                        continue
-                                    channel_id = subscriptions.get(subscription_id)
-                                    state = self._channel_state.get(channel_id or "")
-                                    if channel_id and state is not None:
-                                        before = self._cursor_mark(state)
-                                        await self._handle_event(channel_id, state, event)
-                                        self._trim_seen(state)
-                                        if self._cursor_mark(state) != before:
-                                            self._save_cursors()
-                                elif message[0] == "CLOSED":
-                                    detail = message[-1] if len(message) > 2 else "subscription closed"
-                                    sub_id = str(message[1]) if len(message) > 1 else ""
-                                    closed_channel = subscriptions.get(sub_id)
-                                    detail_l = str(detail).lower()
-                                    # A membership rejection ("restricted: not a
-                                    # channel member", bare "not a channel member",
-                                    # or "auth-required") means the relay will
-                                    # never serve this subscription — drop it
-                                    # permanently rather than reconnecting and
-                                    # repeating the same rejection in a tight loop.
-                                    is_membership_rejection = (
-                                        "restricted" in detail_l
-                                        or "not a channel member" in detail_l
-                                        or "auth-required" in detail_l
+                                    except ConnectionClosedOK:
+                                        # A clean server-side close is a normal
+                                        # lifecycle event (subscription
+                                        # exhausted, relay restart), not a
+                                        # failure: exit the connection context
+                                        # quietly so the reconnect path starts
+                                        # fresh without a disconnect warning or
+                                        # backoff (#101160).
+                                        break
+                                    # Refill the persistent read for the next
+                                    # frame before dispatching this one.
+                                    read_task = asyncio.ensure_future(
+                                        frame_iter.__anext__()
                                     )
-                                    if is_membership_rejection and closed_channel:
-                                        logger.warning(
-                                            "Buzz: relay permanently rejected channel %s (%s) — "
-                                            "removing from watch list",
-                                            closed_channel, detail,
+                                    try:
+                                        message = json.loads(raw)
+                                    except (ValueError, TypeError):
+                                        logger.warning("Buzz: ignoring malformed WebSocket frame")
+                                        continue
+                                    if not isinstance(message, list) or not message:
+                                        continue
+                                    if message[0] == "EVENT" and len(message) >= 3:
+                                        subscription_id = str(message[1])
+                                        event = message[2]
+                                        if not isinstance(event, dict):
+                                            continue
+                                        if subscription_id == _WS_MEMBERSHIP_SUB_ID:
+                                            await self._handle_membership_event(websocket, subscriptions, event)
+                                            continue
+                                        channel_id = subscriptions.get(subscription_id)
+                                        state = self._channel_state.get(channel_id or "")
+                                        if channel_id and state is not None:
+                                            before = self._cursor_mark(state)
+                                            await self._handle_event(channel_id, state, event)
+                                            self._trim_seen(state)
+                                            if self._cursor_mark(state) != before:
+                                                self._save_cursors()
+                                    elif message[0] == "CLOSED":
+                                        detail = message[-1] if len(message) > 2 else "subscription closed"
+                                        sub_id = str(message[1]) if len(message) > 1 else ""
+                                        closed_channel = subscriptions.get(sub_id)
+                                        detail_l = str(detail).lower()
+                                        # A membership rejection ("restricted: not a
+                                        # channel member", bare "not a channel member",
+                                        # or "auth-required") means the relay will
+                                        # never serve this subscription — drop it
+                                        # permanently rather than reconnecting and
+                                        # repeating the same rejection in a tight loop.
+                                        is_membership_rejection = (
+                                            "restricted" in detail_l
+                                            or "not a channel member" in detail_l
+                                            or "auth-required" in detail_l
                                         )
-                                        self._restricted_channels.add(closed_channel)
-                                        del subscriptions[sub_id]
-                                        self._channel_state.pop(closed_channel, None)
-                                    else:
-                                        raise ConnectionError(str(detail))
-                                elif message[0] == "NOTICE":
-                                    logger.warning("Buzz: relay notice: %s", message[-1])
+                                        if is_membership_rejection and closed_channel:
+                                            logger.warning(
+                                                "Buzz: relay permanently rejected channel %s (%s) — "
+                                                "removing from watch list",
+                                                closed_channel, detail,
+                                            )
+                                            self._restricted_channels.add(closed_channel)
+                                            del subscriptions[sub_id]
+                                            self._channel_state.pop(closed_channel, None)
+                                        else:
+                                            raise ConnectionError(str(detail))
+                                    elif message[0] == "NOTICE":
+                                        logger.warning("Buzz: relay notice: %s", message[-1])
+                            finally:
+                                # Tear down the persistent read on exit
+                                # (clean close, wedged-death, or outer
+                                # cancellation) — no leaked tasks, no
+                                # swallowed cancellation (#101160 accep. 6b).
+                                await _cancel_and_await(read_task)
                         finally:
                             discovery_task.cancel()
                             try:

@@ -3849,60 +3849,63 @@ class TestChannelCursorPersistence:
 # async generator that does not expose ping()): a pong keeps the connection,
 # an unanswered probe takes the reconnect path, and a clean server-side close
 # (ConnectionClosedOK) exits the connection context quietly.
+class _EndOfStream:
+    """Sentinel pushed to end the fake reader's async generator cleanly.
 
-class _ScriptedFrameSource:
-    """Fake websocket frame iterator for _websocket_loop tests.
-
-    Each ``__anext__`` call runs a fresh coroutine, so cancelling the
-    ``asyncio.wait_for`` read-idle timeout does not kill the source — the
-    real websockets transport re-reads its internal queue after a cancelled
-    recv, so re-entrancy is the production shape.
-
-    Script entries (consumed one per ``__anext__`` call)::
-
-        "idle"                  -> sleep until cancelled (quiet relay)
-        ("frame", payload)      -> return the frame payload
-        ("error", exc)          -> raise exc (StopAsyncIteration / ConnectionClosedOK)
+    The generator RETURNS on this sentinel so the interpreter raises
+    StopAsyncIteration from __anext__() outside the generator — raising
+    StopAsyncIteration inside an async generator would be converted to
+    RuntimeError by PEP 479, which is not the production shape.
     """
 
-    def __init__(self, script, idle_sleep=60.0):
-        self._script = list(script)
-        self._idle_sleep = idle_sleep
-        self.calls = 0
 
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        self.calls += 1
-        if not self._script:
-            raise StopAsyncIteration
-        step = self._script.pop(0)
-        if step == "idle":
-            await asyncio.sleep(self._idle_sleep)
-            raise StopAsyncIteration
-        kind, payload = step
-        if kind == "frame":
-            return payload
-        raise payload
+_END_OF_STREAM = _EndOfStream()
 
 
 class _FakeWS:
-    """Minimal fake websocket connection for _websocket_loop tests.
+    """Production-shaped fake websocket connection for _websocket_loop tests.
 
-    A plain class (not a Mock) so ``__aiter__``/``__aenter__``/``__aexit__``
-    behave exactly like the real transport: ``__aiter__`` hands back the
-    frame source unchanged, and ``async with`` returns the connection itself.
-    ``ping`` is an AsyncMock so tests can assert on probe calls.
+    ``__aiter__`` returns a REAL async generator (mirroring websockets 15.x
+    ``Connection.__aiter__``): cancelling an in-flight ``__anext__`` closes
+    the generator, after which every further read raises StopAsyncIteration.
+    The loop under test must therefore NEVER cancel its pending read — it
+    races the read against a bounded ping probe instead (#101258 review).
+
+    Frames/exceptions are pushed by the test on a schedule; ``ping`` mirrors
+    the two-stage websockets contract (awaiting it sends and returns a pong
+    waiter).
     """
 
-    def __init__(self, frames, ping=None):
-        self.frames = frames
-        self.ping = ping if ping is not None else AsyncMock()
+    def __init__(self, ping):
+        self._queue = asyncio.Queue()
+        self.ping = ping
         self.exited = False
+        self.reader_closed = False
 
     def __aiter__(self):
-        return self.frames
+        async def _agen():
+            try:
+                while True:
+                    item = await self._queue.get()
+                    if item is _END_OF_STREAM:
+                        return
+                    if isinstance(item, BaseException):
+                        raise item
+                    yield item
+            finally:
+                self.reader_closed = True
+
+        return _agen()
+
+    def push_frame(self, payload):
+        self._queue.put_nowait(payload)
+
+    def push_exception(self, exc):
+        self._queue.put_nowait(exc)
+
+    def push_end(self):
+        """End the reader cleanly (generator return -> StopAsyncIteration)."""
+        self._queue.put_nowait(_END_OF_STREAM)
 
     async def __aenter__(self):
         return self
@@ -3915,95 +3918,148 @@ class _FakeWS:
 class TestWebsocketReadIdleLiveness:
     """#101160: idle watchdog must probe liveness, not assume death."""
 
-    def _harness(self, adapter, frames, monkeypatch, *, dead_ping=False,
-                 connect_calls_before_stop=1):
-        """Stub the transport and drive ``_websocket_loop`` until the fake
-        ``connect`` raises CancelledError (terminating the reconnect loop).
-
-        Returns ``(connect_calls, ws)`` so tests can assert on the fake
-        connection's ``ping`` probe count.
-
-        The fake ``ping`` mirrors the real websockets 15.x TWO-stage
-        contract: ``await ping()`` only SENDS the ping and returns a pong
-        waiter, and only awaiting that waiter waits for the pong.  A live
-        transport resolves the waiter promptly; a wedged one (CLOSE_WAIT)
-        returns a waiter that never resolves.
-        """
-        connect_calls = {"n": 0}
-
-        async def _live_ping(*_a, **_k):
+    def _make_ping(self, *, dead=False, pong_delay=0.0):
+        """Two-stage ping: await sends and returns a pong waiter.  Live
+        resolves promptly; dead never resolves; delayed resolves later."""
+        async def ping(*_a, **_k):
             waiter = asyncio.get_running_loop().create_future()
-            waiter.set_result(0.01)  # pong arrives — latency in seconds
+            if not dead and pong_delay <= 0:
+                waiter.set_result(0.01)  # pong arrived — latency in seconds
+            elif not dead:
+                async def _resolve():
+                    await asyncio.sleep(pong_delay)
+                    if not waiter.done():
+                        waiter.set_result(0.01)
+
+                asyncio.ensure_future(_resolve())
             return waiter
 
-        async def _dead_ping(*_a, **_k):
-            # Sending succeeds (first await returns promptly) but the pong
-            # waiter never resolves — a wedged socket answers no pong.
-            return asyncio.get_running_loop().create_future()
+        return AsyncMock(side_effect=ping)
 
-        ping = AsyncMock(side_effect=_dead_ping if dead_ping else _live_ping)
-        ws = _FakeWS(frames, ping=ping)
+    def _harness(self, adapter, monkeypatch, *, ping=None, subscriptions=None,
+                 connect_calls_before_stop=1, idle_timeout=0.05,
+                 probe_timeout=0.05):
+        """Stub the transport (websockets.connect is a SYNC factory in 15.x)
+        and return ``(connect_calls, ws)``; the fake connect raises
+        CancelledError on its Nth call to terminate the reconnect loop."""
+        connect_calls = {"n": 0}
+        if ping is None:
+            ping = self._make_ping()
+        ws = _FakeWS(ping)
 
-        # websockets 15.x ``connect()`` is a synchronous factory returning the
-        # connection object (which supports ``async with``) — not a coroutine.
         def fake_connect(*args, **kwargs):
             connect_calls["n"] += 1
             if connect_calls["n"] > connect_calls_before_stop:
                 raise asyncio.CancelledError
             return ws
 
-        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", 0.05)
-        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_PROBE_TIMEOUT", 0.05)
+        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_TIMEOUT", idle_timeout)
+        monkeypatch.setattr(_buzz_mod, "_WS_READ_IDLE_PROBE_TIMEOUT", probe_timeout)
         monkeypatch.setattr("websockets.connect", fake_connect)
         adapter._authenticate_websocket = AsyncMock()
-        adapter._subscribe_websocket = AsyncMock(return_value={})
+        adapter._subscribe_websocket = AsyncMock(return_value=subscriptions or {})
         adapter._ws_discovery_loop = AsyncMock()
         adapter._ws_ready = None
         return connect_calls, ws
 
+    async def _drive(self, adapter, actions):
+        """Run ``_websocket_loop`` (terminated by the fake connect's
+        CancelledError) while pushing scheduled frames/exceptions."""
+        async def _runner():
+            for delay, action in actions:
+                await asyncio.sleep(delay)
+                action()  # synchronous push (push_frame/push_end/...)
+
+        runner = asyncio.create_task(_runner())
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await adapter._websocket_loop()
+        finally:
+            runner.cancel()
+            try:
+                await runner
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    def _dispatch_spy(self, adapter, subscriptions):
+        """Wire an EVENT frame through the real dispatch path and record it."""
+        handled = []
+        adapter._handle_event = AsyncMock(side_effect=lambda c, s, e: handled.append(e))
+        adapter._channel_state = {CHANNEL: {"last_ts": 1, "seen": {}}}
+        adapter._subscribe_websocket = AsyncMock(return_value=subscriptions)
+        return handled
+
     @pytest.mark.asyncio
     async def test_quiet_but_alive_relay_keeps_connection(self, monkeypatch, caplog):
-        """Silence + answered ping probes must NOT reconnect (no warning)."""
+        """Multiple idle windows with answered probes: no reconnect, and a
+        frame arriving AFTER them is still dispatched (the persistent read is
+        never cancelled — a cancelled async-generator read would die here)."""
         import logging
+
         caplog.set_level(logging.WARNING)
         adapter = _make_adapter()
-        event_frame = json.dumps(["EVENT", "missing-sub", {"id": "e1"}])
-        frames = _ScriptedFrameSource(
-            ["idle", "idle", ("frame", event_frame), ("error", StopAsyncIteration())]
-        )
-        connects, ws = self._harness(adapter, frames, monkeypatch)
+        connects, ws = self._harness(adapter, monkeypatch)
+        handled = self._dispatch_spy(adapter, {"sub1": CHANNEL})
+        event = {"id": "e1", "pubkey": "a" * 64, "content": "hi",
+                 "created_at": 1000, "kind": 9, "tags": [["h", CHANNEL]]}
 
-        with pytest.raises(asyncio.CancelledError):
-            await adapter._websocket_loop()
+        await self._drive(adapter, [
+            # ~0.30s of silence = several 0.05s idle windows, each probed
+            # (pong answers) without reconnecting.
+            (0.30, lambda: ws.push_frame(json.dumps(["EVENT", "sub1", event]))),
+            (0.10, lambda: ws.push_end()),
+        ])
 
-        # Two read-idle windows were survived via ping probes; the EVENT frame
-        # after them was consumed and the connection only ended on a clean
-        # iterator exhaustion (StopAsyncIteration) — i.e. connect #2 is the
-        # normal post-clean-close reconnect, not a death reconnect.
-        assert frames.calls == 4
-        assert connects["n"] == 2
-        # The transport answered both probes → no death declared.
-        assert ws.ping.call_count == 2
+        # The frame was dispatched on the FIRST connection — the persistent
+        # read survived the idle windows (a wait_for-cancelled async
+        # generator would have raised StopAsyncIteration and reconnected).
+        assert handled == [event]
+        assert connects["n"] == 2  # only the post-clean-close reconnect
+        assert ws.ping.call_count >= 3  # every idle window probed, all alive
         assert "went silent" not in caplog.text
         assert "disconnected" not in caplog.text
-        # Dispatch path untouched: the EVENT frame after the idle windows was
-        # consumed without error (raw is a valid JSON list frame).
-        assert event_frame  # consumed below without raising
+
+    @pytest.mark.asyncio
+    async def test_frame_arriving_during_probe_wins_the_race(self, monkeypatch, caplog):
+        """#101258 review, acceptance 2b: a frame that arrives while the
+        liveness probe is in flight must be dispatched — not dropped, and not
+        mistaken for a wedged transport."""
+        import logging
+
+        caplog.set_level(logging.WARNING)
+        adapter = _make_adapter()
+        # Pong takes 5s — far beyond the probe bound, so the probe can only
+        # win if no frame shows up.  A frame arriving mid-probe (0.15s, well
+        # inside the 0.05-0.35s probe window) must win the race.
+        ping = self._make_ping(pong_delay=5.0)
+        connects, ws = self._harness(adapter, monkeypatch, ping=ping,
+                                     probe_timeout=0.3)
+        handled = self._dispatch_spy(adapter, {"sub1": CHANNEL})
+        event = {"id": "e2", "pubkey": "a" * 64, "content": "hi",
+                 "created_at": 1001, "kind": 9, "tags": [["h", CHANNEL]]}
+
+        await self._drive(adapter, [
+            (0.15, lambda: ws.push_frame(json.dumps(["EVENT", "sub1", event]))),
+            (0.45, lambda: ws.push_end()),
+        ])
+
+        assert handled == [event]  # frame won the race and was dispatched
+        assert connects["n"] == 2
+        assert "went silent" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_wedged_relay_with_unanswered_probe_reconnects(self, monkeypatch, caplog):
         """A relay that cannot answer the ping probe is dead — reconnect."""
         import logging
+
         caplog.set_level(logging.WARNING)
         adapter = _make_adapter()
-        frames = _ScriptedFrameSource(["idle"])
-        connects, ws = self._harness(adapter, frames, monkeypatch, dead_ping=True)
+        connects, ws = self._harness(
+            adapter, monkeypatch, ping=self._make_ping(dead=True)
+        )
 
-        with pytest.raises(asyncio.CancelledError):
-            await adapter._websocket_loop()
+        await self._drive(adapter, [])
 
-        # The unanswered probe forced the reconnect path with the "went
-        # silent" diagnosis.
         assert "went silent" in caplog.text
         assert "disconnected" in caplog.text
         assert connects["n"] == 2
@@ -4014,16 +4070,16 @@ class TestWebsocketReadIdleLiveness:
         """ConnectionClosedOK is a lifecycle event: no warning, no probe."""
         import logging
         from websockets.exceptions import ConnectionClosedOK
+
         caplog.set_level(logging.WARNING)
         adapter = _make_adapter()
-        frames = _ScriptedFrameSource([("error", ConnectionClosedOK(rcvd=None, sent=None))])
-        connects, ws = self._harness(adapter, frames, monkeypatch)
+        connects, ws = self._harness(adapter, monkeypatch)
 
-        with pytest.raises(asyncio.CancelledError):
-            await adapter._websocket_loop()
+        await self._drive(adapter, [
+            (0.01, lambda: ws.push_exception(ConnectionClosedOK(rcvd=None, sent=None))),
+        ])
 
-        # Clean close → immediate reconnect without disconnect noise.
-        assert connects["n"] == 2
+        assert connects["n"] == 2  # clean close -> immediate reconnect
         assert ws.ping.call_count == 0
         assert "went silent" not in caplog.text
         assert "disconnected" not in caplog.text

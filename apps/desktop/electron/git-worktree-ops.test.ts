@@ -78,6 +78,26 @@ test('ensureGitRepo: inits a plain dir with a root commit so worktrees branch', 
   }
 })
 
+test('ensureGitRepo: automatic root commit ignores a signing-required repository config', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-wt-signing-'))
+
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: dir })
+    execFileSync('git', ['config', 'commit.gpgSign', 'true'], { cwd: dir })
+    execFileSync('git', ['config', 'gpg.format', 'ssh'], { cwd: dir })
+    execFileSync('git', ['config', 'user.signingKey', path.join(dir, 'missing-signing-key')], { cwd: dir })
+
+    await ensureGitRepo('git', dir)
+
+    assert.match(
+      execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: dir }).toString().trim(),
+      /^[0-9a-f]{7,}$/
+    )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  }
+})
+
 test('switchBranch: switches a normal checkout branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-switch-'))
   const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
@@ -164,7 +184,10 @@ test('listBranches: empty on a non-repo path', async () => {
   try {
     assert.deepEqual(await listBranches(dir, 'git'), [])
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    // Let Windows deliver the child-process close event before removing the
+    // directory that Git briefly held as its cwd. A synchronous retry loop
+    // blocks that release under full-suite load.
+    await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
@@ -288,6 +311,8 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
       'user.email=hermes@localhost',
       '-c',
       'user.name=Hermes',
+      '-c',
+      'commit.gpgSign=false',
       'commit',
       '--allow-empty',
       '-m',
@@ -335,7 +360,18 @@ function seedRemoteAndClone(label, branches) {
       .trim()
 
   execFileSync('git', ['init', '-b', 'main', remoteDir])
-  remoteGit('-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', 'commit', '--allow-empty', '-m', 'root')
+  remoteGit(
+    '-c',
+    'user.email=hermes@localhost',
+    '-c',
+    'user.name=Hermes',
+    '-c',
+    'commit.gpgSign=false',
+    'commit',
+    '--allow-empty',
+    '-m',
+    'root'
+  )
 
   for (const branch of branches) {
     remoteGit('branch', branch)
@@ -458,7 +494,7 @@ test('switchBranch: repo dir still validates the branch name and switches', asyn
     execFileSync('git', ['init', '-b', 'main'], { cwd: dir })
     execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: dir })
     execFileSync('git', ['config', 'user.name', 'test'], { cwd: dir })
-    execFileSync('git', ['commit', '--allow-empty', '-m', 'root'], { cwd: dir })
+    execFileSync('git', ['-c', 'commit.gpgSign=false', 'commit', '--allow-empty', '-m', 'root'], { cwd: dir })
 
     // Existing behaviour preserved: an illegal branch name still errors.
     await assert.rejects(() => switchBranch(dir, '///', 'git'), /Branch name is required/)

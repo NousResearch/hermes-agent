@@ -304,7 +304,9 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
+def _graceful_restart_via_sigusr1(
+    pid: int, drain_timeout: float, *, is_revived=None
+) -> bool:
     """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
 
     SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``,
@@ -324,6 +326,10 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
             SIGUSR1.  Must cover the after-turn wait plus the stop()/drain
             phase (#77184); callers should pass
             ``resolve_restart_exit_wait_budget(...)``.
+        is_revived: Optional zero-arg probe reporting that a supervised
+            replacement is already up (#101426).  Forwarded to
+            :func:`_wait_for_pid_exit` so a lingering old PID cannot hold
+            the wait hostage after the supervisor revived the service.
 
     Returns:
         True if the PID was signalled and exited within the timeout.
@@ -342,18 +348,32 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     except (PermissionError, OSError):
         return False
 
-    # Drain-wait: delegate to the shared PID-exit helper (0.5s poll, bounded).
-    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
+    # Drain-wait: delegate to the shared PID-exit helper (bounded, backoff).
+    # Only forward the revival probe when set so two-arg test doubles of
+    # _wait_for_pid_exit keep working unchanged.
+    if is_revived is None:
+        return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
+    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0), is_revived=is_revived)
 
 
-def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+def _wait_for_pid_exit(pid: int, timeout: float, is_revived=None) -> bool:
     """Wait up to ``timeout`` seconds for ``pid`` to leave the process table.
 
     ``launchctl bootstrap`` of a label whose previous instance is still draining
     fails with EIO ("already loaded"), so callers that tear the gateway down
     must wait for the old process to actually exit before re-bootstrapping.
 
-    Returns True once the PID is gone (or was never alive), False on timeout.
+    ``is_revived`` is an optional zero-arg probe reporting that a supervised
+    replacement process is already running (#101426 — a lingering old PID,
+    e.g. a wrapper child held as a zombie by an inherited pipe, must not
+    idle the update for the full drain budget after launchd already revived
+    the service).  A truthy probe short-circuits the wait with True.
+    Best-effort: a raising probe reads as "not revived" and the wait
+    continues unchanged.  Poll interval backs off exponentially (0.5s → 5s
+    cap) so multi-minute drain waits don't busy-poll.
+
+    Returns True once the PID is gone (or a replacement is observed), False
+    on timeout.
     """
     if pid <= 0:
         return True
@@ -368,12 +388,20 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
     from gateway.status import _pid_exists
 
     deadline = _time.monotonic() + max(timeout, 0.0)
+    interval = 0.5
     while True:
         if not _pid_exists(pid):
             return True
+        if is_revived is not None:
+            try:
+                if is_revived():
+                    return True
+            except Exception:
+                pass
         if _time.monotonic() >= deadline:
             return False
-        _time.sleep(0.5)
+        _time.sleep(interval)
+        interval = min(interval * 2.0, 5.0)
 
 
 # --- Wedged-gateway detection + bounded escalation (#81642) -----------------
@@ -5999,6 +6027,27 @@ def _wait_for_launchd_service_pid(
         time.sleep(0.5)
 
 
+def _launchd_fresh_pid_predicate(domain: str, label: str, old_pid: int | None):
+    """Return a best-effort zero-arg probe reporting a revived service PID.
+
+    Reuses :func:`_launchd_print_service_pid` — the same probe
+    :func:`_wait_for_launchd_service_pid` polls — so the shared
+    :func:`_wait_for_pid_exit` drain wait can stop the moment KeepAlive has
+    a replacement up, instead of idling on a lingering old PID (#101426).
+    Never raises: a failing probe reads as "not revived" and the drain
+    wait continues unchanged.
+    """
+
+    def _revived() -> bool:
+        try:
+            _loaded, fresh = _launchd_print_service_pid(domain, label)
+        except Exception:
+            return False
+        return fresh is not None and fresh > 0 and fresh != old_pid
+
+    return _revived
+
+
 def launchd_restart():
     label = get_launchd_label()
     domain = _launchd_domain()
@@ -6052,7 +6101,13 @@ def launchd_restart():
                 f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
                 f"(up to {wait_budget:.0f}s)..."
             )
-            if _graceful_restart_via_sigusr1(pid, wait_budget):
+            if _graceful_restart_via_sigusr1(
+                pid,
+                wait_budget,
+                # KeepAlive may already have a replacement up while the old
+                # PID lingers in the table — stop waiting then (#101426).
+                is_revived=_launchd_fresh_pid_predicate(domain, label, pid),
+            ):
                 # The gateway exited with the planned-restart code. When
                 # launchd is actually supervising this label, KeepAlive
                 # revives it — do NOT kickstart (the replacement may already

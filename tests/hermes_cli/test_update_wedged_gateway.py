@@ -227,7 +227,7 @@ def _launchd_harness(monkeypatch, tmp_path, pid):
     monkeypatch.setattr(
         gateway_cli,
         "_graceful_restart_via_sigusr1",
-        lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+        lambda pid, timeout, **_kw: events.append(("drain", pid, timeout)) or True,
     )
     monkeypatch.setattr(
         gateway_cli,
@@ -442,7 +442,7 @@ class TestLaunchdRestartWedgedIntegration:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+            lambda pid, timeout, **_kw: events.append(("drain", pid, timeout)) or True,
         )
         # KeepAlive revival observed instantly — avoids the real 15s poll
         # (mocked subprocess.run returns empty stdout, so the PID probe
@@ -609,7 +609,7 @@ class TestLoopTickWitness:
             monkeypatch.setattr(
                 gateway_cli,
                 "_graceful_restart_via_sigusr1",
-                lambda pid, timeout: events.append(("drain", pid, timeout)) or True,
+                lambda pid, timeout, **_kw: events.append(("drain", pid, timeout)) or True,
             )
             monkeypatch.setattr(
                 gateway_cli,

@@ -7120,6 +7120,7 @@ def _restart_macos_launchd_gateways(
         launchd_restart,
         launchd_gateway_labels_for_install,
         _graceful_restart_via_sigusr1,
+        _launchd_fresh_pid_predicate,
         _launchd_kickstart,
         _launchd_service_registered,
         _locate_launchd_gateway_service,
@@ -7153,7 +7154,11 @@ def _restart_macos_launchd_gateways(
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
                 graceful_ok = _graceful_restart_via_sigusr1(
-                    old_pid, drain_timeout=drain_budget
+                    old_pid,
+                    drain_timeout=drain_budget,
+                    # Same early-exit as the current profile: a revived
+                    # sibling must not idle on its lingering old PID (#101426).
+                    is_revived=_launchd_fresh_pid_predicate(domain, label, old_pid),
                 )
             if graceful_ok and _wait_for_launchd_service_pid(
                 label, old_pid=old_pid, timeout=10.0, domain=domain

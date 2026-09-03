@@ -399,6 +399,37 @@ class TestLaunchdServiceRecovery:
     def test_wait_for_pid_exit_ignores_nonpositive_pid(self):
         assert gateway_cli._wait_for_pid_exit(0, timeout=30) is True
 
+    def test_wait_for_pid_exit_returns_once_revival_observed(self, monkeypatch):
+        """#101426: a lingering old PID must not idle the update after the
+        supervisor already revived the service — the revival probe
+        short-circuits the drain wait without sleeping."""
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        slept = []
+        monkeypatch.setattr(gateway_cli.time, "sleep", slept.append)
+
+        assert (
+            gateway_cli._wait_for_pid_exit(4242, timeout=1995, is_revived=lambda: True)
+            is True
+        )
+        assert slept == []
+
+    def test_wait_for_pid_exit_backoff_caps_poll_interval(self, monkeypatch):
+        """Long drain waits back off exponentially (0.5s → 5s cap)."""
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        sleeps = []
+        monkeypatch.setattr(gateway_cli.time, "sleep", sleeps.append)
+        calls = []
+
+        def _revived():
+            calls.append(1)
+            return len(calls) >= 8
+
+        assert (
+            gateway_cli._wait_for_pid_exit(4242, timeout=600, is_revived=_revived)
+            is True
+        )
+        assert sleeps == [0.5, 1.0, 2.0, 4.0, 5.0, 5.0, 5.0]
+
 
 
     def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
@@ -609,7 +640,7 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_pid_exit",
-            lambda pid, timeout: waited.append((pid, timeout)) or True,
+            lambda pid, timeout, **kw: waited.append((pid, timeout)) or True,
         )
 
         run_calls = []
@@ -812,7 +843,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+            lambda pid, timeout, **kw: calls.append(("graceful", pid, timeout)) or True,
         )
 
         # Once SIGUSR1 makes the gateway exit with the planned restart code,
@@ -851,7 +882,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **kw: True)
         waits = iter((False, True))
         monkeypatch.setattr(
             gateway_cli,
@@ -885,7 +916,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **kw: True)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_systemd_service_restart",
@@ -912,7 +943,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **kw: True)
 
         def failed_replacement_wait(
             system=False, previous_pid=None, replacement_observed=None
@@ -942,7 +973,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
-        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True)
+        monkeypatch.setattr(gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **kw: True)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_systemd_service_restart",
@@ -1029,7 +1060,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(
             gateway_cli,
             "_graceful_restart_via_sigusr1",
-            lambda pid, timeout: calls.append(("graceful", pid, timeout)) or True,
+            lambda pid, timeout, **kw: calls.append(("graceful", pid, timeout)) or True,
         )
         monkeypatch.setattr(
             gateway_cli,
@@ -1091,7 +1122,7 @@ class TestGatewaySystemServiceRouting:
         )
         monkeypatch.setattr(gateway_cli, "_get_restart_exit_wait_budget", lambda: 27.0)
         monkeypatch.setattr(
-            gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: True
+            gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout, **kw: True
         )
         monkeypatch.setattr(
             gateway_cli,

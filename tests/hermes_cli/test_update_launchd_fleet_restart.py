@@ -293,7 +293,7 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
     monkeypatch.setattr(
         gw,
         "_graceful_restart_via_sigusr1",
-        lambda pid, drain_timeout: (rec.drains.append(pid), (drain_results or {}).get(pid, False))[1],
+        lambda pid, drain_timeout, **_kw: (rec.drains.append(pid), (drain_results or {}).get(pid, False))[1],
     )
 
     def fake_kickstart(label, domain):

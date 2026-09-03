@@ -105,6 +105,80 @@ def test_rank_slash_completions_uses_score_before_usage():
     assert [item["text"] for item in ranked_plain] == ["/notes", "/summarize"]
 
 
+def test_rank_slash_completions_does_not_truncate_commands_when_browsing():
+    # A bare `/` must surface every registry command (issue: /goal, /loop,
+    # /queue sat past position 30 and never reached the client) while the
+    # user-growable skill block keeps its cap.
+    commands = [_item(f"/cmd{i}") for i in range(40)]
+    registry_names = frozenset(f"cmd{i}" for i in range(40))
+
+    ranked = _rank_slash_completions(
+        commands,
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=True,
+        registry_command_names=registry_names,
+    )
+    assert len(ranked) == 40
+    assert ranked[-1]["text"] == "/cmd39"
+
+
+def test_rank_slash_completions_still_caps_plugin_commands_when_browsing():
+    # Plugin-registered commands (kind: "command", same as registry
+    # commands) are an unbounded, user-installed source, unlike
+    # COMMAND_REGISTRY — a bare `/` must still bound them, or a large
+    # plugin install floods the browse list the way skills used to.
+    registry = [_item(f"/reg{i}") for i in range(40)]
+    plugins = [_item(f"/plugin{i}") for i in range(40)]
+    registry_names = frozenset(f"reg{i}" for i in range(40))
+
+    ranked = _rank_slash_completions(
+        registry + plugins,
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=True,
+        registry_command_names=registry_names,
+    )
+
+    texts = [item["text"] for item in ranked]
+    assert texts[:40] == [f"/reg{i}" for i in range(40)]
+    plugin_texts = texts[40:]
+    assert len(plugin_texts) == 30
+    assert plugin_texts == [f"/plugin{i}" for i in range(30)]
+
+
+def test_rank_slash_completions_defaults_to_the_real_command_registry():
+    # No registry_command_names override: this must wire up to the actual
+    # hermes_cli.commands.GATEWAY_KNOWN_COMMANDS, not just a test double.
+    # /help is a real registry command; /plugin* stands in for names a
+    # plugin registered (kind "command", but not in the registry) and
+    # must still be capped.
+    items = [_item("/help")] + [_item(f"/plugin{i}") for i in range(40)]
+
+    ranked = _rank_slash_completions(
+        items,
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=True,
+    )
+
+    texts = [item["text"] for item in ranked]
+    assert texts[0] == "/help"
+    assert len([t for t in texts if t.startswith("/plugin")]) == 30
+
+
+def test_rank_slash_completions_still_caps_commands_when_searching():
+    commands = [_item(f"/cmd{i}") for i in range(40)]
+
+    ranked = _rank_slash_completions(
+        commands,
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=False,
+    )
+    assert len(ranked) == 30
+
+
 def test_rank_slash_completions_ties_break_on_usage_then_name():
     a = _item("/beta", kind="skill")
     b = _item("/alpha", kind="skill")

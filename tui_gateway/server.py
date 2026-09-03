@@ -16154,6 +16154,7 @@ def _rank_slash_completions(
     *,
     browsing: bool,
     score_of=None,
+    registry_command_names: frozenset[str] | None = None,
 ) -> list[dict]:
     """Rank and bound slash completions the way the menu should read.
 
@@ -16180,6 +16181,14 @@ def _rank_slash_completions(
     BROWSING, so bundled skills with no recorded activity are dropped as
     noise. A typed query is SEARCHING, and a search that hides a match is
     broken — there nothing is pruned, the ranking only reorders.
+
+    Items with ``kind != "skill"`` are not all equally bounded, though:
+    plugin-registered commands (``PluginContext.register_command``) also
+    land in that bucket and, unlike ``COMMAND_REGISTRY``, are an unbounded,
+    user-installed source — the same flooding shape the skill cap exists to
+    prevent. ``registry_command_names`` (default: ``GATEWAY_KNOWN_COMMANDS``)
+    is the actual fixed set; only names in it skip the cap while browsing,
+    so a large plugin install still gets capped like the skill block.
     """
 
     def name_of(item: dict) -> str:
@@ -16202,7 +16211,20 @@ def _rank_slash_completions(
     else:
         skills.sort(key=lambda item: (-usage(name_of(item)), name_of(item)))
 
-    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+    if browsing:
+        if registry_command_names is None:
+            from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+
+            registry_command_names = GATEWAY_KNOWN_COMMANDS
+        fixed_commands = [c for c in commands if name_of(c) in registry_command_names]
+        other_commands = [
+            c for c in commands if name_of(c) not in registry_command_names
+        ]
+        ranked_commands = fixed_commands + other_commands[:_SLASH_COMPLETION_LIMIT]
+    else:
+        ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
+
+    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
 
 
 def _cli_exec_blocked(argv: list[str]) -> str | None:

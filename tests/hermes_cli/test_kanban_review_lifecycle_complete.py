@@ -149,6 +149,165 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"review_axis": "spec", "findings_count": 4},
+        {"review_axis": "spec", "review_result": "approved"},
+        {"review_axis": "aggregate", "findings_count": 4},
+        {"review_result": "changes_requested", "issues_found": ["missing guard"]},
+        {"review_result": "nonapproved"},
+        {"review_result": "non-approved"},
+        {"review_result": "rejection"},
+        {"review_result": "non approval"},
+        {"review_result": "disapproved"},
+        {"review_result": "changes required"},
+        {"review_result": "request_changes"},
+        {"review_outcome": "denied"},
+        {"review_verdict": {"review_result": "nonapproved"}},
+        {"review_verdict": "rejected"},
+        {
+            "review_verdict": {"review_result": "approved"},
+            "review_result": "rejected",
+        },
+        {
+            "review_verdict": {"review_result": "approved"},
+            "review_axis": "spec",
+        },
+        {"review_result": False},
+        {"review_result": ""},
+        {"review_outcome": None},
+        {"review_axis": False},
+        {"review_axis": ""},
+        {"review_verdict": {}},
+        {"review_result": "approved", "review_verdict": {}},
+        {
+            "review_result": "approved",
+            "review_verdict": {"verdict": "rejected"},
+        },
+        {
+            "review_result": "approved",
+            "review_verdict": {"outcomes": ["rejected"]},
+        },
+        {"review_axis": "standards", "review_outcome": "rejected"},
+        {"review_axis": "spec", "approved": False},
+        {"review_axis": "spec", "blocking": True},
+    ],
+)
+def test_completion_rejects_explicit_nonapproval_review_metadata(conn, metadata):
+    task_id = kb.create_task(conn, title="Audit release", assignee="reviewer")
+    review = kb.claim_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+
+    with pytest.raises(kb.ReviewVerdictError):
+        kb.complete_task(
+            conn,
+            task_id,
+            summary="Review work finished.",
+            metadata=metadata,
+            expected_run_id=review.current_run_id,
+        )
+
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    assert task.status == "running"
+    rejected = [
+        event for event in kb.list_events(conn, task_id)
+        if event.kind == "completion_blocked_review_verdict"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0].run_id == review.current_run_id
+    assert rejected[0].payload is not None
+    assert rejected[0].payload["reason"]
+
+
+def test_completion_accepts_explicit_approved_review_metadata(conn):
+    task_id = kb.create_task(conn, title="Audit release", assignee="reviewer")
+    review = kb.claim_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+
+    assert kb.complete_task(
+        conn,
+        task_id,
+        summary="Approved after independent verification.",
+        metadata={
+            "review_axis": "aggregate",
+            "review_result": "approved",
+            "issues_found": [],
+        },
+        expected_run_id=review.current_run_id,
+    )
+
+
+def test_completion_keeps_unrelated_free_form_metadata_compatible(conn):
+    task_id = kb.create_task(conn, title="Implement feature", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+
+    assert kb.complete_task(
+        conn,
+        task_id,
+        summary="Implementation complete.",
+        metadata={"approved": False, "blocking": True, "domain": "not-review"},
+        expected_run_id=implementation.current_run_id,
+    )
+
+
+def test_rejected_review_completion_with_stale_run_does_not_emit_event(conn):
+    task_id = kb.create_task(conn, title="Audit release", assignee="reviewer")
+    review = kb.claim_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert review.current_run_id is not None
+
+    assert not kb.complete_task(
+        conn,
+        task_id,
+        metadata={"review_axis": "spec", "findings_count": 1},
+        expected_run_id=review.current_run_id + 1,
+    )
+    assert not [
+        event for event in kb.list_events(conn, task_id)
+        if event.kind == "completion_blocked_review_verdict"
+    ]
+
+
+def test_rejected_review_completion_on_done_task_does_not_emit_event(conn):
+    task_id = kb.create_task(conn, title="Audit release", assignee="reviewer")
+    review = kb.claim_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert kb.complete_task(
+        conn,
+        task_id,
+        metadata={"review_result": "approved"},
+        expected_run_id=review.current_run_id,
+    )
+
+    assert not kb.complete_task(
+        conn,
+        task_id,
+        metadata={"review_axis": "spec", "findings_count": 1},
+        expected_run_id=review.current_run_id,
+    )
+    assert not [
+        event for event in kb.list_events(conn, task_id)
+        if event.kind == "completion_blocked_review_verdict"
+    ]
+
+
+def test_rejected_review_completion_without_active_run_does_not_emit_event(conn):
+    task_id = kb.create_task(conn, title="Audit release", assignee="reviewer")
+
+    assert not kb.complete_task(
+        conn,
+        task_id,
+        metadata={"review_axis": "spec", "findings_count": 1},
+    )
+    assert not [
+        event for event in kb.list_events(conn, task_id)
+        if event.kind == "completion_blocked_review_verdict"
+    ]
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,

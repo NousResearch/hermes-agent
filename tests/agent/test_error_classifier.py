@@ -972,6 +972,40 @@ class TestModelLoadFailure5xx:
         assert result.retryable is False
         assert result.should_fallback is True
 
+    def test_500_credential_load_failure_mentioning_model_stays_retryable(self):
+        # Regression (PR review): the old load-phrase + "model"
+        # co-occurrence guard misfired on non-model load failures whose
+        # text mentions a model elsewhere — here a credential load for a
+        # model provider.  Misrouting it to the terminal model_not_found
+        # path would send a fixable auth/config problem straight to
+        # fallback with no retry, so it must stay retryable.
+        e = MockAPIError(
+            "HTTP 500: failed to load credentials for model provider",
+            status_code=500,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_500_adapter_load_failure_for_model_runtime_stays_retryable(self):
+        # Same false-positive family: an adapter/runtime load failure that
+        # merely names "model" is not a model-load failure.
+        e = MockAPIError(
+            "HTTP 500: failed to load provider adapter for model runtime",
+            status_code=500,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_message_only_credential_load_failure_stays_retryable(self):
+        # The status-less shim path (_classify_by_message) shares the same
+        # narrowed patterns: the model must be the thing being loaded, not
+        # just mentioned in the message.
+        e = MockAPIError("failed to load credentials for model provider")
+        result = classify_api_error(e)
+        assert result.retryable is True
+
 
 # ── Test: Adversarial / edge cases (from live testing) ─────────────────
 

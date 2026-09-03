@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -459,33 +460,42 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
 # configured fallback model can still take the turn instead of dropping it
 # (the generic model_not_found form: retryable=False, should_fallback=True).
 #
-# Matched via co-occurrence rather than bare substrings: llama-server puts
-# the model id between the two halves ("model name=<id> failed to load"),
-# so no fixed phrase covers it, while a bare "failed to load" would also
-# swallow unrelated load failures ("failed to load credentials").  Any
-# load-failure phrase plus the word "model" in the same message is the
-# unambiguous signal.  ``error_msg`` is already lowercased by
+# Matched via explicit model-load phrasings rather than bare substrings:
+# llama-server puts the model id between the two halves ("model name=<id>
+# failed to load"), so no fixed phrase covers it, while a bare "failed to
+# load" would also swallow unrelated load failures.  The earlier
+# load-phrase + "model" co-occurrence guard was too loose: a credential or
+# adapter load failure whose text merely mentions a model elsewhere
+# ("failed to load credentials for model provider") also satisfied it and
+# was misrouted to the terminal, no-retry path — so each pattern now names
+# the model itself as the thing being loaded (or the llama-server
+# model-first split).  ``error_msg`` is already lowercased by
 # ``classify_api_error``; ``_is_model_load_failure`` lowercases again so it
 # also holds when called directly.
 _MODEL_LOAD_FAILURE_PATTERNS = [
-    "failed to load",
+    # llama-server: "model name=<id> failed to load" (model id splits the
+    # phrase, model named first).
+    r"model\b.*\bfailed to load\b",
+    # Load verb with the model itself as the object ("the" optional).
+    r"failed to load (?:the )?model\b",
+    r"unable to load (?:the )?model\b",
+    r"error loading (?:the )?model\b",
     "model load failed",
     "load model failed",
-    "error loading model",
-    "unable to load model",
 ]
 
 
 def _is_model_load_failure(error_msg: str) -> bool:
     """True when the message names a model-side load failure.
 
-    See ``_MODEL_LOAD_FAILURE_PATTERNS`` for why this is a co-occurrence
-    guard (load-failure phrase + "model") instead of bare substring
-    membership.
+    See ``_MODEL_LOAD_FAILURE_PATTERNS`` for why each pattern is anchored
+    to an explicit model-load phrasing instead of the earlier load-phrase
+    + "model" co-occurrence guard (which misfired on non-model load
+    failures that merely mention a model elsewhere in the text).
     """
     msg = (error_msg or "").lower()
-    return "model" in msg and any(
-        p in msg for p in _MODEL_LOAD_FAILURE_PATTERNS
+    return any(
+        re.search(p, msg) for p in _MODEL_LOAD_FAILURE_PATTERNS
     )
 
 

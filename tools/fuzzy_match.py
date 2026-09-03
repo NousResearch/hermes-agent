@@ -58,9 +58,11 @@ UNICODE_MAP = {
 }
 
 IDENTICAL_STRINGS_ERROR = (
-    "No edit was applied because old_string and new_string are identical. "
-    "Provide the existing text to replace in old_string and the changed "
-    "replacement text in new_string."
+    "No edit was applied: new_string is identical to old_string, so the edit "
+    "would change nothing. This is not an argument-plumbing error — re-sending "
+    "the same call will fail identically. Diff your intended replacement "
+    "against the actual file text (file_preview) and fix whichever side "
+    "carries the typo."
 )
 
 

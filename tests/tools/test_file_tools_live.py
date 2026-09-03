@@ -188,8 +188,8 @@ class TestPatchReplace:
         assert result.success is False
         assert result.error is not None
         assert "No edit was applied" in result.error
-        assert "existing text to replace in old_string" in result.error
-        assert "replacement text in new_string" in result.error
+        assert "change nothing" in result.error
+        assert "file_preview" in result.error
         assert Path(path).read_text() == "hello world\n"
 
     def test_multiline_patch(self, ops, tmp_path):

@@ -31,6 +31,17 @@ class TestExactMatch:
         assert new == "abc"
         assert err == IDENTICAL_STRINGS_ERROR
 
+    def test_identical_strings_error_names_the_no_op(self):
+        # The message must state the edit changes nothing, so a model that
+        # typo'd both sides self-corrects instead of re-sending the call.
+        assert "change nothing" in IDENTICAL_STRINGS_ERROR
+
+    def test_identical_strings_error_directs_a_next_action(self):
+        # The message must not leave "re-send the arguments" as the only
+        # legible reading — it points at diffing against the file content.
+        assert "re-sending" in IDENTICAL_STRINGS_ERROR
+        assert "file_preview" in IDENTICAL_STRINGS_ERROR
+
     def test_multiline_exact(self):
         content = "line1\nline2\nline3"
         new, count, _, err = fuzzy_find_and_replace(content, "line1\nline2", "replaced")

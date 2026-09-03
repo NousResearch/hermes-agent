@@ -7,6 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.progress_events import (
+    DurableContentBoundary,
+    DurableContentSource,
+    ProvisionalContentBoundary,
+    RetractedContentBoundary,
+)
 
 
 def test_stream_send_metadata_carries_original_reply_anchor():
@@ -758,7 +764,7 @@ class TestEditOverflowSplitAndDeliver:
     """When edit_message split-and-delivers an oversized payload across the
     original message + N continuations (Telegram >4096 UTF-16), the consumer
     must update _message_id to the latest continuation, reset _last_sent_text,
-    and fire on_new_message so subsequent tool-progress bubbles linearize
+    and publish a durable boundary so subsequent tool-progress bubbles linearize
     below the new visible message."""
 
     @pytest.mark.asyncio
@@ -782,9 +788,8 @@ class TestEditOverflowSplitAndDeliver:
         )
         consumer = GatewayStreamConsumer(adapter, "chat_999", config)
 
-        # Track on_new_message firings.
-        new_msg_count = [0]
-        consumer._on_new_message = lambda: new_msg_count.__setitem__(0, new_msg_count[0] + 1)
+        boundaries = []
+        consumer._on_content_boundary = boundaries.append
 
         # Seed the consumer as if a first send succeeded already.
         consumer._message_id = "msg_initial"
@@ -799,9 +804,9 @@ class TestEditOverflowSplitAndDeliver:
         assert consumer._message_id == "msg_continuation_2"
         # Skip-if-same cache reset so the next edit doesn't false-positive.
         assert consumer._last_sent_text == ""
-        # on_new_message fired so the tool-progress bubble breaks below
-        # the new continuation (per the openclaw #32535 lesson).
-        assert new_msg_count[0] == 1
+        assert len(boundaries) == 1
+        assert boundaries[0].source is DurableContentSource.OVERFLOW
+        assert boundaries[0].message_id == "msg_continuation_2"
 
 
 class TestInterimCommentaryMessages:
@@ -1076,12 +1081,13 @@ class TestCursorStrippingOnFallback:
         assert consumer._last_sent_text == "Hello world"
 
 
-# ── on_new_message callback (tool-progress linearization) ─────────────
+# ── durable content boundary callback (tool-progress linearization) ───
 
 
-class TestOnNewMessageCallback:
-    """The on_new_message callback fires whenever a fresh content bubble
-    lands on the platform. Gateway uses this to close off the current
+class TestContentBoundaryCallback:
+    """The callback fires whenever a durable content bubble lands.
+
+    Gateway uses this to close off the current
     tool-progress bubble so the next tool.started opens a new bubble
     below the content — preserving chronological order in the chat.
 
@@ -1092,6 +1098,120 @@ class TestOnNewMessageCallback:
     content messages lined up below, making the timeline look scrambled.
     """
 
+    def test_duplicate_delivery_confirmation_is_idempotent(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        events = []
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat",
+            StreamConsumerConfig(),
+            on_content_boundary=events.append,
+        )
+
+        consumer._notify_content_boundary(
+            DurableContentSource.COMMENTARY,
+            message_id="same-message",
+        )
+        consumer._notify_content_boundary(
+            DurableContentSource.COMMENTARY,
+            message_id="same-message",
+        )
+
+        assert len(events) == 1
+        assert events[0].boundary_id.endswith(":message:same-message")
+
+    @pytest.mark.asyncio
+    async def test_stream_preview_is_provisional_until_segment_seals(self):
+        """A preview opens a pause point but cannot reset progress yet."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="preview_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="preview_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        events = []
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat",
+            config,
+            on_content_boundary=events.append,
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("provisional")
+        assert len(events) == 1
+        assert isinstance(events[0], ProvisionalContentBoundary)
+        await asyncio.sleep(0.05)
+
+        assert adapter.send.await_count == 1
+        assert len(events) == 1
+        boundary_id = events[0].boundary_id
+
+        consumer.on_segment_break()
+        await asyncio.sleep(0.05)
+        assert len(events) == 2
+        assert isinstance(events[1], DurableContentBoundary)
+        assert events[1].boundary_id == boundary_id
+        assert events[1].source is DurableContentSource.STREAM_FINALIZED
+        assert events[1].message_id == "preview_1"
+
+        consumer.finish()
+        await task
+
+    @pytest.mark.asyncio
+    async def test_filtered_segment_retracts_provisional_boundary(self):
+        """Hidden-only deltas cannot commit a durable content split."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        events = []
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+            on_content_boundary=events.append,
+        )
+
+        consumer.on_delta("<think>hidden</think>")
+        consumer.on_segment_break()
+        consumer.finish()
+        await consumer.run()
+
+        assert isinstance(events[0], ProvisionalContentBoundary)
+        assert isinstance(events[1], RetractedContentBoundary)
+        assert events[0].boundary_id == events[1].boundary_id
+        assert not any(isinstance(event, DurableContentBoundary) for event in events)
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_overflow_send_resolves_matching_provisional_boundary(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="overflow_1")
+        )
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        events = []
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat",
+            StreamConsumerConfig(),
+            on_content_boundary=events.append,
+        )
+
+        consumer.on_delta("preview")
+        await consumer._send_new_chunk("overflow", None)
+
+        assert isinstance(events[0], ProvisionalContentBoundary)
+        assert isinstance(events[1], DurableContentBoundary)
+        assert events[1].source is DurableContentSource.OVERFLOW
+        assert events[0].boundary_id == events[1].boundary_id
 
     @pytest.mark.asyncio
     async def test_callback_fires_once_per_segment(self):
@@ -1108,7 +1228,7 @@ class TestOnNewMessageCallback:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1)
         consumer = GatewayStreamConsumer(
             adapter, "chat", config,
-            on_new_message=lambda: events.append("reset"),
+            on_content_boundary=events.append,
         )
 
         consumer.on_delta("A")
@@ -1119,13 +1239,20 @@ class TestOnNewMessageCallback:
         consumer.finish()
         await consumer.run()
 
-        # Three content bubbles ⇒ three reset notifications
-        assert events == ["reset", "reset", "reset"]
+        durable = [event for event in events if isinstance(event, DurableContentBoundary)]
+        provisional = [
+            event for event in events if isinstance(event, ProvisionalContentBoundary)
+        ]
+        assert [event.message_id for event in durable] == ["msg_1", "msg_2", "msg_3"]
+        assert len(provisional) == 3
+        assert [event.boundary_id for event in provisional] == [
+            event.boundary_id for event in durable
+        ]
 
 
     @pytest.mark.asyncio
     async def test_no_callback_when_none(self):
-        """Consumer works correctly when on_new_message is None (default)."""
+        """Consumer works correctly when the boundary callback is None."""
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
         adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))

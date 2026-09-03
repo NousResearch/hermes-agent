@@ -59,6 +59,59 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class EphemeralPreviewCaptureAdapter(ProgressCaptureAdapter):
+    """Track message identity and preview deletion across one streamed turn."""
+
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.deleted = []
+        self._next_id = 0
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self._next_id += 1
+        message_id = f"message-{self._next_id}"
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+                "message_id": message_id,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+    async def edit_message(
+        self,
+        chat_id,
+        message_id,
+        content,
+        **kwargs,
+    ) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                **kwargs,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+    async def delete_message(self, chat_id, message_id) -> bool:
+        self.deleted.append({"chat_id": chat_id, "message_id": message_id})
+        return True
+
+
+class SlowPreviewCaptureAdapter(EphemeralPreviewCaptureAdapter):
+    """Delay only the provisional content send to expose ordering races."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if "temporary preview" in content:
+            await asyncio.sleep(0.5)
+        return await super().send(chat_id, content, reply_to, metadata)
+
+
 class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
     """Capture sends while exercising Discord's real preview formatter."""
 
@@ -227,6 +280,40 @@ class FakeAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class EphemeralPreviewBetweenToolsAgent:
+    """Emit a retractable stream preview between two tool starts."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.tool_progress_callback is not None
+        assert self.stream_delta_callback is not None
+        self.tool_progress_callback("tool.started", "terminal", "first", {})
+        time.sleep(0.35)
+        self.stream_delta_callback("temporary preview")
+        time.sleep(0.1)
+        self.tool_progress_callback("tool.started", "terminal", "second", {})
+        time.sleep(0.35)
+        return {
+            "final_response": "[SILENT]",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 2,
+        }
+
+
+class DurablePreviewBetweenToolsAgent(EphemeralPreviewBetweenToolsAgent):
+    """Keep the streamed preview as durable content at turn finalization."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        result = super().run_conversation(message, conversation_history, task_id)
+        result["final_response"] = "temporary preview"
+        return result
 
 
 class NativeTaskCardAdapter(ProgressCaptureAdapter):
@@ -1055,6 +1142,104 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_preview_does_not_split_accumulated_progress(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        EphemeralPreviewBetweenToolsAgent,
+        session_id="sess-ephemeral-progress",
+        config_data={
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "streaming": True,
+                        "tool_progress": "all",
+                        "tool_progress_grouping": "accumulate",
+                        "cleanup_progress": True,
+                    }
+                }
+            },
+        },
+        chat_id="1234",
+        chat_type="private",
+        thread_id="77",
+        adapter_cls=EphemeralPreviewCaptureAdapter,
+    )
+
+    assert result["final_response"] == "[SILENT]"
+    assert isinstance(adapter, EphemeralPreviewCaptureAdapter)
+    deleted_ids = {entry["message_id"] for entry in adapter.deleted}
+    assert any(
+        sent["message_id"] in deleted_ids and "temporary preview" in sent["content"]
+        for sent in adapter.sent
+    )
+    progress_sends = [
+        sent
+        for sent in adapter.sent
+        if "Running" in sent["content"]
+    ]
+    assert len(progress_sends) == 1, (
+        adapter.sent,
+        adapter.deleted,
+        adapter.edits,
+    )
+    progress_id = progress_sends[0]["message_id"]
+    assert adapter.edits
+    assert {edit["message_id"] for edit in adapter.edits} == {progress_id}
+    assert "first" in adapter.edits[-1]["content"]
+    assert "second" in adapter.edits[-1]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "adapter_cls",
+    [EphemeralPreviewCaptureAdapter, SlowPreviewCaptureAdapter],
+)
+async def test_durable_preview_splits_progress_at_confirmed_boundary(
+    monkeypatch, tmp_path, adapter_cls
+):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DurablePreviewBetweenToolsAgent,
+        session_id="sess-durable-progress",
+        config_data={
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "streaming": True,
+                        "tool_progress": "all",
+                        "tool_progress_grouping": "accumulate",
+                        "cleanup_progress": False,
+                    }
+                }
+            },
+        },
+        chat_id="1234",
+        chat_type="private",
+        thread_id="77",
+        adapter_cls=adapter_cls,
+    )
+
+    assert result["final_response"] == "temporary preview"
+    assert isinstance(adapter, EphemeralPreviewCaptureAdapter)
+    progress_sends = [sent for sent in adapter.sent if "Running" in sent["content"]]
+    assert len(progress_sends) == 2, (
+        [sent["content"] for sent in adapter.sent],
+        adapter.edits,
+    )
+    assert "first" in progress_sends[0]["content"]
+    assert "second" not in progress_sends[0]["content"]
+    assert "second" in progress_sends[1]["content"]
 
 
 @pytest.mark.asyncio

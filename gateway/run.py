@@ -42,7 +42,7 @@ import signal
 import threading
 import time
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from contextvars import Context, copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -67,6 +67,11 @@ from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.turn_context import (
     compression_made_progress,
+)
+from gateway.progress_events import (
+    DurableContentBoundary,
+    ProvisionalContentBoundary,
+    RetractedContentBoundary,
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
@@ -5390,6 +5395,10 @@ class TurnRunner:
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
         progress_msg_id = None   # ID of the current progress message to edit
         can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        seen_content_boundary_events: set[tuple[str, str]] = set()
+        pending_provisional_boundary_id: str | None = None
+        deferred_progress_events: list = []
+        replay_progress_events = deque()
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -5528,6 +5537,125 @@ class TurnRunner:
             progress_lines = groups[-1]
             return True
 
+        async def _seal_progress_boundary(source: str) -> None:
+            """Finalize the active progress bubble before durable content."""
+            nonlocal progress_msg_id, progress_lines
+            await _roll_progress_overflow_if_needed()
+            if can_edit and progress_lines and progress_msg_id:
+                try:
+                    await _edit_progress_message(
+                        progress_msg_id,
+                        _progress_text(progress_lines),
+                    )
+                except Exception:
+                    logger.debug(
+                        "progress boundary seal failed (%s)",
+                        source,
+                        exc_info=True,
+                    )
+            progress_msg_id = None
+            progress_lines = []
+            ctx.last_progress_msg[0] = None
+            ctx.repeat_count[0] = 0
+
+        async def _route_content_boundary(raw) -> bool:
+            """Resolve preview lifecycle events and queue deferred tool updates."""
+            nonlocal pending_provisional_boundary_id
+            event_key = (raw.boundary_id, type(raw).__name__)
+            if event_key in seen_content_boundary_events:
+                return True
+            seen_content_boundary_events.add(event_key)
+
+            if isinstance(raw, ProvisionalContentBoundary):
+                pending_provisional_boundary_id = raw.boundary_id
+                return True
+
+            if isinstance(raw, DurableContentBoundary):
+                await _seal_progress_boundary(raw.source.value)
+                if pending_provisional_boundary_id == raw.boundary_id:
+                    pending_provisional_boundary_id = None
+                    replay_progress_events.extend(deferred_progress_events)
+                    deferred_progress_events.clear()
+                return True
+            if not isinstance(raw, RetractedContentBoundary):
+                return False
+
+            if pending_provisional_boundary_id == raw.boundary_id:
+                pending_provisional_boundary_id = None
+                replay_progress_events.extend(deferred_progress_events)
+                deferred_progress_events.clear()
+            return True
+
+        async def _drain_progress_after_cancel() -> None:
+            """Resolve queued boundaries before the final progress update."""
+            nonlocal pending_provisional_boundary_id, progress_msg_id, can_edit
+            while True:
+                try:
+                    if replay_progress_events:
+                        raw = replay_progress_events.popleft()
+                    elif not ctx.progress_queue.empty():
+                        raw = ctx.progress_queue.get_nowait()
+                    elif pending_provisional_boundary_id is not None:
+                        # A missing resolution must not drop deferred tool output.
+                        pending_provisional_boundary_id = None
+                        replay_progress_events.extend(deferred_progress_events)
+                        deferred_progress_events.clear()
+                        continue
+                    else:
+                        break
+
+                    if isinstance(
+                        raw,
+                        (
+                            DurableContentBoundary,
+                            ProvisionalContentBoundary,
+                            RetractedContentBoundary,
+                        ),
+                    ):
+                        await _route_content_boundary(raw)
+                        continue
+                    if pending_provisional_boundary_id is not None:
+                        deferred_progress_events.append(raw)
+                        continue
+                    if (
+                        isinstance(raw, tuple)
+                        and len(raw) == 3
+                        and raw[0] == "__dedup__"
+                    ):
+                        _, base_msg, count = raw
+                        if progress_lines:
+                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            await _roll_progress_overflow_if_needed()
+                    else:
+                        progress_lines.append(raw)
+                        await _roll_progress_overflow_if_needed()
+                except Exception:
+                    break
+
+            if progress_lines and progress_msg_id is None:
+                try:
+                    if can_edit:
+                        result = await _send_progress_text(
+                            _progress_text(progress_lines)
+                        )
+                        if result.success:
+                            progress_msg_id = result.message_id
+                            can_edit = bool(progress_msg_id)
+                    else:
+                        for line in progress_lines:
+                            await _send_progress_text(line)
+                        progress_lines.clear()
+                except Exception:
+                    pass
+            if can_edit and progress_lines and progress_msg_id:
+                await _roll_progress_overflow_if_needed()
+            if can_edit and progress_lines and progress_msg_id:
+                full_text = _progress_text(progress_lines)
+                try:
+                    await _edit_progress_message(progress_msg_id, full_text)
+                except Exception:
+                    pass
+
         while True:
             try:
                 if not ctx._run_still_current():
@@ -5538,7 +5666,11 @@ class TurnRunner:
                             break
                     return
 
-                raw = ctx.progress_queue.get_nowait()
+                raw = (
+                    replay_progress_events.popleft()
+                    if replay_progress_events
+                    else ctx.progress_queue.get_nowait()
+                )
 
                 # Drain silently when interrupted: events queued in the
                 # window between tool parse and interrupt processing
@@ -5556,26 +5688,27 @@ class TurnRunner:
                 except Exception:
                     pass
 
+                if isinstance(
+                    raw,
+                    (
+                        DurableContentBoundary,
+                        ProvisionalContentBoundary,
+                        RetractedContentBoundary,
+                    ),
+                ):
+                    await _route_content_boundary(raw)
+                    continue
+
+                if pending_provisional_boundary_id is not None:
+                    deferred_progress_events.append(raw)
+                    continue
+
                 # Handle dedup messages: update last line with repeat counter
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
                     if progress_lines:
                         progress_lines[-1] = f"{base_msg} (×{count + 1})"
                     msg = progress_lines[-1] if progress_lines else base_msg
-                elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                    # Content bubble just landed on the platform — close off
-                    # the current tool-progress bubble so the next tool
-                    # starts a fresh bubble below the content. Without this,
-                    # tool lines keep editing the ORIGINAL progress message
-                    # above the new content, making the chat appear out of
-                    # order. Mirrors GatewayStreamConsumer.on_segment_break
-                    # on the content side. (Issue: tool + content
-                    # linearization regression after PR #7885.)
-                    progress_msg_id = None
-                    progress_lines = []
-                    ctx.last_progress_msg[0] = None
-                    ctx.repeat_count[0] = 0
-                    continue
                 else:
                     msg = raw
                     progress_lines.append(msg)
@@ -5673,46 +5806,13 @@ class TurnRunner:
                     await adapter.send_typing(ctx.source.chat_id, metadata=ctx._progress_metadata)
 
             except queue.Empty:
-                await asyncio.sleep(0.3)
+                try:
+                    await asyncio.sleep(0.3)
+                except asyncio.CancelledError:
+                    await _drain_progress_after_cancel()
+                    return
             except asyncio.CancelledError:
-                # Drain remaining queued messages
-                while not ctx.progress_queue.empty():
-                    try:
-                        raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                            _, base_msg, count = raw
-                            if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                await _roll_progress_overflow_if_needed()
-                        elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                            # Content-bubble marker during drain: close off
-                            # the current progress bubble and start a fresh
-                            # one for any tool lines that arrived after.
-                            await _roll_progress_overflow_if_needed()
-                            if can_edit and progress_lines and progress_msg_id:
-                                _pending_text = _progress_text(progress_lines)
-                                try:
-                                    await _edit_progress_message(progress_msg_id, _pending_text)
-                                except Exception:
-                                    pass
-                            progress_msg_id = None
-                            progress_lines = []
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
-                        else:
-                            progress_lines.append(raw)
-                            await _roll_progress_overflow_if_needed()
-                    except Exception:
-                        break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
-                    await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        await _edit_progress_message(progress_msg_id, full_text)
-                    except Exception:
-                        pass
+                await _drain_progress_after_cancel()
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)
@@ -6051,8 +6151,8 @@ class TurnRunner:
                         chat_id=ctx.source.chat_id,
                         config=_consumer_cfg,
                         metadata=ctx._status_thread_metadata,
-                        on_new_message=(
-                            (lambda: ctx.progress_queue.put(("__reset__",)))
+                        on_content_boundary=(
+                            (lambda boundary: ctx.progress_queue.put(boundary))
                             if ctx.progress_queue is not None
                             else None
                         ),
@@ -32894,9 +32994,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
-            # Stop progress sender, interrupt monitor, and notification task
-            if progress_task:
-                progress_task.cancel()
+            # Stop side tasks that cannot contribute to stream finalization.
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()
@@ -32929,6 +33027,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await stream_task
                         except asyncio.CancelledError:
                             pass
+
+            # The stream's finalization publishes the durable/retracted outcome
+            # of any provisional content boundary. Cancel progress only after
+            # that outcome is queued so deferred tool updates can be replayed
+            # against the correct progress anchor.
+            if progress_task:
+                progress_task.cancel()
             
             # Unconditional abort + bounded wait for the streaming-TTS
             # consumer (#60671 hardening).  Covers cancellation / exception

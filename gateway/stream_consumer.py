@@ -29,6 +29,13 @@ from typing import Any, Callable, Optional
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
 from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
+from gateway.progress_events import (
+    ContentBoundaryEvent,
+    DurableContentBoundary,
+    DurableContentSource,
+    ProvisionalContentBoundary,
+    RetractedContentBoundary,
+)
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -239,7 +246,7 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
-        on_new_message: Optional[callable] = None,
+        on_content_boundary: Optional[Callable[[ContentBoundaryEvent], None]] = None,
         on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
         run_still_current: Optional[Callable[[], bool]] = None,
@@ -248,14 +255,15 @@ class GatewayStreamConsumer:
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
-        # Fired whenever a fresh content bubble is created on the platform
-        # (first-send of a new message, commentary, overflow chunk, or
-        # fallback continuation). The gateway uses this to linearize the
-        # tool-progress bubble: when content resumes after a tool batch,
-        # the next tool.started should open a NEW progress bubble below
-        # the content, not edit the old bubble above it.
-        # Called with no arguments. Exceptions are swallowed.
-        self._on_new_message = on_new_message
+        # Typed content-timeline events for progress linearization. A provisional
+        # persistent preview pauses later tool updates; durable confirmation
+        # commits the split, while retraction resumes the current progress bubble.
+        # Native draft frames, preview edits, and empty lifecycle signals emit
+        # no boundary events.
+        self._on_content_boundary = on_content_boundary
+        self._pending_preview_boundary: Optional[ProvisionalContentBoundary] = None
+        self._content_boundary_sequence = 0
+        self._published_content_boundaries: set[tuple[str, str]] = set()
         # Fired once when the stream transitions into its finalization path.
         # Gateway callers use this to pause typing refreshes before a slow
         # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
@@ -832,15 +840,107 @@ class GatewayStreamConsumer:
         ):
             self._queue.put(_REOPEN_SEED)
 
-    def _notify_new_message(self) -> None:
-        """Fire the on_new_message callback, swallowing any errors."""
-        cb = self._on_new_message
+    def _publish_content_boundary(self, event: ContentBoundaryEvent) -> None:
+        """Publish each lifecycle phase for a boundary at most once."""
+        cb = self._on_content_boundary
         if cb is None:
             return
+        event_key = (event.boundary_id, type(event).__name__)
+        if event_key in self._published_content_boundaries:
+            return
+        self._published_content_boundaries.add(event_key)
         try:
-            cb()
+            cb(event)
         except Exception:
-            logger.debug("on_new_message callback error", exc_info=True)
+            logger.debug("content boundary callback error", exc_info=True)
+
+    def _notify_content_boundary(
+        self,
+        source: DurableContentSource,
+        *,
+        message_id: Optional[str] = None,
+    ) -> None:
+        """Publish one idempotent boundary for confirmed persistent content."""
+        normalized_message_id = str(message_id) if message_id is not None else None
+        if normalized_message_id is not None:
+            boundary_id = f"{self._turn_id}:message:{normalized_message_id}"
+        else:
+            self._content_boundary_sequence += 1
+            boundary_id = f"{self._turn_id}:boundary:{self._content_boundary_sequence}"
+        self._publish_content_boundary(
+            DurableContentBoundary(
+                boundary_id=boundary_id,
+                source=source,
+                message_id=normalized_message_id,
+            )
+        )
+
+    def _open_preview_boundary(self) -> None:
+        """Pause later progress before a preview delivery can overtake it."""
+        if self._pending_preview_boundary is not None:
+            return
+        self._content_boundary_sequence += 1
+        event = ProvisionalContentBoundary(
+            boundary_id=(
+                f"{self._turn_id}:preview:{self._content_boundary_sequence}"
+            )
+        )
+        self._pending_preview_boundary = event
+        self._publish_content_boundary(event)
+
+    def _record_pending_preview_message_id(self, message_id: str) -> None:
+        """Attach the platform id after a provisional send succeeds."""
+        pending = self._pending_preview_boundary
+        if pending is None:
+            return
+        self._pending_preview_boundary = ProvisionalContentBoundary(
+            boundary_id=pending.boundary_id,
+            message_id=str(message_id),
+        )
+
+    def _confirm_pending_preview_boundary(
+        self,
+        *,
+        source: DurableContentSource = DurableContentSource.STREAM_FINALIZED,
+        message_id: Optional[str] = None,
+    ) -> None:
+        """Resolve a provisional preview as a persistent timeline entry."""
+        pending = self._pending_preview_boundary
+        if pending is None:
+            return
+        self._pending_preview_boundary = None
+        self._publish_content_boundary(
+            DurableContentBoundary(
+                boundary_id=pending.boundary_id,
+                source=source,
+                message_id=(str(message_id) if message_id is not None else pending.message_id),
+            )
+        )
+
+    def _confirm_or_notify_content_boundary(
+        self,
+        source: DurableContentSource,
+        *,
+        message_id: Optional[str] = None,
+    ) -> None:
+        """Resolve the active preview, otherwise publish a direct boundary."""
+        if self._pending_preview_boundary is not None:
+            self._confirm_pending_preview_boundary(
+                source=source,
+                message_id=message_id,
+            )
+        else:
+            self._notify_content_boundary(source, message_id=message_id)
+
+    def _retract_pending_preview_boundary(self) -> None:
+        """Resolve a provisional preview that left no persistent chat entry."""
+        pending = self._pending_preview_boundary
+        if pending is None:
+            return
+        self._pending_preview_boundary = None
+        self._publish_content_boundary(
+            RetractedContentBoundary(boundary_id=pending.boundary_id)
+        )
 
     @staticmethod
     def _signal_flush(flush_event) -> None:
@@ -862,6 +962,11 @@ class GatewayStreamConsumer:
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
+        had_persistent_preview = (
+            self._message_id is not None
+            or self._already_sent
+            or bool(self._last_sent_text)
+        )
         # Retain the finalized visible text of the current segment before
         # clearing ``_last_sent_text``, so ``has_delivered_text`` can still
         # match it after a segment break. (#65919 review)
@@ -878,6 +983,11 @@ class GatewayStreamConsumer:
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
         self._segment_preview_message_ids = set()
+        if self._pending_preview_boundary is not None:
+            if had_persistent_preview:
+                self._confirm_pending_preview_boundary()
+            else:
+                self._retract_pending_preview_boundary()
         # Tool-progress overlay: clear on segment reset so a new segment
         # starts clean.
         self._tool_progress_lines = []
@@ -1057,6 +1167,10 @@ class GatewayStreamConsumer:
         appears below any tool-progress messages the gateway sent in between.
         """
         if text:
+            # Open synchronously on the agent thread before it can report the
+            # next tool. The async consumer may not reach adapter.send() until
+            # after that tool event, especially under platform latency.
+            self._open_preview_boundary()
             self._queue.put(text)
         elif text is None:
             self.on_segment_break()
@@ -1730,6 +1844,11 @@ class GatewayStreamConsumer:
                         # turn-final answer — only got_done marks delivered (#29346).
                         is_turn_final=got_done,
                     )
+                    if got_done or got_segment_break:
+                        # The preview is now sealed into the timeline (or a
+                        # failed finalize left the already-sent preview visible).
+                        # Only now may it split tool progress chronology.
+                        self._confirm_pending_preview_boundary()
                     self._last_edit_time = time.monotonic()
                     # Reset tool_progress_active flag after frame delivery —
                     # the lines are still in _tool_progress_lines (for the next
@@ -1739,6 +1858,9 @@ class GatewayStreamConsumer:
                         self._tool_progress_active = False
 
                 if got_done:
+                    # A same-text final may skip the send/edit branch above, but
+                    # the surviving preview is still now a durable entry.
+                    self._confirm_pending_preview_boundary()
                     if self._accumulated or self._message_id is not None or self._already_sent:
                         await self._notify_before_finalize()
                     # Final edit without cursor. If progressive editing failed
@@ -2095,9 +2217,10 @@ class GatewayStreamConsumer:
                 self._track_preview_ids_from_result(result)
                 self._already_sent = True
                 self._last_sent_text = text
-                # Fresh content bubble — close off any stale tool bubble
-                # above so the next tool starts a new bubble below.
-                self._notify_new_message()
+                self._confirm_or_notify_content_boundary(
+                    DurableContentSource.OVERFLOW,
+                    message_id=str(result.message_id),
+                )
                 return str(result.message_id)
             else:
                 self._edit_supported = False
@@ -2349,9 +2472,10 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
-            # Each fallback chunk is a fresh platform message — notify
-            # so any stale tool-progress bubble gets closed off.
-            self._notify_new_message()
+            self._notify_content_boundary(
+                DurableContentSource.FALLBACK,
+                message_id=(str(result.message_id) if result.message_id else None),
+            )
 
         # Remove the frozen partial message so the user only sees the
         # complete fallback response.  ONLY safe when the fallback re-sent
@@ -2489,7 +2613,16 @@ class GatewayStreamConsumer:
         self._last_sent_text = final_text
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
-        self._notify_new_message()
+        if self._pending_preview_boundary is not None:
+            self._confirm_pending_preview_boundary(
+                source=DurableContentSource.FRESH_FINAL,
+                message_id=(str(new_message_id) if new_message_id else None),
+            )
+        else:
+            self._notify_content_boundary(
+                DurableContentSource.FRESH_FINAL,
+                message_id=(str(new_message_id) if new_message_id else None),
+            )
         return "delivered"
 
     @staticmethod
@@ -2784,10 +2917,10 @@ class GatewayStreamConsumer:
             # the final response to be incorrectly suppressed when there are
             # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
             if result.success:
-                # Commentary counts as fresh content — close off any
-                # stale tool bubble above it so the next tool starts a
-                # new bubble below.
-                self._notify_new_message()
+                self._notify_content_boundary(
+                    DurableContentSource.COMMENTARY,
+                    message_id=(str(result.message_id) if result.message_id else None),
+                )
                 # Record the exact delivered text so run.py can confirm whether
                 # an interim "preview" actually carried the final response, vs.
                 # unrelated commentary delivered during a session split (#14238).
@@ -3014,16 +3147,23 @@ class GatewayStreamConsumer:
         # clarify answer, where the typing bubble is already on screen with no
         # content), close it with an empty finalize so it doesn't hang forever.
         # Do this before the delete loop; keep the delivery flags False below.
+        cleanup_succeeded = True
         if self._native_stream_opened:
             try:
-                await self.adapter.send_stream_frame(
+                close_result = await self.adapter.send_stream_frame(
                     "",
                     finalize=True,
                     chat_id=self.chat_id,
                     reply_to=self._initial_reply_to_id,
                     turn_id=self._turn_id,
                 )
+                if (
+                    close_result is False
+                    or getattr(close_result, "success", True) is False
+                ):
+                    cleanup_succeeded = False
             except Exception as e:
+                cleanup_succeeded = False
                 logger.debug(
                     "Silence-marker native stream close failed: %s", e,
                 )
@@ -3035,18 +3175,36 @@ class GatewayStreamConsumer:
         if self._message_id and self._message_id != "__no_edit__":
             stale_ids.add(self._message_id)
         delete_fn = getattr(self.adapter, "delete_message", None)
-        if delete_fn is not None:
+        if stale_ids and delete_fn is None:
+            cleanup_succeeded = False
+        elif delete_fn is not None:
             for stale_id in stale_ids:
                 if not stale_id or stale_id == "__no_edit__":
                     continue
                 try:
-                    await delete_fn(self.chat_id, stale_id)
+                    deleted = await delete_fn(self.chat_id, stale_id)
+                    if deleted is False:
+                        cleanup_succeeded = False
                 except Exception as e:
+                    cleanup_succeeded = False
                     logger.debug(
                         "Silence-marker preview cleanup failed (%s): %s",
                         stale_id, e,
                     )
+        if self._message_id == "__no_edit__" and self._already_sent:
+            cleanup_succeeded = False
         self._preview_message_ids = set()
+        if cleanup_succeeded:
+            self._retract_pending_preview_boundary()
+        else:
+            self._confirm_pending_preview_boundary(
+                source=DurableContentSource.STREAM_PERSISTED,
+                message_id=(
+                    str(self._message_id)
+                    if self._message_id and self._message_id != "__no_edit__"
+                    else None
+                ),
+            )
         self._message_id = None
         self._accumulated = ""
         self._stream_ledger = ""
@@ -3426,8 +3584,8 @@ class GatewayStreamConsumer:
                         # the on-screen content (the new message only holds the
                         # final chunk's text), so subsequent edits must target
                         # the new id and skip-if-same comparisons must reset.
-                        # Fire on_new_message so tool-progress bubbles linearize
-                        # below the new continuation, not the original.
+                        # Publish a durable boundary so tool-progress bubbles
+                        # linearize below the new continuation, not the original.
                         # ``getattr`` with default keeps backwards compat with
                         # SimpleNamespace mocks in tests that pre-date the field.
                         _continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
@@ -3443,7 +3601,10 @@ class GatewayStreamConsumer:
                             self._message_id = str(result.message_id)
                             self._message_created_ts = time.monotonic()
                             self._last_sent_text = ""
-                            self._notify_new_message()
+                            self._confirm_or_notify_content_boundary(
+                                DurableContentSource.OVERFLOW,
+                                message_id=str(result.message_id),
+                            )
                         else:
                             self._last_sent_text = text
                         # Successful edit — reset flood strike counter
@@ -3501,7 +3662,14 @@ class GatewayStreamConsumer:
                             self._edit_supported = False
                             self._already_sent = True
                             if getattr(result, "continuation_message_ids", ()):
-                                self._notify_new_message()
+                                self._confirm_or_notify_content_boundary(
+                                    DurableContentSource.OVERFLOW,
+                                    message_id=(
+                                        str(result.message_id)
+                                        if result.message_id
+                                        else None
+                                    ),
+                                )
                             return False
 
                         # Edit failed.  If this looks like flood control / rate
@@ -3569,19 +3737,28 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new, threaded to the original user message
-                # so it lands in the correct topic/thread.
-                result = await self.adapter.send(
-                    chat_id=self.chat_id,
-                    content=text,
-                    reply_to=self._initial_reply_to_id,
-                    metadata=self._metadata_for_send(
-                        final=finalize,
-                        expect_edits=not finalize,
-                    ),
-                )
+                # First message — announce the provisional boundary before the
+                # platform send starts so a slow adapter cannot let later tools
+                # overtake this content entry.
+                self._open_preview_boundary()
+                try:
+                    result = await self.adapter.send(
+                        chat_id=self.chat_id,
+                        content=text,
+                        reply_to=self._initial_reply_to_id,
+                        metadata=self._metadata_for_send(
+                            final=finalize,
+                            expect_edits=not finalize,
+                        ),
+                    )
+                except BaseException:
+                    self._retract_pending_preview_boundary()
+                    raise
                 if result.success:
                     if result.message_id:
+                        self._record_pending_preview_message_id(
+                            str(result.message_id)
+                        )
                         self._message_id = result.message_id
                         # Track when the preview first became visible to
                         # the user so fresh-final logic can detect stale
@@ -3601,13 +3778,24 @@ class GatewayStreamConsumer:
                         # every delta/tool boundary when platforms accept a
                         # message but do not return an editable message id.
                         self._message_id = "__no_edit__"
-                    # Notify the gateway that a fresh content bubble was
-                    # created so any accumulated tool-progress bubble above
-                    # gets closed off — the next tool fires into a new
-                    # bubble below, preserving chronological order.
-                    self._notify_new_message()
+                    if finalize:
+                        self._confirm_pending_preview_boundary(
+                            source=DurableContentSource.STREAM_FINALIZED,
+                            message_id=(
+                                str(result.message_id)
+                                if result.message_id
+                                else None
+                            ),
+                        )
+                    elif not result.message_id:
+                        # A successful send without an editable id cannot be
+                        # retracted, so it is already a durable timeline entry.
+                        self._confirm_pending_preview_boundary(
+                            source=DurableContentSource.STREAM_PERSISTED,
+                        )
                     return True
                 else:
+                    self._retract_pending_preview_boundary()
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False
                     return False

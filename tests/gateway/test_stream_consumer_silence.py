@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.progress_events import DurableContentBoundary, ProvisionalContentBoundary
 from gateway.response_filters import (
     is_intentional_silence_response,
     is_partial_silence_marker,
@@ -152,5 +153,29 @@ class TestStreamedSilenceSuppression:
         adapter.delete_message.assert_awaited_once_with("chat_1", "preview_1")
         assert consumer.final_content_delivered is False
         assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
+    async def test_failed_preview_delete_commits_boundary(self):
+        """A preview that remains visible is a durable timeline entry."""
+        adapter = _make_adapter()
+        adapter.delete_message.return_value = False
+        events = []
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+            on_content_boundary=events.append,
+        )
+        consumer._message_id = "preview_1"
+        consumer._preview_message_ids = {"preview_1"}
+        consumer._already_sent = True
+
+        consumer.on_delta("NO_REPLY")
+        consumer.finish()
+        await consumer.run()
+
+        assert isinstance(events[0], ProvisionalContentBoundary)
+        assert isinstance(events[1], DurableContentBoundary)
+        assert events[0].boundary_id == events[1].boundary_id
 
 

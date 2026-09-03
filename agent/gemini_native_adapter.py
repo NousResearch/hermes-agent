@@ -51,13 +51,18 @@ GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
 
 
 def bare_gemini_model_id(model: str) -> str:
-    """Strip Gemini's own provider prefix from an aggregator-style model id."""
+    """Strip provider and endpoint prefixes ('google/', 'gemini/', 'models/') from a model id."""
     name = (model or "").strip()
-    lowered = name.lower()
-    for prefix in ("google/", "gemini/"):
-        if lowered.startswith(prefix):
-            return name[len(prefix):].strip() or name
-    return name
+    changed = True
+    while changed:
+        changed = False
+        lowered = name.lower()
+        for prefix in ("google/", "gemini/", "models/"):
+            if lowered.startswith(prefix):
+                name = name[len(prefix):].strip()
+                changed = True
+                break
+    return name or (model or "").strip()
 
 
 def _gemini_major_version(model: str) -> Optional[int]:

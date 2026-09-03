@@ -675,3 +675,19 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+def test_bare_gemini_model_id_strips_models_and_provider_prefixes():
+    from agent.gemini_native_adapter import bare_gemini_model_id, gemini_requires_tool_call_ids
+
+    assert bare_gemini_model_id("models/gemini-2.5-flash") == "gemini-2.5-flash"
+    assert bare_gemini_model_id("google/models/gemini-3.1-pro") == "gemini-3.1-pro"
+    assert bare_gemini_model_id("gemini/models/gemini-3-flash-preview") == "gemini-3-flash-preview"
+    assert bare_gemini_model_id("google/gemini-3.6-flash") == "gemini-3.6-flash"
+    assert bare_gemini_model_id("gemini-2.5-pro") == "gemini-2.5-pro"
+
+    # Test tool call ID requirement gating with models/ prefix
+    assert gemini_requires_tool_call_ids("models/gemini-3.6-flash") is True
+    assert gemini_requires_tool_call_ids("google/models/gemini-3.1-pro") is True
+    assert gemini_requires_tool_call_ids("models/gemini-2.5-flash") is False
+

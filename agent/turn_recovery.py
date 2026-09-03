@@ -17,7 +17,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
-from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
+from agent.retry_utils import (
+    anthropic_overload_retry_ceiling, is_anthropic_overload_error,
+    is_zai_coding_overload_error, zai_coding_overload_retry_ceiling,
+)
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import (
     _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
@@ -964,21 +967,23 @@ def interruptible_backoff_sleep(
     return None
 
 
-_ZAI_POLICY_NOTES = {
+_POLICY_NOTES = {
     "zai_coding_overload_long": " (Z.AI Coding overload adaptive long backoff)",
     "zai_coding_overload_short": " (Z.AI Coding overload short retry)",
+    "anthropic_overload_long": " (Anthropic overload adaptive long backoff)",
+    "anthropic_overload_short": " (Anthropic overload short retry)",
 }
 
 
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
-    is_zai_coding_overload: bool, base_url: Any, model: Any,
+    is_zai_coding_overload: bool, is_anthropic_overload: bool, base_url: Any, model: Any,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at 600s: Anthropic Tier 1 buckets
     reset in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff,
-    replaced by the adaptive policy for 429s / Z.AI overloads. Normal retries are
-    buffered; long Z.AI Coding waits surface immediately."""
+    replaced by the adaptive policy for 429s / Z.AI overloads / Anthropic overloaded_error.
+    Normal retries are buffered; long overload waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
     from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff, parse_retry_after_seconds
@@ -1010,16 +1015,17 @@ def compute_error_backoff(
             _retry_after = None
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
-    _adaptive = is_rate_limited or is_zai_coding_overload
+    _is_capacity_overload = is_zai_coding_overload or is_anthropic_overload
+    _adaptive = is_rate_limited or _is_capacity_overload
     if _adaptive and _retry_after is None:
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
     if _adaptive:
-        _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
-        _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
+        _policy_note = _POLICY_NOTES.get(_backoff_policy or "", "")
+        _wait_reason = "Provider overloaded" if _is_capacity_overload and not is_rate_limited else "Rate limited"
         _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
-        if _backoff_policy == "zai_coding_overload_long":
+        if _backoff_policy in ("zai_coding_overload_long", "anthropic_overload_long"):
             agent._emit_status(_rate_limit_status)
         else:
             agent._buffer_status(_rate_limit_status)
@@ -1174,6 +1180,7 @@ class ClassifiedErrorVerdict:
     is_rate_limited: bool
     wrapped_output_cap_budget: Optional[int]
     is_zai_coding_overload: bool
+    is_anthropic_overload: bool
 
 
 _OVERFLOW_REASONS = frozenset({
@@ -1276,6 +1283,7 @@ def route_classified_error(
     is_rate_limited = False
     _wrapped_output_cap_budget = None
     _is_zai_coding_overload = False
+    _is_anthropic_overload = False
     status_code = getattr(api_error, "status_code", None)
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ClassifiedErrorVerdict:
@@ -1286,7 +1294,7 @@ def route_classified_error(
             compression_attempts=compression_attempts,
             provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
             is_rate_limited=is_rate_limited, wrapped_output_cap_budget=_wrapped_output_cap_budget,
-            is_zai_coding_overload=_is_zai_coding_overload,
+            is_zai_coding_overload=_is_zai_coding_overload, is_anthropic_overload=_is_anthropic_overload,
         )
 
     def _fallback_break() -> ClassifiedErrorVerdict:
@@ -1382,6 +1390,13 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    # Anthropic capacity dips arrive as `overloaded_error` inside a streaming 200 —
+    # no status code, so `is_rate_limited` is False and the default 3-retry budget
+    # (~25s) expires well inside a window that routinely lasts minutes. Raise the
+    # ceiling so the adaptive long tier is reachable.
+    _is_anthropic_overload = is_anthropic_overload_error(base_url=str(base_url), model=model, error=api_error)
+    if _is_anthropic_overload:
+        max_retries = max(max_retries, anthropic_overload_retry_ceiling())
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)

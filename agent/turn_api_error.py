@@ -172,6 +172,7 @@ def handle_api_error(
     is_rate_limited = _ce.is_rate_limited
     _wrapped_output_cap_budget = _ce.wrapped_output_cap_budget
     _is_zai_coding_overload = _ce.is_zai_coding_overload
+    _is_anthropic_overload = _ce.is_anthropic_overload
     if _ce.provider_overflow_recovery_pending:
         _provider_overflow_recovery_pending = True
     if _ce.action != "fallthrough":
@@ -201,6 +202,7 @@ def handle_api_error(
         agent, api_error=api_error, classified=classified, _retry=_retry, status_code=status_code,
         error_msg=error_msg, is_context_length_error=is_context_length_error,
         is_rate_limited=is_rate_limited, _is_zai_coding_overload=_is_zai_coding_overload,
+        _is_anthropic_overload=_is_anthropic_overload,
         _provider=_provider, _base=_base, _model=_model, messages=messages,
         api_messages=api_messages, api_kwargs=api_kwargs, active_system_prompt=active_system_prompt,
         conversation_history=conversation_history, approx_tokens=approx_tokens,
@@ -250,6 +252,7 @@ class UnrecoveredErrorVerdict:
 def settle_unrecovered_error(
     agent: Any, *, api_error: Any, classified: Any, _retry: Any, status_code: Any, error_msg: Any,
     is_context_length_error: Any, is_rate_limited: Any, _is_zai_coding_overload: Any,
+    _is_anthropic_overload: Any,
     _provider: Any, _base: Any, _model: Any, messages: Any, api_messages: Any, api_kwargs: Any,
     active_system_prompt: Any, conversation_history: Any, approx_tokens: Any, retry_count: Any,
     max_retries: Any, compression_attempts: Any, api_call_count: Any,
@@ -351,7 +354,7 @@ def settle_unrecovered_error(
     wait_time = compute_error_backoff(
         agent, api_error, retry_count=retry_count, max_retries=max_retries,
         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
-        base_url=_base, model=_model,
+        is_anthropic_overload=_is_anthropic_overload, base_url=_base, model=_model,
     )
     # Same preserve-redirect rule as the invalid-response wait: a steering correction
     # must survive backoff, not die as "Operation interrupted".

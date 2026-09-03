@@ -5,7 +5,12 @@ import threading
 import agent.retry_utils as retry_utils
 from types import SimpleNamespace
 
-from agent.retry_utils import adaptive_rate_limit_backoff, is_zai_coding_overload_error, jittered_backoff
+from agent.retry_utils import (
+    adaptive_rate_limit_backoff,
+    is_anthropic_overload_error,
+    is_zai_coding_overload_error,
+    jittered_backoff,
+)
 
 
 def test_backoff_is_exponential():
@@ -167,6 +172,134 @@ def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
 
     assert long_waits, "long-backoff tier never reached within the retry ceiling"
     assert long_waits == [30.0, 60.0, 90.0, 120.0]
+
+
+def _anthropic_overload_error(status_code=200):
+    """Anthropic capacity dip as seen on the streaming path.
+
+    The envelope is HTTP 200 — the error rides in the body — so anything that
+    keys off the status code alone will miss it.
+    """
+    return SimpleNamespace(
+        status_code=status_code,
+        body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+
+
+def test_anthropic_overload_detected_despite_http_200():
+    """The streaming path delivers `overloaded_error` inside a 200 body."""
+    assert is_anthropic_overload_error(
+        base_url="https://api.anthropic.com",
+        model="claude-opus-5",
+        error=_anthropic_overload_error(),
+    )
+
+
+def test_anthropic_overload_covers_anthropic_compatible_proxies():
+    """`ANTHROPIC_BASE_URL` proxies emit the same error type and must qualify.
+
+    Host-scoping would reintroduce the blind spot this detection exists to
+    close — the endpoint reported in #55540 is exactly such a proxy.
+    """
+    assert is_anthropic_overload_error(
+        base_url="https://my-gateway.internal/v1",
+        model="glm-5.2",
+        error=_anthropic_overload_error(),
+    )
+
+
+def test_overload_detection_requires_the_anthropic_wire_token():
+    """Free-text 'overloaded' from some other provider must not qualify.
+
+    Matching the body is only safe because `overloaded_error` is a distinctive
+    Anthropic-wire token; a generic phrase must stay out.
+    """
+    generic = SimpleNamespace(
+        status_code=503,
+        body={"error": {"message": "Server is overloaded, please try again"}},
+    )
+    assert not is_anthropic_overload_error(
+        base_url="https://api.example.com/v1", model="some-model", error=generic
+    )
+
+
+def test_zai_overload_keeps_its_own_schedule():
+    """Z.AI is matched first and must not be captured by the Anthropic tier."""
+    monkey_err = _zai_overload_error()
+    _wait, policy = adaptive_rate_limit_backoff(
+        4,
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=monkey_err,
+        default_wait=1.0,
+    )
+    assert policy == "zai_coding_overload_long"
+
+
+def test_non_overload_anthropic_error_uses_default_wait():
+    """Ordinary Anthropic failures keep the default exponential schedule."""
+    err = SimpleNamespace(status_code=500, body={"error": {"type": "api_error"}})
+    wait, policy = adaptive_rate_limit_backoff(
+        1,
+        base_url="https://api.anthropic.com",
+        model="claude-opus-5",
+        error=err,
+        default_wait=2.0,
+    )
+    assert (wait, policy) == (2.0, None)
+
+
+def test_anthropic_overload_ceiling_makes_long_tier_reachable(monkeypatch):
+    """With the extended ceiling the full 15/30/60/120s schedule executes.
+
+    Without it, `api_max_retries` (3) equals the short-attempt count, so the
+    long tier is dead code and a multi-minute capacity window kills the turn.
+    """
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    from agent.retry_utils import anthropic_overload_retry_ceiling
+
+    err = _anthropic_overload_error()
+    ceiling = anthropic_overload_retry_ceiling()
+
+    long_waits = []
+    # The loop computes backoff for attempts 1..ceiling-1 (it gives up at ceiling).
+    for attempt in range(1, ceiling):
+        wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.anthropic.com",
+            model="claude-opus-5",
+            error=err,
+            default_wait=1.0,
+        )
+        if policy == "anthropic_overload_long":
+            long_waits.append(wait)
+
+    assert long_waits, "long-backoff tier never reached within the retry ceiling"
+    assert long_waits == [15.0, 30.0, 60.0, 120.0]
+
+
+def test_anthropic_overload_outlasts_a_multi_minute_window(monkeypatch):
+    """The observed failure mode: capacity windows lasting minutes.
+
+    Total wait across the ceiling must exceed the ~2 min window seen in the
+    field, where the stock 3-retry budget spent only ~25s.
+    """
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    from agent.retry_utils import anthropic_overload_retry_ceiling
+
+    err = _anthropic_overload_error()
+    ceiling = anthropic_overload_retry_ceiling()
+    total = sum(
+        adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.anthropic.com",
+            model="claude-opus-5",
+            error=err,
+            default_wait=2.0,
+        )[0]
+        for attempt in range(1, ceiling)
+    )
+    assert total >= 180.0, f"only {total}s of retry budget — a 2 min window still kills the turn"
 
 
 # ---------------------------------------------------------------------------

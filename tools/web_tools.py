@@ -634,6 +634,14 @@ def _web_requires_env() -> list[str]:
 # Override via web.extract_char_limit in config.yaml.
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
+# Ceiling on that budget, so a typo (one extra zero) can't blow up the context
+# window. The default is the value this was hard-coded to for years, so nobody
+# who hasn't configured it sees a change. It is a guard against mistakes, not a
+# statement about what a model can hold: a 1M-token window fits far more than
+# 500k characters, and an operator deliberately reading one long primary source
+# whole raises it with web.extract_char_limit_max in config.yaml.
+MAX_EXTRACT_CHAR_LIMIT = 500_000
+
 # Hard ceiling on the full-text file written to cache/web. The truncate-store
 # path otherwise calls path.write_text(content, encoding="utf-8") with no upper bound, so a
 # multi-MB page (some backends return very large markdown) writes unbounded
@@ -646,15 +654,44 @@ MAX_STORED_TEXT_CHARS = 2_000_000
 _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 
+def _get_extract_char_limit_max() -> int:
+    """Resolve the ceiling on the per-page char budget from config."""
+    try:
+        configured = _load_web_config().get("extract_char_limit_max")
+        if configured is not None:
+            # Never below the floor, or the clamp range would be empty.
+            return max(2000, int(configured))
+    except (TypeError, ValueError):
+        pass
+    return MAX_EXTRACT_CHAR_LIMIT
+
+
+def _clamp_extract_char_limit(value: int) -> int:
+    """Clamp a per-page char budget to the allowed range, logging a reduction.
+
+    Floor at 2k (below that the footer dominates); ceiling at the configurable
+    guard above. A reduction used to be silent, so an operator who set
+    extract_char_limit high got a head+tail truncated page with nothing in the
+    log saying their setting had been overridden — and a dropped middle reads
+    to the model like a complete document.
+    """
+    ceiling = _get_extract_char_limit_max()
+    clamped = max(2000, min(value, ceiling))
+    if clamped < value:
+        logger.warning(
+            "Requested extract char limit %d exceeds the %d ceiling; using %d "
+            "(raise web.extract_char_limit_max in config.yaml to allow more)",
+            value, ceiling, clamped,
+        )
+    return clamped
+
+
 def _get_extract_char_limit() -> int:
     """Resolve the per-page char budget from config, clamped to a sane range."""
     try:
         configured = _load_web_config().get("extract_char_limit")
         if configured is not None:
-            value = int(configured)
-            # Floor at 2k (below that the footer dominates), no hard ceiling
-            # beyond a generous guard so a typo can't blow up context.
-            return max(2000, min(value, 500_000))
+            return _clamp_extract_char_limit(int(configured))
     except (TypeError, ValueError):
         pass
     return DEFAULT_EXTRACT_CHAR_LIMIT
@@ -1067,6 +1104,8 @@ async def web_extract_tool(
         format (str): Desired output format ("markdown" or "html", optional)
         char_limit (Optional[int]): Per-page char budget sent to the model
             (default: web.extract_char_limit or 15000). Larger pages truncate.
+            Clamped to 2000..web.extract_char_limit_max (default 500000); a
+            value reduced by that ceiling is logged as a warning.
 
     Security: URLs are checked for embedded secrets before fetching.
 
@@ -1415,7 +1454,7 @@ async def web_extract_tool(
 
         effective_char_limit = char_limit if char_limit is not None else _get_extract_char_limit()
         try:
-            effective_char_limit = max(2000, min(int(effective_char_limit), 500_000))
+            effective_char_limit = _clamp_extract_char_limit(int(effective_char_limit))
         except (TypeError, ValueError):
             effective_char_limit = DEFAULT_EXTRACT_CHAR_LIMIT
 
@@ -1620,6 +1659,8 @@ if __name__ == "__main__":
     print("🛠️  Web tools ready for use!")
     print(f"   Extract char limit: {_get_extract_char_limit()} chars "
           "(pages over this are truncated; full text stored in cache/web)")
+    print(f"   Extract char limit ceiling: {_get_extract_char_limit_max()} chars "
+          "(raise with web.extract_char_limit_max in config.yaml)")
 
     # Show debug mode status
     if _debug.active:

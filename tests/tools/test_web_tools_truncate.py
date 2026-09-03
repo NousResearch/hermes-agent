@@ -66,6 +66,53 @@ class TestCharLimitConfig:
             assert wt._get_extract_char_limit() == wt.DEFAULT_EXTRACT_CHAR_LIMIT
 
 
+    def test_oversized_value_clamped_to_default_ceiling(self):
+        cfg = {"extract_char_limit": 2_000_000}
+        with patch("tools.web_tools._load_web_config", return_value=cfg):
+            assert wt._get_extract_char_limit() == wt.MAX_EXTRACT_CHAR_LIMIT
+
+
+    def test_raised_ceiling_is_honored(self):
+        cfg = {"extract_char_limit": 2_000_000, "extract_char_limit_max": 2_000_000}
+        with patch("tools.web_tools._load_web_config", return_value=cfg):
+            assert wt._get_extract_char_limit() == 2_000_000
+
+
+    def test_floor_still_applies(self):
+        with patch("tools.web_tools._load_web_config", return_value={"extract_char_limit": 10}):
+            assert wt._get_extract_char_limit() == 2000
+        # A ceiling below the floor can't invert the range.
+        cfg = {"extract_char_limit": 10, "extract_char_limit_max": 5}
+        with patch("tools.web_tools._load_web_config", return_value=cfg):
+            assert wt._get_extract_char_limit() == 2000
+
+
+    def test_bad_ceiling_falls_back_to_default_ceiling(self):
+        cfg = {"extract_char_limit": 2_000_000, "extract_char_limit_max": "nope"}
+        with patch("tools.web_tools._load_web_config", return_value=cfg):
+            assert wt._get_extract_char_limit() == wt.MAX_EXTRACT_CHAR_LIMIT
+
+
+    def test_reduced_value_is_logged_with_both_numbers(self):
+        cfg = {"extract_char_limit": 2_000_000}
+        with patch("tools.web_tools._load_web_config", return_value=cfg), \
+                patch("tools.web_tools.logger") as mock_logger:
+            assert wt._get_extract_char_limit() == wt.MAX_EXTRACT_CHAR_LIMIT
+        mock_logger.warning.assert_called_once()
+        # The operator must be able to see what they asked for and what they got.
+        args = mock_logger.warning.call_args[0]
+        assert 2_000_000 in args
+        assert wt.MAX_EXTRACT_CHAR_LIMIT in args
+
+
+    def test_in_range_value_is_not_logged(self):
+        cfg = {"extract_char_limit": 50_000}
+        with patch("tools.web_tools._load_web_config", return_value=cfg), \
+                patch("tools.web_tools.logger") as mock_logger:
+            assert wt._get_extract_char_limit() == 50_000
+        mock_logger.warning.assert_not_called()
+
+
 class TestEndToEnd:
     def test_web_extract_truncates_large_page_no_llm(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

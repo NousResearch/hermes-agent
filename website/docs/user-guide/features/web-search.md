@@ -54,7 +54,7 @@ Backends return raw page markdown, which can be huge (forum threads, docs sites,
 | Over the budget | Head+tail window (~75% head / ~25% tail, cut on markdown line boundaries) plus an explicit `[TRUNCATED]` footer. The full clean text is stored to disk and the footer tells the agent the file path and the exact `read_file` call to page through the omitted middle |
 | Over 2 000 000 | Stored text is capped at 2 MB |
 
-The per-page budget is configurable via `web.extract_char_limit` in `config.yaml` (default `15000`, clamped to 2 000–500 000), and the agent can raise it per-call with the tool's `char_limit` argument.
+The per-page budget is configurable via `web.extract_char_limit` in `config.yaml` (default `15000`, clamped to 2 000–500 000), and the agent can raise it per-call with the tool's `char_limit` argument. The upper end of that clamp is itself configurable via `web.extract_char_limit_max` — raise it to send a very long page whole to a long-context model. A budget reduced by the ceiling is logged as a warning naming both the requested and the effective value.
 
 ### When truncation gets in the way
 
@@ -470,7 +470,7 @@ Switch to a self-hosted instance (see [Option A](#option-a--self-host-with-docke
 
 ### `web_extract` returns truncated content with a `[TRUNCATED]` footer
 
-That's expected for pages over the character budget. The footer names the on-disk file holding the full clean text and the exact `read_file` call to page through the omitted middle. To see more inline, raise `web.extract_char_limit` in `config.yaml` or pass a larger `char_limit` on the call.
+That's expected for pages over the character budget. The footer names the on-disk file holding the full clean text and the exact `read_file` call to page through the omitted middle. To see more inline, raise `web.extract_char_limit` in `config.yaml` or pass a larger `char_limit` on the call. To go above 500 000 characters, raise `web.extract_char_limit_max` too — otherwise the request is clamped to it and a warning is logged.
 
 ---
 

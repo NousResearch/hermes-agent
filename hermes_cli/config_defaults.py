@@ -557,6 +557,7 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        "extract_char_limit_max": 500000,  # ceiling on extract_char_limit; raise it to send a long page whole to a long-context model
         # Keyless free-tier ring: with NO web backend configured or keyed,
         # web_search/web_extract rotate round-robin across four vendors'
         # public free tiers (exa, parallel, firecrawl, keenable),

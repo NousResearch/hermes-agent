@@ -1002,3 +1002,108 @@ class TestCallTimeDirResolution:
                 ss._rmtree_writable(foreign)
         finally:
             reset_hermes_home_override(token)
+
+
+class TestOsJunkIgnoredByModificationDetector:
+    """OS metadata junk must not read as a user modification of a skill.
+
+    Browsing a bundled skill's directory in Finder drops ``.DS_Store`` (and
+    AppleDouble ``._*`` companions) into it with zero user intent; counting
+    that stray file as divergence froze all future bundled updates for the
+    skill (#102408). The detector must ignore OS junk — but only OS junk:
+    a genuine edit still reads as user-modified even when junk is present.
+    """
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(
+            patch(
+                "tools.skills_sync._get_optional_dir",
+                return_value=bundled.parent / "optional-skills",
+            )
+        )
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def _skill(self, root, rel, body="# Body\n", name="demo-skill"):
+        d = root / rel
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n{body}", encoding="utf-8")
+        return d
+
+    def test_dir_hash_and_file_list_ignore_os_junk(self, tmp_path):
+        """Identical trees with/without junk hash and enumerate the same."""
+        from tools.skills_sync import _skill_file_list
+
+        clean = self._skill(tmp_path, "clean/demo-skill")
+        junky = self._skill(tmp_path, "junky/demo-skill")
+        for junk in (".DS_Store", "._SKILL.md", "Icon\r", "Thumbs.db"):
+            (junky / junk).write_bytes(b"\x00junk")
+        (junky / "nested").mkdir()
+        (junky / "nested" / ".DS_Store").write_bytes(b"\x00junk")
+
+        assert _dir_hash(clean) == _dir_hash(junky)
+        assert _skill_file_list(clean) == _skill_file_list(junky) == ["SKILL.md"]
+
+    def test_sync_updates_skill_when_only_junk_was_added(self, tmp_path):
+        """Junk-only divergence must not freeze the package: an upstream
+        update still lands (pre-fix this read as user-modified forever)."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Baseline: the user's synced copy matches the recorded origin hash…
+        origin = self._skill(bundled, "cat/demo-skill", body="# v1\n")
+        user = self._skill(skills_dir, "cat/demo-skill", body="# v1\n")
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo-skill:{_dir_hash(origin)}\n", encoding="utf-8")
+        # …then Finder drops junk into the user's copy…
+        (user / ".DS_Store").write_bytes(b"\x00junk")
+        (user / "._SKILL.md").write_bytes(b"\x00junk")
+        # …and upstream ships a newer version.
+        self._skill(bundled, "cat/demo-skill", body="# v2 upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert result["user_modified"] == []
+        assert "demo-skill" in result["updated"]
+        assert "# v2 upstream" in (skills_dir / "cat" / "demo-skill" / "SKILL.md").read_text()
+
+    def test_genuine_edit_still_flagged_alongside_junk(self, tmp_path):
+        """The junk exemption must not mask a real user edit."""
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        origin = self._skill(bundled, "cat/demo-skill", body="# v1\n")
+        user = self._skill(skills_dir, "cat/demo-skill", body="# my edit\n")
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(f"demo-skill:{_dir_hash(origin)}\n", encoding="utf-8")
+        (user / ".DS_Store").write_bytes(b"\x00junk")
+        self._skill(bundled, "cat/demo-skill", body="# v2 upstream\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        assert "demo-skill" in result["user_modified"]
+        assert "demo-skill" not in result["updated"]
+
+    def test_diff_does_not_report_junk_as_added(self, tmp_path):
+        """`hermes skills diff` must not surface junk as 'only in your copy'."""
+        from tools.skills_sync import diff_bundled_skill
+
+        bundled = tmp_path / "bundled"
+        skills_dir = tmp_path / "user_skills"
+        self._skill(bundled, "cat/demo-skill", body="# v1\n")
+        self._skill(skills_dir, "cat/demo-skill", body="# v1\n")
+        (skills_dir / "cat" / "demo-skill" / ".DS_Store").write_bytes(b"\x00junk")
+
+        with self._patches(bundled, skills_dir, skills_dir / ".bundled_manifest"):
+            result = diff_bundled_skill("demo-skill")
+
+        assert result["ok"] is True
+        assert result["modified"] is False

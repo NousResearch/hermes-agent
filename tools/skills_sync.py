@@ -287,6 +287,23 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return _skills_dir() / rel
 
 
+_OS_JUNK_FILENAMES = frozenset({".DS_Store", "Thumbs.db"})
+
+
+def _is_os_junk_file(rel: Path) -> bool:
+    """Whether ``rel`` is OS/metadata junk rather than skill content.
+
+    Finder drops ``.DS_Store`` (and AppleDouble ``._*`` companions, plus the
+    ``Icon\\r`` custom-icon file) into any folder a user browses on macOS;
+    Windows Explorer leaves ``Thumbs.db`` behind. None of these represent a
+    user modification of the skill, so the modification detector must not
+    count them — otherwise browsing a bundled skill's directory in Finder
+    freezes all future bundled updates for it (#102408).
+    """
+    name = rel.name
+    return name in _OS_JUNK_FILENAMES or name.startswith("._") or name == "Icon\r"
+
+
 def _dir_hash(directory: Path) -> str:
     """Compute a hash of all file contents in a directory for change detection."""
     hasher = hashlib.md5()
@@ -294,6 +311,8 @@ def _dir_hash(directory: Path) -> str:
         for fpath in sorted(directory.rglob("*")):
             if fpath.is_file():
                 rel = fpath.relative_to(directory)
+                if _is_os_junk_file(rel):
+                    continue
                 hasher.update(str(rel).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
     except (OSError, IOError):
@@ -317,7 +336,10 @@ def _skill_file_list(skill_dir: Path) -> List[str]:
     files: List[str] = []
     for fpath in sorted(skill_dir.rglob("*")):
         if fpath.is_file():
-            files.append(fpath.relative_to(skill_dir).as_posix())
+            rel = fpath.relative_to(skill_dir)
+            if _is_os_junk_file(rel):
+                continue
+            files.append(rel.as_posix())
     return files
 
 

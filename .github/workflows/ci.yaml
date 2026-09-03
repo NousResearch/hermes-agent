@@ -21,7 +21,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write # needed by lint (PR comment)
+  pull-requests: write # needed by lint (PR comment) + supply-chain review_status
+  actions: read # needed by osv-scanner (SARIF upload)
+  security-events: write # needed by osv-scanner (SARIF upload)
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -139,6 +141,12 @@ jobs:
     if: false
     uses: ./.github/workflows/e2e-desktop.yml
 
+  docs-site:
+    name: Docs Site
+    needs: detect
+    if: needs.detect.outputs.site == 'true'
+    uses: ./.github/workflows/docs-site-checks.yml
+
   uv-lockfile:
     name: Check uv.lock
     needs: detect
@@ -172,6 +180,20 @@ jobs:
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
 
+  supply-chain:
+    name: Supply-chain scan
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true')
+    uses: ./.github/workflows/supply-chain-audit.yml
+    with:
+      event_name: ${{ needs.detect.outputs.event_name }}
+      scan: ${{ needs.detect.outputs.scan == 'true' }}
+      deps: ${{ needs.detect.outputs.deps == 'true' }}
+
+  osv-scanner:
+    name: OSV scan
+    uses: ./.github/workflows/osv-scanner.yml
+
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
@@ -198,6 +220,9 @@ jobs:
       - lockfile-diff
       - docker-lint
       - profile-artifact-check
+      - docs-site
+      - supply-chain
+      - osv-scanner
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this

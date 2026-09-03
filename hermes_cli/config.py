@@ -6230,8 +6230,75 @@ def set_config_value(key: str, value: str, force: bool = False):
         ))
 
 
-def get_config_value(key: str, *, as_json: bool = False):
+def get_config_origin(key: str) -> str:
+    """Return which layer defines a config key.
+
+    Ported semantic from OpenAI Codex's per-key origins tracking
+    (``codex-rs/config/src/loader``): instead of only knowing the effective
+    value, answer *where it came from*. Hermes has three config layers plus
+    the env bridge, so the precedence is:
+
+    - ``env``      — key is an env-backed credential/bridge key and the
+                     env var is set (secrets live in .env, not config.yaml)
+    - ``managed``  — pinned by the administrator's managed config layer
+                     (/etc/hermes/config.yaml or HERMES_MANAGED_DIR)
+    - ``user``     — set explicitly in the user's config.yaml
+    - ``default``  — not user-set, provided by DEFAULT_CONFIG
+    - ``unset``    — no layer defines it (unknown key)
+
+    A managed key always reports ``managed`` even when the user also wrote
+    it — the managed layer wins at the leaf, so the effective source is the
+    managed one.
+    """
+    # 1. Env-backed keys: if the env var is actually set, that is the source
+    #    the effective value came from (get_config_value resolves them first).
+    if _is_env_config_key(key):
+        try:
+            if get_env_value(key.upper()) is not None:
+                return "env"
+        except Exception:
+            pass
+
+    # 2. Managed scope wins at the leaf over the user file.
+    try:
+        from hermes_cli import managed_scope
+
+        if managed_scope.is_key_managed(key):
+            return "managed"
+    except Exception:
+        pass
+
+    # 3. User file (raw, exactly as written — defaults merge would make
+    #    every key "present").  _get_nested returns the _MISSING sentinel
+    #    (not None) for absent keys, so test against it explicitly.
+    try:
+        if _get_nested(read_user_config_raw(), key) is not _MISSING:
+            return "user"
+    except Exception:
+        pass
+
+    # 4. Defaults.
+    try:
+        if _get_nested(DEFAULT_CONFIG, key) is not _MISSING:
+            return "default"
+    except Exception:
+        pass
+
+    return "unset"
+
+
+def get_config_value(key: str, *, as_json: bool = False, origin: bool = False):
     """Print a resolved configuration value."""
+    if origin:
+        origin_name = get_config_origin(key)
+        if as_json:
+            # `--json --origin`: emit a structured object instead of silently
+            # dropping `--json` (review nit on #95638 — combining the flags
+            # used to print the bare origin string).
+            print(json.dumps({"origin": origin_name}))
+        else:
+            print(origin_name)
+        return
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -6322,14 +6389,19 @@ def config_command(args):
     elif subcmd == "get":
         key = getattr(args, 'key', None)
         if not key:
-            print("Usage: hermes config get <key> [--json]")
+            print("Usage: hermes config get <key> [--json] [--origin]")
             print()
             print("Examples:")
             print("  hermes config get model")
             print("  hermes config get terminal.backend")
             print("  hermes config get skills.config --json")
+            print("  hermes config get terminal.backend --origin")
             sys.exit(1)
-        get_config_value(key, as_json=getattr(args, 'json', False))
+        get_config_value(
+            key,
+            as_json=getattr(args, 'json', False),
+            origin=bool(getattr(args, 'origin', False)),
+        )
 
     elif subcmd == "set":
         key = getattr(args, 'key', None)

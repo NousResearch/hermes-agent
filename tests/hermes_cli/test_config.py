@@ -1852,3 +1852,66 @@ class TestConfigCommandFailClosedSurface:
         assert excinfo.value.code == 1
         assert "not valid YAML" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
+
+
+# ---------------------------------------------------------------------------
+# get_config_origin — per-key origins tracking (Codex loader semantic)
+# ---------------------------------------------------------------------------
+
+class TestGetConfigOrigin:
+    def test_unknown_key_is_unset(self):
+        from hermes_cli.config import get_config_origin
+        assert get_config_origin("no.such.key.anywhere") == "unset"
+
+    def test_default_key_when_not_user_set(self, tmp_path, monkeypatch):
+        from hermes_cli.config import get_config_origin, get_config_path
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+        # No user file → a key present in DEFAULT_CONFIG is "default".
+        assert get_config_origin("agent.max_turns") == "default"
+
+    def test_user_key_when_written(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("agent:\n  max_turns: 42\n", encoding="utf-8")
+        assert cfg_mod.get_config_origin("agent.max_turns") == "user"
+
+    def test_managed_key_wins_over_user(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text("agent:\n  max_turns: 42\n", encoding="utf-8")
+        with patch(
+            "hermes_cli.managed_scope.is_key_managed",
+            return_value=True,
+        ):
+            assert cfg_mod.get_config_origin("agent.max_turns") == "managed"
+
+    def test_env_key_reports_env_when_set(self, monkeypatch):
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        assert cfg_mod.get_config_origin("OPENROUTER_API_KEY") == "env"
+
+    def test_get_config_value_origin_flag(self, capsys):
+        from hermes_cli.config import get_config_value
+        get_config_value("no.such.key", origin=True)
+        out = capsys.readouterr().out.strip()
+        assert out == "unset"
+
+    def test_get_config_value_origin_json_flag(self, capsys):
+        """`--json --origin` must emit structured JSON, not silently drop
+        `--json` and print the bare origin string (review nit on #95638)."""
+        import json as _json
+        from hermes_cli.config import get_config_value
+        get_config_value("no.such.key", as_json=True, origin=True)
+        out = capsys.readouterr().out.strip()
+        assert _json.loads(out) == {"origin": "unset"}
+
+    def test_get_config_value_origin_json_user_key(self, tmp_path, monkeypatch, capsys):
+        import json as _json
+        from hermes_cli import config as cfg_mod
+        monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: tmp_path / "config.yaml")
+        (tmp_path / "config.yaml").write_text("agent:\n  max_turns: 42\n", encoding="utf-8")
+        cfg_mod.get_config_value("agent.max_turns", as_json=True, origin=True)
+        out = capsys.readouterr().out.strip()
+        assert _json.loads(out) == {"origin": "user"}

@@ -102,7 +102,7 @@ def _count_live(cls_name: str) -> int:
 
 
 def _snap(pid: int, db_path: str) -> dict:
-    st = open(f"/proc/{pid}/status").read()
+    st = open(f"/proc/{pid}/status", encoding="utf-8").read()
     g = lambda k: int(st.split(k + ":")[1].split()[0])
     tcp = subprocess.run(f"ss -tanp 2>/dev/null | grep -c 'pid={pid},'", shell=True, capture_output=True, text=True).stdout.strip()
     kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(pid)], capture_output=True, text=True).stdout
@@ -125,7 +125,7 @@ def main() -> None:
     ap.add_argument("--reply-kb", type=int, default=0, help="pad each child's final reply to N KB (transcript-size realism)")
     a = ap.parse_args()
     if a.compare:
-        b, c = (json.load(open(p)) for p in a.compare)
+        b, c = (json.load(open(p, encoding="utf-8")) for p in a.compare)
         print(f"| metric | {b['label']} | {c['label']} | delta |\n|---|---|---|---|")
         for k in ("threads", "rss_mb", "fds", "tcp", "pyright", "kernels", "db_mb", "httpx_clients", "transports", "session_dbs"):
             bv, cv = b["peak"][k], c["peak"][k]
@@ -145,7 +145,7 @@ def main() -> None:
     sys.path.insert(0, a.repo)
     os.chdir(a.repo)
     pyright = shutil.which("pyright-langserver", path=os.path.expanduser("~/.hermes/lsp/bin") + os.pathsep + os.environ.get("PATH", ""))
-    with open(os.path.join(home, "config.yaml"), "w") as f:
+    with open(os.path.join(home, "config.yaml"), "w", encoding="utf-8") as f:
         f.write("lsp:\n  enabled: true\n  wait_timeout: 5.0\n  install_strategy: manual\n")
         if pyright:
             f.write(f"  servers:\n    pyright:\n      command: [{json.dumps(pyright)}, \"--stdio\"]\n")
@@ -158,8 +158,8 @@ def main() -> None:
         d = os.path.join(base, f"wt{w}")
         os.makedirs(os.path.join(d, "hermes_cli"))
         subprocess.run(["git", "init", "-q", d], check=True)
-        open(os.path.join(d, "pyproject.toml"), "w").write("[project]\nname='b'\n")
-        open(os.path.join(d, "hermes_cli", "__init__.py"), "w").write("")
+        open(os.path.join(d, "pyproject.toml"), "w", encoding="utf-8").write("[project]\nname='b'\n")
+        open(os.path.join(d, "hermes_cli", "__init__.py"), "w", encoding="utf-8").write("")
         wts.append(d)
 
     srv = _serve()
@@ -216,7 +216,7 @@ def main() -> None:
            "before": before, "peak": peak, "after": after}
     sys.__stderr__.write("BENCH " + json.dumps(out) + "\n"); sys.__stderr__.flush()
     if a.out:
-        open(a.out, "w").write(json.dumps(out, indent=1))
+        open(a.out, "w", encoding="utf-8").write(json.dumps(out, indent=1))
     try:
         from agent.lsp import shutdown_service
         shutdown_service()

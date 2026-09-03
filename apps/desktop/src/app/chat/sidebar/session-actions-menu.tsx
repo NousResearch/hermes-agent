@@ -686,7 +686,7 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" onKeyDown={event => event.stopPropagation()}>
         <DialogHeader>
           <DialogTitle>{r.renameTitle}</DialogTitle>
         </DialogHeader>

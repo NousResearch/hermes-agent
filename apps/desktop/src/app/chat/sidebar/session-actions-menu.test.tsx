@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ActionsContextMenu } from '@/components/ui/actions-menu'
+
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
@@ -122,6 +124,14 @@ function renderMenu() {
   )
 }
 
+function openActionsMenu() {
+  const trigger = screen.getByRole('button', { name: 'Session actions' })
+
+  fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+  fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+  fireEvent.click(trigger)
+}
+
 describe('SessionActionsMenu', () => {
   it('opens the dropdown on click without a tooltip on the kebab', async () => {
     renderMenu()
@@ -133,13 +143,48 @@ describe('SessionActionsMenu', () => {
     // Radix's dropdown trigger opens on pointerdown (not on the synthetic
     // 'click' fireEvent alone would dispatch), so fire the full mouse
     // sequence a real click produces.
-    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
-    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
-    fireEvent.click(trigger)
+    openActionsMenu()
 
     expect(await screen.findByRole('menu')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: /archive/i })).toBeTruthy()
+  })
+
+  // A portaled dialog still bubbles React events through its LOGICAL owner —
+  // here the row wrapped by ActionsContextMenu. Without the modal's own
+  // boundary, Space reaches that owner, is treated as row/menu activation, and
+  // is cancelled before the input can insert it: the Rename field silently
+  // refuses spaces. The stand-in ancestor below cancels Space the way the real
+  // context-menu trigger does.
+  it('keeps Space editable in the portaled Rename dialog inside a context-menu row', async () => {
+    render(
+      <ActionsContextMenu ariaLabel="Row actions" items={() => null}>
+        <div
+          onKeyDown={event => {
+            if (event.key === ' ') {
+              event.preventDefault()
+            }
+          }}
+        >
+          <SessionActionsMenu align="end" sessionId="s1" sideOffset={6} title="My session">
+            <button aria-label="Session actions" type="button">
+              ⋮
+            </button>
+          </SessionActionsMenu>
+        </div>
+      </ActionsContextMenu>
+    )
+
+    openActionsMenu()
+    fireEvent.click(await screen.findByRole('menuitem', { name: /rename/i }))
+
+    const input = await screen.findByDisplayValue('My session')
+
+    const accepted = input.dispatchEvent(
+      new KeyboardEvent('keydown', { bubbles: true, cancelable: true, code: 'Space', key: ' ' })
+    )
+
+    expect(accepted).toBe(true)
   })
 
   it('opens the rename dialog focused on its input, not the row trigger', async () => {

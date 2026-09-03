@@ -117,11 +117,31 @@ class CodexAppServerClient:
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    f"sandbox_workspace_write.writable_roots=[{json.dumps(kanban_root)}]",
                     "-c",
                     "sandbox_workspace_write.network_access=false",
                 ]
             )
+            # Codex builds configured MCP subprocesses from each server's
+            # explicit env table rather than inheriting the app-server env.
+            # Forward only worker identity/routing values; without these the
+            # hermes-tools MCP server hides kanban_complete/kanban_block.
+            for key in (
+                "HERMES_KANBAN_TASK",
+                "HERMES_KANBAN_RUN_ID",
+                "HERMES_KANBAN_BOARD",
+                "HERMES_KANBAN_DB",
+                "HERMES_KANBAN_CLAIM_LOCK",
+                "HERMES_SESSION_ID",
+            ):
+                value = spawn_env.get(key)
+                if value:
+                    app_server_args.extend(
+                        [
+                            "-c",
+                            f"mcp_servers.hermes-tools.env.{key}={json.dumps(value)}",
+                        ]
+                    )
 
         cmd = [codex_bin, "app-server"] + app_server_args
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.

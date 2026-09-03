@@ -3813,7 +3813,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # federated Matrix user could invite the bot into arbitrary rooms,
         # exposing its presence and metadata. Mirrors the allow-list gate
         # used on the message/reaction paths.
-        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+        allow_all = get_secret("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
             "true",
             "1",
             "yes",
@@ -4184,7 +4184,7 @@ class MatrixAdapter(BasePlatformAdapter):
         prompt: Any,
         prompt_label: str,
     ) -> bool:
-        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
+        allow_all = get_secret("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
             "true",
             "1",
             "yes",

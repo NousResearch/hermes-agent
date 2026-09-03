@@ -96,6 +96,7 @@ export interface WorldAssetManifest {
   heroAssetManifest?: string
   heroAssetPreview?: string
   masterAssetManifest?: string
+  masterAssetRejectedCandidates?: string
   profileManifest: string
   productionAssetPipeline: WorldProductionAssetPipeline
   renderProfile: string
@@ -274,6 +275,7 @@ export const LUNAR_CITY_ASSET_MANIFEST: WorldAssetManifest = {
   heroAssetManifest: 'lunar-city/hero-assets/hero-assets-manifest.json',
   heroAssetPreview: 'lunar-city/hero-assets/lunar-city-hero-assets.png',
   masterAssetManifest: 'lunar-city/master-assets/master-asset-manifest.json',
+  masterAssetRejectedCandidates: 'lunar-city/master-assets/rejected-candidates.json',
   profileManifest: 'lunar-city/profile-assets.json',
   productionAssetPipeline: {
     highPolyMasterFirst: true,

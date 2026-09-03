@@ -28,6 +28,9 @@ describe('Lunar City asset manifest', () => {
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetManifest).toBe('lunar-city/hero-assets/hero-assets-manifest.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetPreview).toBe('lunar-city/hero-assets/lunar-city-hero-assets.png')
     expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetManifest).toBe('lunar-city/master-assets/master-asset-manifest.json')
+    expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetRejectedCandidates).toBe(
+      'lunar-city/master-assets/rejected-candidates.json'
+    )
     expect(LUNAR_CITY_ASSET_MANIFEST.profileManifest).toBe('lunar-city/profile-assets.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.assets.filter(asset => asset.kind === 'building')).toHaveLength(8)
     expect(LUNAR_CITY_ASSET_MANIFEST.assets.filter(asset => asset.kind === 'character')).toHaveLength(19)
@@ -305,5 +308,26 @@ describe('Lunar City asset manifest', () => {
       expect(asset.acceptance.requiresVisualApproval).toBe(true)
       expect(asset.acceptance.minimumTriangleCount).toBeGreaterThanOrEqual(asset.heroAsset ? 120000 : 45000)
     }
+  })
+
+  it('records high-poly generated candidates rejected for wrong silhouettes', () => {
+    const rejected = JSON.parse(
+      readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/rejected-candidates.json'), 'utf8')
+    ) as {
+      rejectedCandidates: Array<{
+        artifact: { faces: number; vertices: number }
+        generator: { repository: string }
+        rejection: { rejectIfMatched: string; status: string }
+        targetAssetId: string
+      }>
+    }
+
+    expect(rejected.rejectedCandidates).toHaveLength(1)
+    expect(rejected.rejectedCandidates[0].targetAssetId).toBe('building-research-lab')
+    expect(rejected.rejectedCandidates[0].generator.repository).toBe('https://github.com/Tencent-Hunyuan/Hunyuan3D-2')
+    expect(rejected.rejectedCandidates[0].artifact.faces).toBeGreaterThan(120000)
+    expect(rejected.rejectedCandidates[0].artifact.vertices).toBeGreaterThan(120000)
+    expect(rejected.rejectedCandidates[0].rejection.status).toBe('rejected_for_production')
+    expect(rejected.rejectedCandidates[0].rejection.rejectIfMatched).toBe('high_poly_cube_or_wrong_silhouette')
   })
 })

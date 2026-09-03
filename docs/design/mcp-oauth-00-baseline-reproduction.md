@@ -1,8 +1,9 @@
 # MCP OAuth Chunk 0 — Baseline Reproduction
 
-Status: design proposal (not yet implemented)
+Status: design proposal (harness partially built; F-2 kind-aware injection is a 2026-09-03 design addition not yet in `tests/fakes/mcp_oauth_peer.py`)
 Delivery plan: [`../plans/2026-09-01-mcp-oauth-credential-store-delivery-plan.md`](../plans/2026-09-01-mcp-oauth-credential-store-delivery-plan.md)
 Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md)
+Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-2, F-3, F-5)
 
 ## Purpose
 
@@ -19,7 +20,7 @@ The harness must prove these current behaviors independently:
 3. CLI `hermes mcp login`/`reauth` deletes durable state before authorization and does not restore it after failure.
 4. Runtime reconnect or parking must not delete a token after a transient transport failure.
 
-The first three are expected failures on the baseline. The fourth is a preservation invariant and guards the useful soft-eviction portion of the earlier proposal.
+The first three are expected failures on the baseline. The fourth is a preservation invariant and guards the useful soft-eviction portion of the earlier proposal. It is the same invariant the fix relies on — "a dependency being unreachable is not evidence against the credential" (architecture §6.2, §7.1) — so the preservation test cross-references those sections.
 
 ## Test harness
 
@@ -45,7 +46,18 @@ The peer supports failure injection after:
 - Token persistence.
 - MCP initialization/probe.
 
-Tests use an isolated temporary `HERMES_HOME`, real `HermesTokenStorage`, and real surface/lifecycle entry points where possible. Patch the network transport or provider boundary, not the persistence methods under test.
+Tests use an isolated temporary `HERMES_HOME`, real `HermesTokenStorage`, and real surface/lifecycle entry points where possible. Patch the network transport or provider boundary, not the persistence methods under test. The fixture seeds `HERMES_HOME` from `Path(tmp_path).resolve()` so a canonical spelling is the baseline for the identity-digest tests added in Chunk 1.
+
+### Failure kind
+
+Each network-boundary injection point (the discovery, registration, token-exchange, and probe steps) also accepts an optional *kind*, so the same peer serves the F-2 probe/commit taxonomy that Chunk 3 asserts:
+
+- `definitive` — HTTP 4xx, `invalid_grant`, or `invalid_client`. The default, and the only kind the Chunk 0 baseline tests use: the current bug loses the token regardless of kind.
+- `indeterminate` — HTTP 5xx, connection error, timeout, or HTTP 429 with an optional `Retry-After`.
+
+The MCP probe point yields a classifiable outcome rather than a single raise: `authenticated`, `rejected` (HTTP 401/403), or `indeterminate`.
+
+Chunk 0 only exposes this capability. The assertions that a `definitive` outcome aborts, an `indeterminate` token-exchange failure surfaces a transient error, and an `indeterminate` probe commits `probe=deferred` belong to Chunk 3.
 
 ## Scenario fixture
 
@@ -60,6 +72,8 @@ server.meta.json   = OLD issuer/token endpoint metadata
 The injected flow writes a distinguishable `PARTIAL` client or metadata record and then fails. Assertions record the resulting artifact set and demonstrate that the active token disappears.
 
 No real token values are used. Test sentinel strings must be unmistakably fake.
+
+The OLD/NEW token fixtures use the legacy on-disk shape in Chunk 0 (`access_token`, `refresh_token`, `token_type`, `expires_in`). Chunk 4 extends them with `accepted_at_utc`, `expires_at`, and `original_expires_in`, and adds an injectable UTC clock to the peer for the wall-clock plausibility guard — reusing the same peer, not replacing it.
 
 ## Proposed test locations
 
@@ -98,6 +112,8 @@ Run the prescribed repository test wrapper against the focused files. The demons
 - Do not read source files or assert function-call text.
 - Do not depend on Todoist, Hugging Face, or another live provider.
 - Do not freeze implementation-specific line numbers or file counts.
+- Do not add the F-2 taxonomy assertions. Chunk 0 exposes kind-aware and classifiable-probe injection; Chunk 3 asserts the retry / abort / `probe=deferred` behavior.
+- Do not add the Chunk 4 token time-model fields or clock injection yet.
 
 ## Merge strategy
 
@@ -112,6 +128,6 @@ The preferred approach is to include the harness in Chunk 1 while preserving a r
 
 - Every surface-specific failure is reproducible without network access.
 - The tests execute production imports and real temporary credential state.
-- Failure injection is reusable by transactional reauthorization tests.
+- Failure injection is reusable by transactional reauthorization tests, including failure kind (definitive rejection vs indeterminate transport) and classifiable probe outcome — not only failure point.
 - Transient reconnect retention has a positive behavioral test.
 - No secrets or real user paths appear in output.

@@ -11760,6 +11760,12 @@ async function ensureRegistryBackend(
   }
 
   const key = backendScopeKey(id, profile)
+  const stopping = poolStopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
   const existing = backendPool.get(key)
 
   if (existing) {
@@ -11940,6 +11946,12 @@ async function ensureManagedSshBackend(source, profile, correlationId) {
 
 async function ensureManagedSshBackendAtKey(source, profile, key, correlationId, tokenPersistenceSource = '') {
   managedConnectionUpdateGate.assertCanDial(source.id, correlationId)
+  const stopping = poolStopper.inFlight(key)
+
+  if (stopping) {
+    await stopping
+  }
+
   const existing = backendPool.get(key)
 
   if (existing) {

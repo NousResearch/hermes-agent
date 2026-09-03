@@ -46,7 +46,27 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    def test_retries_with_json_object_when_json_schema_is_unavailable(self):
+        calls = []
 
+        def mock_call_llm(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("This response_format type is unavailable now")
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title":"Fix response format warning"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("fix the response format warning") == (
+                "Fix response format warning"
+            )
+
+        assert calls[0]["extra_body"]["response_format"]["type"] == "json_schema"
+        assert calls[1]["extra_body"] == {
+            "response_format": {"type": "json_object"}
+        }
 
     def test_strips_think_blocks(self):
         """Reasoning-model output wrapped in <think>...</think> must not

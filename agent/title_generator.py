@@ -282,6 +282,15 @@ def derive_title(user_message: str) -> Optional[str]:
     return line or None
 
 
+def _response_format_is_unavailable(exc: Exception) -> bool:
+    """Return whether a provider rejected the requested response-format mode."""
+    message = str(exc).lower()
+    return "response_format" in message and any(
+        marker in message
+        for marker in ("unavailable", "unsupported", "not supported", "unknown")
+    )
+
+
 def _extract_title_text(content: str) -> str:
     """Pull the title out of a model response.
 
@@ -400,17 +409,31 @@ def generate_title(
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
+        request_kwargs = {
+            "task": "title_generation",
+            "messages": messages,
             # A title is a handful of tokens. The old 500-token ceiling let a
             # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
+            "max_tokens": 64,
+            "temperature": 0.3,
+            "timeout": timeout,
+            "main_runtime": main_runtime,
+        }
+        try:
+            response = call_llm(
+                **request_kwargs,
+                extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            )
+        except Exception as exc:
+            if not _response_format_is_unavailable(exc):
+                raise
+            logger.info(
+                "Title provider rejected json_schema; retrying with json_object"
+            )
+            response = call_llm(
+                **request_kwargs,
+                extra_body={"response_format": {"type": "json_object"}},
+            )
         content = response.choices[0].message.content or ""
         title = _clean_title(_extract_title_text(content))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title

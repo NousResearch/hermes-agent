@@ -9270,18 +9270,6 @@ class AIAgent:
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
-        # Only a finished prior response can request this transition. It occurs
-        # before the inbound message is admitted and never copies/summarizes it.
-        try:
-            from session_rollover import adopt_agent_at_turn_boundary
-            adopt_agent_at_turn_boundary(
-                self,
-                active_work=bool(getattr(self, "_executing_tools", False))
-                or bool(getattr(self, "_active_children", ()) or ()),
-            )
-        except Exception:
-            logger.debug("turn-boundary rollover adoption failed", exc_info=True)
-
         # A review deliberately shares this agent's session_id for prompt-cache
         # parity. Fence review startup or interrupt an admitted request, then
         # await that request's exit before opening any live-turn Relay or task
@@ -9335,6 +9323,7 @@ class AIAgent:
         relay_lease = None
         relay_turn = None
         durable_turn_lease = None
+        durable_turn_lease_session_id = None
         durable_turn_lease_stop = None
         durable_turn_lease_refresh = None
         durable_turn_liveness_watchdog = None
@@ -9526,8 +9515,37 @@ class AIAgent:
                 # the agent attr so a late flush after reclaim is fenced in
                 # the same SQLite write transaction as the transcript insert.
                 durable_turn_lease = _durable_holder
+                durable_turn_lease_session_id = session_id
                 self._active_session_turn_lease_holder = _durable_holder
                 self._active_session_turn_lease_ttl_seconds = _lease_ttl
+                # The durable lease serializes parent adoption with every
+                # alias-key caller. Adopt before any caller-provided history is
+                # copied into the shared turn prologue: CLI passes
+                # conversation_history[:-1], ACP passes state.history, and
+                # build_turn_context copies either value. A child starts with
+                # the inbound message only, never its parent's transcript.
+                try:
+                    from session_rollover import adopt_agent_at_turn_boundary
+
+                    adopted_id = adopt_agent_at_turn_boundary(
+                        self,
+                        active_work=bool(getattr(self, "_executing_tools", False))
+                        or bool(getattr(self, "_active_children", ()) or ()),
+                        turn_lease_holder=durable_turn_lease,
+                    )
+                except Exception:
+                    logger.debug("turn-boundary rollover adoption failed", exc_info=True)
+                    adopted_id = None
+                if adopted_id:
+                    session_id = adopted_id
+                    durable_turn_lease_session_id = adopted_id
+                    task_context["session_id"] = adopted_id
+                    conversation_history = []
+                    # The registry follows the child so alias-key traffic must
+                    # wait through its inbound persistence and final response.
+                    # The SQLite durable lease remains held on the parent until
+                    # this turn exits, which serializes the adoption itself.
+                    self._session_messages = []
                 if _lease_waited:
                     self._emit_status(
                         "Session is free; loading the latest transcript..."
@@ -9706,7 +9724,7 @@ class AIAgent:
                         return False
                     try:
                         if not _turn_db.refresh_session_turn_lease(
-                            getattr(self, "session_id", None) or session_id,
+                            durable_turn_lease_session_id or session_id,
                             durable_turn_lease,
                             ttl_seconds=_lease_ttl,
                         ):
@@ -9717,7 +9735,7 @@ class AIAgent:
                                 return False
                             logger.error(
                                 "Lost session turn lease while turn is active: %s",
-                                getattr(self, "session_id", None) or session_id,
+                                durable_turn_lease_session_id or session_id,
                             )
                             _interrupt_turn(
                                 "Session turn lease lost; stopping to protect "
@@ -9729,7 +9747,7 @@ class AIAgent:
                             return False
                         logger.warning(
                             "Failed to refresh session turn lease: %s",
-                            getattr(self, "session_id", None) or session_id,
+                            durable_turn_lease_session_id or session_id,
                             exc_info=True,
                         )
                         _interrupt_turn(
@@ -9905,7 +9923,8 @@ class AIAgent:
                     if durable_turn_lease is not None:
                         try:
                             _turn_db.release_session_turn_lease(
-                                session_id, durable_turn_lease
+                                durable_turn_lease_session_id or session_id,
+                                durable_turn_lease,
                             )
                         except Exception:
                             logger.error(

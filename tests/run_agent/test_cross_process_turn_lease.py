@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from agent import relay_runtime
 from hermes_state import SessionDB
 from run_agent import AIAgent
+from session_rollover import TurnBoundaryRollover
 
 
 class _DB:
@@ -63,6 +64,10 @@ def _agent_with_db(db, *, session_id="stale-parent", platform="desktop"):
     agent._pending_redirect = None
     agent._execution_thread_id = None
     agent._interrupt_thread_signal_pending = False
+    agent._session_messages = []
+    agent._executing_tools = False
+    agent.__dict__["_active_children"] = []
+    agent.reset_session_state = lambda previous_messages=None, old_session_id=None, carry_over_context=False: None
     return agent
 
 
@@ -635,3 +640,75 @@ def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
     second.release_session_turn_lease("shared", next_holder)
     first.close()
     second.close()
+
+
+def test_cli_explicit_history_is_replaced_before_the_real_turn_prologue(monkeypatch, tmp_path):
+    """The CLI passes an explicit parent snapshot; it must never reach the child."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("parent", source="cli")
+    db.append_message("parent", "user", "parent request")
+    db.append_message("parent", "assistant", "parent answer")
+    assert TurnBoundaryRollover(db).mark_pending("parent", threshold_tokens=10)
+    agent = _agent_with_db(db, session_id="parent", platform="cli")
+    observed = {}
+
+    def fake_run(live_agent, inbound, _system, history, *_args, **_kwargs):
+        observed.update(session_id=live_agent.session_id, inbound=inbound, history=history)
+        # This is the production handoff boundary: the loop owns the one inbound
+        # row, and callers must not provide it in history as well.
+        assert history == []
+        db.append_message(live_agent.session_id, "user", inbound)
+        return {"final_response": "ok", "messages": [{"role": "user", "content": inbound}]}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    result = AIAgent.run_conversation(
+        agent,
+        "fresh inbound",
+        conversation_history=[
+            {"role": "user", "content": "parent request"},
+            {"role": "assistant", "content": "parent answer"},
+        ],
+    )
+
+    child = agent.session_id
+    assert child != "parent"
+    assert observed == {"session_id": child, "inbound": "fresh inbound", "history": []}
+    assert result["messages"] == [{"role": "user", "content": "fresh inbound"}]
+    child_messages = db.get_messages_as_conversation(child)
+    assert [message["content"] for message in child_messages] == ["fresh inbound"]
+    assert len(child_messages) == 1
+    assert [message["content"] for message in db.get_messages_as_conversation("parent")] == [
+        "parent request",
+        "parent answer",
+    ]
+
+
+def test_adoption_transfers_the_held_lease_and_defers_for_active_work(monkeypatch, tmp_path):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("parent", source="gateway")
+    assert TurnBoundaryRollover(db).mark_pending("parent", threshold_tokens=10)
+    agent = _agent_with_db(db, session_id="parent", platform="gateway")
+    agent._executing_tools = True
+    started = []
+    monkeypatch.setattr(
+        "agent.conversation_loop.run_conversation",
+        lambda live_agent, inbound, _system, history, *_args, **_kwargs: (
+            started.append((live_agent.session_id, inbound, history))
+            or {"final_response": "ok", "messages": history}
+        ),
+    )
+
+    AIAgent.run_conversation(agent, "deferred", conversation_history=[])
+    assert agent.session_id == "parent"
+    assert started == [("parent", "deferred", [])]
+    parent = db.get_session("parent")
+    assert parent is not None and parent["ended_at"] is None
+
+    agent._executing_tools = False
+    AIAgent.run_conversation(agent, "adopted", conversation_history=[])
+    child = agent.session_id
+    assert child != "parent"
+    # The successor can acquire immediately after the child turn releases. A
+    # parent-key release would leave the child lease stranded until TTL expiry.
+    assert db.try_acquire_session_turn_lease(child, "successor", ttl_seconds=5)
+    db.release_session_turn_lease(child, "successor")

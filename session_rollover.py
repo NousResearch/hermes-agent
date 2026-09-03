@@ -91,14 +91,23 @@ class TurnBoundaryRollover:
         row = self._db.get_session(session_id)
         if not row or row.get("ended_at") is not None:
             return False
-        config = _model_config(row)
-        if config.get(_PENDING_KEY):
+        if _model_config(row).get(_PENDING_KEY):
             return True
-        config[_PENDING_KEY] = {"threshold_tokens": int(threshold_tokens)}
-        self._set_model_config(session_id, config)
+        # Do not read/replace model_config: /model, /reasoning and /yolo can
+        # mutate independent keys between the read above and this write.
+        patch = getattr(self._db, "patch_session_model_config", None)
+        if not callable(patch):
+            return False
+        patch(session_id, {_PENDING_KEY: {"threshold_tokens": int(threshold_tokens)}})
         return True
 
-    def adopt_at_turn_boundary(self, session_id: str, *, active_work: bool) -> Optional[str]:
+    def adopt_at_turn_boundary(
+        self,
+        session_id: str,
+        *,
+        active_work: bool,
+        turn_lease_holder: str | None = None,
+    ) -> Optional[str]:
         """Atomically close a pending parent and create one empty child.
 
         ``active_work`` is supplied by the lifecycle owner.  The database
@@ -118,10 +127,13 @@ class TurnBoundaryRollover:
             config = _model_config(parent)
             if not config.pop(_PENDING_KEY, None):
                 return None
-            child_config = {_HANDOFF_KEY: {
+            # A child is a fresh runtime, not a fresh identity. Preserve every
+            # parent runtime/model setting except the consumed rollover marker.
+            child_config = dict(config)
+            child_config[_HANDOFF_KEY] = {
                 "previous_session_id": session_id,
                 "recovery": RECOVERY_GUIDANCE,
-            }}
+            }
             # Keep routing identity, source, cwd, profile, model and role
             # namespace intact.  The transcript is intentionally not copied.
             conn.execute(
@@ -137,6 +149,17 @@ class TurnBoundaryRollover:
                  parent.get("system_prompt"), session_id, parent.get("cwd"),
                  parent.get("profile_name")),
             )
+            if turn_lease_holder:
+                # A rollover is a new lease domain. Move ownership inside this
+                # transaction so alias-key arrivals cannot run in the gap
+                # between adoption and the child's inbound persistence.
+                moved = conn.execute(
+                    "UPDATE session_turn_leases SET conversation_id = ? "
+                    "WHERE conversation_id = ? AND holder = ?",
+                    (child_id, session_id, turn_lease_holder),
+                ).rowcount
+                if moved != 1:
+                    raise RuntimeError("turn-boundary rollover lease was not owned")
             changed = conn.execute(
                 "UPDATE sessions SET ended_at = strftime('%s','now'), end_reason = ? "
                 "WHERE id = ? AND ended_at IS NULL",
@@ -175,7 +198,15 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
     """Re-read policy and live model budget after a durably completed response."""
     if not isinstance(result, Mapping) or result.get("failed") or result.get("interrupted"):
         return False
-    if result.get("completed") is False:
+    # A response is eligible only after its final durable transcript write
+    # succeeded. finalize_turn reports that exact failure in cleanup_errors.
+    # Partial/compression recovery results are not completed boundaries.
+    if (
+        result.get("completed") is not True
+        or result.get("partial")
+        or result.get("compression_exhausted")
+        or any(str(error).startswith("persist_session:") for error in result.get("cleanup_errors", ()) or ())
+    ):
         return False
     db = getattr(agent, "_session_db", None)
     session_id = str(getattr(agent, "session_id", "") or "")
@@ -197,14 +228,23 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
         return False
 
 
-def adopt_agent_at_turn_boundary(agent: Any, *, active_work: bool = False) -> Optional[str]:
+def adopt_agent_at_turn_boundary(
+    agent: Any,
+    *,
+    active_work: bool = False,
+    turn_lease_holder: str | None = None,
+) -> Optional[str]:
     """Adopt a pending child before loading the next inbound user turn."""
     db = getattr(agent, "_session_db", None)
     old_id = str(getattr(agent, "session_id", "") or "")
     if db is None or not old_id:
         return None
     try:
-        child_id = TurnBoundaryRollover(db).adopt_at_turn_boundary(old_id, active_work=active_work)
+        child_id = TurnBoundaryRollover(db).adopt_at_turn_boundary(
+            old_id,
+            active_work=active_work,
+            turn_lease_holder=turn_lease_holder,
+        )
     except Exception:
         return None
     if not child_id:
@@ -216,3 +256,29 @@ def adopt_agent_at_turn_boundary(agent: Any, *, active_work: bool = False) -> Op
     if callable(reset):
         reset(previous_messages=previous, old_session_id=old_id, carry_over_context=False)
     return child_id
+
+
+def consume_handoff_note(agent: Any) -> str:
+    """Consume the child's recovery pointer for one API request only.
+
+    It is deliberately not a transcript message or api_content sidecar: the
+    next user turn remains exactly the user's inbound content on disk.
+    """
+    db = getattr(agent, "_session_db", None)
+    session_id = str(getattr(agent, "session_id", "") or "")
+    if db is None or not session_id:
+        return ""
+    row = db.get_session(session_id)
+    config = _model_config(row or {})
+    handoff = config.get(_HANDOFF_KEY)
+    if not isinstance(handoff, Mapping):
+        return ""
+    previous = str(handoff.get("previous_session_id") or "").strip()
+    recovery = str(handoff.get("recovery") or "").strip()
+    if not previous or not recovery:
+        return ""
+    patch = getattr(db, "patch_session_model_config", None)
+    if not callable(patch):
+        return ""
+    patch(session_id, {_HANDOFF_KEY: None})
+    return f"[Fresh session handoff: previous session {previous}. {recovery}]"

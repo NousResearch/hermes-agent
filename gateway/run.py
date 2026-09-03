@@ -21298,13 +21298,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # activity themselves. Otherwise periodic Kanban/process
             # notifications keep the stable routing key alive across every
             # daily/idle boundary.
-            # This inbound event is admitted but no agent/tool/child work has
-            # started. Publish a completed pending rollover before its message
-            # is accepted; the durable transition itself is exactly-once.
-            await asyncio.to_thread(
-                self.session_store.adopt_turn_boundary_rollover,
-                self._session_key_for_source(source),
-            )
             session_entry = await self.async_session_store.get_or_create_session(
                 source,
                 touch_activity=not bool(getattr(event, "internal", False)),

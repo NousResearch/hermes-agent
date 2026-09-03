@@ -2546,6 +2546,14 @@ def run_conversation(
             # never mutated beyond the api_content stamp, so nothing leaks
             # into the clean transcript content.
             if idx == current_turn_user_idx and msg.get("role") == "user":
+                # A fresh turn-boundary child gets a one-shot, non-transcript
+                # recovery pointer. Consume only at the actual first request,
+                # after retries/tool loops have their shared API copy.
+                try:
+                    from session_rollover import consume_handoff_note
+                    _handoff_note = consume_handoff_note(agent)
+                except Exception:
+                    _handoff_note = ""
                 if isinstance(_api_content, str) and _api_content:
                     # Stamped by the prologue from the same composition —
                     # reuse it so the persisted sidecar and the wire cannot
@@ -2562,6 +2570,8 @@ def run_conversation(
                     )
                     if _composed is not None:
                         api_msg["content"] = _composed
+                if _handoff_note and isinstance(api_msg.get("content"), str):
+                    api_msg["content"] = api_msg["content"] + "\n\n" + _handoff_note
             elif (
                 isinstance(_api_content, str)
                 and _api_content
@@ -9324,11 +9334,6 @@ def run_conversation(
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
-    try:
-        from session_rollover import mark_completed_turn
-        mark_completed_turn(agent, result)
-    except Exception:
-        logger.debug("turn-boundary rollover marking failed", exc_info=True)
     if _compression_timeout_exhausted:
         # Reuse the gateway's existing context-recovery contract (#98722,
         # salvaged from #98741). The bloated transcript remains intact while
@@ -9337,6 +9342,11 @@ def run_conversation(
         result["error"] = _COMPRESSION_TIMEOUT_FINAL_RESPONSE
         result["partial"] = True
         result["compression_exhausted"] = True
+    try:
+        from session_rollover import mark_completed_turn
+        mark_completed_turn(agent, result)
+    except Exception:
+        logger.debug("turn-boundary rollover marking failed", exc_info=True)
     return result
 
 

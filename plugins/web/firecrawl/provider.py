@@ -15,14 +15,15 @@ firecrawl implementation that previously lived in tools/web_tools.py:
   - :func:`_extract_web_search_results` / :func:`_extract_scrape_payload`
     response-shape normalizers that handle SDK / direct API / gateway
     response variants.
-  - Per-URL extract loop with 60s timeout, redirect-aware SSRF re-check,
+  - Per-URL extract loop with configurable timeout (default 60s), redirect-aware SSRF re-check,
     website-policy gating, and format-aware content selection.
 
 Async note: the underlying SDK is sync. ``extract()`` is declared
 ``async def`` because it performs per-URL I/O that benefits from
 running in an executor; the implementation wraps each scrape in
-:func:`asyncio.to_thread` with :func:`asyncio.wait_for(timeout=60)` to
-guard against hung fetches.
+:func:`asyncio.to_thread` with :func:`asyncio.wait_for` to guard
+against hung fetches. The timeout is configurable (default 60s) —
+see :func:`_resolve_scrape_timeout`.
 
 Config keys this provider responds to::
 
@@ -32,6 +33,8 @@ Config keys this provider responds to::
       backend: "firecrawl"            # shared fallback (default)
       use_gateway: false              # prefer managed gateway when both
                                       # direct + gateway credentials exist
+      firecrawl:
+        scrape_timeout: 60            # per-URL scrape timeout in seconds
 
 Env vars::
 
@@ -41,6 +44,7 @@ Env vars::
     TOOL_GATEWAY_DOMAIN=...          # alternate gateway env
     TOOL_GATEWAY_SCHEME=...
     TOOL_GATEWAY_USER_TOKEN=...
+    HERMES_FIRECRAWL_SCRAPE_TIMEOUT=...  # overrides web.firecrawl.scrape_timeout
 """
 
 from __future__ import annotations
@@ -59,6 +63,33 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 _FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
+
+
+# ---------------------------------------------------------------------------
+# Scrape timeout resolution
+# ---------------------------------------------------------------------------
+# Separate from auxiliary.web_extract.timeout, which only governs the
+# post-scrape LLM summarization step, not the scrape request itself.
+# Resolution: env var -> config.yaml web.firecrawl.scrape_timeout -> 60s default.
+def _resolve_scrape_timeout() -> float:
+    env_val = os.getenv("HERMES_FIRECRAWL_SCRAPE_TIMEOUT", "").strip()
+    if env_val:
+        try:
+            return float(env_val)
+        except ValueError:
+            pass
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        val = cfg_get(cfg, "web", "firecrawl", "scrape_timeout")
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return 60.0
+
+
+_FIRECRAWL_SCRAPE_TIMEOUT = _resolve_scrape_timeout()
 
 
 # ---------------------------------------------------------------------------
@@ -679,7 +710,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             url=url,
                             formats=formats,
                         ),
-                        timeout=60,
+                        timeout=_FIRECRAWL_SCRAPE_TIMEOUT,
                     )
                 except asyncio.TimeoutError:
                     logger.warning("Firecrawl scrape timed out for %s", url)
@@ -689,7 +720,8 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             "title": "",
                             "content": "",
                             "error": (
-                                "Scrape timed out after 60s — page may be too large "
+                                "Scrape timed out after "
+                                f"{_FIRECRAWL_SCRAPE_TIMEOUT:.0f}s — page may be too large "
                                 "or unresponsive. Try browser_navigate instead."
                             ),
                         }

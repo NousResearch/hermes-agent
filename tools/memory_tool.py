@@ -385,9 +385,63 @@ class MemoryStore:
         return bak
 
     def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
+        """Persist entries to the appropriate file. Called after every mutation.
+
+        Re-reads the file under the already-held lock and merges on-disk
+        entries with the session's pending entries before writing. This
+        prevents lost updates from concurrent writers (other sessions,
+        daemons, cron jobs, scripts) that may have written to the file
+        between the session's last reload and this save — issue #85858.
+
+        The merge is a union-where-session-wins: all of the session's
+        pending entries are preserved, and on-disk entries not present
+        in the session's state are added. Conflicts (same entry modified
+        by both the session and an external writer) result in both
+        versions being present — safe, no data loss.
+        """
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        path = self._path_for(target)
+
+        # Re-read on-disk state to merge with pending changes.
+        # The caller holds _file_lock (add/replace/remove/apply_batch),
+        # so we see the latest state. External writers that don't use
+        # the lock are the primary target of this merge.
+        disk_entries, read_ok = self._read_entries_checked(path)
+        if not read_ok:
+            # File exists but unreadable — don't overwrite it.
+            return
+
+        pending = self._entries_for(target)
+
+        # Merge: session entries + disk entries not in session.
+        # Deduplicate while preserving order (session entries first).
+        merged = self._merge_disk_with_pending(disk_entries, pending)
+
+        self._write_file(path, merged)
+
+    def _merge_disk_with_pending(
+        self, disk_entries: List[str], pending_entries: List[str]
+    ) -> List[str]:
+        """Merge on-disk entries with the session's pending entries.
+
+        Returns a deduplicated list where:
+        - All pending (session) entries are included first, in order
+        - On-disk entries NOT present in pending are appended (external
+          writes preserved — issue #85858)
+        - No duplicates
+
+        Conflicts where both the session and an external writer modified
+        the same logical entry result in both versions being present.
+        This is safe (no data loss) and a future refinement could add
+        timestamp-based resolution.
+        """
+        pending_set = set(pending_entries)
+        merged: List[str] = list(pending_entries)
+        for entry in disk_entries:
+            if entry not in pending_set:
+                merged.append(entry)
+        # Deduplicate while preserving insertion order
+        return list(dict.fromkeys(merged))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":

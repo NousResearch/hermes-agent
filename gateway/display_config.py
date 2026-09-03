@@ -186,6 +186,16 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 4 — batch or non-interactive delivery
     "email":           _TIER_MINIMAL,
     "sms":             _TIER_MINIMAL,
+    # Plugin-provided carrier SMS platforms (e.g. team-telnyx/telnyx-hermes-sms)
+    # register under their own platform key rather than the built-in "sms"
+    # (Twilio) key, so they fell through to _GLOBAL_DEFAULTS —
+    # interim_assistant_messages=True and streaming following the global
+    # config. That spins up a GatewayStreamConsumer on every one-shot SMS
+    # turn that never actually streams anything, tripping the
+    # "Normal final-send NOT suppressed... possible duplicate send"
+    # diagnostic on every single reply even though nothing is ever sent
+    # twice. Same batch/non-interactive delivery model as built-in "sms".
+    "telnyx_sms":      _TIER_MINIMAL,
     "webhook":         _TIER_MINIMAL,
     "homeassistant":   _TIER_MINIMAL,
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},

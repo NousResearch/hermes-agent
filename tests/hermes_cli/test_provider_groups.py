@@ -37,6 +37,38 @@ def test_reverse_index_matches_groups():
 
 
 
+def test_token_plan_tiers_fold_into_qwen_members():
+    # Token Plan ships Personal and Team editions per region. The Team slugs
+    # are registered by a user plugin rather than in-tree, so listing them as
+    # Qwen group members is what keeps them folded into the Qwen row instead
+    # of leaking out as top-level singles when the plugin is installed.
+    team_slugs = ("alibaba-token-plan-team", "alibaba-token-plan-cn-team")
+    personal_slugs = ("alibaba-token-plan", "alibaba-token-plan-cn")
+    members = PROVIDER_GROUPS["qwen"][2]
+    for slug in personal_slugs + team_slugs:
+        assert slug in members, f"{slug} must be a declared Qwen member"
+
+    # Feed an explicit input (not the group list) so a fold that wrongly
+    # emitted a Team slug as a top-level single, or dropped it, is caught:
+    # every Token Plan slug must land in the Qwen row's members, and none may
+    # also appear as a standalone single row.
+    rows = group_providers(list(personal_slugs) + list(team_slugs) + ["openrouter"])
+    assert len(rows) == 2  # one Qwen group + the ungrouped openrouter single
+    qwen = next(r for r in rows if r["kind"] == "group")
+    singles = {r["slug"] for r in rows if r["kind"] == "single"}
+    assert qwen["group_id"] == "qwen"
+    for slug in personal_slugs + team_slugs:
+        assert slug in qwen["members"], f"{slug} folded out of the Qwen row"
+        assert slug not in singles, f"{slug} leaked as a top-level single"
+
+    # Absent members are inert: with only the plugin uninstalled (no Team
+    # slugs in the picker input), the Personal pair still folds and the Team
+    # names add nothing.
+    rows = group_providers([*personal_slugs, "openrouter"])
+    qwen = next(r for r in rows if r["kind"] == "group")
+    assert qwen["members"] == [*personal_slugs]
+
+
 def test_multi_member_group_folds_to_one_row():
     rows = group_providers(["minimax", "minimax-oauth", "minimax-cn"])
     assert len(rows) == 1

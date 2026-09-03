@@ -17,6 +17,7 @@ Covers:
 - registry stays bounded; live and pending leases are never evicted
 - timed-out and cancelled acquire attempts do not pin idle registry entries
 - GatewayRunner._release_turn_lease wiring (bare-runner safe, token-scoped)
+- a waiter invalidated by /stop while blocked is dropped before transcript load
 """
 
 import asyncio
@@ -492,3 +493,148 @@ def test_runner_release_turn_lease_is_token_scoped_and_bare_safe():
         assert runner._release_turn_lease("", 1) is False
 
     _run(scenario())
+
+
+def test_runner_drops_waiter_invalidated_while_acquiring_turn_lease():
+    """A pre-/stop waiter must not resume into history load/compression."""
+    from gateway.run import GatewayRunner
+
+    async def scenario():
+        runner = object.__new__(GatewayRunner)
+        runner._sessions = {}
+        runner._turn_leases = SessionTurnLeaseRegistry()
+        key = "key-a"
+        session_id = "sess-stop-race"
+        runner._session_state(key).persistent.run_generation = 1
+
+        holder = await runner._turn_leases.acquire(
+            session_id, owner_key="holder", generation=1, timeout=5
+        )
+        waiter = asyncio.create_task(
+            runner._acquire_turn_lease_for_run(
+                key, session_id, 1, timeout=5
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert not waiter.done()
+
+        # /stop invalidates the waiter before the old turn unwinds.
+        runner._session_state(key).persistent.run_generation = 2
+        assert runner._turn_leases.release(holder) is True
+
+        assert await waiter is False
+        # The normal dispatch finally remains responsible for releasing the
+        # stale generation's newly acquired token.
+        assert runner._release_turn_lease(key, 1) is True
+
+    _run(scenario())
+
+
+def test_runner_drops_alias_waiter_when_holder_session_is_invalidated():
+    """Stopping one routing key invalidates a blocked alias on the same session."""
+    from gateway.run import GatewayRunner
+
+    async def scenario():
+        runner = object.__new__(GatewayRunner)
+        runner._sessions = {}
+        runner._turn_leases = SessionTurnLeaseRegistry()
+        session_id = "sess-alias-stop-race"
+        runner._session_state("key-b").persistent.run_generation = 1
+
+        holder = await runner._turn_leases.acquire(
+            session_id, owner_key="key-a", generation=1, timeout=5
+        )
+        runner._session_state("key-a").turn.lease_token = holder
+        runner._session_state("key-a").turn.lease_generation = 1
+        waiter = asyncio.create_task(
+            runner._acquire_turn_lease_for_run("key-b", session_id, 1, timeout=5)
+        )
+        await asyncio.sleep(0.02)
+        assert not waiter.done()
+
+        assert runner._invalidate_turn_lease_waiters(session_key="key-a") is True
+        assert runner._turn_leases.release(holder) is True
+
+        assert await waiter is False
+        assert runner._release_turn_lease("key-b", 1) is True
+
+    _run(scenario())
+
+
+def test_waiter_started_after_invalidation_remains_valid():
+    """Invalidation rejects only pre-command work, not a later replacement turn."""
+    from gateway.run import GatewayRunner
+
+    async def scenario():
+        runner = object.__new__(GatewayRunner)
+        runner._sessions = {}
+        runner._turn_leases = SessionTurnLeaseRegistry()
+        session_id = "sess-post-stop"
+        runner._session_state("key-b").persistent.run_generation = 1
+        runner._session_state("key-c").persistent.run_generation = 1
+
+        holder = await runner._turn_leases.acquire(
+            session_id, owner_key="key-a", generation=1, timeout=5
+        )
+        runner._session_state("key-a").turn.lease_token = holder
+        runner._session_state("key-a").turn.lease_generation = 1
+        stale = asyncio.create_task(
+            runner._acquire_turn_lease_for_run("key-b", session_id, 1, timeout=5)
+        )
+        await asyncio.sleep(0.02)
+        assert runner._invalidate_turn_lease_waiters(session_key="key-a") is True
+        fresh = asyncio.create_task(
+            runner._acquire_turn_lease_for_run("key-c", session_id, 1, timeout=5)
+        )
+        await asyncio.sleep(0.02)
+        assert runner._turn_leases.release(holder) is True
+
+        assert await stale is False
+        assert runner._release_turn_lease("key-b", 1) is True
+        assert await fresh is True
+        assert runner._release_turn_lease("key-c", 1) is True
+
+    _run(scenario())
+
+
+@pytest.mark.asyncio
+async def test_agent_path_drops_invalidated_alias_before_loading_transcript(
+    monkeypatch, tmp_path
+):
+    """The production acquisition site rejects a pre-/stop alias waiter."""
+    from tests.gateway.test_42039_duplicate_user_message import (
+        _bootstrap,
+        _event,
+        _source,
+    )
+
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._turn_leases = SessionTurnLeaseRegistry()
+    runner._session_state("key-b").persistent.run_generation = 1
+    holder = await runner._turn_leases.acquire(
+        "sess-dedup", owner_key="key-a", generation=1, timeout=1
+    )
+    runner._session_state("key-a").turn.lease_token = holder
+    runner._session_state("key-a").turn.lease_generation = 1
+    session_env_tokens = object()
+    runner._set_session_env = MagicMock(return_value=session_env_tokens)
+    runner._clear_session_env = MagicMock()
+
+    waiter = asyncio.create_task(
+        runner._handle_message_with_agent(_event(), _source(), "key-b", 1)
+    )
+    for _ in range(100):
+        lease = runner._turn_leases._leases["sess-dedup"]
+        if lease.pending_acquires:
+            break
+        await asyncio.sleep(0)
+    assert runner._turn_leases._leases["sess-dedup"].pending_acquires == 1
+
+    assert runner._invalidate_turn_lease_waiters(session_key="key-a") is True
+    assert runner._turn_leases.release(holder) is True
+
+    result = await waiter
+    assert result == {"final_response": "", "api_calls": 0, "interrupted": True}
+    runner.session_store.load_transcript.assert_not_called()
+    runner._clear_session_env.assert_called_once_with(session_env_tokens)
+    assert runner._release_turn_lease("key-b", 1) is True

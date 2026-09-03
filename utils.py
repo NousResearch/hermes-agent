@@ -36,6 +36,34 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+# The one canonical fallback for TERMINAL_TIMEOUT. Referenced by both
+# tools/terminal_tool.py::_get_env_config and tools/process_registry.py's
+# wait() path (issue #85809 / review of #85811) so the two independent
+# readers of this env var can't drift out of sync on the hardcoded value.
+TERMINAL_TIMEOUT_DEFAULT_SECONDS = 180
+
+
+def resolve_terminal_timeout_default() -> int:
+    """Parse TERMINAL_TIMEOUT with a floor at >0, falling back to the one
+    canonical default (TERMINAL_TIMEOUT_DEFAULT_SECONDS) for any
+    unparseable OR non-positive value.
+
+    TERMINAL_TIMEOUT=0 (or a negative value) is a "0 means no timeout"
+    misunderstanding, not a real request for an instant timeout -- 0
+    actually means the underlying subprocess/asyncio timeout fires
+    immediately. Left unguarded at any READER of this env var, every
+    terminal command silently fails with a misleading "timed out after
+    0s" that looks like a hang/IPC bug rather than a config mistake
+    (issue #85809). Shared by every reader of TERMINAL_TIMEOUT so the
+    guard covers the whole class, not one call site at a time.
+    """
+    try:
+        value = int(os.getenv("TERMINAL_TIMEOUT", str(TERMINAL_TIMEOUT_DEFAULT_SECONDS)))
+    except (ValueError, TypeError):
+        return TERMINAL_TIMEOUT_DEFAULT_SECONDS
+    return value if value > 0 else TERMINAL_TIMEOUT_DEFAULT_SECONDS
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Capture the permission bits of *path* if it exists, else ``None``."""
     try:

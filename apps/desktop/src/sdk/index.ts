@@ -1658,8 +1658,6 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
-
-export const PANES_AREA = 'panes'
 /** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
  *  thinking depth uses the same scale and spelling as the rest of the app. */
 export {
@@ -1669,13 +1667,19 @@ export {
   type ReasoningEffort,
   reasoningEffortLabel
 } from '@/lib/reasoning-effort'
-export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
-export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
+export const PANES_AREA = 'panes'
 /** The app's own gateway-readiness evaluation (setup.status +
  *  setup.runtime_check, reconciled) — pass `host.request`. Don't hand-roll
  *  readiness from raw RPC shapes. */
 export { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
+
+/** The foot of the transcript as a contribution area: render something that
+ *  lives AFTER the last message — before the first one exists, and after the
+ *  reply has landed — for the sessions you own. Costs nothing when unclaimed. */
+export { THREAD_TAIL_AREA, type ThreadTailContribution, type ThreadTailProps } from '@/lib/thread-tail'
 /** Canonical time formatting — every surface pulls from here so timestamps read
  *  the same app-wide. For a row's AGE, bucket with `coarseElapsed` and render
  *  the compact suffixes (`t.sidebar.row.ageMin` → "52m"), which is what the

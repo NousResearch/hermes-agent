@@ -18,8 +18,10 @@ import {
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { useContributions } from '@/contrib'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
+import { THREAD_TAIL_AREA } from '@/lib/thread-tail'
 import { cn } from '@/lib/utils'
 import {
   onScrollToBottomRequest,
@@ -31,6 +33,7 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+import { ThreadTailSlot } from '../thread-tail-slot'
 
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
@@ -395,6 +398,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   sessionId = null,
   sessionKey
 }) => {
+  // The contributed transcript tail (lib/thread-tail.ts). Read here rather
+  // than passed in so the transcript decides its own layout: with nothing
+  // registered every class below is exactly what it was, and the tail block is
+  // not rendered at all.
+  const tail = useContributions(THREAD_TAIL_AREA)
+  const hasTail = tail.length > 0
+
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
   // changes only when messages are added/removed/swapped — it keys the error
   // boundaries and the row identity. The WEIGHT one (parts + character cost)
@@ -813,14 +823,21 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         />
       )}
       <div
-        className="size-full overflow-x-hidden overflow-y-auto overscroll-contain"
+        // A flex COLUMN when a tail is present: it renders after both branches,
+        // and the empty branch is `h-full` — in a block context the tail would be
+        // laid out a full viewport below the fold, mounted and invisible. As a
+        // column the empty branch flexes down to leave the tail its own height.
+        className={cn('size-full overflow-x-hidden overflow-y-auto overscroll-contain', hasTail && 'flex flex-col')}
         data-following={isAtBottom ? 'true' : 'false'}
         data-slot="aui_thread-viewport"
         ref={scrollRef as React.RefCallback<HTMLDivElement>}
       >
         {renderEmpty ? (
           <div
-            className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
+            className={cn(
+              'mx-auto grid w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8',
+              hasTail ? 'min-h-0 flex-1' : 'h-full'
+            )}
             data-slot="aui_thread-content"
           >
             {emptyPlaceholder}
@@ -842,7 +859,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             )}
             {rows}
             {loadingIndicator}
-            {clampToComposer && (
+            {/* COMPOSER CLEARANCE, ONCE. The tail block below reserves a composer's
+                height of its own padding for the same reason; rendering both
+                would put a composer's worth of blank transcript between the
+                last message and the tail. Whoever is last owns the clearance. */}
+            {clampToComposer && !hasTail && (
               <div
                 aria-hidden="true"
                 className="shrink-0"
@@ -852,6 +873,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             )}
           </div>
         )}
+        {/* Same column geometry as a message, so a tail sits on the transcript's
+            own left edge rather than on the viewport's. The composer floats over
+            the bottom of this viewport, so the tail needs its measured height as
+            clearance or it renders underneath the input. */}
+        {hasTail ? (
+          <div
+            className="mx-auto w-full max-w-(--composer-width) shrink-0 px-6"
+            data-slot="aui_thread-tail"
+            style={{ paddingBottom: 'calc(var(--composer-measured-height, 0px) + 0.5rem)' }}
+          >
+            <ThreadTailSlot contributions={tail} sessionId={sessionId ?? ''} />
+          </div>
+        ) : null}
       </div>
     </div>
   )

@@ -832,3 +832,24 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+@pytest.mark.asyncio
+async def test_rich_payload_protects_multiple_currency_amounts():
+    adapter = _make_adapter()
+    content = "| Item | Value |\n|---|---|\n| budget | $2,000–$3,000 |"
+    result = await adapter.send("12345", content)
+    assert result.success is True
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "`$2,000`–`$3,000`" in markdown
+
+
+@pytest.mark.asyncio
+async def test_rich_payload_leaves_math_and_code_currency_alone():
+    adapter = _make_adapter()
+    content = "| Item | Value |\n|---|---|\n| x | `$2,000` and $x^2$ |"
+    result = await adapter.send("12345", content)
+    assert result.success is True
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "`$2,000`" in markdown
+    assert "$x^2$" in markdown

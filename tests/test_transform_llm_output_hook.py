@@ -133,3 +133,45 @@ def test_no_plugins_returns_empty_results(tmp_path, monkeypatch):
         platform="",
     )
     assert results == []
+
+
+def test_transform_pipeline_composes_in_registration_order(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_pipeline"
+    hermes_home.mkdir()
+    _make_enabled_plugin(
+        hermes_home, "first",
+        'ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"] + "-one")',
+    )
+    _make_enabled_plugin(
+        hermes_home, "second",
+        'ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"] + "-two")',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    mgr = PluginManager()
+    mgr.discover_and_load()
+    text, transformed = mgr.transform_llm_output(
+        "base", session_id="s1", model="m", platform="cli"
+    )
+    assert text == "base-one-two"
+    assert transformed is True
+
+
+def test_transform_pipeline_continues_after_failure(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes_failure"
+    hermes_home.mkdir()
+    _make_enabled_plugin(
+        hermes_home, "raising",
+        'def _boom(**kw):\n        raise RuntimeError("boom")\n    ctx.register_hook("transform_llm_output", _boom)',
+    )
+    _make_enabled_plugin(
+        hermes_home, "later",
+        'ctx.register_hook("transform_llm_output", lambda **kw: "safe")',
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    mgr = PluginManager()
+    mgr.discover_and_load()
+    text, transformed = mgr.transform_llm_output(
+        "unsafe", session_id="s1", model="m", platform="cli"
+    )
+    assert text == "safe"
+    assert transformed is True

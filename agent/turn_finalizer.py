@@ -613,28 +613,38 @@ def finalize_turn(
     _response_transformed = False
     _pre_transform_response = None
 
-    # Plugin hook: transform_llm_output
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
+    # Output transforms compose sequentially. Each callback receives the
+    # previous callback's result so a later hard guard cannot be bypassed by an
+    # earlier formatter. Apply to partial/interrupted text too: it may already
+    # be user-visible through a fallback delivery path.
+    if final_response:
         try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
-                "transform_llm_output",
-                response_text=final_response,
+            from hermes_cli.lifecycle import transform_llm_output as _transform_llm_output
+            _transformed_response, _did_transform = _transform_llm_output(
+                final_response,
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
-            for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    _pre_transform_response = final_response
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
+            if _did_transform:
+                _pre_transform_response = final_response
+                final_response = _transformed_response
+                _response_transformed = True
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
+
+    # The finalized response is the canonical user-visible assistant text.
+    # Replace the matching current-turn assistant message so persistence,
+    # memory sync, and future context cannot reintroduce pre-transform text.
+    if _response_transformed and _pre_transform_response is not None:
+        for _message in reversed(messages):
+            if (
+                isinstance(_message, dict)
+                and _message.get("role") == "assistant"
+                and _message.get("content") == _pre_transform_response
+            ):
+                _message["content"] = final_response
+                break
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

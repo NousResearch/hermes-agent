@@ -22,6 +22,13 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return plugins.invoke_hook(hook_name, **kwargs)
 
 
+def transform_llm_output(response_text: str, **kwargs: Any) -> tuple[str, bool]:
+    """Apply the final-output transform pipeline in deterministic order."""
+    from hermes_cli import plugins
+
+    return plugins.transform_llm_output(response_text, **kwargs)
+
+
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
     try:

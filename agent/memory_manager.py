@@ -1265,6 +1265,16 @@ class MemoryManager:
             return False
         return result.get("success") is True and result.get("staged") is not True
 
+    @staticmethod
+    def _memory_tool_result_dict(result: Any) -> Optional[Dict[str, Any]]:
+        """Parse a memory result, returning None for unrecognized shapes."""
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return None
+        return result if isinstance(result, dict) else None
+
     def notify_memory_tool_write(
         self,
         tool_result: Any,
@@ -1288,24 +1298,41 @@ class MemoryManager:
         session/task/tool-call provenance the manager does not) invoked once per
         mirrored op.
         """
-        if not self._memory_tool_result_succeeded(tool_result):
+        result_dict = self._memory_tool_result_dict(tool_result)
+        if not self._memory_tool_result_succeeded(result_dict):
             return
 
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
         if isinstance(operations, list) and operations:
             raw_operations = operations
+            effective_actions = result_dict.get("effective_actions")
+            if effective_actions is not None and (
+                not isinstance(effective_actions, list)
+                or len(effective_actions) != len(raw_operations)
+            ):
+                return
         else:
             raw_operations = [{
                 "action": tool_args.get("action"),
                 "content": tool_args.get("content"),
                 "old_text": tool_args.get("old_text"),
             }]
+            effective_action = result_dict.get("effective_action")
+            effective_actions = (
+                [effective_action] if effective_action is not None else None
+            )
 
-        for op in raw_operations:
+        for index, op in enumerate(raw_operations):
             if not isinstance(op, dict):
                 continue
-            action = str(op.get("action") or "")
+            action = str(
+                effective_actions[index]
+                if effective_actions is not None
+                else op.get("action") or ""
+            )
+            if action == "none":
+                continue
             if action not in self._MIRRORED_MEMORY_ACTIONS:
                 continue
             try:

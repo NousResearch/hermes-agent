@@ -69,6 +69,63 @@ def test_notifies_remove_with_old_text_after_success():
     ]
 
 
+def test_single_consolidation_mirrors_effective_remove():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True, "effective_action": "remove"}),
+        {
+            "action": "replace",
+            "target": "memory",
+            "old_text": "redundant fact",
+            "content": "existing fact",
+        },
+    )
+    assert provider.calls == [
+        {
+            "action": "remove",
+            "target": "memory",
+            "content": "existing fact",
+            "metadata": {"old_text": "redundant fact"},
+        }
+    ]
+
+
+def test_batch_effective_actions_skip_noop_and_mirror_consolidation():
+    mgr, provider = _manager_with_provider()
+    mgr.notify_memory_tool_write(
+        json.dumps({
+            "success": True,
+            "effective_actions": ["none", "remove", "add"],
+        }),
+        {
+            "target": "memory",
+            "operations": [
+                {"action": "add", "content": "existing fact"},
+                {
+                    "action": "replace",
+                    "old_text": "redundant fact",
+                    "content": "existing fact",
+                },
+                {"action": "add", "content": "new fact"},
+            ],
+        },
+    )
+    assert provider.calls == [
+        {
+            "action": "remove",
+            "target": "memory",
+            "content": "existing fact",
+            "metadata": {"old_text": "redundant fact"},
+        },
+        {
+            "action": "add",
+            "target": "memory",
+            "content": "new fact",
+            "metadata": {},
+        },
+    ]
+
+
 
 
 

@@ -17,18 +17,23 @@ Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
 Design:
-- Single `memory` tool with action parameter: add, replace, remove
+- Single `memory` tool with action parameter: add, replace, remove, review
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
+- Canonically equivalent entries that differ only in whitespace and were added
+  by external editors are coalesced on the next tool write; the first formatting
+  is retained
 """
 
 import copy
 import json
 import logging
 import time
+import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
+from difflib import SequenceMatcher
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
@@ -76,6 +81,44 @@ MEMORY_BLOCK_HEADERS = {
 }
 
 ENTRY_DELIMITER = "\n§\n"
+
+# Fuzzy scores are too noisy to drive maintenance suggestions for short facts;
+# presentation-equivalent short entries are already handled by key deduplication.
+_REVIEW_MIN_KEY_LENGTH = 24
+# Keep overlap review conservative: candidates below this score are more likely
+# to be distinct facts that merely share common memory phrasing.
+_REVIEW_SIMILARITY_THRESHOLD = 0.72
+# A report is advisory context, not an exhaustive pairwise dump. Bounding it
+# prevents mutually similar stores from producing a response larger than the
+# bounded memory itself.
+_REVIEW_MAX_CANDIDATES = 20
+# External editors can bypass configured character limits, so bound both the
+# number of entries entering the quadratic loop and expensive matcher calls.
+_REVIEW_MAX_ENTRIES = 50
+_REVIEW_MAX_COMPARISONS = 1_000
+
+
+def _duplicate_key(content: str) -> str:
+    """Return a lossless canonical/whitespace key for destructive deduplication."""
+    return " ".join(unicodedata.normalize("NFC", content).split())
+
+
+def _review_key(content: str) -> str:
+    """Return a broad, non-destructive key for advisory overlap review."""
+    return " ".join(unicodedata.normalize("NFKC", content).casefold().split())
+
+
+def _deduplicate_entries(entries: List[str]) -> List[str]:
+    """Keep the first entry for each presentation-insensitive duplicate key."""
+    deduplicated = []
+    seen = set()
+    for entry in entries:
+        key = _duplicate_key(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(entry)
+    return deduplicated
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +291,8 @@ class MemoryStore:
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.memory_entries = _deduplicate_entries(self.memory_entries)
+        self.user_entries = _deduplicate_entries(self.user_entries)
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -380,7 +423,7 @@ class MemoryStore:
         # external writer had just added. One read, one snapshot, no window.
         bak = None if skip_drift else self._detect_external_drift(target, raw)
         fresh = self._parse_entries(raw)
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+        fresh = _deduplicate_entries(fresh)
         self._set_entries(target, fresh)
         return bak
 
@@ -441,9 +484,16 @@ class MemoryStore:
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
-            if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+            # Destructive deduplication is deliberately limited to canonical
+            # Unicode and whitespace differences. Compatibility characters and
+            # case can carry meaning in formulas, paths, commands, and IDs.
+            content_key = _duplicate_key(content)
+            if any(_duplicate_key(entry) == content_key for entry in entries):
+                return self._success_response(
+                    target,
+                    "Entry already exists (no duplicate added).",
+                    effective_action="none",
+                )
 
             # Calculate what the new total would be
             new_entries = entries + [content]
@@ -468,7 +518,7 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+        return self._success_response(target, "Entry added.", effective_action="add")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -518,7 +568,15 @@ class MemoryStore:
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
-            test_entries[idx] = new_content
+            new_key = _duplicate_key(new_content)
+            duplicate_exists = any(
+                other_idx != idx and _duplicate_key(entry) == new_key
+                for other_idx, entry in enumerate(entries)
+            )
+            if duplicate_exists:
+                test_entries.pop(idx)
+            else:
+                test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
@@ -535,11 +593,19 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
+            self._set_entries(target, test_entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry replaced.")
+        message = (
+            "Entry removed: consolidated with an identical existing entry."
+            if duplicate_exists
+            else "Entry replaced."
+        )
+        return self._success_response(
+            target,
+            message,
+            effective_action="remove" if duplicate_exists else "replace",
+        )
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -581,7 +647,94 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        return self._success_response(target, "Entry removed.", effective_action="remove")
+
+    def review(self, target: str) -> Dict[str, Any]:
+        """Return advisory overlap candidates without changing the store."""
+        path = self._path_for(target)
+        with self._file_lock(path):
+            entries, read_ok = self._read_entries_checked(path)
+        if not read_ok:
+            return _read_failed_error(path)
+
+        safe_entries = []
+        excluded_unsafe_entry_count = 0
+        for entry in entries:
+            if _scan_memory_content(entry):
+                excluded_unsafe_entry_count += 1
+                continue
+            safe_entries.append(entry)
+
+        omitted_entry_count = max(0, len(safe_entries) - _REVIEW_MAX_ENTRIES)
+        review_entries = safe_entries[:_REVIEW_MAX_ENTRIES]
+        candidates = []
+        comparison_count = 0
+        comparison_truncated = False
+        for left_index, left in enumerate(review_entries):
+            left_key = _review_key(left)
+            for right in review_entries[left_index + 1:]:
+                right_key = _review_key(right)
+                shorter_length = min(len(left_key), len(right_key))
+                if shorter_length < _REVIEW_MIN_KEY_LENGTH:
+                    continue
+                # SequenceMatcher's matched characters cannot exceed the
+                # shorter input, so this ratio is an upper bound. Skip pairs
+                # that cannot possibly reach the reporting threshold.
+                if (
+                    2 * shorter_length
+                    < _REVIEW_SIMILARITY_THRESHOLD * (len(left_key) + len(right_key))
+                ):
+                    continue
+                if comparison_count >= _REVIEW_MAX_COMPARISONS:
+                    comparison_truncated = True
+                    break
+                comparison_count += 1
+                similarity = SequenceMatcher(None, left_key, right_key).ratio()
+                if similarity >= _REVIEW_SIMILARITY_THRESHOLD:
+                    candidates.append((similarity, left, right))
+            if comparison_truncated:
+                break
+
+        candidates.sort(
+            key=lambda candidate: (
+                -candidate[0],
+                _review_key(candidate[1]),
+                _review_key(candidate[2]),
+            )
+        )
+        omitted_candidate_count = max(0, len(candidates) - _REVIEW_MAX_CANDIDATES)
+        similar_entries = [
+            {"entries": [left, right], "similarity": round(similarity, 2)}
+            for similarity, left, right in candidates[:_REVIEW_MAX_CANDIDATES]
+        ]
+
+        current = len(ENTRY_DELIMITER.join(entries)) if entries else 0
+        limit = self._char_limit(target)
+        return {
+            "success": True,
+            "done": True,
+            "target": target,
+            "entry_count": len(entries),
+            "usage": f"{current:,}/{limit:,}",
+            "similar_entries": similar_entries,
+            "has_more": (
+                omitted_candidate_count > 0
+                or omitted_entry_count > 0
+                or comparison_truncated
+            ),
+            "omitted_candidate_count": omitted_candidate_count,
+            "reviewed_entry_count": len(review_entries),
+            "omitted_entry_count": omitted_entry_count,
+            "comparison_count": comparison_count,
+            "comparison_truncated": comparison_truncated,
+            "excluded_unsafe_entry_count": excluded_unsafe_entry_count,
+            "note": (
+                "Candidates are advisory only. Use one atomic operations batch to "
+                "replace/remove entries you confirm overlap; distinct facts must remain separate. "
+                "Entries blocked by the memory threat scanner and entries beyond the reported "
+                "review limit are omitted."
+            ),
+        }
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply a sequence of add/replace/remove ops to one target atomically.
@@ -619,6 +772,8 @@ class MemoryStore:
             # Work on a copy; only commit if the whole batch validates.
             working: List[str] = list(self._entries_for(target))
             limit = self._char_limit(target)
+            consolidated_replacements = 0
+            effective_actions = []
 
             for i, op in enumerate(operations):
                 op = op or {}
@@ -630,9 +785,12 @@ class MemoryStore:
                 if act == "add":
                     if not content:
                         return self._batch_error(target, f"{pos}: content is required.")
-                    if content in working:
+                    content_key = _duplicate_key(content)
+                    if any(_duplicate_key(entry) == content_key for entry in working):
+                        effective_actions.append("none")
                         continue  # idempotent -- skip duplicate, don't fail the batch
                     working.append(content)
+                    effective_actions.append("add")
 
                 elif act == "replace":
                     if not old_text:
@@ -650,7 +808,18 @@ class MemoryStore:
                             target,
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
-                    working[matches[0]] = content
+                    match_index = matches[0]
+                    content_key = _duplicate_key(content)
+                    if any(
+                        other_index != match_index and _duplicate_key(entry) == content_key
+                        for other_index, entry in enumerate(working)
+                    ):
+                        working.pop(match_index)
+                        consolidated_replacements += 1
+                        effective_actions.append("remove")
+                    else:
+                        working[match_index] = content
+                        effective_actions.append("replace")
 
                 elif act == "remove":
                     if not old_text:
@@ -664,6 +833,7 @@ class MemoryStore:
                             f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.",
                         )
                     working.pop(matches[0])
+                    effective_actions.append("remove")
 
                 else:
                     return self._batch_error(
@@ -690,7 +860,14 @@ class MemoryStore:
             self._set_entries(target, working)
             self.save_to_disk(target)
 
-        return self._success_response(target, f"Applied {len(operations)} operation(s).")
+        message = f"Applied {len(operations)} operation(s)."
+        if consolidated_replacements:
+            noun = "entry" if consolidated_replacements == 1 else "entries"
+            message += (
+                f" Removed {consolidated_replacements} {noun} consolidated "
+                "with identical existing entries."
+            )
+        return self._success_response(target, message, effective_actions=effective_actions)
 
     def _batch_error(self, target: str, message: str) -> Dict[str, Any]:
         """Build a batch-abort error that reports live (uncommitted) state."""
@@ -723,7 +900,14 @@ class MemoryStore:
         """Truncated one-line previews of entries for error feedback."""
         return [e[:width] + ("..." if len(e) > width else "") for e in entries]
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(
+        self,
+        target: str,
+        message: str = None,
+        *,
+        effective_action: Optional[str] = None,
+        effective_actions: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         # A successful write means the consolidation loop made progress, so the
         # per-turn failure budget resets (the cap counts consecutive failures,
         # not lifetime ones within a turn) (#42405).
@@ -749,6 +933,10 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        if effective_action is not None:
+            resp["effective_action"] = effective_action
+        if effective_actions is not None:
+            resp["effective_actions"] = effective_actions
         resp["note"] = "Write saved. This update is complete — do not repeat it."
         return resp
 
@@ -1168,8 +1356,11 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text)
 
+    elif action == "review":
+        result = store.review(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, review", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1270,7 +1461,8 @@ MEMORY_SCHEMA = {
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
+        "single lone change. Use action='review' for a read-only maintenance report that "
+        "lists possible overlaps before choosing controlled replace/remove operations.\n\n"
         "WHEN: save proactively when the user states a preference, correction, or personal "
         "detail, or you learn a stable fact about their environment, conventions, or workflow. "
         "Priority: user preferences & corrections > environment facts > procedures. The best "
@@ -1288,8 +1480,11 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "replace", "remove", "review"],
+                "description": (
+                    "The action to perform (single-op shape). 'review' is read-only and reports "
+                    "possible overlaps for maintenance. Omit when using 'operations'."
+                )
             },
             "target": {
                 "type": "string",

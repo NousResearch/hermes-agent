@@ -388,6 +388,19 @@ def _sync_config_bool(env_var: str, config_key: str, *, default: bool) -> bool:
     return default
 
 
+def sync_admin_gate_enabled() -> bool:
+    """Whether the sync admin gate is on for this instance (env-first).
+
+    ``HERMES_SYNC_ADMIN_GATE`` -> ``sync.admin_gate`` -> True. When True
+    (the default), the gate-and-swallow entrypoints require the Nous-admin
+    token claim (``tool_gateway_admin === true``). When False, sync opens
+    to all authenticated users. The gateway sync plane and the NAS BFF have
+    their own admin gates; all three must be open for a non-admin to use
+    sync end to end.
+    """
+    return _sync_config_bool("HERMES_SYNC_ADMIN_GATE", "admin_gate", default=True)
+
+
 def sync_feature_enabled() -> bool:
     """Whether the sync feature is turned on for this instance (env-first).
 
@@ -1607,7 +1620,8 @@ def _opted_in_rel_paths() -> List[str]:
 # maybe_pull_skills / maybe_push_skills clone the shape of the curator's
 # maybe_run_curator (agent/curator.py:1998): best-effort, never raise, return
 # a result dict or None. The access gate is checked first -- sync is inert
-# (no push, no pull, no-op) unless the signed-in user is a Nous admin.
+# (no push, no pull, no-op) unless the signed-in user is a Nous admin, OR
+# the admin gate has been config-disabled (HERMES_SYNC_ADMIN_GATE=0).
 # ---------------------------------------------------------------------------
 
 def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[str, Any]]:
@@ -1615,7 +1629,7 @@ def maybe_push_skills(*, message: str = "hermes skill sync") -> Optional[Dict[st
     Never raises. Called from the debounced skill_manage push hook."""
     try:
         identity = resolve_identity()
-        if not identity.get("nous_admin"):
+        if sync_admin_gate_enabled() and not identity.get("nous_admin"):
             return None  # access gate: inert unless the user is a Nous admin
         if not sync_feature_enabled():
             return None  # feature off for this instance (HERMES_SYNC_ENABLED)
@@ -1635,7 +1649,7 @@ def maybe_pull_skills() -> Optional[Dict[str, Any]]:
     + CLI startup)."""
     try:
         identity = resolve_identity()
-        if not identity.get("nous_admin"):
+        if sync_admin_gate_enabled() and not identity.get("nous_admin"):
             return None  # access gate: inert unless the user is a Nous admin
         if not sync_feature_enabled():
             return None  # feature off for this instance (HERMES_SYNC_ENABLED)
@@ -1652,6 +1666,7 @@ def sync_status() -> Dict[str, Any]:
     status: Dict[str, Any] = {
         "nous_admin": False,
         "logged_in": False,
+        "admin_gate_enabled": sync_admin_gate_enabled(),
         "feature_enabled": sync_feature_enabled(),
         "default_opt_in": sync_default_opt_in(),
         "base_url": resolve_sync_base_url(),

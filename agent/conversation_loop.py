@@ -4609,6 +4609,11 @@ def run_conversation(
                             "error": "First response truncated due to output length limit"
                         }
                 
+                # Count every completed provider attempt, including providers
+                # that omit usage. Token/cost accounting below remains gated on
+                # real usage, but the request itself must stay observable.
+                agent.session_api_calls += 1
+
                 # Track actual token usage from response for context management
                 if hasattr(response, 'usage') and response.usage:
                     canonical_usage = normalize_usage(
@@ -4783,7 +4788,6 @@ def run_conversation(
                     agent.session_prompt_tokens += prompt_tokens
                     agent.session_completion_tokens += completion_tokens
                     agent.session_total_tokens += total_tokens
-                    agent.session_api_calls += 1
                     agent.session_input_tokens += canonical_usage.input_tokens
                     agent.session_output_tokens += canonical_usage.output_tokens
                     agent.session_cache_read_tokens += canonical_usage.cache_read_tokens
@@ -4930,6 +4934,15 @@ def run_conversation(
                             f"{cached:,}/{prompt:,} tokens "
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
+                else:
+                    logger.info(
+                        "API call #%d: model=%s provider=%s in=? out=? total=? "
+                        "latency=%.1fs usage=unavailable",
+                        agent.session_api_calls,
+                        agent.model,
+                        agent.provider or "unknown",
+                        api_duration,
+                    )
                 
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
@@ -8552,6 +8565,7 @@ def run_conversation(
                             agent,
                             finish_reason=finish_reason,
                             response=response,
+                            observed_generation=_has_structured,
                         )
                     _empty_retry_budget = (
                         _empty_guard.empty_retry_budget(agent, response)
@@ -8619,15 +8633,14 @@ def run_conversation(
 
                     if _truly_empty and _deterministic_empty:
                         logger.warning(
-                            "Deterministic empty response detected "
-                            "(consecutive zero-output completions, "
-                            "model=%s provider=%s finish_reason=%s) — "
+                            "Repeated empty response detected "
+                            "(model=%s provider=%s finish_reason=%s) — "
                             "skipping remaining retries",
                             agent.model, agent.provider, finish_reason,
                         )
                         agent._buffer_status(
-                            "⚠️ Model is deterministically returning empty "
-                            "(zero output tokens) — skipping further retries "
+                            "⚠️ Model is repeatedly returning empty content — "
+                            "skipping further retries "
                             "to avoid repeat charges"
                         )
 
@@ -8748,7 +8761,12 @@ def run_conversation(
                             "answer:\n\n" + reasoning_preview
                         )
                     else:
-                        final_response = "(empty)"
+                        final_response = agent._format_turn_completion_explanation(
+                            _turn_exit_reason
+                        ) or (
+                            "⚠️ No reply: the model returned empty content after "
+                            "all retries and fallback attempts."
+                        )
                     break
                 
                 # Reset retry counter/signature on successful content

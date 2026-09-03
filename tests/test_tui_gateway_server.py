@@ -1003,6 +1003,55 @@ def test_profile_configured_cwd_skips_placeholders_and_missing(tmp_path):
     assert server._profile_configured_cwd(home) is None
 
 
+def test_profile_home_distinguishes_launch_named_and_missing(monkeypatch, tmp_path):
+    """Only an existing non-launch profile supplies a scoped home."""
+    from hermes_cli import profiles as profiles_mod
+
+    launch_home = tmp_path / "launch"
+    launch_home.mkdir()
+    profile_home = tmp_path / "profiles" / "beta"
+    profile_home.mkdir(parents=True)
+    missing_home = tmp_path / "profiles" / "missing"
+    homes = {
+        "launch": launch_home,
+        "beta": profile_home,
+        "missing": missing_home,
+    }
+
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: homes[name])
+
+    assert server._profile_home(None) is None
+    assert server._profile_home("launch") is None
+    assert server._profile_home("beta") == profile_home
+    assert server._profile_home("missing") is None
+
+
+def test_completion_cwd_missing_profile_home_falls_through_safely(
+    monkeypatch, tmp_path
+):
+    """An uncreated profile cannot crash completion or yield a dead path."""
+    from hermes_cli import profiles as profiles_mod
+
+    launch_home = tmp_path / "launch"
+    launch_home.mkdir()
+    launch_workspace = tmp_path / "launch-repo"
+    launch_workspace.mkdir()
+    missing_home = tmp_path / "profiles" / "missing"
+
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(
+        profiles_mod,
+        "get_profile_dir",
+        lambda name: missing_home if name == "missing" else launch_home,
+    )
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_workspace)}}
+    )
+
+    assert server._completion_cwd({"profile": "missing"}) == str(launch_workspace)
+
+
 def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     """Issue #40334: a new session bound to another profile must use THAT
     profile's terminal.cwd, not the launch profile's stale TERMINAL_CWD."""
@@ -1019,6 +1068,36 @@ def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
     assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
     # No profile and no launch config → fallback to the launch env var.
     assert server._completion_cwd({}) == str(stale)
+
+
+def test_completion_cwd_cross_profile_placeholder_falls_back_to_profile_home(
+    monkeypatch, tmp_path
+):
+    """Issue #87584: a pooled backend rebinding to a profile with a
+    placeholder terminal.cwd must land new sessions in that profile's OWN
+    home — not the launch profile's configured cwd, and not its process env."""
+    profile_home = tmp_path / "home-beta"
+    profile_home.mkdir()
+    # beta's config: placeholder cwd — _configured_cwd_from_cfg returns None.
+    _write_profile_cfg(profile_home, ".")
+
+    launch_workspace = tmp_path / "launch-repo"
+    launch_workspace.mkdir()
+    stale_env = tmp_path / "stale-env"
+    stale_env.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale_env))
+    # The LAUNCH profile has an explicit workspace — the pre-fix leak source.
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"terminal": {"cwd": str(launch_workspace)}}
+    )
+    monkeypatch.setattr(server, "_profile_home", lambda name: profile_home if name else None)
+
+    assert server._completion_cwd({"profile": "beta"}) == str(profile_home)
+
+    # Launch-profile resolution is untouched: no profile param still honors
+    # the launch config over the stale env.
+    assert server._completion_cwd({}) == str(launch_workspace)
 
 
 def test_completion_cwd_prefers_launch_config_over_stale_env(monkeypatch, tmp_path):

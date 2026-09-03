@@ -2502,6 +2502,282 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         self.assertNotIn("@Hermes @Alice", event.text)
 
 
+class TestFeishuReferencedMedia(unittest.TestCase):
+    """Attachments on a reply-to message must reach the agent.
+
+    Feishu only forwards the parent's ``message_id`` on a reply, so replying to
+    an image with "@Hermes what is this?" used to arrive with zero attachments.
+    """
+
+    def _build_adapter(self, *, parent_media=None, parent_text=None):
+        from collections import OrderedDict
+
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._message_text_cache = OrderedDict()
+        adapter._parent_media_cache = OrderedDict()
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value=parent_text)
+        adapter._fetch_parent_media = AsyncMock(return_value=parent_media or ([], []))
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
+        )
+        adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter._resolve_channel_prompt = Mock(return_value=None)
+        adapter._dispatch_inbound_event = AsyncMock()
+        return adapter
+
+    @staticmethod
+    def _reply_message(*, text, message_id="m_reply", parent_id="om_parent"):
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        return SimpleNamespace(
+            content=json.dumps({"text": text}),
+            message_type="text",
+            message_id=message_id,
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=parent_id,
+            upper_message_id=None,
+            thread_id=None,
+        )
+
+    def test_reply_to_image_inherits_attachment(self):
+        adapter = self._build_adapter(
+            parent_media=(["/tmp/cached/photo.png"], ["image/png"]),
+            parent_text="see this",
+        )
+        message = self._reply_message(text="@_user_1 what is in this picture?")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.media_urls, ["/tmp/cached/photo.png"])
+        self.assertEqual(event.media_types, ["image/png"])
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+        self.assertIn("what is in this picture?", event.text)
+
+    def test_reply_to_document_inherits_attachment(self):
+        adapter = self._build_adapter(
+            parent_media=(["/tmp/cached/spec.pdf"], ["application/pdf"]),
+        )
+        message = self._reply_message(text="@_user_1 summarize it")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.media_urls, ["/tmp/cached/spec.pdf"])
+        self.assertEqual(event.media_types, ["application/pdf"])
+
+    def test_bare_mention_reply_to_attachment_survives_empty_text_guard(self):
+        """Regression: a bare "@Hermes" strips to "" and owns no media.
+
+        The empty-text guard must not fire before parent media is merged, or the
+        user's only referenced attachment is silently dropped.
+        """
+        adapter = self._build_adapter(
+            parent_media=(["/tmp/cached/photo.png"], ["image/png"]),
+        )
+        message = self._reply_message(text="@_user_1")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_awaited_once()
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.media_urls, ["/tmp/cached/photo.png"])
+
+    def test_parent_without_media_still_dropped_when_text_empty(self):
+        """A bare "@Hermes" reply to a plain text message stays filtered."""
+        adapter = self._build_adapter(parent_media=([], []), parent_text="hello")
+        message = self._reply_message(text="@_user_1")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_awaited()
+
+    def test_own_media_is_not_duplicated_by_parent_media(self):
+        adapter = self._build_adapter(
+            parent_media=(["/tmp/cached/photo.png"], ["image/png"]),
+        )
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/tmp/cached/photo.png"], ["image/png"])
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"image_key": "img_1"}),
+            message_type="image",
+            message_id="m_reply",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.media_urls, ["/tmp/cached/photo.png"])
+
+    def test_command_reply_does_not_inherit_media(self):
+        """A slash command must not silently pick up the parent's attachment."""
+        adapter = self._build_adapter(
+            parent_media=(["/tmp/cached/photo.png"], ["image/png"]),
+        )
+        message = self._reply_message(text="@_user_1 /model")
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_reply",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.media_urls, [])
+        adapter._fetch_parent_media.assert_not_awaited()
+
+
+class TestFeishuFetchParentMedia(unittest.TestCase):
+    """_fetch_parent_media reuses the standard resource pipeline."""
+
+    def _build_adapter(self):
+        from collections import OrderedDict
+
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._parent_media_cache = OrderedDict()
+        adapter._client = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        adapter._run_blocking = AsyncMock()
+        adapter._download_feishu_message_resources = AsyncMock(
+            return_value=(["/tmp/cached/photo.png"], ["image/png"])
+        )
+        return adapter
+
+    @staticmethod
+    def _ok_response():
+        parent = SimpleNamespace(
+            body=SimpleNamespace(content=json.dumps({"image_key": "img_1"})),
+            msg_type="image",
+            mentions=None,
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        return response
+
+    def test_downloads_parent_media_via_shared_pipeline(self):
+        adapter = self._build_adapter()
+        adapter._run_blocking = AsyncMock(return_value=self._ok_response())
+
+        urls, types = asyncio.run(adapter._fetch_parent_media("om_parent"))
+        self.assertEqual(urls, ["/tmp/cached/photo.png"])
+        self.assertEqual(types, ["image/png"])
+        adapter._download_feishu_message_resources.assert_awaited_once()
+
+    def test_result_is_cached_so_repeated_replies_skip_redownload(self):
+        adapter = self._build_adapter()
+        adapter._run_blocking = AsyncMock(return_value=self._ok_response())
+
+        asyncio.run(adapter._fetch_parent_media("om_parent"))
+        asyncio.run(adapter._fetch_parent_media("om_parent"))
+        self.assertEqual(adapter._download_feishu_message_resources.await_count, 1)
+
+    def test_failed_lookup_returns_empty_and_does_not_raise(self):
+        adapter = self._build_adapter()
+        response = Mock()
+        response.success = Mock(return_value=False)
+        response.code = 230002
+        response.msg = "permission denied"
+        adapter._run_blocking = AsyncMock(return_value=response)
+
+        urls, types = asyncio.run(adapter._fetch_parent_media("om_parent"))
+        self.assertEqual(urls, [])
+        self.assertEqual(types, [])
+
+    def test_exception_is_swallowed(self):
+        adapter = self._build_adapter()
+        adapter._run_blocking = AsyncMock(side_effect=RuntimeError("boom"))
+
+        urls, types = asyncio.run(adapter._fetch_parent_media("om_parent"))
+        self.assertEqual(urls, [])
+        self.assertEqual(types, [])
+
+    def test_no_client_returns_empty(self):
+        adapter = self._build_adapter()
+        adapter._client = None
+
+        urls, types = asyncio.run(adapter._fetch_parent_media("om_parent"))
+        self.assertEqual(urls, [])
+
+
+class TestFeishuTextBatchMediaSafety(unittest.TestCase):
+    """Text batching must never swallow attachments."""
+
+    @staticmethod
+    def _event(*, text, media_urls=None):
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=SimpleNamespace(thread_id=None),
+            raw_message=None,
+            message_id="m1",
+            media_urls=list(media_urls or []),
+            media_types=["image/png"] * len(media_urls or []),
+            reply_to_message_id="om_parent",
+            reply_to_text="parent",
+        )
+
+    def test_events_with_media_are_not_merged(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        existing = self._event(text="first", media_urls=["/tmp/a.png"])
+        incoming = self._event(text="second")
+        self.assertFalse(FeishuAdapter._text_batch_is_compatible(existing, incoming))
+
+    def test_incoming_media_blocks_merge(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        existing = self._event(text="first")
+        incoming = self._event(text="second", media_urls=["/tmp/b.png"])
+        self.assertFalse(FeishuAdapter._text_batch_is_compatible(existing, incoming))
+
+    def test_plain_text_events_still_merge(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        existing = self._event(text="first")
+        incoming = self._event(text="second")
+        self.assertTrue(FeishuAdapter._text_batch_is_compatible(existing, incoming))
+
+
 class TestChatLockEviction(unittest.TestCase):
     """_get_chat_lock is LRU-bounded so _chat_locks cannot grow unbounded."""
 

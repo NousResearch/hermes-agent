@@ -282,6 +282,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_PARENT_MEDIA_CACHE_SIZE = 128       # LRU cap for reply-context parent media lookups
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1633,6 +1634,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._parent_media_cache: "OrderedDict[str, tuple[List[str], List[str]]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -3465,7 +3467,40 @@ class FeishuAdapter(BasePlatformAdapter):
             if text.startswith("/"):
                 inbound_type = MessageType.COMMAND
 
-        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
+        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        reply_to_message_id = (
+            getattr(message, "parent_id", None)
+            or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
+            or None
+        )
+        # Resolve reply context *before* the empty-text guard: a bare "@Hermes"
+        # reply to an attachment strips to "" and carries no media of its own, so
+        # dropping it here would discard the only thing the user pointed at.
+        reply_to_text: Optional[str] = None
+        if reply_to_message_id and inbound_type != MessageType.COMMAND:
+            reply_to_text = await self._fetch_message_text(reply_to_message_id)
+            parent_urls, parent_types = await self._fetch_parent_media(reply_to_message_id)
+            if parent_urls:
+                seen = set(media_urls)
+                for url, media_type in zip(parent_urls, parent_types):
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    media_urls.append(url)
+                    media_types.append(media_type)
+                if inbound_type == MessageType.TEXT:
+                    # Media now dominates the payload; reclassify so the event
+                    # takes the media path (batching, vision) instead of text.
+                    inbound_type = self._resolve_media_message_type(
+                        media_types[0] if media_types else "",
+                        default=MessageType.DOCUMENT,
+                    )
+        elif reply_to_message_id:
+            reply_to_text = await self._fetch_message_text(reply_to_message_id)
+
+        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped,
+        # but only once inherited reply media has had a chance to land above.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
             logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
             return
@@ -3474,15 +3509,6 @@ class FeishuAdapter(BasePlatformAdapter):
             hint = _build_mention_hint(mentions)
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
-
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
-        reply_to_message_id = (
-            getattr(message, "parent_id", None)
-            or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
-            or None
-        )
-        reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
             getattr(sender_id, "open_id", None)
@@ -3871,7 +3897,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _text_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
-        """Only merge text events when reply/thread context is identical."""
+        """Only merge text events when reply/thread context is identical.
+
+        Events carrying attachments are never merged: the merge path rewrites
+        ``existing.text`` and would silently drop the incoming event's media
+        (including attachments inherited from a reply-to message).
+        """
+        if existing.media_urls or incoming.media_urls:
+            return False
         return (
             existing.reply_to_message_id == incoming.reply_to_message_id
             and existing.reply_to_text == incoming.reply_to_text
@@ -4437,6 +4470,63 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
+
+    async def _fetch_parent_media(self, message_id: str) -> tuple[List[str], List[str]]:
+        """Download media attached to a reply-to message.
+
+        Feishu only forwards the parent's ``message_id`` on a reply, so a user who
+        answers an image or file with "@Hermes what is this?" would otherwise reach
+        the agent with no attachment at all. Results are cached because the same
+        parent is commonly referenced by several replies in a row.
+        """
+        if not self._client or not message_id:
+            return [], []
+
+        cached = self._parent_media_cache.get(message_id)
+        if cached is not None:
+            self._parent_media_cache.move_to_end(message_id)
+            return list(cached[0]), list(cached[1])
+
+        try:
+            request = self._build_get_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.get, request)
+            if not response or getattr(response, "success", lambda: False)() is False:
+                code = getattr(response, "code", "unknown")
+                msg = getattr(response, "msg", "message lookup failed")
+                logger.warning(
+                    "[Feishu] Failed to fetch parent media %s: [%s] %s", message_id, code, msg
+                )
+                return [], []
+            items = getattr(getattr(response, "data", None), "items", None) or []
+            parent = items[0] if items else None
+            if parent is None:
+                return [], []
+            body = getattr(parent, "body", None)
+            normalized = normalize_feishu_message(
+                message_type=getattr(parent, "msg_type", "") or "",
+                raw_content=getattr(body, "content", "") or "",
+                mentions=getattr(parent, "mentions", None),
+                bot=self._bot_identity(),
+            )
+            media_urls, media_types = await self._download_feishu_message_resources(
+                message_id=message_id,
+                normalized=normalized,
+            )
+            if media_urls:
+                logger.info(
+                    "[Feishu] Inherited %d attachment(s) from parent message %s",
+                    len(media_urls),
+                    message_id,
+                )
+            self._parent_media_cache[message_id] = (list(media_urls), list(media_types))
+            while len(self._parent_media_cache) > _FEISHU_PARENT_MEDIA_CACHE_SIZE:
+                self._parent_media_cache.popitem(last=False)
+            return media_urls, media_types
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to fetch parent media %s", message_id, exc_info=True
+            )
+            return [], []
 
     def _extract_text_from_raw_content(
         self,

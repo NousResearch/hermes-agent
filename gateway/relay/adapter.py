@@ -3027,24 +3027,72 @@ class RelayAdapter(BasePlatformAdapter):
         registry maps ids back to the real strings on the answer.
         """
         if choices and self.descriptor.supports_op("prompt"):
+            choice_labels = [str(choice) for choice in choices]
             options = [
-                {"id": f"c{i}", "label": str(choice)[:75]}
-                for i, choice in enumerate(choices)
+                {"id": f"c{i}", "label": f"Choose {i + 1}"}
+                for i in range(len(choice_labels))
             ]
             options.append({"id": "other", "label": "✏️ Other (type your answer)"})
+            details = "\n\n".join(
+                f"{i + 1}. {label}" for i, label in enumerate(choice_labels)
+            )
+            prompt_text = f"❓ {question}\n\n{details}"
+            len_fn = self.message_len_fn_for_chat(chat_id)
+            max_length = self.max_message_length_for_chat(chat_id)
+            if len_fn(prompt_text) > max_length:
+                from tools import clarify_gateway as _cg
+
+                is_multi = False
+                try:
+                    with _cg._lock:
+                        entry = _cg._entries.get(clarify_id)
+                    is_multi = bool(
+                        entry and getattr(entry, "multi_select", False)
+                    )
+                except Exception:
+                    is_multi = False
+                if is_multi:
+                    response_hint = (
+                        "Multiple selections allowed — reply with the numbers "
+                        "separated by commas or spaces (e.g. \"1, 3\"), the option "
+                        "text, or your own answer."
+                    )
+                else:
+                    response_hint = (
+                        "Reply with the number, the option text, or your own answer."
+                    )
+                fallback_text = f"{prompt_text}\n\n{response_hint}"
+                _cg.mark_awaiting_text(clarify_id)
+                chunks = self.truncate_message(
+                    fallback_text,
+                    max_length,
+                    len_fn=len_fn,
+                )
+                chunk_metadata = dict(metadata or {})
+                chunk_metadata["_interim_send"] = True
+                last_result = SendResult(success=True)
+                for chunk in chunks:
+                    last_result = await self.send(
+                        chat_id=chat_id,
+                        content=chunk,
+                        metadata=chunk_metadata,
+                    )
+                    if not last_result.success:
+                        return last_result
+                return last_result
             prompt_id = self._mint_prompt(
                 "clarify",
                 {
                     "session_key": session_key,
                     "clarify_id": clarify_id,
-                    "choices": [str(c) for c in choices],
+                    "choices": choice_labels,
                     "chat_id": str(chat_id),
                 },
             )
             result = await self._send_prompt(
                 chat_id,
                 prompt_kind="clarify",
-                text=f"❓ {question}",
+                text=prompt_text,
                 prompt_id=prompt_id,
                 options=options,
                 metadata=metadata,

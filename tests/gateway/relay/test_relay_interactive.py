@@ -144,10 +144,11 @@ async def test_slash_confirm_renders_three_options():
 @pytest.mark.asyncio
 async def test_clarify_renders_choices_plus_other_with_positional_ids():
     adapter, stub = _adapter()
+    long_choice = "staging — the safe one with a deliberately descriptive label " + "x" * 80
     result = await adapter.send_clarify(
         "c1",
         "Which environment?",
-        ["staging — the safe one", "production"],
+        [long_choice, "production"],
         "cl-1",
         "sess:1",
     )
@@ -158,9 +159,111 @@ async def test_clarify_renders_choices_plus_other_with_positional_ids():
     # Positional ids (choice text is arbitrary UTF-8; ids must be callback-safe).
     assert ids == ["c0", "c1", "other"]
     labels = [o["label"] for o in action["options"]]
-    assert labels[0].startswith("staging")
+    assert labels[:2] == ["Choose 1", "Choose 2"]
+    assert long_choice in action["content"]
+    assert "production" in action["content"]
     state = adapter._pending_prompts[action["prompt_id"]]
-    assert state["choices"] == ["staging — the safe one", "production"]
+    assert state["choices"] == [long_choice, "production"]
+
+
+@pytest.mark.asyncio
+async def test_clarify_falls_back_when_prompt_exceeds_platform_limit(monkeypatch):
+    adapter, stub = _adapter(platform="discord", max_message_length=2000)
+    choices = ["A" * 800, "B" * 800]
+    marked: list[str] = []
+    monkeypatch.setattr(
+        "tools.clarify_gateway.mark_awaiting_text", lambda cid: marked.append(cid)
+    )
+
+    result = await adapter.send_clarify(
+        "c1",
+        "Q" * 500,
+        choices,
+        "cl-oversize",
+        "sess:oversize",
+    )
+
+    assert result.success is True
+    assert not [action for action in stub.sent if action["op"] == "prompt"]
+    sends = [action for action in stub.sent if action["op"] == "send"]
+    assert sends
+    assert all(len(action["content"]) <= 2000 for action in sends)
+    delivered = "".join(action["content"] for action in sends)
+    assert choices[0] in delivered
+    assert choices[1] in delivered
+    assert marked == ["cl-oversize"]
+
+
+@pytest.mark.asyncio
+async def test_oversize_multi_select_clarify_keeps_multi_select_instructions():
+    from tools import clarify_gateway as cg
+
+    clarify_id = "cl-oversize-multi"
+    session_key = "sess:oversize-multi"
+    choices = ["A" * 800, "B" * 800]
+    cg.register(
+        clarify_id,
+        session_key,
+        "Q" * 500,
+        choices,
+        multi_select=True,
+    )
+    adapter, stub = _adapter(platform="discord", max_message_length=2000)
+    try:
+        result = await adapter.send_clarify(
+            "c1",
+            "Q" * 500,
+            choices,
+            clarify_id,
+            session_key,
+        )
+
+        assert result.success is True
+        delivered = "".join(
+            action["content"] for action in stub.sent if action["op"] == "send"
+        )
+        assert "Multiple selections allowed" in delivered
+        assert 'separated by commas or spaces (e.g. "1, 3")' in delivered
+    finally:
+        cg.clear_session(session_key)
+
+
+@pytest.mark.asyncio
+async def test_oversize_clarify_fallback_does_not_seal_open_slack_draft():
+    adapter, stub = _adapter(
+        platform="slack",
+        label="Slack",
+        max_message_length=2000,
+        supports_draft_streaming=True,
+        markdown_dialect="mrkdwn",
+        len_unit="unicode",
+        supported_ops=FULL_OPS + ("draft",),
+    )
+    await adapter.send_draft(
+        "c1",
+        17,
+        "partial assistant reply",
+        metadata={"message_id": "turn-1"},
+    )
+    open_drafts = dict(adapter._open_draft_by_chat)
+    stub.sent.clear()
+
+    result = await adapter.send_clarify(
+        "c1",
+        "Q" * 500,
+        ["A" * 800, "B" * 800],
+        "cl-open-draft",
+        "sess:open-draft",
+    )
+
+    assert result.success is True
+    assert not [
+        action
+        for action in stub.sent
+        if action["op"] == "draft" and action.get("final")
+    ]
+    assert adapter._open_draft_by_chat == open_drafts
+    assert [action for action in stub.sent if action["op"] == "send"]
 
 
 # ── the pending-prompt registry ──────────────────────────────────────────

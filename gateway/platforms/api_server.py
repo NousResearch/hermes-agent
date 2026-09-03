@@ -2462,7 +2462,7 @@ class APIServerAdapter(BasePlatformAdapter):
         — that stays reserved for an explicit test/manual override, so the first
         profile served can't pin every later request to its DB.
         """
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
         key = str(home)
         with self._session_db_cache_lock:
@@ -2470,24 +2470,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 return None
             db = self._session_dbs.get(key)
             if db is None:
-                db = SessionDB(db_path=home / "state.db")
+                db = get_shared_session_db(home / "state.db")
                 self._session_dbs[key] = db
             return db
 
     def _close_cached_session_dbs(self) -> None:
-        """Close SessionDB handles owned by this adapter's profile cache."""
+        """Release SessionDB handles borrowed by this adapter's profile cache."""
         with self._session_db_cache_lock:
             self._session_db_cache_closed = True
             cached = list(self._session_dbs.values())
             self._session_dbs.clear()
         shared_db = getattr(self, "_session_db", None)
+        from hermes_state import release_or_close
+
         for db in cached:
             if db is shared_db:
                 continue
             try:
-                db.close()
+                release_or_close(db)
             except Exception:
-                logger.debug("Failed to close API-server SessionDB", exc_info=True)
+                logger.debug("Failed to release API-server SessionDB", exc_info=True)
 
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.

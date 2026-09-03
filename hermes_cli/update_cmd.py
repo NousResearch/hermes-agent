@@ -8020,6 +8020,73 @@ def _path_uid(path) -> Optional[int]:
         return None
 
 
+def _git_objects_foreign_owned_paths(project_root, limit: int = 5) -> list:
+    """Return foreign-owned directories in the Git object database.
+
+    A prior ``sudo hermes`` / ``sudo git`` invocation can leave one or more
+    loose-object fan-out directories owned by root. Git can still read the
+    checkout, so the damage stays hidden until fetch or autostash needs to
+    write an object whose hash lands in that directory (#102172).
+
+    Only the object root and its direct child directories are relevant write
+    boundaries, so this scan is bounded to at most 259 stat calls. POSIX-only;
+    root and platforms without ``geteuid`` have no ownership mismatch to gate.
+    Never raises.
+    """
+    try:
+        if not hasattr(os, "geteuid"):
+            return []
+        euid = os.geteuid()
+        if euid == 0:
+            return []
+
+        objects = Path(project_root) / ".git" / "objects"
+        foreign: list = []
+
+        owner = _path_uid(objects)
+        if owner is not None and owner != euid:
+            foreign.append((str(objects), owner))
+        if len(foreign) >= limit:
+            return foreign
+
+        try:
+            entries = os.scandir(objects)
+        except OSError:
+            return foreign
+        with entries:
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                owner = _path_uid(entry.path)
+                if owner is not None and owner != euid:
+                    foreign.append((str(entry.path), owner))
+                    if len(foreign) >= limit:
+                        break
+        return foreign
+    except Exception:
+        return []
+
+
+def _refuse_update_if_git_objects_foreign_owned(project_root) -> None:
+    """Stop before backup/stash when Git cannot safely write new objects."""
+    foreign = _git_objects_foreign_owned_paths(project_root)
+    if not foreign:
+        return
+    print("\n✗ Update stopped: this checkout's Git objects are owned by another user.")
+    print("  Fetching or stashing now would fail when Git writes a new object.")
+    print("  This usually happens after running hermes or git with sudo. Offending paths:")
+    for path, uid in foreign:
+        print(f"    - {path} (owner uid {uid})")
+    print("\n  Fix ownership, then re-run the update:")
+    print(f"    sudo chown -R $(id -un): {project_root}")
+    print("    hermes update")
+    print("\n  Nothing was modified; update stopped before creating a backup or stashing local changes.")
+    sys.exit(1)
+
+
 def _venv_foreign_owned_paths(venv_root, limit: int = 5) -> list:
     """Bounded scan for venv entries not owned by the current user (#83529).
 
@@ -8304,6 +8371,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         )
                     )
                     sys.exit(2)
+
+    # A foreign-owned .git/objects fan-out can stay latent until fetch or
+    # autostash happens to write a matching hash. Refuse before spending time
+    # on a backup, and before any Git mutation, with an exact recovery command.
+    _refuse_update_if_git_objects_foreign_owned(_m().PROJECT_ROOT)
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.

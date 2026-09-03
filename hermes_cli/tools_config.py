@@ -3225,6 +3225,7 @@ def _prompt_toolset_checklist(
         pre_selected,
         cancel_returns=pre_selected,
         status_fn=status_fn,
+        wrap=True,
     )
     return {effective[i][0] for i in chosen}
 

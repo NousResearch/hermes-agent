@@ -408,6 +408,71 @@ def _scroll_for_cursor(
     return max(0, min(scroll_offset, max(0, total_rows - visible_rows)))
 
 
+def _scroll_for_cursor_wrap(
+    scroll_offset: int,
+    cursor_pos: int,
+    item_heights: List[int],
+    row_budget: int,
+) -> int:
+    """Height-aware scroll: keep the (possibly multi-line) cursor item fully
+    visible when rows wrap long descriptions across several terminal lines.
+
+    ``item_heights`` is the per-item row count (index-aligned with the filtered
+    list), and ``row_budget`` is the number of screen rows available for items.
+    When every item is one row this is equivalent to ``_scroll_for_cursor`` with
+    ``visible_rows == row_budget``.
+    """
+    row_budget = max(1, row_budget)
+    n = len(item_heights)
+
+    if n == 0:
+        return 0
+
+    heights = [max(1, h) for h in item_heights]
+
+    def rows_for(start: int, end: int) -> int:
+        """Rows consumed by items in [start, end)."""
+        return sum(heights[start:end])
+
+    # Everything fits on screen — snap to the top, matching single-row clamp.
+    if rows_for(0, n) <= row_budget:
+        return 0
+
+    def visible_count(start: int) -> int:
+        """How many items fit in row_budget starting at ``start`` (>=1)."""
+        total = 0
+        count = 0
+        for pos in range(start, n):
+            if total + heights[pos] > row_budget:
+                break
+            total += heights[pos]
+            count += 1
+        return count
+
+    def bottom_anchor(cursor: int) -> int:
+        """Offset such that the cursor is the last fully-visible item, filling
+        the budget above it as much as possible (mirrors single-row down
+        scroll, which anchors the cursor to the bottom row)."""
+        # Start with the cursor's own rows, then extend upward while they fit.
+        total = heights[cursor]
+        start = cursor
+        while start > 0 and total + heights[start - 1] <= row_budget:
+            start -= 1
+            total += heights[start]
+        return start
+
+    # Cursor above the window (scrolled up past it) — snap to it at the top.
+    if cursor_pos < scroll_offset:
+        return max(0, cursor_pos)
+
+    # Cursor within the window — keep the current offset (normal scrolling).
+    if scroll_offset <= cursor_pos < scroll_offset + visible_count(scroll_offset):
+        return max(0, scroll_offset)
+
+    # Cursor below the window — bottom-anchor.
+    return max(0, bottom_anchor(cursor_pos))
+
+
 def _handle_active_search_key(
     curses_mod, key: int, search: _SearchState
 ) -> tuple[bool, bool, bool]:
@@ -649,6 +714,8 @@ def _run_curses_menu(
     cancel_value,
     searchable=False,
     search_labels=None,
+    compute_item_heights=None,
+    draw_row_lines=None,
 ):
     """Shared curses single-/multi-select event loop.
 
@@ -687,6 +754,19 @@ def _run_curses_menu(
             ``search_labels``. Returned values are always ORIGINAL item indices.
         search_labels: per-item text used for filtering (required when
             ``searchable`` is true; length must equal ``item_count``).
+        compute_item_heights(max_x) -> list[int] | None
+            Optional callback returning per-item row counts for the current
+            terminal width (index-aligned with ``search_labels``/the filtered
+            list), used when items may wrap long text across several lines.
+            When it returns a non-None list, the scroll math accounts for
+            multi-line items instead of assuming one row each and
+            ``draw_row_lines`` is used to paint them; otherwise behavior is
+            byte-identical to the single-row path.
+        draw_row_lines(stdscr, y, idx, is_cursor, max_x, height) -> None
+            Optional multi-line item painter, used only when
+            ``compute_item_heights`` is provided. Draws the item starting at
+            row ``y`` over ``height`` rows. ``idx`` is the ORIGINAL item index
+            (same contract as ``draw_row``).
     """
     navigation_handler = _MENU_NAVIGATION_HANDLER.get()
     navigation_start = (
@@ -771,10 +851,19 @@ def _run_curses_menu(
                     back_enabled=allow_back,
                 )
 
-                visible_rows = max(1, max_y - items_start - reserve_bottom)
-                scroll_offset = _scroll_for_cursor(
-                    scroll_offset, cursor_pos, visible_rows, len(filtered)
-                )
+                row_budget = max(1, max_y - items_start - reserve_bottom)
+                wrap_rows = compute_item_heights is not None
+
+                if wrap_rows:
+                    all_heights = compute_item_heights(max_x) or []
+                    filtered_heights = [max(1, all_heights[i]) for i in filtered]
+                    scroll_offset = _scroll_for_cursor_wrap(
+                        scroll_offset, cursor_pos, filtered_heights, row_budget
+                    )
+                else:
+                    scroll_offset = _scroll_for_cursor(
+                        scroll_offset, cursor_pos, row_budget, len(filtered)
+                    )
 
                 if use_search and search.query and not filtered:
                     try:
@@ -782,14 +871,24 @@ def _run_curses_menu(
                     except curses.error:
                         pass
 
-                for draw_i, filtered_pos in enumerate(
-                    range(scroll_offset, min(len(filtered), scroll_offset + visible_rows))
-                ):
-                    i = filtered[filtered_pos]
-                    y = draw_i + items_start
-                    if y >= max_y - reserve_bottom:
-                        break
-                    draw_row(stdscr, y, i, i == cursor, max_x)
+                if wrap_rows and draw_row_lines is not None:
+                    y = items_start
+                    for filtered_pos in range(scroll_offset, len(filtered)):
+                        i = filtered[filtered_pos]
+                        height = filtered_heights[filtered_pos]
+                        if y >= max_y - reserve_bottom:
+                            break
+                        draw_row_lines(stdscr, y, i, i == cursor, max_x, height)
+                        y += height
+                else:
+                    for draw_i, filtered_pos in enumerate(
+                        range(scroll_offset, min(len(filtered), scroll_offset + row_budget))
+                    ):
+                        i = filtered[filtered_pos]
+                        y = draw_i + items_start
+                        if y >= max_y - reserve_bottom:
+                            break
+                        draw_row(stdscr, y, i, i == cursor, max_x)
 
                 if draw_footer is not None:
                     draw_footer(stdscr, max_y, max_x)
@@ -890,6 +989,7 @@ def curses_checklist(
     *,
     cancel_returns: Set[int] | None = None,
     status_fn: Optional[Callable[[Set[int]], str]] = None,
+    wrap: bool = False,
 ) -> Set[int]:
     """Curses multi-select checklist. Returns set of selected indices.
 
@@ -901,6 +1001,11 @@ def curses_checklist(
         status_fn: Optional callback ``f(chosen_indices) -> str`` whose return
             value is rendered on the bottom row of the terminal.  Use this for
             live aggregate info (e.g. estimated token counts).
+        wrap: When true, long item labels wrap onto multiple terminal lines
+            (the scroll math accounts for each item's wrapped height) instead
+            of being hard-truncated at the terminal width. Used by
+            ``hermes tools`` where plugin toolset descriptions can be very
+            long. The single-row path is unchanged when false.
     """
     if cancel_returns is None:
         cancel_returns = set(selected)
@@ -951,6 +1056,48 @@ def curses_checklist(
         except curses.error:
             pass
 
+    def _draw_row_wrap(stdscr, y, i, is_cursor, max_x, height):
+        import curses
+        check = "✓" if i in chosen else " "
+        arrow = "→" if is_cursor else " "
+        prefix = f" {arrow} [{check}] "
+        prefix_len = len(prefix)
+        attr = curses.A_NORMAL
+        if is_cursor:
+            attr = curses.A_BOLD
+            if curses.has_colors():
+                attr |= curses.color_pair(1)
+        # First line carries the checkbox/arrow prefix; each continuation line
+        # is indented to align under the item text. Both carry the same
+        # item-text capacity (wrap_x - prefix_len) — see _compute_heights.
+        line_cols = max(1, max_x - 1)
+        item_cols = max(1, line_cols - prefix_len)
+        text = items[i]
+        for row in range(height):
+            chunk = text[row * item_cols : (row + 1) * item_cols]
+            if not chunk:
+                break
+            if row == 0:
+                drawn = prefix + chunk
+                try:
+                    stdscr.addnstr(y + row, 0, drawn, max_x - 1, attr)
+                except curses.error:
+                    pass
+            else:
+                try:
+                    stdscr.addnstr(y + row, prefix_len, chunk, max_x - 1 - prefix_len, attr)
+                except curses.error:
+                    pass
+
+    def _compute_heights(max_x):
+        prefix_len = len(" → [✓] ")
+        line_cols = max(1, max_x - 1)
+        item_cols = max(1, line_cols - prefix_len)
+        heights = []
+        for item in items:
+            heights.append(max(1, -(-len(item) // item_cols)))
+        return heights
+
     def _on_action(action, cursor):
         if action == NAV_TOGGLE:
             chosen.symmetric_difference_update({cursor})
@@ -970,6 +1117,8 @@ def curses_checklist(
         extra_color_pairs=bool(status_fn),
         fallback=lambda: _numbered_fallback(title, items, selected, cancel_returns, status_fn),
         cancel_value=cancel_returns,
+        compute_item_heights=(_compute_heights if wrap else None),
+        draw_row_lines=(_draw_row_wrap if wrap else None),
     )
 
 

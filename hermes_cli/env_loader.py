@@ -724,14 +724,18 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # mid-process takes effect on the next call.
         return
 
-    # A real fetch attempt happened (success OR error).  Mark the home now
-    # so the 3-5 import-time load_hermes_dotenv() calls per startup don't
-    # re-fetch / re-print — error retries within one process are opt-in via
-    # reset_secret_source_cache().  Marking AFTER the attempt (not before,
-    # see #40597) is what lets the earlier failure paths stay retryable.
-    _APPLIED_HOMES.add(home_key)
-
+    # Only mark as applied when at least one key was actually applied.
+    # Previously this was unconditional, so a re-apply that saw every key as
+    # `skipped_existing` (because the previous apply wrote it to os.environ)
+    # still latched `_APPLIED_HOMES`, leaving an empty
+    # `_SECRET_SOURCE_VALUES_BY_HOME` snapshot and breaking
+    # `hydrate_profile_secret_sources` (which short-circuits on
+    # `home_key in _APPLIED_HOMES`) for all later multiplex turns.
+    # The write-back + reset + re-apply cycle from the cron prelude (#33465)
+    # hit this every time, clearing the scope after the first cron job.
+    # See #102041.
     if report.applied_any:
+        _APPLIED_HOMES.add(home_key)
         # Re-run the ASCII sanitization pass: vault values are
         # user-supplied and might have the same copy-paste corruption as
         # a manually edited .env (see #6843).

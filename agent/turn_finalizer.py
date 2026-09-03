@@ -779,6 +779,12 @@ def finalize_turn(
     _leftover_steer = agent._drain_pending_steer()
     if _leftover_steer:
         result["pending_steer"] = _leftover_steer
+    # Same handling for a leftover kanban-comment note. It never carries
+    # user authority, so it is surfaced as its own follow-up field rather
+    # than folded into the next user turn, but must not be silently dropped.
+    _leftover_kanban_note = getattr(agent, "_drain_pending_kanban_note", lambda: None)()
+    if _leftover_kanban_note:
+        result["pending_kanban_note"] = _leftover_kanban_note
     agent._response_was_previewed = False
 
     # Include interrupt message if one triggered the interrupt

@@ -917,6 +917,13 @@ def init_agent(
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
 
+    # Kanban-comment note mechanism, a sibling of /steer above, used only by
+    # tools.kanban_tools.inject_new_comments_from_env. Rides its own
+    # KANBAN_COMMENT_MARKER_OPEN/_CLOSE envelope so a kanban worker's comment
+    # is never mistaken for a message from the actual user.
+    agent._pending_kanban_note: Optional[str] = None
+    agent._pending_kanban_note_lock = threading.Lock()
+
     # Active-turn redirect mechanism. A regular follow-up sent while the model
     # is generating is different from a hard /stop: preserve the valid turn
     # prefix, cancel only the in-flight model request, and rebuild its tail with

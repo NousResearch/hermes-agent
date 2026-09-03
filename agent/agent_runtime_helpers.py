@@ -39,7 +39,7 @@ from agent.message_sanitization import (
     tool_call_id_variants,
     tool_result_id_variants,
 )
-from agent.prompt_builder import format_steer_marker
+from agent.prompt_builder import format_kanban_comment_marker, format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
@@ -5244,6 +5244,62 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 
 
 
+def apply_pending_kanban_note_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
+    """Append any pending kanban-comment note to the last tool result in this turn.
+
+    Sibling of apply_pending_steer_to_tool_results, called at the same
+    point in the tool-call batch. Uses format_kanban_comment_marker so the
+    note rides its own honestly attributed envelope, never the user-steer
+    marker, and reuses the same tail-search and restash fallback logic.
+
+    Args:
+        messages: The running messages list.
+        num_tool_msgs: Number of tool results appended in this batch;
+            used to locate the tail slice safely.
+    """
+    if num_tool_msgs <= 0 or not messages:
+        return
+    note_text = agent._drain_pending_kanban_note()
+    if not note_text:
+        return
+    target_idx = None
+    for j in range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1):
+        msg = messages[j]
+        if isinstance(msg, dict) and msg.get("role") == "tool":
+            target_idx = j
+            break
+    if target_idx is None:
+        # No tool result in this batch. Put the note back so the next
+        # tool batch's drain can deliver it instead of losing it.
+        _lock = getattr(agent, "_pending_kanban_note_lock", None)
+        if _lock is not None:
+            with _lock:
+                if agent._pending_kanban_note:
+                    agent._pending_kanban_note = agent._pending_kanban_note + "\n" + note_text
+                else:
+                    agent._pending_kanban_note = note_text
+        else:
+            existing = getattr(agent, "_pending_kanban_note", None)
+            agent._pending_kanban_note = (existing + "\n" + note_text) if existing else note_text
+        return
+    marker = format_kanban_comment_marker(note_text)
+    existing_content = messages[target_idx].get("content", "")
+    if not isinstance(existing_content, str):
+        try:
+            blocks = list(existing_content) if existing_content else []
+            blocks.append({"type": "text", "text": marker.lstrip()})
+            messages[target_idx]["content"] = blocks
+        except Exception:
+            messages[target_idx]["content"] = f"{existing_content}{marker}"
+    else:
+        messages[target_idx]["content"] = existing_content + marker
+    _ra().logger.info(
+        "Delivered kanban comment note to agent after tool batch (%d chars)",
+        len(note_text),
+    )
+
+
+
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
 
@@ -5333,6 +5389,7 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "apply_pending_kanban_note_to_tool_results",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

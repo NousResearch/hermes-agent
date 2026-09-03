@@ -385,7 +385,11 @@ def _get_db():
     if _db is None:
         from hermes_state_registry import acquire
         try:
-            _db, _db_error = acquire(), None
+            # Pin to import-time launch home (#102526). A bare acquire() follows
+            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
+            # overrides per profile at startup — first touch inside a foreign window
+            # permanently binds this process-wide handle to the wrong state.db.
+            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)

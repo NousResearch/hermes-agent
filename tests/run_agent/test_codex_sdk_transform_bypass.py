@@ -19,6 +19,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 from agent.codex_runtime import (
+    _bound_codex_tool_image_payloads,
     _bypass_sdk_request_transform,
     _is_plain_json_data,
 )
@@ -112,6 +113,86 @@ class TestBypassSdkRequestTransform:
         kwargs = _wire_kwargs()
 
         assert _bypass_sdk_request_transform(kwargs) is kwargs
+
+
+class TestBoundCodexToolImagePayloads:
+    @staticmethod
+    def _tool_output(call_id: str, image_chars: int):
+        return {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": [
+                {"type": "input_text", "text": f"screenshot {call_id}"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64," + ("A" * image_chars),
+                },
+            ],
+        }
+
+    def test_multiple_screenshots_keep_newest_within_aggregate_budget(self):
+        request = _wire_kwargs()
+        request["input"] = [
+            self._tool_output("old", 300_000),
+            self._tool_output("new", 300_000),
+        ]
+
+        bounded = _bound_codex_tool_image_payloads(request)
+
+        old_output = bounded["input"][0]["output"]
+        new_output = bounded["input"][1]["output"]
+        assert not any(part.get("type") == "input_image" for part in old_output)
+        assert any("combined tool images exceeded" in part.get("text", "") for part in old_output)
+        assert any(part.get("type") == "input_image" for part in new_output)
+        # Request-local recovery must not poison or rewrite canonical history.
+        assert request["input"][0]["output"][1]["type"] == "input_image"
+
+    def test_single_oversized_stored_screenshot_is_removed_for_recovery(self):
+        request = _wire_kwargs()
+        request["input"] = [self._tool_output("poisoned", 760_000)]
+
+        bounded = _bound_codex_tool_image_payloads(request)
+
+        assert not any(
+            part.get("type") == "input_image"
+            for part in bounded["input"][0]["output"]
+        )
+
+    def test_under_budget_tool_images_and_user_images_are_unchanged(self):
+        request = _wire_kwargs()
+        user_image = {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "data:image/png;base64," + ("U" * 400_000)},
+            ],
+        }
+        request["input"] = [user_image, self._tool_output("tool", 400_000)]
+
+        bounded = _bound_codex_tool_image_payloads(request)
+
+        assert bounded is request
+        assert bounded["input"][0] is user_image
+
+    def test_extra_body_input_is_bounded_when_it_is_the_effective_payload(self):
+        request = _wire_kwargs()
+        request.pop("input")
+        request["extra_body"] = {
+            "input": [
+                self._tool_output("old", 300_000),
+                self._tool_output("new", 300_000),
+            ]
+        }
+
+        bounded = _bound_codex_tool_image_payloads(request)
+
+        assert not any(
+            part.get("type") == "input_image"
+            for part in bounded["extra_body"]["input"][0]["output"]
+        )
+        assert any(
+            part.get("type") == "input_image"
+            for part in bounded["extra_body"]["input"][1]["output"]
+        )
 
 
 class TestRunCodexStreamRoutesPayloadViaExtraBody:

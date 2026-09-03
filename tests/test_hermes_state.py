@@ -2611,6 +2611,31 @@ class TestListSessionsRich:
         db.append_message("legacy_child", "user", "after reset")
         assert db.resolve_resume_session_id("legacy_parent") == "legacy_parent"
 
+    def test_resume_walker_does_not_cross_legacy_branch_boundary(self, db):
+        db.create_session("branch_parent", "webui")
+        db.append_message("branch_parent", "user", "parent transcript")
+        db.end_session("branch_parent", "branched")
+        db.create_session(
+            "legacy_branch_child",
+            "webui",
+            parent_session_id="branch_parent",
+        )
+        db.append_message("legacy_branch_child", "user", "branch transcript")
+
+        assert db.resolve_resume_session_id("branch_parent") == "branch_parent"
+
+    def test_resume_walker_follows_child_with_inherited_branch_marker(self, db):
+        db.create_session("branch", "webui")
+        db.create_session(
+            "model_child",
+            "webui",
+            parent_session_id="branch",
+            model_config={"_branched_from": "original_parent"},
+        )
+        db.append_message("model_child", "assistant", "continued transcript")
+
+        assert db.resolve_resume_session_id("branch") == "model_child"
+
     # Compression-tip following (the walker's original purpose) is pinned by
     # tests/hermes_state/test_resolve_resume_session_id.py
     # ::test_follows_compression_tip_when_parent_retains_messages.

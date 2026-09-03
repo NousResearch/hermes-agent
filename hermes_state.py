@@ -75,6 +75,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
+    _legacy_branch_child_sql,
     _legacy_reset_child_sql,
     _shape_preview,
     _sql_session_last_active,
@@ -8512,10 +8513,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed.
 
-        Before clearing a reset boundary, stabilize markerless legacy reset
-        children that still depend on the parent's mutable end_reason.
+        Before clearing a branch or reset boundary, stabilize markerless
+        legacy children that still depend on the parent's mutable end_reason.
         """
         def _do(conn):
+            # WHERE shape shared with _BRANCH_CHILD_SQL's fallback arm via
+            # _legacy_branch_child_sql so stamping and classification cannot
+            # drift when the mutable parent boundary is cleared below.
+            conn.execute(
+                "UPDATE sessions AS child SET model_config = json_set("
+                "COALESCE(child.model_config, '{}'), '$._branched_from', "
+                "child.parent_session_id) "
+                "WHERE child.parent_session_id = ? "
+                "AND json_extract(COALESCE(child.model_config, '{}'), "
+                "                 '$._branched_from') IS NULL "
+                f"AND {_legacy_branch_child_sql('child')}",
+                (session_id,),
+            )
             placeholders = ",".join("?" for _ in _RESET_END_REASONS)
             # WHERE shape shared with _RESET_CHILD_SQL's fallback arm via
             # _legacy_reset_child_sql so the stamping and the listing
@@ -13978,9 +13992,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if row is not None:
                     best = current
 
-                # Walk to the most-recently-started child — but skip explicit
-                # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
-                # reset-continuation (`_reset_from` or the legacy same-key
+                # Walk to the most-recently-started child — but skip branch
+                # (`_branched_from` or the legacy parent-end heuristic),
+                # delegate/subagent (`_delegate_from`), reset-continuation
+                # (`_reset_from` or the legacy same-key
                 # heuristic — a post-reset conversation must never be reached
                 # by resuming the parent the user reset away), and tool
                 # children. They also carry a ``parent_session_id`` yet
@@ -13991,7 +14006,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     child_row = conn.execute(
                         "SELECT id FROM sessions AS child "
                         "WHERE child.parent_session_id = ? "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+                        "  AND COALESCE(json_extract(COALESCE(child.model_config, '{}'), '$._branched_from'), '') "
+                        "      != child.parent_session_id "
+                        f"  AND NOT {_legacy_branch_child_sql('child')} "
                         "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
                         "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
                         f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "

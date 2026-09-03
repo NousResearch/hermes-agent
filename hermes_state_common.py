@@ -173,14 +173,21 @@ def _shape_preview(raw: Any) -> str:
     return text
 
 
+def _legacy_branch_child_sql(alias: str) -> str:
+    """Pre-marker branch-child heuristic shared by lineage classifiers."""
+    return (
+        f"EXISTS (SELECT 1 FROM sessions p"
+        f"            WHERE p.id = {alias}.parent_session_id"
+        f"            AND p.end_reason = 'branched'"
+        f"            AND {alias}.started_at >= p.ended_at)"
+    )
+
+
 # A child session counts as a /branch (kept visible, never cascade-deleted) if
 # it carries the stable marker OR the legacy end_reason heuristic holds.
 _BRANCH_CHILD_SQL = (
     "json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
-    " OR EXISTS (SELECT 1 FROM sessions p"
-    "            WHERE p.id = {a}.parent_session_id"
-    "            AND p.end_reason = 'branched'"
-    "            AND {a}.started_at >= p.ended_at)"
+    " OR " + _legacy_branch_child_sql("{a}")
 )
 
 

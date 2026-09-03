@@ -121,6 +121,12 @@ def chunk_memory(memory: str) -> list:
     return chunks
 
 
+def parse_api_response(raw: str) -> dict:
+    """Parse the raw HTTP body. Raises JSONDecodeError on non-JSON so the
+    caller can retry (server latency bodies are often plain text)."""
+    return json.loads(raw)
+
+
 def call_llm_once(cfg: dict, prompt: str) -> list:
     body = json.dumps({
         "model": cfg["model"],
@@ -141,7 +147,13 @@ def call_llm_once(cfg: dict, prompt: str) -> list:
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             with urllib.request.urlopen(req, timeout=300) as r:
-                resp = json.loads(r.read().decode("utf-8"))
+                raw = r.read().decode("utf-8", errors="replace")
+            try:
+                resp = parse_api_response(raw)
+            except json.JSONDecodeError:
+                print(f"  [retry {attempt}/{MAX_RETRIES}] non-JSON response ({raw[:120]!r}) — waiting {RETRY_BASE_DELAY * attempt}s...")
+                time.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             content = resp["choices"][0]["message"]["content"]
             content = content.strip()
             if content.startswith("```"):
@@ -175,8 +187,6 @@ def call_llm_once(cfg: dict, prompt: str) -> list:
             time.sleep(RETRY_BASE_DELAY * attempt)
     print(f"ERROR: failed after {MAX_RETRIES} attempts ({last_err})", file=sys.stderr)
     sys.exit(2)
-
-
 def call_llm(cfg: dict, memory: str, dry_run: bool = False) -> list:
     if dry_run:
         print("[dry-run] no API call — memory collected:", len(memory), "chars")

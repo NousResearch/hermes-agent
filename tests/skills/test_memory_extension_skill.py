@@ -7,6 +7,7 @@ Also covers the contradiction-detection scripts: deterministic pass 1
 no network).
 """
 
+import json
 import re
 import shutil
 import subprocess
@@ -245,3 +246,24 @@ class TestContradictionLLMScript:
         )
         assert r.returncode != 0
         assert "no memory" in (r.stdout + r.stderr).lower()
+
+    def test_parse_api_response_accepts_json(self):
+        """parse_api_response returns a dict for a valid JSON body."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("mem_llm", SCRIPT_LLM)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        body = '{"choices": [{"message": {"content": "[]"}}]}'
+        assert mod.parse_api_response(body)["choices"][0]["message"]["content"] == "[]"
+
+    def test_parse_api_response_rejects_non_json(self):
+        """parse_api_response raises JSONDecodeError on a plain-text body
+        (e.g. a server-latency page) so the caller can retry."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("mem_llm2", SCRIPT_LLM)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with pytest.raises(json.JSONDecodeError):
+            mod.parse_api_response("<html>524 origin timeout</html>")

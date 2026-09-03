@@ -189,6 +189,7 @@ def test_external_queue_drain_records_correlated_error_without_live_owner(monkey
             {
                 "text": "",
                 "status": "error",
+                "error": "External turn has no live session owner",
                 "external_submission_id": "gas-city-request-1",
             },
         ),

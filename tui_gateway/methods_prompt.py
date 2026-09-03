@@ -348,7 +348,7 @@ def _(rid, params: dict) -> dict:
             logger.info("prompt.submit: typed stop phrase — voice chat ended")
             return _ok(rid, {"voice_stopped": True})
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
-    if params.get("interrupted"):
+    if external_submission_id is None and params.get("interrupted"):
         # Client-side barge-in (desktop VAD / typing over playback) — latch it
         # so this turn's model message carries the interruption note.
         from tools.tts_streaming import mark_speech_interrupted
@@ -1046,6 +1046,12 @@ def _(rid, params: dict) -> dict:
             # Terminal frame + retained snapshot (not a bare "error" event +
             # cleared inflight): if the client is disconnected right now, the
             # retained snapshot is the only way resume can show this failure.
+            if external_submission_id:
+                _emit(
+                    "message.start",
+                    sid,
+                    {"external_submission_id": external_submission_id},
+                )
             _emit_terminal_turn_error(
                 sid,
                 session,

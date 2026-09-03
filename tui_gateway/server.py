@@ -9014,44 +9014,51 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
-    cancelled_external_ids = _queued_external_submission_ids(session)
-    tokens = _set_session_context(session["session_key"])
-    try:
-        # /new is a full conversation boundary: session-scoped runtime
-        # overrides (/model, /reasoning, /fast) do NOT carry forward — the
-        # fresh agent re-derives model/provider, reasoning, and service tier
-        # from config.yaml (#48055, #23131). Session pins are cleared below so
-        # a rebuild can't resurrect them. (Global process state is still never
-        # touched — see the cross-session-contamination note in
-        # _apply_model_switch.)
-        session.pop("model_override", None)
-        session.pop("create_reasoning_override", None)
-        session.pop("create_service_tier_override", None)
-        session.pop("one_turn_model_restore", None)
-        new_agent = _make_agent(
-            sid,
-            session["session_key"],
-            session_id=session["session_key"],
-            platform_override=_session_source(session),
-            context_cwd_is_launch_artifact=(
-                _context_cwd_is_launch_artifact(session)
-            ),
-        )
-    finally:
-        _clear_session_context(tokens)
-    session["agent"] = new_agent
-    session["config_model_seen"] = _config_model_target()
-    session["attached_images"] = []
-    session["queued_prompt"] = None
-    session.pop("queued_prompts", None)
-    session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    session["edit_snapshots"] = {}
-    session["image_counter"] = 0
-    session["running"] = False
-    session["show_reasoning"] = _load_show_reasoning()
-    session["tool_progress_mode"] = _load_tool_progress_mode()
-    session["tool_started_at"] = {}
     with session["history_lock"]:
+        run_thread = session.get("_run_thread")
+        if session.get("running") or (
+            run_thread is not None and run_thread.is_alive()
+        ):
+            raise RuntimeError("cannot reset a session while its turn is active")
+        cancelled_external_ids = _queued_external_submission_ids(session)
+        tokens = _set_session_context(session["session_key"])
+        try:
+            # /new is a full conversation boundary: session-scoped runtime
+            # overrides (/model, /reasoning, /fast) do NOT carry forward — the
+            # fresh agent re-derives model/provider, reasoning, and service tier
+            # from config.yaml (#48055, #23131). Session pins are cleared below so
+            # a rebuild can't resurrect them. (Global process state is still never
+            # touched — see the cross-session-contamination note in
+            # _apply_model_switch.)
+            session.pop("model_override", None)
+            session.pop("create_reasoning_override", None)
+            session.pop("create_service_tier_override", None)
+            session.pop("one_turn_model_restore", None)
+            new_agent = _make_agent(
+                sid,
+                session["session_key"],
+                session_id=session["session_key"],
+                platform_override=_session_source(session),
+                context_cwd_is_launch_artifact=(
+                    _context_cwd_is_launch_artifact(session)
+                ),
+            )
+        finally:
+            _clear_session_context(tokens)
+        session["agent"] = new_agent
+        session["config_model_seen"] = _config_model_target()
+        session["attached_images"] = []
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(
+            session.get("_queued_prompt_generation", 0)
+        ) + 1
+        session["edit_snapshots"] = {}
+        session["image_counter"] = 0
+        session["running"] = False
+        session["show_reasoning"] = _load_show_reasoning()
+        session["tool_progress_mode"] = _load_tool_progress_mode()
+        session["tool_started_at"] = {}
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
     for submission_id in cancelled_external_ids:
@@ -10829,19 +10836,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         # live owner transport to receive it. Emit only after releasing the
         # session lock: transports and replay storage may perform their own
         # synchronization.
-        _emit(
-            "message.start",
+        assert isinstance(external_submission_id, str)
+        _emit_external_queue_failure(
             sid,
-            {"external_submission_id": external_submission_id},
-        )
-        _emit(
-            "message.complete",
-            sid,
-            {
-                "text": "",
-                "status": "error",
-                "external_submission_id": external_submission_id,
-            },
+            external_submission_id,
+            "External turn has no live session owner",
         )
         # The head slot was already advanced before liveness was checked. Keep
         # draining so a following interactive prompt is not stranded forever

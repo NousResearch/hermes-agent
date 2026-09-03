@@ -19354,6 +19354,7 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     and /fast overrides do NOT carry into the fresh agent — it re-derives
     everything from config.yaml (#48055, #23131)."""
     captured = {}
+    failures = []
     new_agent = types.SimpleNamespace(model="openai/gpt-5.4", service_tier="")
     session = _session(
         agent=types.SimpleNamespace(
@@ -19364,6 +19365,11 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
         model_override={"model": "openai/gpt-5.4"},
         create_reasoning_override={"enabled": True, "effort": "high"},
         create_service_tier_override="",
+        queued_prompt={
+            "text": "external wake",
+            "transport": object(),
+            "external_submission_id": "gas-city-request-1",
+        },
     )
 
     def make_agent(*_args, **kwargs):
@@ -19378,6 +19384,11 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
     monkeypatch.setattr(server, "_session_info", lambda *_args: {})
     monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *args: failures.append(args),
+    )
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
 
     server._reset_session_agent("sid", session)
@@ -19391,6 +19402,43 @@ def test_reset_session_agent_clears_session_overrides(monkeypatch):
     assert "create_reasoning_override" not in session
     assert "create_service_tier_override" not in session
     assert session["agent"] is new_agent
+    assert failures == [
+        (
+            "sid",
+            "gas-city-request-1",
+            "External turn cancelled by session reset before it started",
+        )
+    ]
+    assert session["queued_prompt"] is None
+
+
+def test_reset_session_agent_refuses_to_corrupt_an_active_turn(monkeypatch):
+    queued = {
+        "text": "external wake",
+        "transport": object(),
+        "external_submission_id": "gas-city-request-1",
+    }
+    session = _session(running=True, queued_prompt=queued)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("active session must not be rebuilt")
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("active owner's stream must not receive queue failure frames")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="while its turn is active"):
+        server._reset_session_agent("sid", session)
+
+    assert session["queued_prompt"] is queued
+    assert session["running"] is True
 
 
 @pytest.mark.parametrize(

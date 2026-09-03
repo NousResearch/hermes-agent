@@ -1321,6 +1321,27 @@ def _interrupt_session_turn(
             session.get("_queued_prompt_generation", 0)
         ) + 1
 
+    if should_interrupt:
+        # Sibling of the gateway dispatch in
+        # gateway/run.py::_interrupt_and_clear_session: a user-initiated stop
+        # of a live TUI/desktop turn is the same "loop is gone" event, so
+        # plugins holding per-turn external resources get the same signal.
+        # Observer-only; dispatch failures never break the interrupt.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+            _invoke_hook(
+                "agent_loop_stopped",
+                session_key=session.get("session_key", ""),
+                platform="tui",
+                reason="user_stop",
+                invalidation_reason="session_interrupt",
+            )
+        except Exception:
+            logger.debug(
+                "agent_loop_stopped hook dispatch failed", exc_info=True
+            )
+
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt

@@ -459,6 +459,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown or expiry may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
@@ -1042,6 +1043,33 @@ def my_callback(session_id: str, platform: str, **kwargs):
 ---
 
 See the **[Build a Plugin guide](/developer-guide/plugins)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `agent_loop_stopped`
+
+Fires when the gateway **interrupts a running agent turn** — the user ran `/stop` while the loop was working, or the running-agent fast-path inside `/new` cleared the in-flight run before swapping the session. Unlike `on_session_finalize`, this fires earlier, while a turn is mid-flight, so plugins can drop per-turn external resources the agent loop will never consume (e.g. an outbound RPC that was waiting for a tool result).
+
+Fires on both interruption surfaces: the messaging **gateway** (`/stop`, `/new` fast-path) and the **TUI/desktop** `session.interrupt` path (platform is reported as `"tui"`). Does not fire in the plain CLI; there is no equivalent interruption surface there.
+
+**Callback signature:**
+
+```python
+def my_callback(session_key: str, platform: str, reason: str, invalidation_reason: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_key` | `str` | The session whose run was interrupted. |
+| `platform` | `str` | The messaging platform name (`"telegram"`, `"discord"`, etc.); empty string if unknown. |
+| `reason` | `str` | Why the agent was interrupted (e.g. `"user_stop"`, the reset/new reason). |
+| `invalidation_reason` | `str` | Why queued session state was invalidated (e.g. `"stop_command"`, `"stop_command_thread_sibling"`, `"reset_command"`). |
+
+**Fires:** In `gateway/run.py::_interrupt_and_clear_session`, immediately after `request_hard_interrupt()` interrupts the running agent. Only when a real agent was running — the pending-sentinel `/stop` path (no agent loop yet started) does **not** fire this hook, since there is no in-flight work to drop. On the slow `/new` reset path, `on_session_finalize` fires later in `_handle_reset_command` instead.
+
+**Return value:** Ignored.
+
+**Use cases:** Cancel external requests blocked on a tool result the loop will never consume, notify a connected voice/realtime client that a tool call was abandoned, release per-turn credentials or locks held only for the duration of an active turn.
 
 ---
 

@@ -225,6 +225,13 @@ VALID_HOOKS: Set[str] = {
     "on_skill_lifecycle",
     "subagent_start",
     "subagent_stop",
+    # Fired by the gateway when an agent turn is interrupted mid-run --
+    # either by /stop or by the running-agent fast-path of /new (see
+    # gateway/run.py::_interrupt_and_clear_session). Lets plugins fail
+    # any per-turn external resources they are holding (e.g. remote tool
+    # calls awaiting a result). Kwargs: session_key, platform, reason,
+    # invalidation_reason. Return values are ignored.
+    "agent_loop_stopped",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

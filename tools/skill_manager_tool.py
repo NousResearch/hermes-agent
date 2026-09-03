@@ -195,6 +195,20 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 
+def _display_create_dir() -> str:
+    """Display string for the skill-creation directory (schema/instruction text).
+
+    Renders ``skills.create_dir`` when configured so every instruction that
+    names the creation path follows the config, falling back to the
+    profile-local skills dir.
+    """
+    try:
+        from agent.skill_utils import display_skill_create_dir
+        return display_skill_create_dir()
+    except Exception:
+        return f"{display_hermes_home()}/skills/"
+
+
 def _containing_skills_root(skill_path: Path) -> Path:
     """Return the skills root directory (local or external_dirs entry) that
     contains ``skill_path``.  Falls back to the local ``SKILLS_DIR`` if no
@@ -670,10 +684,23 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    Honors ``skills.create_dir`` from config.yaml: when configured, new
+    skills are created there (e.g. a shared brain/fleet directory) instead
+    of the profile-local skills dir.  Falls back to the local dir when unset.
+    """
+    base = _skills_dir()
+    try:
+        from agent.skill_utils import get_skill_create_dir
+        create_dir = get_skill_create_dir()
+        if create_dir is not None:
+            base = create_dir
+    except Exception:
+        logger.debug("skills.create_dir lookup failed", exc_info=True)
     if category:
-        return _skills_dir() / category / name
-    return _skills_dir() / name
+        return base / category / name
+    return base / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -1028,10 +1055,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     except Exception:
         pass
 
+    try:
+        _display_path = str(skill_dir.relative_to(_skills_dir()))
+    except ValueError:
+        # Skill created under skills.create_dir — not relative to the
+        # profile-local root, so show the absolute path.
+        _display_path = str(skill_dir)
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(_skills_dir())),
+        "path": _display_path,
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -2107,7 +2140,7 @@ SKILL_MANAGE_SCHEMA = {
         "recurring task types. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
-        f"{display_hermes_home()}/skills/; must precede that skill's other "
+        f"{_display_create_dir()}; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "

@@ -303,6 +303,21 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    @pytest.mark.parametrize("model, provider, base_url", [
+        ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
+        ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),
+        ("muse-spark-1.3", "meta-ai", "https://api.meta.ai/v1"),
+        ("meta/muse-spark-1.3", "commandcode", "https://api.commandcode.ai/provider/v1"),
+    ])
+    def test_muse_spark_resolves_1m_without_network(self, model, provider, base_url):
+        """Muse Spark is 1,048,576 on every host even when models.dev and the
+        live /models probe are unavailable (fresh HERMES_HOME, offline)."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            assert get_model_context_length(model, provider=provider, base_url=base_url) == 1_048_576
+
     def test_empty_model_uses_fallback_context(self):
         assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
         assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
@@ -798,6 +813,36 @@ class TestFetchEndpointModelMetadata:
         not_found.json.assert_not_called()
         not_found.close.assert_called_once()
         success.close.assert_called_once()
+
+    def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
+        """A fresh process (cleared in-memory cache) must answer from the disk
+        memo within the TTL instead of re-probing the endpoint — the cost every
+        one-shot Bot Mode DM hop paid on startup. Expired memos re-probe."""
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(
+            mm, "_get_endpoint_metadata_cache_path", lambda: tmp_path / "endpoint_model_metadata.json"
+        )
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
+
+        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+            # "New process": drop the in-memory cache only.
+            mm._endpoint_model_metadata_cache.clear()
+            mm._endpoint_model_metadata_cache_time.clear()
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+        mock_get.assert_called_once()
+
+        # Past the TTL the memo is stale and the endpoint is probed again.
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
+            "agent.model_metadata.requests.get", return_value=success
+        ) as mock_get:
+            mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+        mock_get.assert_called_once()
 
 
 # =========================================================================
@@ -1599,6 +1644,18 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestMuseSparkStaleCacheGuard:
+    """Muse Spark (1M window per OpenRouter live metadata) had no catalog
+    entry, so older builds persisted the 256K default fallback. The cache
+    guard must flag that stale value and keep correct/probed values."""
+
+    def test_stale_muse_spark_detected_by_generic_guard(self):
+        from agent.model_metadata import _stale_pre_catalog_cache_entry
+        for slug in ("muse-spark-1.3", "meta/muse-spark-1.3-contributor", "muse-spark-1.2-contributor"):
+            assert _stale_pre_catalog_cache_entry(slug, 256_000), slug
+            assert not _stale_pre_catalog_cache_entry(slug, 1_048_576), slug
 
 
 class TestGrok46StaleCacheGuard:

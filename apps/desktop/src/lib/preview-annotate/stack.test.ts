@@ -25,7 +25,13 @@ function draft(note: string, kind: 'area' | 'element' = 'element'): AnnotatePinD
     rect: { height: 24, width: 80, x: 10, y: 12 },
     identity:
       kind === 'element'
-        ? { css: { 'font-size': '14px' }, selector: 'button.go', tag: 'button', text: 'Go' }
+        ? {
+            css: { 'font-size': '14px' },
+            html: '<button class="go">Go</button>',
+            selector: 'button.go',
+            tag: 'button',
+            text: 'Go'
+          }
         : undefined
   }
 }

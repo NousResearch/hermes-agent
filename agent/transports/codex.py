@@ -59,7 +59,7 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
 # A function literally named ``web_search`` collides with Grok's native
 # server-side tool (incomplete hang or HTTP 400 duplicate names); this alias
 # avoids that while still dispatching through Hermes's configured provider
-# (Firecrawl / Exa / …). Mapped back to ``web_search`` in normalize_response.
+# (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
 _XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
 
 # OpenCode's /v1/responses endpoints (Zen and Go, including custom providers
@@ -661,7 +661,7 @@ class ResponsesApiTransport(ProviderTransport):
         #    fails): drop the client ``web_search`` function and declare
         #    xAI's built-in instead. 1:1 swap only when client ``web_search``
         #    was already present — never an additive grant.
-        # 2. **Client** (Firecrawl / Keenable / Exa / … configured or resolved):
+        # 2. **Client** (Firecrawl / Tavily / Exa / … configured or resolved):
         #    keep Hermes dispatch so ``web.backend`` / ``web.search_backend``
         #    is honored, but rename the wire tool to
         #    ``hermes_web_search`` so Grok cannot hijack the name. The alias

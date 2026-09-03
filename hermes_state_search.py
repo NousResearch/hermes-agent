@@ -22,7 +22,11 @@ from hermes_state_common import (
     FTS_SQL,
     FTS_STALE_KEY,
     FTS_STORAGE_VERSION,
+    FTS_TOOL_CONTENT_PREFIX_CHARS,
+    FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY,
+    FTS_TRIGRAM_EXCLUDED_SOURCES,
     FTS_TRIGRAM_SQL,
+    fts_trigram_session_sql,
     MAX_FTS5_QUERY_CHARS,
     SCHEMA_VERSION,
     _FTS_CJK_TRIGGERS,
@@ -152,18 +156,22 @@ class SessionSearchMixin:
                 lo, hi = hw - 1000, hw + 1000
                 conn.execute(
                     "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
-                    "SELECT m.id, m.content, m.tool_name, m.tool_calls "
+                    "SELECT m.id, "
+                    "CASE WHEN m.role = 'tool' AND m.id > ? "
+                    "THEN substr(COALESCE(m.content, ''), 1, ?) "
+                    "ELSE m.content END, m.tool_name, m.tool_calls "
                     "FROM messages m "
                     "WHERE m.id > ? AND m.id <= ? "
                     "AND NOT EXISTS (SELECT 1 FROM messages_fts_docsize d WHERE d.id = m.id)",
-                    (lo, hi),
+                    (hw, FTS_TOOL_CONTENT_PREFIX_CHARS, lo, hi),
                 )
                 if include_trigram:
                     conn.execute(
-                        "INSERT INTO messages_fts_trigram(rowid, content, tool_name, tool_calls) "
-                        "SELECT m.id, m.content, m.tool_name, m.tool_calls "
-                        "FROM messages m "
+                        "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
+                        "SELECT m.id, m.content, m.tool_name "
+                        "FROM messages m JOIN sessions s ON s.id = m.session_id "
                         "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                        f"AND {fts_trigram_session_sql('s')} "
                         "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
                         (lo, hi),
                     )
@@ -191,9 +199,9 @@ class SessionSearchMixin:
         comparison, so they keep the legacy chunked ``LIMIT`` delete —
         those shadow tables are small by construction.
         """
-        with self._lock:
+        with self._read_ctx() as conn:
             trash = [
-                r[0] for r in self._conn.execute(
+                r[0] for r in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND name LIKE ? ESCAPE '\\'",
                     (self._FTS_TRASH_PREFIX.replace("_", "\\_") + "%",),
@@ -319,9 +327,11 @@ class SessionSearchMixin:
             if include_trigram:
                 conn.execute(
                     "INSERT INTO messages_fts_trigram"
-                    "(rowid, content, tool_name, tool_calls) "
-                    "SELECT id, content, tool_name, tool_calls FROM messages "
-                    "WHERE id > ? AND id <= ? AND role <> 'tool'",
+                    "(rowid, content, tool_name) "
+                    "SELECT m.id, m.content, m.tool_name "
+                    "FROM messages m JOIN sessions s ON s.id = m.session_id "
+                    "WHERE m.id > ? AND m.id <= ? AND m.role <> 'tool' "
+                    f"AND {fts_trigram_session_sql('s')}",
                     (progress, upper),
                 )
             # Publish progress in the same transaction as the rows it
@@ -340,7 +350,9 @@ class SessionSearchMixin:
             return True  # transient (lock contention) — caller retries
         if more is False:
             status = self.fts_rebuild_status()
-            if status is not None and status["indexed"] >= status["total"]:
+            if high_water <= 0 or (
+                status is not None and status["indexed"] >= status["total"]
+            ):
                 self._fts_rebuild_finish()
             return False
         return bool(more)
@@ -568,6 +580,11 @@ class SessionSearchMixin:
                     "('fts_rebuild_progress', '0') "
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
                 )
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw)),
+            )
             return hw
 
         hw = conn.execute(
@@ -576,6 +593,7 @@ class SessionSearchMixin:
         for k, v in (
             ("fts_rebuild_high_water", str(hw)),
             ("fts_rebuild_progress", "0"),
+            (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(hw)),
         ):
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
@@ -643,23 +661,26 @@ class SessionSearchMixin:
         is a legacy inline-FTS install that can be optimized to the v23
         external-content schema, or a previous optimize run was interrupted
         (legacy vtables already demoted, but backfill markers and/or trash
-        tables remain) and re-running would resume it, or the CJK-bigram
-        index needs a backfill/rebuild on this tokenizer-capable host, or
-        a prior demote left an empty external-content index without markers
-        (healable on re-run).
+        tables remain) and re-running would resume it, or this DB is v23 with the
+        old tool-calls-inclusive trigram projection (repairable via this same
+        migration flow), or the CJK-bigram index needs a backfill/rebuild on this
+        tokenizer-capable host, or a prior demote left an empty external-content
+        index without markers (healable on re-run).
         False for fresh and fully-optimized installs (and when FTS5 is
         unavailable)."""
         if not self._fts_enabled or self.read_only:
             return False
-        with self._lock:
-            if self._db_has_legacy_inline_fts(self._conn):
+        with self._read_ctx() as conn:
+            if self._db_has_legacy_inline_fts(conn):
+                return True
+            if self._db_has_trigram_tool_calls_projection(self._conn):
                 return True
             # Interrupted optimize: demotion already removed the legacy
             # vtables (so the check above is False), but the transition is
             # unfinished until the backfill markers are cleared and the
             # demoted trash tables are torn down. Search stays complete
             # through the gap supplement meanwhile; re-running resumes.
-            if self._conn.execute(
+            if conn.execute(
                 "SELECT 1 FROM state_meta "
                 "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
             ).fetchone():
@@ -667,20 +688,20 @@ class SessionSearchMixin:
             # CJK-bigram index work — only offerable when THIS process can
             # tokenize: a pending backfill (markers set at creation on a
             # populated DB) or a stale index awaiting a from-scratch rebuild.
-            if self._fts_cjk_loaded and self._conn.execute(
+            if self._fts_cjk_loaded and conn.execute(
                 "SELECT 1 FROM state_meta WHERE key IN "
                 f"('fts_cjk_rebuild_high_water', '{FTS_CJK_STALE_KEY}') LIMIT 1"
             ).fetchone():
                 return True
-            if self._has_fts_trash(self._conn):
+            if self._has_fts_trash(conn):
                 return True
             # Pre-fix crash window: empty external-content index with
             # messages still present, no markers, no trash (teardown already
             # finished or never needed). Re-run seeds markers and backfills.
-            return self._fts_external_index_empty_with_messages(self._conn)
+            return self._fts_external_index_empty_with_messages(conn)
 
     def _demote_legacy_fts_to_trash(self) -> int:
-        """Demote the legacy inline FTS vtables and stage their shadow tables
+        """Demote upgrade-eligible FTS vtables and stage their shadow tables
         for chunked teardown. Returns MAX(messages.id) as the rebuild high
         water. O(1) schema surgery — the heavy delete is deferred to the
         chunked teardown, exactly as the validated auto path did.
@@ -753,9 +774,16 @@ class SessionSearchMixin:
         progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
         vacuum: bool = True,
     ) -> Dict[str, Any]:
-        """Migrate a legacy v22 inline-FTS DB to the v23 external-content
-        schema, foreground and to completion. Safe to re-run: if a previous
-        attempt was interrupted it resumes from the progress marker.
+        """Repair an older FTS layout into the current v23-compatible shape,
+        foreground and to completion.
+
+        Supports two paths:
+        - legacy-v22 inline -> demote to v23 external-content
+        - v23 installs where ``messages_fts_trigram`` still stores
+          ``tool_calls`` payloads
+
+        Safe to re-run: if a previous attempt was interrupted it resumes from
+        the progress marker.
 
         ``progress_cb`` receives {"phase", "percent", "indexed", "total"}
         dicts for a CLI progress bar. Returns a summary dict.
@@ -779,11 +807,13 @@ class SessionSearchMixin:
         # finishing the backfill + teardown — this is what makes re-running
         # after an interruption safe.
         with self._lock:
-            legacy = self._db_has_legacy_inline_fts(self._conn)
+            needs_storage_upgrade = self._db_needs_fts_storage_upgrade(
+                self._conn
+            )
         pending = self.get_meta("fts_rebuild_high_water") is not None
-        if legacy and not pending:
+        if needs_storage_upgrade and not pending:
             self._demote_legacy_fts_to_trash()
-        elif pending and not legacy:
+        elif pending and not needs_storage_upgrade:
             # Resume mid-demote: markers exist, empty v23 tables may still be
             # missing if the process died between the staged demote commit and
             # schema ensure. Re-ensure is IF NOT EXISTS and cheap.
@@ -876,13 +906,13 @@ class SessionSearchMixin:
         # still empty against a non-empty messages table. Pre-fix code could
         # tear down trash and settle after a no-op backfill when markers were
         # missing — permanent search-index loss for historical rows.
-        with self._lock:
-            still_pending = self._conn.execute(
+        with self._read_ctx() as conn:
+            still_pending = conn.execute(
                 "SELECT 1 FROM state_meta "
                 "WHERE key = 'fts_rebuild_high_water' LIMIT 1"
             ).fetchone() is not None
-            still_trash = self._has_fts_trash(self._conn)
-            empty_index = self._fts_external_index_empty_with_messages(self._conn)
+            still_trash = self._has_fts_trash(conn)
+            empty_index = self._fts_external_index_empty_with_messages(conn)
         if still_pending or still_trash or empty_index:
             reason = (
                 "backfill_incomplete" if still_pending or empty_index
@@ -1131,8 +1161,8 @@ class SessionSearchMixin:
         # excludes handoffs with a DB pick that includes them, soft-deleting
         # the wrong turn.
         fetch_limit = int(limit) * 2 + 5
-        with self._lock:
-            cursor = self._conn.execute(
+        with self._read_ctx() as conn:
+            cursor = conn.execute(
                 "SELECT id, timestamp, content FROM messages "
                 "WHERE session_id = ? AND role = 'user'"
                 f"{active_clause}{display_clause} "
@@ -1760,6 +1790,24 @@ class SessionSearchMixin:
         if not query:
             return []
 
+        # New oversized tool results only index a bounded prefix to keep the
+        # foreground write transaction short. An explicit tool-role search is
+        # the opt-in full-body path and scans canonical rows via LIKE.
+        if role_filter and "tool" in role_filter:
+            matches = self._search_messages_like_fallback(
+                query,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+                limit=limit,
+                offset=offset,
+                sort=sort,
+                include_inactive=include_inactive,
+            )
+            return self._finalize_search_matches(
+                matches, result_fields=result_fields
+            )
+
         self._refresh_fts_stale_state()
         if self._fts_stale:
             matches = self._search_messages_like_fallback(
@@ -1876,6 +1924,12 @@ class SessionSearchMixin:
             # query explicitly filtering on role='tool' must therefore use
             # the LIKE fallback, which scans the base table directly.
             _wants_tool_rows = bool(role_filter) and "tool" in role_filter
+            # Cron and subagent transcripts are excluded too (see
+            # FTS_TRIGRAM_EXCLUDED_SOURCES); an explicit filter for them
+            # must likewise scan the base table.
+            _wants_cron_rows = bool(source_filter) and any(
+                src in FTS_TRIGRAM_EXCLUDED_SOURCES for src in source_filter
+            )
 
             # ── CJK-bigram route (messages_fts_cjk, cjk_unicode61) ──────
             # When the bigram index is available it serves EVERY CJK query
@@ -1890,6 +1944,7 @@ class SessionSearchMixin:
             if (
                 self._fts_cjk_available
                 and not _wants_tool_rows
+                and not _wants_cron_rows
                 and not self._has_lone_cjk_run(raw_query)
             ):
                 tokens = raw_query.split()
@@ -1963,6 +2018,7 @@ class SessionSearchMixin:
                 and not _any_short_cjk
                 and self._trigram_available
                 and not _wants_tool_rows
+                and not _wants_cron_rows
             ):
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
@@ -2382,7 +2438,9 @@ class SessionSearchMixin:
         FAILS CLOSED: if another process holds the rebuild lock beyond the
         bounded wait, this call defers (returns 0) rather than racing it.
         Callers already treat 0 as "rebuild made no progress" and fall back
-        to the stale-FTS breadcrumb path, which retries at next startup.
+        to the stale-FTS breadcrumb path, which retries in-process from the
+        gateway housekeeping tick (``retry_deferred_fts_recovery``) and at
+        next startup.
 
         Safe to call when FTS tables don't exist (skips them).
         Returns the number of FTS indexes that were rebuilt.
@@ -2396,6 +2454,14 @@ class SessionSearchMixin:
                 )
                 return 0
             with self._lock:
+                high_water = self._conn.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM messages"
+                ).fetchone()[0]
+                self._conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, str(high_water)),
+                )
                 for tbl in self._FTS_TABLES:
                     if not self._fts_table_exists(tbl):
                         continue

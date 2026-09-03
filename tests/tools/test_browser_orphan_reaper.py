@@ -58,8 +58,25 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
         assert d.exists()
-        _reap_orphaned_browser_sessions()
+        with patch(
+            "tools.browser_tool._socket_dir_idle_seconds",
+            return_value=10_000,
+        ):
+            _reap_orphaned_browser_sessions()
         assert not d.exists()
+
+    def test_fresh_dir_without_pid_file_survives_creator_race(self, fake_tmpdir):
+        """A concurrent reaper must not delete a session still starting."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_starting1234")
+        with patch(
+            "tools.browser_tool._socket_dir_idle_seconds",
+            return_value=0.0,
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
 
 
     def test_alive_legacy_daemon_is_reaped(self, fake_tmpdir):

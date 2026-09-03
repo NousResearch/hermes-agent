@@ -336,3 +336,46 @@ def test_manual_compress_without_live_thread_reports_honestly():
         host._compress_codex_app_server_session("tg:123", "sess-1")
     )
     assert "Nothing to compact" in reply
+
+
+# ---------------------------------------------------------------------------
+# Multiplexed gateway: the hygiene worker must see the caller's ContextVars
+# (profile secret scope / HERMES_HOME override). A bare run_in_executor worker
+# starts with an EMPTY Context, so get_secret(<PROVIDER>_API_KEY) inside the
+# summary path fails closed and every hygiene compaction degrades to a lossy
+# truncation (#100849 bundle).
+# ---------------------------------------------------------------------------
+
+def test_hygiene_worker_inherits_caller_contextvars(tmp_path):
+    import contextvars
+    import threading
+
+    marker = contextvars.ContextVar("hygiene_scope_marker", default=None)
+    seen = {}
+
+    class ScopeProbeAgent(LiveCodexAgent):
+        def _compress_context(self, messages, system_message, **kwargs):
+            seen["value"] = marker.get()
+            seen["thread"] = threading.current_thread().name
+            return super()._compress_context(messages, system_message, **kwargs)
+
+    agent = ScopeProbeAgent(mode="hermes")
+    key = "tg:ctx"
+    gw, _db = _gateway(tmp_path, key, agent)
+
+    async def _scoped():
+        token = marker.set("profile-scope")
+        try:
+            return await run_codex_hygiene_compaction(
+                gw, key, agent.session_id, auto_mode="hermes",
+                history=_history(), approx_tokens=345_000, timeout_seconds=30.0,
+            )
+        finally:
+            marker.reset(token)
+
+    assert asyncio.run(_scoped()) == "compacted"
+    assert seen["thread"] != "MainThread", "compaction must still run off-loop"
+    assert seen["value"] == "profile-scope", (
+        "hygiene worker lost the caller's ContextVars — under multiplex_profiles "
+        "this is the UnscopedSecretError / lossy-truncation regression"
+    )

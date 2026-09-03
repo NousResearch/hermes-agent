@@ -1620,6 +1620,13 @@ class RelayAdapter(BasePlatformAdapter):
             # how platform=RELAY home channels slipped through in the first
             # place. Set locally, never read off the wire.
             delivered_via_upstream_relay=True,
+            # The HERMES profile this interaction is routed to (multiplex
+            # mode) — mirrors _event_from_wire's profile stamping for plain
+            # relayed messages (#60586). Without this, a Team-Gateway's
+            # Discord slash-command/button/modal always fell back to the
+            # legacy agent:main namespace even when the connector resolved
+            # a specific profile for it.
+            profile=getattr(forward, "profile", None),
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:

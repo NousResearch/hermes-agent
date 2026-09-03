@@ -275,7 +275,7 @@ describe('useModelControls', () => {
     })
   })
 
-  it('persists an active primary-session picker change as the profile default via config.set --global', async () => {
+  it('sends an active primary-session picker change without a scope flag so the gateway decides persistence', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
     let controls!: Controls
@@ -289,13 +289,13 @@ describe('useModelControls', () => {
       })
     ).resolves.toBe(true)
 
-    // The primary main agent's pick IS the profile default, so it persists to
-    // config.yaml (model.default + model.provider) — which is what lets a
-    // chosen subscription provider outrank a leftover OPENAI_API_KEY env var.
+    // No hardcoded --global (#90235): resolve_persist_behavior on the gateway
+    // owns the policy — session-only unless model.persist_switch_by_default
+    // is set or no default has ever been configured (#86414's first pick).
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic --global'
+      value: 'claude-sonnet-4.6 --provider anthropic'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
@@ -376,7 +376,7 @@ describe('useModelControls', () => {
       confirm_expensive_model: true,
       key: 'model',
       session_id: 'session-1',
-      value: 'muse-spark-1.2-contributor --provider opencode-go --global'
+      value: 'muse-spark-1.2-contributor --provider opencode-go'
     })
     expect($currentModel.get()).toBe('muse-spark-1.2-contributor')
     expect($currentProvider.get()).toBe('opencode-go')

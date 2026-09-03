@@ -38,6 +38,7 @@ vi.mock('@/store/session', async importActual => ({
 const { createSessionRpcDispatcher } = await import('./session-rpc-dispatcher')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
 const { $profiles } = await import('@/store/profile')
+const { $removedSessionIds, $sessionMutationsInFlight } = await import('@/store/session-removal')
 
 const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, setSessionOwnerHint, setSessions } =
   await import('@/store/session')
@@ -75,6 +76,8 @@ afterEach(() => {
   setMessagingSessions([])
   $sessionTiles.set([])
   $profiles.set([])
+  $removedSessionIds.set(new Set())
+  $sessionMutationsInFlight.set(new Set())
   _resetSessionOwnerHintsForTests({ storage: true })
   sessionMocks.requestSessionResume.mockReset()
   vi.clearAllMocks()
@@ -231,6 +234,23 @@ describe('createSessionRpcDispatcher: stale runtime recovery', () => {
     await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
 
     expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['tombstoned', $removedSessionIds],
+    ['being deleted', $sessionMutationsInFlight]
+  ])('still reports the 4001 for a selected session that is %s', async (_state, sessions) => {
+    // The rebind decision moved to requestSessionResume (store/session-removal),
+    // which drops resume requests for a removal-pending id — this seam only has
+    // to keep surfacing the error to its caller.
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    sessions.set(new Set(['stored-omar']))
+    gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(
+      Object.assign(new Error('session not found'), { code: 4001 })
+    )
+    const { request } = dispatcher(undefined, 'stored-omar')
+
+    await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toThrow('session not found')
   })
 
   it('does not interpret an unrelated coded RPC failure as a stale runtime', async () => {

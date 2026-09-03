@@ -28,6 +28,7 @@ class _StubChild:
     def __init__(self, parent=None, accept_steer: bool = True):
         self.steered: list[str] = []
         self.accept_steer = accept_steer
+        self.session_id = "child-session-id"
         self._live_transcript_path = "/tmp/live/task-0.log"
         if parent is not None:
             self._delegate_parent_ref = weakref.ref(parent)
@@ -119,6 +120,7 @@ def test_list_shows_only_own_children():
         assert entry["subagent_id"] == "sid-ctl-list-1"
         assert entry["goal"] == "test goal"
         assert entry["accepting_steer"] is True
+        assert entry["session_id"] == "child-session-id"
         assert entry["live_transcript"] == "/tmp/live/task-0.log"
         # Internal fields must not leak
         assert "agent" not in entry

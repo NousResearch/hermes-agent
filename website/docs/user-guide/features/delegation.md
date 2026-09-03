@@ -351,6 +351,20 @@ A delegation the stall monitor has flagged shows as
 children show their quiet time so you can tell "slow" from "stuck" at a
 glance.
 
+For a durable view of one child's current work plan, use the child
+`session_id` returned by `delegate_task(action='list')`:
+
+```bash
+hermes sessions inspect <child-session-id>
+hermes sessions inspect <child-session-id> --json
+```
+
+The inspection combines the session's latest activity heartbeat with its most
+recent `todo` plan, including the active step and derived completion percentage.
+It remains useful when no plan was created: the session state and last activity
+are still shown. Use the profile flag (`hermes -p <name> sessions inspect ...`)
+when the child belongs to another profile's session store.
+
 ## Steering a Running Subagent
 
 Interrupting a child throws away its in-flight work; often you just want to redirect it.
@@ -365,7 +379,7 @@ The parent agent orchestrates its own running children with the same `delegate_t
 {"action": "stop",  "subagent_id": "sa-0-1a2b3c4d"}
 ```
 
-- **`list`** returns the conversation's live children: `subagent_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Ids also come back in the spawn dispatch response as `subagent_ids`.
+- **`list`** returns the conversation's live children: `subagent_id`, `session_id`, goal, status, `running_seconds`, `accepting_steer`, and the live transcript path. Subagent ids also come back in the spawn dispatch response as `subagent_ids`.
 - **`steer`** queues a course correction into a running child without stopping it (delivery semantics below).
 - **`stop`** ends a child early at its next iteration boundary; the partial result still re-enters the conversation as a normal completion message.
 

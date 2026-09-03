@@ -18,6 +18,8 @@
 #     [--relaunch-cwd <p>]     linux: working directory to restore on relaunch
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
+#     [--client-only]          runtime-free remote Desktop client: no venv,
+#                              git+Desktop only, never fleet-restart
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
 #     [--self-test-marker]
 #     [-- <args...>]           linux: filtered launch args to replay
@@ -39,7 +41,7 @@ ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
+SELF_TEST_TCC_HEAL=0 CLIENT_ONLY=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,6 +51,7 @@ while [ $# -gt 0 ]; do
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
     --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
+    --client-only) CLIENT_ONLY=1; shift ;;
     --no-ui) NO_UI=1; shift ;;
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
@@ -412,11 +415,13 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
+INSTALLED_COMMIT=""
 write_result() {
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","finished_at":%s}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","commit":"%s","finished_at":%s}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
-    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(date +%s)" \
+    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" \
+    "$(json_escape "$INSTALLED_COMMIT")" "$(date +%s)" \
     > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
 }
 
@@ -712,7 +717,54 @@ sleep 1
 start_ui
 
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
-[ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
+CLIENT_PY="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+
+run_client_only_update() {
+  # Runtime-free remote client: no venv, no fleet restart. Drive the
+  # stdlib updater with a system interpreter so a missing Hermes CLI is
+  # not treated as a bricked local install.
+  [ -n "$CLIENT_PY" ] || {
+    FINAL_CODE=3
+    FINAL_MSG="Update aborted: no python3 on PATH to run a client-only update."
+    log "$FINAL_MSG"
+    exit 3
+  }
+  log "runtime-free remote client: updating checkout only (no venv, no fleet restart)"
+  publish_stage "Updating Desktop client"
+  local out code
+  PYTHONPATH="$INSTALL_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    "$CLIENT_PY" -m hermes_cli.client_only_update \
+    --install-root "$INSTALL_ROOT" \
+    --hermes-home "$HERMES_HOME" \
+    --branch "$BRANCH" \
+    --client-only \
+    ${HERMES_CLIENT_ONLY_SKIP_BUILD:+--skip-desktop-build} \
+    >"$STATUS.clientout" 2>&1
+  code=$?
+  out="$(cat "$STATUS.clientout" 2>/dev/null)"
+  printf '%s\n' "$out" >> "$LOG" 2>/dev/null
+  INSTALLED_COMMIT="$(printf '%s\n' "$out" | sed -n 's/^INSTALLED_COMMIT=//p' | tail -n 1)"
+  log "client-only update exit code: $code commit=${INSTALLED_COMMIT:-none}"
+  if [ "$code" -eq 0 ]; then
+    FINAL_CODE=0
+    FINAL_MSG="Update complete."
+  else
+    FINAL_CODE="$code"
+    FINAL_MSG="$(printf '%s\n' "$out" | tail -n 1)"
+    [ -n "$FINAL_MSG" ] || FINAL_MSG="Client-only update failed (exit $code)."
+  fi
+  exit "$FINAL_CODE"
+}
+
+if [ ! -x "$HERMES_BIN" ]; then
+  if [ "$CLIENT_ONLY" -eq 1 ]; then
+    run_client_only_update
+  fi
+  FINAL_CODE=3
+  FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."
+  log "$FINAL_MSG"
+  exit 3
+fi
 
 # Heal a venv the reverted TCC anchor left bricked BEFORE invoking the CLI:
 # venv/bin/hermes execs venv/bin/python3, so a dead alias kills every attempt

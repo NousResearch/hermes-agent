@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _classify_responses_issuer,
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
     _sanitize_replayed_fn_name,
@@ -19,6 +20,30 @@ _HARMONY_SOURCE_SNIPPET = (
     "Need to generate one image according to the description."
     "<|end|><|start|>assistant<|channel|>final<|message|>"
 )
+
+
+@pytest.mark.parametrize(
+    "configured_base_url",
+    [
+        "https://responses.example/v1",
+        "https://RESPONSES.EXAMPLE/v1",
+        "https://responses.example:443/v1",
+        "http://RESPONSES.EXAMPLE:80/v1",
+    ],
+)
+def test_responses_issuer_canonicalizes_sdk_base_url(configured_base_url):
+    """The SDK-normalized base URL must retain the main path's issuer."""
+    from openai import OpenAI
+
+    client = OpenAI(api_key="test", base_url=configured_base_url)
+    try:
+        sdk_base_url = str(client.base_url)
+    finally:
+        client.close()
+
+    assert _classify_responses_issuer(
+        base_url=configured_base_url
+    ) == _classify_responses_issuer(base_url=sdk_base_url)
 
 
 def test_chat_content_drops_images_from_assistant_role():
@@ -300,11 +325,175 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
 
 _OVERSIZED_ITEM_ID = "x" * 408
 _VALID_ITEM_ID = "msg_abc123"
+_LEGACY_FOREIGN_ITEM_ID = "a7ca4fd3c0b6ffcf"
 
 
 # The codex app-server overflows the Responses 64-char call_id limit for
 # MCP-routed tools, e.g. codex_mcp__hermes-tools__web_search_exec-<uuid> (#73492).
 _OVERSIZED_CALL_ID = "codex_mcp__hermes-tools__web_search_exec-" + "0" * 43
+
+
+def test_codex_replay_drops_legacy_foreign_short_message_id():
+    """A pre-stamp Qwen Responses item must not poison a Codex turn.
+
+    This matches the outbound shape after switching from a provider that
+    emits short hexadecimal ids to openai-codex. The Codex backend rejects
+    non-``msg`` ids even when they are under 64 chars.
+    """
+    messages = [
+        {
+            "role": "assistant",
+            "content": "response from the previous provider",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "response from the previous provider",
+                        }
+                    ],
+                    "id": _LEGACY_FOREIGN_ITEM_ID,
+                }
+            ],
+        },
+        {"role": "user", "content": "follow up"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        messages,
+        current_issuer_kind="codex_backend",
+    )
+
+    replayed = next(item for item in items if item.get("type") == "message")
+    assert "id" not in replayed
+    assert replayed["content"] == [
+        {
+            "type": "output_text",
+            "text": "response from the previous provider",
+        }
+    ]
+
+
+def test_normalize_codex_response_stamps_issuer_on_message_items():
+    """Persisted message ids need provenance for safe provider switching."""
+    response = SimpleNamespace(
+        status="completed",
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                id="msg_from_xai",
+                content=[SimpleNamespace(type="output_text", text="hello")],
+            )
+        ],
+    )
+
+    assistant_message, _ = _normalize_codex_response(
+        response,
+        issuer_kind="xai_responses",
+    )
+
+    assert assistant_message.codex_message_items[0]["_issuer_kind"] == "xai_responses"
+
+
+def test_replay_drops_foreign_message_id_but_keeps_same_issuer_id():
+    """Provider switching keeps text while withholding foreign item ids."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "from xAI",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "from xAI"}],
+                    "id": "msg_xai",
+                    "_issuer_kind": "xai_responses",
+                }
+            ],
+        },
+        {"role": "user", "content": "switch providers"},
+        {
+            "role": "assistant",
+            "content": "from Codex",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "from Codex"}],
+                    "id": "msg_codex",
+                    "_issuer_kind": "codex_backend",
+                }
+            ],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        messages,
+        current_issuer_kind="codex_backend",
+    )
+
+    replayed = [item for item in items if item.get("type") == "message"]
+    assert [item.get("id") for item in replayed] == [None, "msg_codex"]
+    assert [item["content"][0]["text"] for item in replayed] == [
+        "from xAI",
+        "from Codex",
+    ]
+
+
+def test_replay_canonicalizes_legacy_other_issuer_stamps():
+    """Pre-upgrade URL spellings remain same-issuer replay candidates."""
+    legacy_issuer = "other:https://RESPONSES.EXAMPLE:443/v1"
+    messages = [
+        {
+            "role": "assistant",
+            "content": "from custom endpoint",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "encrypted_content": "opaque-custom-reasoning",
+                    "summary": [],
+                    "_issuer_kind": legacy_issuer,
+                }
+            ],
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {"type": "output_text", "text": "from custom endpoint"}
+                    ],
+                    "id": "msg_custom",
+                    "_issuer_kind": legacy_issuer,
+                }
+            ],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        messages,
+        current_issuer_kind=_classify_responses_issuer(
+            base_url="https://responses.example/v1/"
+        ),
+    )
+
+    assert any(
+        item.get("encrypted_content") == "opaque-custom-reasoning"
+        for item in items
+    )
+    replayed_message = next(
+        item for item in items if item.get("type") == "message"
+    )
+    assert replayed_message["id"] == "msg_custom"
 
 
 def test_chat_messages_to_responses_input_clamps_oversized_call_id():

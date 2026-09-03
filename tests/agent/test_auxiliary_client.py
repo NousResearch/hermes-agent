@@ -3235,7 +3235,7 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
     """
 
     @staticmethod
-    def _build_adapter(base_url):
+    def _build_adapter(base_url, *, issuer_kind=None):
         from agent.auxiliary_client import _CodexCompletionsAdapter
         from types import SimpleNamespace
 
@@ -3271,7 +3271,11 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
         real_client = MagicMock()
         real_client.base_url = base_url
         real_client.responses.create = _create
-        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.5")
+        adapter = _CodexCompletionsAdapter(
+            real_client,
+            "gpt-5.5",
+            issuer_kind=issuer_kind,
+        )
         return adapter, captured_kwargs
 
     @staticmethod
@@ -3311,6 +3315,38 @@ class TestCodexAdapterGithubResponsesMessageIdDrop:
             base_url="https://chatgpt.com/backend-api/codex"
         )
         adapter.create(messages=self._replay_messages())
+        message_item = next(
+            item for item in captured["input"] if item.get("type") == "message"
+        )
+        assert message_item["id"] == "msg_short_but_connection_scoped"
+
+    def test_codex_backend_drops_legacy_foreign_short_message_id(self):
+        messages = self._replay_messages()
+        messages[1]["codex_message_items"][0]["id"] = "a7ca4fd3c0b6ffcf"
+        adapter, captured = self._build_adapter(
+            base_url="https://chatgpt.com/backend-api/codex"
+        )
+
+        adapter.create(messages=messages)
+
+        message_item = next(
+            item for item in captured["input"] if item.get("type") == "message"
+        )
+        assert "id" not in message_item
+        assert message_item["content"] == [
+            {"type": "output_text", "text": "pong"}
+        ]
+
+    def test_explicit_codex_issuer_keeps_id_through_custom_proxy(self):
+        messages = self._replay_messages()
+        messages[1]["codex_message_items"][0]["_issuer_kind"] = "codex_backend"
+        adapter, captured = self._build_adapter(
+            base_url="https://codex-proxy.example/v1",
+            issuer_kind="codex_backend",
+        )
+
+        adapter.create(messages=messages)
+
         message_item = next(
             item for item in captured["input"] if item.get("type") == "message"
         )

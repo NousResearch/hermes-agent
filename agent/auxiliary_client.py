@@ -1729,9 +1729,16 @@ class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(
+        self,
+        real_client: OpenAI,
+        model: str,
+        *,
+        issuer_kind: Optional[str] = None,
+    ):
         self._client = real_client
         self._model = model
+        self._issuer_kind = issuer_kind
 
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
@@ -1750,7 +1757,10 @@ class _CodexCompletionsAdapter:
         # assistant tool calls as `function_call` items and tool results as
         # `function_call_output` items with a valid call_id, so every
         # Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _classify_responses_issuer,
+        )
         from utils import base_url_host_matches
 
         instructions = "You are a helpful assistant."
@@ -1771,7 +1781,21 @@ class _CodexCompletionsAdapter:
         # through this adapter instead of agent/transports/codex.py's
         # build_kwargs, so they need the same guard applied independently.
         _host_for_input = str(getattr(self._client, "base_url", "") or "")
-        _is_github_for_input = base_url_host_matches(_host_for_input, "githubcopilot.com")
+        _is_xai_for_input = (
+            base_url_host_matches(_host_for_input, "x.ai")
+            or base_url_host_matches(_host_for_input, "api.x.ai")
+        )
+        _is_github_for_input = (
+            base_url_host_matches(_host_for_input, "githubcopilot.com")
+            or base_url_host_matches(_host_for_input, "models.github.ai")
+        )
+        _is_codex_for_input = _is_official_codex_base_url(_host_for_input)
+        _issuer_for_input = self._issuer_kind or _classify_responses_issuer(
+            is_xai_responses=_is_xai_for_input,
+            is_github_responses=_is_github_for_input,
+            is_codex_backend=_is_codex_for_input,
+            base_url=_host_for_input,
+        )
         # Auxiliary calls never send ``context_management`` (native
         # compaction is a main-turn feature), so they must never replay a
         # compaction checkpoint from the replayed history nor let one
@@ -1780,6 +1804,7 @@ class _CodexCompletionsAdapter:
         input_items = _chat_messages_to_responses_input(
             replay_messages,
             is_github_responses=_is_github_for_input,
+            current_issuer_kind=_issuer_for_input,
             native_compaction_eligible=False,
         )
 
@@ -2381,9 +2406,19 @@ class CodexAuxiliaryClient:
     Also exposes .api_key and .base_url for introspection by async wrappers.
     """
 
-    def __init__(self, real_client: OpenAI, model: str):
+    def __init__(
+        self,
+        real_client: OpenAI,
+        model: str,
+        *,
+        issuer_kind: Optional[str] = None,
+    ):
         self._real_client = real_client
-        adapter = _CodexCompletionsAdapter(real_client, model)
+        adapter = _CodexCompletionsAdapter(
+            real_client,
+            model,
+            issuer_kind=issuer_kind,
+        )
         self.chat = _CodexChatShim(adapter)
         self.api_key = real_client.api_key
         self.base_url = real_client.base_url
@@ -4218,7 +4253,11 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
         base_url=base_url,
         default_headers=hermes_xai_default_headers(),
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    return CodexAuxiliaryClient(
+        real_client,
+        model,
+        issuer_kind="xai_responses",
+    ), model
 
 
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -4259,7 +4298,11 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         base_url=base_url,
         default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
     )
-    return CodexAuxiliaryClient(real_client, model), model
+    return CodexAuxiliaryClient(
+        real_client,
+        model,
+        issuer_kind="codex_backend",
+    ), model
 
 
 def _try_azure_foundry(

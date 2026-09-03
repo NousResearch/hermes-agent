@@ -19,6 +19,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, NamedTuple, Optional
 
+import httpx
+
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -48,8 +50,23 @@ def _classify_responses_issuer(
     if is_codex_backend:
         return "codex_backend"
     if base_url:
-        return f"other:{base_url}"
+        # OpenAI stores base_url as an httpx.URL, which lowercases hosts,
+        # removes default ports, canonicalizes IDNs, and appends a trailing
+        # slash. Apply the same URL normalization before stamping issuer
+        # identity so main and auxiliary paths agree on custom endpoints.
+        try:
+            normalized_base_url = str(httpx.URL(str(base_url))).rstrip("/")
+        except (httpx.InvalidURL, TypeError, UnicodeError):
+            normalized_base_url = str(base_url).rstrip("/")
+        return f"other:{normalized_base_url}" if normalized_base_url else "other"
     return "other"
+
+
+def _canonicalize_responses_issuer_kind(issuer_kind: Any) -> Any:
+    """Normalize legacy URL-backed issuer stamps before comparison."""
+    if not isinstance(issuer_kind, str) or not issuer_kind.startswith("other:"):
+        return issuer_kind
+    return _classify_responses_issuer(base_url=issuer_kind[len("other:"):])
 
 
 # Throttle the per-process cross-issuer skip warning so we don't flood logs
@@ -523,10 +540,11 @@ def _chat_messages_to_responses_input(
     endpoint that minted it — replaying a Codex-issued blob against xAI
     (or vice versa) always yields HTTP 400 ``invalid_encrypted_content``
     and breaks every subsequent turn in the same session.  When this
-    argument is provided and a reasoning item carries an ``_issuer_kind``
-    stamp from a different endpoint, the item is dropped from the replayed
-    input.  Legacy items without a stamp are still replayed
-    (backwards-compatible).  The two guards compose:
+    argument is provided, foreign encrypted reasoning items are dropped and
+    foreign assistant message ids are withheld while their text is still
+    replayed. Legacy message ids without a stamp retain backwards-compatible
+    handling, except that Codex only receives ids in its required ``msg``
+    namespace. The two reasoning guards compose:
     ``replay_encrypted_reasoning=False`` is the session-wide kill switch
     (drops ALL replay); ``current_issuer_kind`` is the per-item filter
     that runs only when replay is still enabled.
@@ -557,6 +575,9 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    canonical_current_issuer = _canonicalize_responses_issuer_kind(
+        current_issuer_kind
+    )
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -617,9 +638,10 @@ def _chat_messages_to_responses_input(
                             # Unstamped (legacy) items pass through.
                             item_issuer = ri.get("_issuer_kind")
                             if (
-                                current_issuer_kind is not None
+                                canonical_current_issuer is not None
                                 and item_issuer is not None
-                                and item_issuer != current_issuer_kind
+                                and _canonicalize_responses_issuer_kind(item_issuer)
+                                != canonical_current_issuer
                             ):
                                 global _CROSS_ISSUER_WARN_EMITTED
                                 if not _CROSS_ISSUER_WARN_EMITTED:
@@ -689,13 +711,27 @@ def _chat_messages_to_responses_input(
                             "content": normalized_content_parts,
                         }
                         item_id = raw_item.get("id")
+                        item_issuer = raw_item.get("_issuer_kind")
+                        issuer_matches = (
+                            canonical_current_issuer is None
+                            or item_issuer is None
+                            or _canonicalize_responses_issuer_kind(item_issuer)
+                            == canonical_current_issuer
+                        )
                         if (
                             not is_github_responses
                             and isinstance(item_id, str)
                             and item_id.strip()
+                            and issuer_matches
                         ):
                             stripped_id = item_id.strip()
-                            if len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH:
+                            if (
+                                len(stripped_id) <= _MAX_RESPONSES_ITEM_ID_LENGTH
+                                and (
+                                    canonical_current_issuer != "codex_backend"
+                                    or stripped_id.startswith("msg")
+                                )
+                            ):
                                 replay_item["id"] = stripped_id
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():
@@ -1663,6 +1699,8 @@ def _normalize_codex_response(
                     "status": _normalize_responses_message_status(item_status),
                     "content": [{"type": "output_text", "text": message_text}],
                 }
+                if issuer_kind:
+                    raw_message_item["_issuer_kind"] = issuer_kind
                 item_id = getattr(item, "id", None)
                 if isinstance(item_id, str) and item_id:
                     raw_message_item["id"] = item_id

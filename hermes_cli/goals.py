@@ -2281,6 +2281,9 @@ def run_kanban_goal_loop(
         if status == "changes_requested":
             _log(f"kanban goal loop: reviewer returned task {task_id} for changes after {turns_used} turn(s)")
             return {"outcome": "changes_requested_by_reviewer", "turns_used": turns_used, "reason": "reviewer requested changes"}
+        if status == "paused":
+            _log(f"kanban goal loop: task {task_id} paused after {turns_used} turn(s)")
+            return {"outcome": "paused", "turns_used": turns_used, "reason": "dispatcher shutdown"}
         if status not in ("running", "ready"):
             # Reclaimed / archived / unexpected — let the dispatcher own it.
             _log(f"kanban goal loop: task {task_id} status={status!r}; stopping")

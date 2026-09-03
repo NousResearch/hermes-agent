@@ -9070,6 +9070,42 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # ── Cooperative Kanban shutdown pause ────────────────
+                # A dispatcher shutdown asks workers to yield only after the
+                # model has produced a complete turn. First atomically release
+                # the owned run; only the successful pause path persists this
+                # special exit, so a lost ownership race falls through to the
+                # ordinary terminal guard without duplicating the response.
+                _kanban_paused = False
+                try:
+                    from agent.kanban_stop import (
+                        kanban_shutdown_drain_requested,
+                        pause_current_kanban_run,
+                    )
+
+                    if kanban_shutdown_drain_requested():
+                        _kanban_paused = pause_current_kanban_run()
+                        if _kanban_paused:
+                            append_message(messages, final_msg)
+                            try:
+                                agent._flush_messages_to_session_db(messages, conversation_history)
+                            except Exception:
+                                logger.warning(
+                                    "shutdown-pause turn flush failed (session=%s)",
+                                    getattr(agent, "session_id", None) or "none",
+                                    exc_info=True,
+                                )
+                            _turn_exit_reason = "kanban_shutdown_paused"
+                            logger.info(
+                                "kanban worker paused at turn boundary task=%s",
+                                os.environ.get("HERMES_KANBAN_TASK", ""),
+                            )
+                except Exception:
+                    logger.debug("kanban shutdown pause check failed", exc_info=True)
+
+                if _kanban_paused:
+                    break
+
                 # ── Kanban worker terminal-tool stop guard ─────────────
                 # Workers must end with kanban_complete / kanban_block.
                 # Models sometimes narrate the next step ("Let me write the

@@ -1271,6 +1271,38 @@ class GatewayKanbanWatchersMixin:
                     path, exc,
                 )
 
+    def _prepare_kanban_shutdown_drain(self) -> None:
+        """Allocate the marker inherited by workers from this dispatcher."""
+        try:
+            from hermes_cli import kanban_db as _kb
+
+            self._kanban_shutdown_drain_marker = _kb.prepare_shutdown_drain_marker()
+        except Exception:
+            logger.debug("kanban shutdown marker preparation failed", exc_info=True)
+
+    def _request_kanban_shutdown_drain(self, *, reason: str) -> None:
+        """Tell this dispatcher's workers to yield at their next turn end."""
+        try:
+            from hermes_cli import kanban_db as _kb
+
+            marker = getattr(self, "_kanban_shutdown_drain_marker", None)
+            if marker is not None:
+                os.environ["HERMES_KANBAN_DRAIN_MARKER"] = str(marker)
+            payload = _kb.request_shutdown_drain(reason=reason)
+            logger.info(
+                "kanban shutdown drain requested: workers will pause at their "
+                "next turn boundary (marker=%s)",
+                payload.get("marker"),
+            )
+        except Exception:
+            # Shutdown must continue to the existing reclaim/termination
+            # fallback if the cooperative marker cannot be written.
+            logger.warning(
+                "kanban shutdown drain marker could not be written; "
+                "worker reclaim remains the fallback",
+                exc_info=True,
+            )
+
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
@@ -1345,6 +1377,11 @@ class GatewayKanbanWatchersMixin:
                 "kanban dispatcher: advisory lock unavailable at %s; proceeding "
                 "on config control alone.", _lock_path,
             )
+
+        # Workers inherit this per-dispatcher path. A new gateway lifetime
+        # gets a different path, so an old shutdown request cannot pause new
+        # work after restart.
+        self._prepare_kanban_shutdown_drain()
 
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)

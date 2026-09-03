@@ -16569,6 +16569,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._clear_plugin_message_injector()
             self._draining = True
 
+            # Ask dispatcher-owned Kanban workers to release their cards at
+            # the next completed model turn. This is cooperative and bounded:
+            # the existing timeout/interruption path below remains the
+            # fallback for a worker that never reaches a turn boundary.
+            request_kanban_drain = getattr(
+                self, "_request_kanban_shutdown_drain", None
+            )
+            if callable(request_kanban_drain):
+                request_kanban_drain(
+                    reason=(
+                        "gateway restart" if self._restart_requested
+                        else "gateway shutdown"
+                    )
+                )
+
             stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
             if callable(stop_room_worker):
                 try:

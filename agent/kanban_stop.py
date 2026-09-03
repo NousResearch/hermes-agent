@@ -35,6 +35,47 @@ def kanban_stop_nudge_enabled() -> bool:
     return bool(task)
 
 
+def kanban_shutdown_drain_requested() -> bool:
+    """Return whether this worker was asked to pause at a turn boundary."""
+    if not (os.environ.get("HERMES_KANBAN_TASK") or "").strip():
+        return False
+    try:
+        from hermes_cli import kanban_db
+
+        return kanban_db.shutdown_drain_requested()
+    except Exception:
+        # A missing/unreadable control path must not turn a normal worker
+        # response into a shutdown protocol failure. The dispatcher reclaim
+        # remains the bounded fallback when the cooperative path is unavailable.
+        return False
+
+
+def pause_current_kanban_run(*, reason: str = "dispatcher shutdown") -> bool:
+    """Release this worker's active run so the card can be resumed later."""
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    claim_lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    if not task_id or not raw_run_id or not claim_lock:
+        return False
+    try:
+        run_id = int(raw_run_id)
+        from hermes_cli import kanban_db
+
+        conn = kanban_db.connect()
+        try:
+            return kanban_db.pause_task(
+                conn,
+                task_id,
+                expected_run_id=run_id,
+                claimer=claim_lock,
+                reason=reason,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
 def _tool_call_name(tc: Any) -> str:
     if isinstance(tc, dict):
         fn = tc.get("function")
@@ -103,6 +144,8 @@ def build_kanban_stop_nudge(
 
 __all__ = [
     "build_kanban_stop_nudge",
+    "kanban_shutdown_drain_requested",
     "kanban_stop_nudge_enabled",
+    "pause_current_kanban_run",
     "session_called_kanban_terminal",
 ]

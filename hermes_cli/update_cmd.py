@@ -4750,11 +4750,29 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 # Local commits on top of the remote tip — not behind.
                 print("✓ Already up to date.")
                 return
-            if counted is not None:
-                commits_word = "commit" if counted == 1 else "commits"
-                print(f"⚕ Update available: {counted} {commits_word} behind {compare_branch}.")
-            else:
-                print(f"⚕ Update available (behind {compare_branch}).")
+            if counted is None:
+                # The compare API has no answer. That covers both a local-only
+                # HEAD SHA GitHub has never seen (the update_in_place workflow)
+                # and a failed/rate-limited API call, so ask git locally
+                # whether the target is already contained in HEAD. On a shallow
+                # clone the answer is reliable while the boundary sits at or
+                # below the target ref (the local-commits-on-top-of-tip case);
+                # across a moved boundary git may still say no — that just
+                # lands on the honest "unknown" below, never a false "behind".
+                ancestor = subprocess.run(
+                    git_cmd + ["merge-base", "--is-ancestor", compare_branch, "HEAD"],
+                    cwd=_m().PROJECT_ROOT,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                )
+                if ancestor.returncode == 0:
+                    print("✓ Already up to date.")
+                    return
+                print(f"⚕ Update status unknown (could not compare against {compare_branch}).")
+                print("  Run 'hermes update' to install regardless.")
+                return
+            commits_word = "commit" if counted == 1 else "commits"
+            print(f"⚕ Update available: {counted} {commits_word} behind {compare_branch}.")
             print(f"  Run '{recommended_update_command()}' to install.")
         return
 

@@ -44,6 +44,7 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_MOUNTS_LABEL_KEY = "hermes-mounts"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -599,6 +600,31 @@ def _egress_reuse_fingerprint(
             "volume_args": volume_args,
             "env_overrides": env_overrides,
             "host_args": host_args,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _mounts_reuse_fingerprint(
+    persistent: bool,
+    volumes: list,
+    extra_args: list,
+) -> str:
+    """Stable Docker-label value for the user-configured mount identity.
+
+    Cross-process reuse attaches to an existing container without re-running
+    ``docker run``, so any config that shapes the container's mounts/flags at
+    creation time — ``container_persistent``, ``docker_volumes``,
+    ``docker_extra_args`` — is silently dropped by the label-based reuse
+    probe unless it is part of the reuse label (issue #101368).
+    """
+    payload = json.dumps(
+        {
+            "persistent": bool(persistent),
+            "volumes": [str(v) for v in (volumes or [])],
+            "extra_args": [str(a) for a in (extra_args or [])],
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -1413,11 +1439,15 @@ class DockerEnvironment(BaseEnvironment):
         # container-start time and never changes for the container's lifetime.
         profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
+        mounts_label = _mounts_reuse_fingerprint(
+            self._persistent, volumes, extra_args,
+        )
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_MOUNTS_LABEL_KEY}={mounts_label}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1430,6 +1460,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _MOUNTS_LABEL_KEY: mounts_label,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1474,6 +1505,46 @@ class DockerEnvironment(BaseEnvironment):
                         "(task=%s, profile=%s).",
                         container_id[:12], actual_mode or "unknown",
                         task_label, profile_name,
+                    )
+                    try:
+                        subprocess.run(
+                            [self._docker_exe, "rm", "-f", container_id],
+                            capture_output=True,
+                            text=True, encoding="utf-8", errors="replace",
+                            timeout=30,
+                            check=False,
+                            stdin=subprocess.DEVNULL,
+                        )
+                    except (subprocess.TimeoutExpired, OSError) as e:
+                        logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
+                    existing = None
+            if existing is not None:
+                container_id, _state = existing
+                # Mounts guard: docker_volumes / docker_extra_args /
+                # container_persistent only take effect at ``docker run``
+                # time and are immutable afterwards, so attaching to a
+                # container created under different values silently ignores
+                # the new config (issue #101368). On mismatch we remove the
+                # stale container and start fresh, mirroring the network-mode
+                # guard above. A container without the label predates this
+                # fingerprint: treat it as a mismatch only when the current
+                # config actually requests non-default mounts, so
+                # default-config users keep their long-lived container.
+                actual_mounts = self._container_mounts_label(container_id)
+                if actual_mounts is None:
+                    mounts_mismatch = (
+                        bool(volumes or extra_args) or not self._persistent
+                    )
+                else:
+                    mounts_mismatch = actual_mounts != mounts_label
+                if mounts_mismatch:
+                    logger.warning(
+                        "Existing container %s was created with different "
+                        "mounts config (docker_volumes/docker_extra_args/"
+                        "container_persistent changed) — removing it and "
+                        "starting fresh so the configured mounts take effect "
+                        "(task=%s, profile=%s).",
+                        container_id[:12], task_label, profile_name,
                     )
                     try:
                         subprocess.run(
@@ -1901,6 +1972,43 @@ class DockerEnvironment(BaseEnvironment):
             return None
         mode = result.stdout.strip()
         return mode or None
+
+    def _container_mounts_label(self, container_id: str) -> Optional[str]:
+        """Return the container's ``hermes-mounts`` label, or ``None`` when the
+        label is absent (container predates the fingerprint) or inspection
+        fails.
+
+        Used by the reuse path to detect containers created under different
+        docker_volumes / docker_extra_args / container_persistent settings;
+        see ``_mounts_reuse_fingerprint``.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect",
+                    "--format",
+                    '{{index .Config.Labels "hermes-mounts"}}',
+                    container_id,
+                ],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect mounts label failed: %s", e)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect mounts label returned %d: %s",
+                result.returncode, result.stderr.strip(),
+            )
+            return None
+        value = result.stdout.strip()
+        if not value or value == "<no value>":
+            return None
+        return value
 
     def _find_reusable_container(
         self,

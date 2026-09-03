@@ -69,7 +69,15 @@ def _reuse_guard_harness(monkeypatch, *, existing_mode: str, network: bool):
             # missing label as "<no value>".
             Result.stdout = "existing-container-id\trunning\t<no value>\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            Result.stdout = f"{existing_mode}\n"
+            fmt = cmd[cmd.index("--format") + 1] if "--format" in cmd else ""
+            if "NetworkMode" in fmt:
+                Result.stdout = f"{existing_mode}\n"
+            else:
+                # Mounts-label probe: report a label matching this env's
+                # config so the harness exercises reuse, not rebuild.
+                Result.stdout = (
+                    docker_env._mounts_reuse_fingerprint(False, None, None) + "\n"
+                )
         elif len(cmd) > 1 and cmd[1] == "run":
             Result.stdout = "fresh-container-id\n"
         return Result()
@@ -110,7 +118,12 @@ def test_reuse_skips_inspect_when_network_enabled(monkeypatch):
     commands = _reuse_guard_harness(monkeypatch, existing_mode="none", network=True)
 
     # Default-network config never churns containers, even air-gapped ones
-    # (operators may have created them via docker_extra_args).
-    assert not any(cmd[1] == "inspect" for cmd in commands)
+    # (operators may have created them via docker_extra_args). The NetworkMode
+    # inspect belongs to the network guard and must not run; the mounts-label
+    # probe (#101368) is the one allowed inspect on the reuse path.
+    assert not any(
+        cmd[1] == "inspect" and any("NetworkMode" in str(p) for p in cmd)
+        for cmd in commands
+    ), "network guard must not inspect when network is enabled"
     assert not any(cmd[1] == "rm" for cmd in commands)
     assert not any(cmd[1] == "run" for cmd in commands)

@@ -733,6 +733,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
+        "hermes-mounts": docker_env._mounts_reuse_fingerprint(False, [], []),
     }
 
 
@@ -820,6 +821,16 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
                 return subprocess.CompletedProcess(
                     cmd, 0,
                     stdout=f"reused-cid\t{ps_state}\t<no value>\n",
+                    stderr="",
+                )
+            if sub == "inspect":
+                # By default the existing container's mounts label matches the
+                # dummy env's default config (persistent=False, no volumes,
+                # no extra args), so the reuse path keeps it.  Tests that need
+                # a mismatch stub this branch with their own mock.
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout=docker_env._mounts_reuse_fingerprint(False, [], []) + "\n",
                     stderr="",
                 )
             if sub == "start":
@@ -945,6 +956,180 @@ def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
     assert not run_invocations, "should not docker run when reusing an exited container"
 
 
+def test_fresh_container_records_mounts_reuse_label(monkeypatch):
+    """``docker run`` must stamp the ``hermes-mounts`` fingerprint label so a
+    later cross-process reuse can detect mounts-config drift (#101368)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state=None)
+
+    volumes = ["C:/Users/me/Obsidian/LLM-Wiki:/obsidian-wiki"]
+    env = _make_dummy_env(
+        task_id="mounts-label",
+        persistent_filesystem=True,
+        volumes=volumes,
+    )
+
+    assert env._container_id == "fresh-cid"
+    expected = docker_env._mounts_reuse_fingerprint(True, volumes, [])
+    assert env._labels[docker_env._MOUNTS_LABEL_KEY] == expected
+    run_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_invocations, "expected a fresh docker run"
+    assert f"{docker_env._MOUNTS_LABEL_KEY}={expected}" in run_invocations[0][0], (
+        "docker run must carry the mounts fingerprint label"
+    )
+
+
+def test_reuse_rejects_container_created_with_different_mounts(monkeypatch):
+    """docker_volumes / docker_extra_args / container_persistent only take
+    effect at ``docker run`` time and are immutable afterwards, so attaching
+    to a container created under older values silently ignores the new config
+    (#101368).  Reuse must detect the drift via the ``hermes-mounts`` label,
+    remove the stale container, and start a fresh one that honors it."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="stale-cid\trunning\t<no value>\n", stderr=""
+                )
+            if sub == "inspect":
+                # The container was created BEFORE the user added
+                # docker_volumes: its label reflects the volume-less config.
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout=docker_env._mounts_reuse_fingerprint(True, [], []) + "\n",
+                    stderr="",
+                )
+            if sub == "rm":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(
+        task_id="mounts-mismatch",
+        persistent_filesystem=True,
+        volumes=["C:/Users/me/Obsidian/LLM-Wiki:/obsidian-wiki"],
+    )
+
+    assert env._container_id == "fresh-cid", (
+        "a container created with different mounts must not be reused"
+    )
+    rm_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert rm_invocations and rm_invocations[0][0][3] == "stale-cid", (
+        "the stale container must be removed so the next startup doesn't pick it up again"
+    )
+    run_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_invocations, "a fresh container honoring docker_volumes must be started"
+
+
+def test_reuse_replaces_unlabeled_container_when_mounts_configured(monkeypatch):
+    """Upgrade path: containers created before the ``hermes-mounts`` label
+    existed carry no label.  When the current config requests non-default
+    mounts, reuse must fail closed (remove + fresh) so the first startup
+    after upgrading actually honors docker_volumes (#101368)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="legacy-cid\trunning\t<no value>\n", stderr=""
+                )
+            if sub == "inspect":
+                # Legacy container: no hermes-mounts label at all.
+                return subprocess.CompletedProcess(cmd, 0, stdout="<no value>\n", stderr="")
+            if sub == "rm":
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(
+        task_id="mounts-legacy",
+        persistent_filesystem=True,
+        volumes=["C:/Users/me/hermes-workspace:/host-media"],
+    )
+
+    assert env._container_id == "fresh-cid", (
+        "an unlabeled container must not be reused when mounts are configured"
+    )
+    rm_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert rm_invocations, "the legacy container must be removed before the fresh run"
+
+
+def test_reuse_keeps_unlabeled_container_with_default_mounts(monkeypatch):
+    """The flip side of the upgrade path: a legacy container with no
+    ``hermes-mounts`` label is kept when the current config uses default
+    mounts, so upgrading doesn't churn every default-config user's
+    long-lived container (#101368)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="legacy-cid\trunning\t<no value>\n", stderr=""
+                )
+            if sub == "inspect":
+                return subprocess.CompletedProcess(cmd, 0, stdout="<no value>\n", stderr="")
+            if sub == "start":
+                return subprocess.CompletedProcess(cmd, 0, stdout="legacy-cid\n", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    # Default mounts: persistent container, no volumes, no extra args.
+    env = _make_dummy_env(task_id="mounts-legacy-default", persistent_filesystem=True)
+
+    assert env._container_id == "legacy-cid", (
+        "default-config containers must keep being reused across the upgrade"
+    )
+    rm_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert not rm_invocations, "no container should be removed for default mounts config"
+
+
 def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
     """When ``docker run`` fails (e.g. exit 125), the partially-created
     container must be removed by name.
@@ -1042,11 +1227,23 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
                     stdout="safe-cid\trunning\t\n",
                     stderr="",
                 )
+            if cmd[1] == "inspect":
+                # Mounts label matching this env's config so the reuse path
+                # keeps the container (this test pins the ps parser, not the
+                # mounts guard).
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout=docker_env._mounts_reuse_fingerprint(True, [], []) + "\n",
+                    stderr="",
+                )
         return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
 
     monkeypatch.setattr(docker_env.subprocess, "run", _run)
 
-    env = _make_dummy_env(task_id="empty-label")
+    # persistent_filesystem=True + no volumes/extra args = default mounts, so
+    # the unlabeled legacy container stays reusable (this test is about the
+    # ps-output parser, not the mounts guard).
+    env = _make_dummy_env(task_id="empty-label", persistent_filesystem=True)
     assert env._container_id == "safe-cid", (
         f"container with empty-string label should be reused, got {env._container_id!r}"
     )

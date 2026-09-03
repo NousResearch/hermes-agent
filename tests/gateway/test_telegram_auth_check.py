@@ -144,6 +144,62 @@ def test_is_user_authorized_from_message_allow_from():
     assert adapter._is_user_authorized_from_message(msg) is False
 
 
+def test_is_user_authorized_from_message_comma_string_allow_from():
+    """A comma-string allow_from must behave exactly like the equivalent list.
+
+    A comma-string is a canonical wire format for these keys (a list allow_from
+    is ",".join(...)-ed onto TELEGRAM_ALLOWED_USERS, and the env branch of this
+    same method splits it), and scalar YAML ``allow_from: "111,222"`` reaches
+    the adapter as one string. Iterating such a value char-wise would build an
+    allow-set of single characters, rejecting every real id and locking the
+    owner out. The test above covers the list form only, so this pins the
+    string form through the same DM branch.
+    """
+    adapter = _make_adapter(allow_from="111,222")
+
+    msg = _make_message(from_user_id=111, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=222, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    # An unlisted id is still rejected — and not admitted by a stray char match.
+    msg = _make_message(from_user_id=333, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_comma_string_group_allow_from():
+    """The group branch reads group_allow_from and must split a comma-string
+    there too — the two keys are selected by chat type but parsed identically."""
+    adapter = _make_adapter(group_allow_from="111,222")
+
+    msg = _make_message(from_user_id=222, chat_type="group")
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=333, chat_type="group")
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_comma_string_with_spaces():
+    """Surrounding whitespace in a comma-string is tolerated (same .strip() the
+    env branch applies)."""
+    adapter = _make_adapter(allow_from=" 111 , 222 ")
+
+    msg = _make_message(from_user_id=222, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+    msg = _make_message(from_user_id=333, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is False
+
+
+def test_is_user_authorized_from_message_comma_string_wildcard():
+    """A bare '*' scalar (not a one-element list) still wildcards."""
+    adapter = _make_adapter(allow_from="*")
+
+    msg = _make_message(from_user_id=999, chat_type="dm")
+    assert adapter._is_user_authorized_from_message(msg) is True
+
+
 def test_allowlist_dm_with_explicit_pair_behavior_reaches_gateway(monkeypatch):
     """Allowlist + unauthorized_dm_behavior:pair must not early-drop unknown DMs.
 

@@ -7,6 +7,8 @@ import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
 import { estimateTokensRough } from '../lib/text.js'
+import type { BootTheme } from '../lib/themeBoot.js'
+import { DEFAULT_THEME } from '../theme.js'
 import type { Msg } from '../types.js'
 
 // Mock the external-URL opener so the billing.step_up.verification test can
@@ -884,6 +886,162 @@ describe('createGatewayEventHandler', () => {
     expect(polarityBackgroundFromForeground('#ffffff')).toBeUndefined()
     expect(polarityBackgroundFromForeground('#808080')).toBeUndefined()
     expect(polarityBackgroundFromForeground('not-a-color')).toBeUndefined()
+  })
+
+  // ── Boot-cache bridge: skin.changed races the OSC-11 probe ──────────
+  //
+  // While no gateway skin has arrived, reapplyTheme() (driven by the
+  // OSC-11/10 answers, which can beat gateway.ready) must not repaint
+  // through the skinless default palette — a skinned session flashes gold
+  // until skin.changed lands. The bridge serves the boot cache instead
+  // while it still describes THIS terminal; every fall-through below
+  // asserts the OLD default-theme behavior survives for skinless users.
+
+  const cachedPrimary = '#e6edf3' // mono-skin sentinel, distinct from the dark default's gold
+
+  const cacheFixture = (over: Partial<BootTheme> = {}): BootTheme => ({
+    background: '#141414',
+    theme: { ...DEFAULT_THEME, color: { ...DEFAULT_THEME.color, primary: cachedPrimary } },
+    ...over
+  })
+
+  // Fresh module graph per scenario: bootThemeSnapshot is read once at
+  // import, so the themeBoot mock must be installed before the handler (and
+  // its uiStore) load. Assertions go through the SAME fresh uiStore the
+  // fresh handler writes to (resetModules re-instances both together).
+  const freshHandlerWithCache = async (snapshot: BootTheme | null) => {
+    vi.resetModules()
+    vi.doMock('../lib/themeBoot.js', () => ({
+      bootSeededPin: false,
+      bootTheme: snapshot?.theme ?? null,
+      bootThemeSnapshot: snapshot,
+      invalidateBootBackground: () => false,
+      writeBootTheme: () => undefined
+    }))
+
+    const handler = await import('../app/createGatewayEventHandler.js')
+    const ui = await import('../app/uiStore.js')
+
+    return { handler, ui }
+  }
+
+  // Neutralize inherited host signals so the fall-through default is the
+  // deterministic dark palette (#FFD700 primary) in every scenario.
+  const stubNeutralHost = () => {
+    vi.stubEnv('TERM_PROGRAM', '')
+    vi.stubEnv('COLORFGBG', '')
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '')
+  }
+
+  it('bridges the boot cache when the live OSC answer matches the cached background', async () => {
+    stubNeutralHost()
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#141414')
+
+    const { handler, ui } = await freshHandlerWithCache(cacheFixture())
+    handler.reapplyTheme()
+
+    expect(ui.getUiState().theme.color.primary).toBe(cachedPrimary)
+    vi.unstubAllEnvs()
+  })
+
+  it('bridges the boot cache before any live OSC answer exists', async () => {
+    stubNeutralHost()
+
+    const { handler, ui } = await freshHandlerWithCache(cacheFixture())
+    handler.reapplyTheme()
+
+    expect(ui.getUiState().theme.color.primary).toBe(cachedPrimary)
+    vi.unstubAllEnvs()
+  })
+
+  it('falls through to the skinless default when the terminal changed', async () => {
+    stubNeutralHost()
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#282828') // different terminal than the cache
+
+    const { handler, ui } = await freshHandlerWithCache(cacheFixture())
+    handler.reapplyTheme()
+
+    expect(ui.getUiState().theme.color.primary).toBe('#FFD700')
+    vi.unstubAllEnvs()
+  })
+
+  it('keeps the bridge only for an equal config pin, not a contradicting one', async () => {
+    stubNeutralHost()
+
+    // Contradicting pin: the cache was pinned dark, config now says light.
+    vi.stubEnv('HERMES_TUI_THEME', 'light')
+    const contradicting = await freshHandlerWithCache(cacheFixture({ mode: 'dark' }))
+    contradicting.handler.reapplyTheme()
+    expect(contradicting.ui.getUiState().theme.color.primary).toBe('#867000')
+    vi.unstubAllEnvs()
+
+    // Equal pin (the boot cache replayed it): the bridge holds.
+    stubNeutralHost()
+    vi.stubEnv('HERMES_TUI_THEME', 'dark')
+    const agreeing = await freshHandlerWithCache(cacheFixture({ mode: 'dark' }))
+    agreeing.handler.reapplyTheme()
+    expect(agreeing.ui.getUiState().theme.color.primary).toBe(cachedPrimary)
+    vi.unstubAllEnvs()
+  })
+
+  it('never bridges a pure-black cache against a contradicting light answer', async () => {
+    // The pure-black fingerprint is "unset default", not a measurement — it
+    // must not pin polarity. A dark cache on a dark terminal still bridges
+    // (nothing contradicts it), but a light answer must win.
+    stubNeutralHost()
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#000000')
+
+    const { handler, ui } = await freshHandlerWithCache(cacheFixture({ background: '#000000' }))
+
+    // Unknown-polarity phase (probe distrusted, nothing resolved): dark.
+    handler.reapplyTheme()
+    expect(ui.getUiState().theme.color.primary).toBe('#FFD700')
+
+    // A light-terminal answer arrives: the untrustworthy black cache must
+    // not hold the bridge against it.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
+    handler.reapplyTheme()
+    expect(ui.getUiState().theme.color.primary).toBe('#867000')
+
+    vi.unstubAllEnvs()
+  })
+
+  it('behaves exactly as before on first launch (no cache), still tracking polarity', async () => {
+    stubNeutralHost()
+
+    const { handler, ui } = await freshHandlerWithCache(null)
+    handler.reapplyTheme()
+    expect(ui.getUiState().theme.color.primary).toBe('#FFD700')
+
+    // #20379 regression guard: a later light-terminal answer still re-derives.
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#ffffff')
+    handler.reapplyTheme()
+    expect(ui.getUiState().theme.color.primary).toBe('#867000')
+    vi.unstubAllEnvs()
+  })
+
+  it('clears the bridge once the first skin arrives — the skin wins for good', async () => {
+    stubNeutralHost()
+    vi.stubEnv('HERMES_TUI_BACKGROUND', '#141414')
+
+    const { handler, ui } = await freshHandlerWithCache(cacheFixture())
+
+    const appended: Msg[] = []
+    const onEvent = handler.createGatewayEventHandler(buildCtx(appended))
+
+    // A late probe answer before the skin: still the cached mono theme.
+    handler.reapplyTheme()
+    expect(ui.getUiState().theme.color.primary).toBe(cachedPrimary)
+
+    // The skin lands: it takes over and the bridge is spent.
+    onEvent({ payload: { colors: { ui_primary: '#00FF88' } }, type: 'skin.changed' } as any)
+    expect(ui.getUiState().theme.color.primary).toBe('#00FF88')
+
+    // Another probe-driven re-resolve keeps the skin (never regresses to
+    // the cache or the default mid-session).
+    handler.reapplyTheme()
+    expect(ui.getUiState().theme.color.primary).toBe('#00FF88')
+    vi.unstubAllEnvs()
   })
 
   it('claims wake-word ownership when the gateway becomes ready', () => {

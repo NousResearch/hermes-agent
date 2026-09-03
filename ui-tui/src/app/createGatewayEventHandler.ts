@@ -21,7 +21,13 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
 import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
-import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
+import {
+  bootSeededPin,
+  type BootTheme,
+  bootThemeSnapshot,
+  invalidateBootBackground,
+  writeBootTheme
+} from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
@@ -171,6 +177,10 @@ const paintTerminalDefaults = (theme: Theme) => {
 }
 
 const applySkin = (s: GatewaySkin) => {
+  if (!lastSkin) {
+    bootThemeBeforeSkin = null
+  }
+
   lastSkin = s
   const theme = themeForSkin(s)
 
@@ -178,10 +188,62 @@ const applySkin = (s: GatewaySkin) => {
   paintTerminalDefaults(theme)
 }
 
+// ── Boot-cache bridge (skin.changed races the OSC-11 probe) ────────────
+//
+// Theme resolution is async at startup: the gateway skin event and the
+// terminal's OSC-11 background probe answer in either order. While no skin
+// has arrived, a probe-driven re-resolve must NOT repaint through the
+// skinless default palette — for a skinned session that flashes the default
+// identity colors (gold-on-navy) for a frame or several until skin.changed
+// lands, even though the boot cache already holds the correct theme
+// (lib/themeBoot.ts replays it for frame one; this bridges it past frame
+// one). Capture the seeded theme once at module load and treat it as the
+// "no-skin" answer while it still describes this terminal:
+//
+//   - the seeded/cached background matches the live OSC-11 answer (same
+//     terminal), or detection has nothing live to offer (no answer yet);
+//   - no explicit user override (HERMES_TUI_LIGHT / HERMES_TUI_THEME)
+//     contradicts the cached mode pin;
+//   - the cached background is not the distrusted pure-black fingerprint;
+//   - no skin has arrived (applySkin clears the capture).
+//
+// Any other case falls through to the skinless default exactly as before,
+// so #20379's polarity machinery keeps working for skinless sessions.
+let bootThemeBeforeSkin: null | BootTheme = bootThemeSnapshot
+
+export function themeBeforeSkin(): Theme {
+  const cached = bootThemeBeforeSkin
+
+  if (!cached) {
+    return defaultThemeForCurrentBackground()
+  }
+
+  const liveBackground = process.env.HERMES_TUI_BACKGROUND
+
+  const seedableBackground =
+    cached.background && cached.background.toLowerCase() !== '#000000' ? cached.background : undefined
+
+  const hasLiveAnswer = Boolean(liveBackground)
+
+  const backgroundCompatible =
+    !hasLiveAnswer ||
+    (seedableBackground !== undefined && liveBackground!.toLowerCase() === seedableBackground.toLowerCase())
+
+  const explicitOverride =
+    process.env.HERMES_TUI_LIGHT !== undefined ||
+    (process.env.HERMES_TUI_THEME !== undefined && process.env.HERMES_TUI_THEME !== cached.mode)
+
+  if (backgroundCompatible && !explicitOverride) {
+    return cached.theme
+  }
+
+  return defaultThemeForCurrentBackground()
+}
+
 /** Re-derive the theme from current detection signals (env overrides, cached
  *  OSC-11 answer) — used by /theme, config sync, and the OSC listener. */
 export function reapplyTheme(): void {
-  const theme = lastSkin ? themeForSkin(lastSkin) : defaultThemeForCurrentBackground()
+  const theme = lastSkin ? themeForSkin(lastSkin) : themeBeforeSkin()
 
   commitTheme(theme)
   // Polarity flips swap paired palettes, so the default fg must track the

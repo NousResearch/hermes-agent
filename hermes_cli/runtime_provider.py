@@ -1232,8 +1232,20 @@ def _resolve_named_custom_runtime(
     # Managed llama.cpp runtime: a llamacpp-flavored alias with no explicit
     # base_url resolves to the supervised server (or a detected external
     # one) before the generic custom fallthrough. Explicit base_url always
-    # wins — a user pointing at a specific server means that server.
-    if requested_norm in ("llamacpp", "llama.cpp", "llama-cpp") and not explicit_base_url:
+    # wins — a user pointing at a specific server means that server. A
+    # config-level model.base_url is that same explicit pointer (#101120):
+    # the managed-runtime guard must not intercept it, or a self-managed
+    # llama.cpp server configured via `hermes config set model.base_url`
+    # stops resolving and the CLI falls back to "no provider configured".
+    try:
+        _cfg_base_url = str(_get_model_config().get("base_url") or "").strip()
+    except Exception:  # noqa: BLE001 — config read is best-effort here
+        _cfg_base_url = ""
+    if (
+        requested_norm in ("llamacpp", "llama.cpp", "llama-cpp")
+        and not explicit_base_url
+        and not _cfg_base_url
+    ):
         try:
             from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
 

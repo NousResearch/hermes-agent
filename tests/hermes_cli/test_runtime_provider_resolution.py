@@ -1340,6 +1340,56 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
 
 
 
+# ----------------------------------------------------------------------
+# GitHub #101120 — the managed llama.cpp runtime guard must not intercept
+# a llamacpp alias when a config-level model.base_url points at the
+# user's own server. That base_url is as explicit as a flag-level one;
+# without the check, `hermes config set model.provider llamacpp` +
+# `model.base_url http://127.0.0.1:9931/v1` raises "The local model
+# server is turned off", the startup credential probe swallows it, and
+# the CLI reports "No inference provider is configured yet".
+# ----------------------------------------------------------------------
+
+def test_llamacpp_alias_with_config_base_url_skips_managed_runtime(monkeypatch):
+    """A config model.base_url keeps llamacpp on the generic custom path."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "llamacpp",
+            "base_url": "http://127.0.0.1:9931/v1",
+        },
+    )
+    def _must_not_resolve():
+        raise AssertionError("managed endpoint resolver must not be consulted")
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        _must_not_resolve,
+    )
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+
+    resolved = rp.resolve_runtime_provider(requested="llamacpp")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://127.0.0.1:9931/v1"
+
+
+def test_llamacpp_alias_without_config_base_url_keeps_managed_runtime(monkeypatch):
+    """No base_url anywhere: the managed-runtime guard still owns the alias."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "llamacpp"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint",
+        lambda: None,
+    )
+
+    with pytest.raises(ValueError, match="local model server"):
+        rp.resolve_runtime_provider(requested="llamacpp")
+
 
 
 

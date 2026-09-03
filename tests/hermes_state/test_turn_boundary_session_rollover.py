@@ -9,6 +9,7 @@ from session_rollover import (
     RolloverPolicy,
     TurnBoundaryRollover,
     allows_new_work,
+    allows_new_delegation,
     consume_handoff_note,
     mark_completed_turn,
 )
@@ -50,6 +51,26 @@ def test_draining_parent_refuses_new_work_but_not_completion_delivery(tmp_path: 
     agent = type("Agent", (), {"_session_db": db, "session_id": "parent"})()
 
     assert allows_new_work(agent) is False
+    assert allows_new_delegation(agent) is False
+
+
+def test_checkpoint_captures_repo_and_result_evidence_without_non_repo_git(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    non_repo = tmp_path / "not-a-repo"
+    non_repo.mkdir()
+    db.create_session("parent", source="cli", cwd=str(non_repo))
+    agent = type("Agent", (), {"_session_db": db, "session_id": "parent", "cwd": str(non_repo)})()
+    rollover = TurnBoundaryRollover(db)
+
+    assert rollover.mark_pending(
+        "parent", threshold_tokens=10,
+        lifecycle={"state": "draining", "checkpoint": {"verification_evidence": ["tests/x"]}},
+    )
+    payload = json.loads(db.get_session("parent")["model_config"])["turn_boundary_lifecycle"]["checkpoint"]
+    assert payload["worktree"] == str(non_repo)
+    assert payload["branch"] is None
+    assert payload["head"] is None
+    assert payload["verification_evidence"] == ["tests/x"]
 
 
 def test_rollover_is_pending_until_a_safe_next_turn_then_preserves_lineage(

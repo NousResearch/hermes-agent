@@ -9,6 +9,8 @@ and session_search guidance, never a compaction or an LLM-produced summary.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
@@ -120,11 +122,15 @@ class TurnBoundaryRollover:
         patch = getattr(self._db, "patch_session_model_config", None)
         if not callable(patch):
             return False
+        lifecycle_data = dict(lifecycle or {})
+        checkpoint = lifecycle_data.get("checkpoint")
+        lifecycle_data["checkpoint"] = _checkpoint_with_repo_evidence(
+            checkpoint if isinstance(checkpoint, Mapping) else {}, row
+        )
         patch_data: dict[str, Any] = {
             _PENDING_KEY: {"threshold_tokens": int(threshold_tokens)},
         }
-        if lifecycle:
-            patch_data[_LIFECYCLE_KEY] = dict(lifecycle)
+        patch_data[_LIFECYCLE_KEY] = lifecycle_data
         patch(session_id, patch_data)
         return True
 
@@ -221,6 +227,33 @@ def _model_config(row: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _checkpoint_with_repo_evidence(checkpoint: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
+    """Capture bounded work evidence without inspecting secrets or arbitrary cwd."""
+    payload = dict(checkpoint)
+    cwd = str(payload.get("worktree") or row.get("cwd") or "").strip()
+    payload["worktree"] = cwd or None
+    for key in ("changed_files", "verification_evidence", "pending_workers", "result_pointers", "external_effects", "external_readback"):
+        payload.setdefault(key, [])
+    payload.setdefault("branch", None)
+    payload.setdefault("head", None)
+    worktree = Path(cwd) if cwd else None
+    if worktree is None or not worktree.is_dir() or not (worktree / ".git").exists():
+        return payload
+    try:
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=worktree, check=True, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2,
+            ).stdout.strip()
+        payload["branch"] = git("branch", "--show-current") or None
+        payload["head"] = git("rev-parse", "HEAD") or None
+        if not payload["changed_files"]:
+            payload["changed_files"] = [line for line in git("status", "--porcelain").splitlines() if line]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return payload
+
+
 def allows_new_work(agent: Any) -> bool:
     """Fail closed for new tools/delegations once a parent is draining."""
     db = getattr(agent, "_session_db", None)
@@ -232,6 +265,11 @@ def allows_new_work(agent: Any) -> bool:
     except Exception:
         return False
     return not isinstance(state, Mapping) or state.get("state") != "draining"
+
+
+def allows_new_delegation(agent: Any) -> bool:
+    """Dedicated pre-dispatch delegation admission gate while draining."""
+    return allows_new_work(agent)
 
 
 def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:

@@ -12734,7 +12734,8 @@ def _notification_poller_loop(
         # visible independently.
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            if evt.get("type") != "async_delegation":
+                _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
         _requeued = False
@@ -12757,19 +12758,30 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             continue
         try:
-            _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
+                db = getattr(session.get("agent"), "_session_db", None)
+                target_session_id = str(
+                    getattr(session.get("agent"), "session_id", "")
+                    or session.get("session_key")
+                )
+                if db is None or not target_session_id:
+                    raise RuntimeError("no durable session for delegation display")
+                db.append_message(
+                    target_session_id,
+                    "user",
+                    content=text,
                     display_kind="async_delegation_complete",
                     display_metadata=_async_delegation_display_metadata(evt),
                 )
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                with session["history_lock"]:
+                    session["running"] = False
             else:
+                _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
@@ -12820,7 +12832,8 @@ def _notification_poller_loop(
 
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            if evt.get("type") != "async_delegation":
+                _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
@@ -12835,19 +12848,30 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             continue
         try:
-            _emit("message.start", sid)
             if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
+                db = getattr(session.get("agent"), "_session_db", None)
+                target_session_id = str(
+                    getattr(session.get("agent"), "session_id", "")
+                    or session.get("session_key")
+                )
+                if db is None or not target_session_id:
+                    raise RuntimeError("no durable session for delegation display")
+                db.append_message(
+                    target_session_id,
+                    "user",
+                    content=text,
                     display_kind="async_delegation_complete",
                     display_metadata=_async_delegation_display_metadata(evt),
                 )
+                _emit("status.update", sid, {"kind": "process", "text": text})
+                with session["history_lock"]:
+                    session["running"] = False
             else:
+                _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
@@ -14242,10 +14266,31 @@ def _run_prompt_submit(
                 )
                 _claim = claim_event_delivery(_evt, "tui-post-turn")
                 if _claim is None:
+                    with session["history_lock"]:
+                        session["running"] = False
                     continue
                 try:
-                    _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    if _evt.get("type") == "async_delegation":
+                        db = getattr(session.get("agent"), "_session_db", None)
+                        target_session_id = str(
+                            getattr(session.get("agent"), "session_id", "")
+                            or session.get("session_key")
+                        )
+                        if db is None or not target_session_id:
+                            raise RuntimeError("no durable session for delegation display")
+                        db.append_message(
+                            target_session_id,
+                            "user",
+                            content=synth,
+                            display_kind="async_delegation_complete",
+                            display_metadata=_async_delegation_display_metadata(_evt),
+                        )
+                        _emit("status.update", sid, {"kind": "process", "text": synth})
+                        with session["history_lock"]:
+                            session["running"] = False
+                    else:
+                        _emit("message.start", sid)
+                        _run_prompt_submit(rid, sid, session, synth)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

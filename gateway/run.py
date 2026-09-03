@@ -28360,6 +28360,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raw_sid, e,
                 )
                 return False
+        if evt.get("type") == "async_delegation":
+            # A completed delegation is a user-visible delivery, not a new
+            # user prompt. Push it directly so the client sees the result
+            # without a recursive agent turn, then let the durable claim ack
+            # below provide cross-process exact-once admission.
+            try:
+                await adapter.send(
+                    source.chat_id,
+                    synth_text,
+                    metadata=self._thread_metadata_for_source(source),
+                )
+                return True
+            except Exception as e:
+                logger.error("Async delegation display delivery error: %s", e)
+                return False
         try:
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()

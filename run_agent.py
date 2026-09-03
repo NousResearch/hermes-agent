@@ -9136,6 +9136,9 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
+        from session_rollover import allows_new_delegation
+        if not allows_new_delegation(self):
+            return "[Delegation admission closed — session is draining; in-flight workers may finish.]"
         from tools.delegate_tool import (
             _strip_model_hidden_task_fields,
             delegate_task as _delegate_task,

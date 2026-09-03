@@ -84,6 +84,30 @@ def test_cli_completion_is_durable_display_only_not_a_recursive_turn(monkeypatch
     )]
 
 
+def test_cli_duplicate_completion_is_persisted_once(monkeypatch):
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._pending_input = queue.Queue()
+    persisted = []
+    cli._session_db = type("DB", (), {
+        "append_message": lambda _self, *args, **kwargs: persisted.append((args, kwargs)),
+    })()
+    event = {"type": "async_delegation", "delegation_id": "deleg", "session_key": "visible-session"}
+
+    class FakeRegistry:
+        def drain_notifications(self, **_kwargs):
+            return [(event, "completion payload"), (event, "completion payload")]
+
+    claims = iter(("claim", None))
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: next(claims))
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *_args: None)
+
+    cli._drain_process_notifications("cli-idle")
+
+    assert len(persisted) == 1
+
+
 def test_cli_completion_ownership_accepts_compression_lineage():
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "visible-session"

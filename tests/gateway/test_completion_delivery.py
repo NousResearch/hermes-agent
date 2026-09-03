@@ -34,6 +34,11 @@ def isolated_registry(tmp_path, monkeypatch):
 
 
 def _runner(adapter, *, origins=None):
+    if not hasattr(adapter, "send"):
+        async def _send(_chat_id, text, metadata=None):
+            await adapter.handle_message(SimpleNamespace(text=text, metadata=metadata))
+
+        adapter.send = AsyncMock(side_effect=_send)
     runner = object.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}

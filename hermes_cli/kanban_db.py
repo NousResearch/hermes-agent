@@ -400,7 +400,23 @@ RECLAIM_DEFER_GRACE_SECONDS = 120
 # exact loop this branch exists to prevent (pass 10, AJ). The handoff
 # applies only once the scope is confirmed empty, or on a definite
 # pid-semantics (``unsupported``) host once the pid is confirmed dead.
+# A drain that outlives even the escalation is bounded by
+# ``_OWN_WORKER_HANDOFF_DRAIN_BREAKER_TICKS`` below (pass 11, AO).
 _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS = RECLAIM_DEFER_GRACE_SECONDS * 5
+
+# Pass 11 (AO): the drain ceiling escalates the verified stop but never
+# terminates the hold — a scope whose SIGKILL cannot drain it (D-state
+# straggler, server-side wedged stop job) left the row ``running``
+# forever with a per-tick warning. After this many consecutive ceiling
+# ticks with the scope still not provably empty, the sweep stops
+# extending: the task moves to ``blocked`` (``needs_input``) with the
+# run ended and the scope kept on the row, and one
+# ``handoff_scope_stuck`` event names the unit and worker pid for the
+# operator. ``blocked`` is not spawnable, so no duplicate can start
+# beside the wedged scope; the orphan audit keeps requesting the
+# verified stop in the background, and once the scope is confirmed dead
+# the operator unblocks the task for a clean respawn.
+_OWN_WORKER_HANDOFF_DRAIN_BREAKER_TICKS = 3
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -10141,6 +10157,40 @@ def _apply_pending_own_worker_handoff(
         return True
 
 
+def _own_worker_handoff_ceiling_ticks(
+    conn: sqlite3.Connection,
+    task_id: str,
+    run_id: int,
+) -> int:
+    """Drain-ceiling ticks this run has already survived (pass 11, AO).
+
+    Counts the ``claim_extended`` holds the handoff branch wrote with
+    reason ``own_worker_handoff_draining`` at or beyond the drain
+    ceiling (payload ``drain_age``). ``drain_age`` is
+    ``now - marker_created_at`` and therefore monotonic, so once a tick
+    reaches the ceiling every later tick does too: the plain count IS
+    the run of consecutive ceiling ticks, with no reset to miss.
+    """
+    ticks = 0
+    for ev in conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'claim_extended' AND run_id IS ?",
+        (task_id, run_id),
+    ).fetchall():
+        try:
+            payload = json.loads(ev["payload"]) if ev["payload"] else {}
+        except (TypeError, ValueError):
+            continue
+        drain_age = payload.get("drain_age")
+        if (
+            payload.get("reason") == "own_worker_handoff_draining"
+            and drain_age is not None
+            and int(drain_age) >= _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS
+        ):
+            ticks += 1
+    return ticks
+
+
 def _handle_stale_own_worker_handoff(
     conn: sqlite3.Connection,
     row: Any,
@@ -10170,7 +10220,13 @@ def _handle_stale_own_worker_handoff(
       teardown is ESCALATED instead — the queued verified stop keeps
       its SIGKILL escalation, one ``handoff_stop_escalated`` event per
       run records it, and the handoff applies on a later tick once the
-      cgroup confirms empty.
+      cgroup confirms empty. A drain that survives
+      ``_OWN_WORKER_HANDOFF_DRAIN_BREAKER_TICKS`` consecutive ceiling
+      ticks trips the breaker (pass 11, AO): the task blocks
+      (``needs_input``) with the run ended and the scope retained on
+      the row — nothing spawnable beside the wedged unit, the orphan
+      audit keeps reaping it, and the operator unblocks after a
+      verified death.
 
     Returns True when the row was handled (apply or extension); False
     when there is no pending marker for this run or the handoff could
@@ -10208,6 +10264,92 @@ def _handle_stale_own_worker_handoff(
             # is spawnable and the same tick would duplicate the run
             # beside the live cgroup (pass 10, AJ).
             if drain_age >= _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS:
+                # Pass 11 (AO): escalation alone never terminates the
+                # hold — a scope whose SIGKILL cannot drain it left the
+                # row running forever with a per-tick warning. After N
+                # consecutive ceiling ticks still not provably empty,
+                # stop extending: the task blocks (needs_input) so
+                # nothing can spawn beside the wedged scope, the run
+                # ends, and the scope stays on the row for the operator
+                # — the orphan audit keeps requesting the verified stop,
+                # and a verified death later lets the operator unblock.
+                ceiling_ticks = _own_worker_handoff_ceiling_ticks(
+                    conn, row["id"], int(run_id),
+                )
+                if (
+                    ceiling_ticks + 1
+                    >= _OWN_WORKER_HANDOFF_DRAIN_BREAKER_TICKS
+                ):
+                    worker_pid = (
+                        int(row["worker_pid"])
+                        if row["worker_pid"] is not None else None
+                    )
+                    reason = (
+                        "scope will not drain; manual cleanup needed "
+                        f"(unit {scope}"
+                        + (
+                            f", worker pid {worker_pid}"
+                            if worker_pid is not None else ""
+                        )
+                        + ")"
+                    )
+                    with write_txn(conn):
+                        cur = conn.execute(
+                            "UPDATE tasks "
+                            "   SET status = 'blocked', "
+                            "       block_kind = 'needs_input', "
+                            "       claim_lock = NULL, "
+                            "       claim_expires = NULL, "
+                            "       worker_pid = NULL, "
+                            "       worker_pid_started_at = NULL, "
+                            "       worker_registered_at = NULL "
+                            " WHERE id = ? AND status = 'running' "
+                            "   AND claim_lock IS ? "
+                            "   AND claim_expires IS NOT NULL "
+                            "   AND claim_expires < ?",
+                            (row["id"], row["claim_lock"], now),
+                        )
+                        if cur.rowcount == 1:
+                            stuck_run = _end_run(
+                                conn, row["id"],
+                                outcome="blocked", status="blocked",
+                                error=reason,
+                                metadata={
+                                    "scope": scope,
+                                    "worker_pid": worker_pid,
+                                    "drain_age": drain_age,
+                                    "drain_ceiling": (
+                                        _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS
+                                    ),
+                                    "ceiling_ticks": ceiling_ticks + 1,
+                                },
+                            )
+                            _append_event(
+                                conn, row["id"], "handoff_scope_stuck",
+                                {
+                                    "reason": reason,
+                                    "scope": scope,
+                                    "worker_pid": worker_pid,
+                                    "drain_age": drain_age,
+                                    "drain_ceiling": (
+                                        _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS
+                                    ),
+                                    "ceiling_ticks": ceiling_ticks + 1,
+                                },
+                                run_id=stuck_run,
+                            )
+                            _log.warning(
+                                "kanban: own-worker handoff for %s "
+                                "(run %s) blocked after %d drain-"
+                                "ceiling ticks — %s",
+                                row["id"], run_id, ceiling_ticks + 1,
+                                reason,
+                            )
+                    # Handled either way: the breaker fired, or its CAS
+                    # missed because the row moved under us. This tick
+                    # must not fall through to the extension or the
+                    # generic reclaim.
+                    return True
                 # Ceiling reached with the scope still not provably
                 # empty: the worker asked to hand off and has not
                 # exited — it is wedged. Escalate the teardown rather
@@ -10215,7 +10357,8 @@ def _handle_stale_own_worker_handoff(
                 # already escalates to SIGKILL on the service, the
                 # claim and marker survive, and a later tick applies
                 # the handoff once the cgroup confirms empty. One event
-                # per run keeps the escalation auditable.
+                # per run keeps the escalation auditable — and gates the
+                # warning to once per run, not once per tick.
                 with write_txn(conn):
                     already = conn.execute(
                         "SELECT 1 FROM task_events "
@@ -10236,15 +10379,16 @@ def _handle_stale_own_worker_handoff(
                             },
                             run_id=run_id,
                         )
-                _log.warning(
-                    "kanban: deferred own-worker handoff for %s (run %s) "
-                    "hit the %ds drain ceiling with the scope not "
-                    "provably empty — escalating the verified stop "
-                    "(SIGKILL) and holding the claim; the handoff "
-                    "applies once the scope confirms dead",
-                    row["id"], run_id,
-                    _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS,
-                )
+                        _log.warning(
+                            "kanban: deferred own-worker handoff for %s "
+                            "(run %s) hit the %ds drain ceiling with the "
+                            "scope not provably empty — escalating the "
+                            "verified stop (SIGKILL) and holding the "
+                            "claim; the handoff applies once the scope "
+                            "confirms dead",
+                            row["id"], run_id,
+                            _OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS,
+                        )
             # Hold the claim (the marker must outlive its single defer
             # grace), exactly like a live worker would, and let a later
             # tick re-check.

@@ -2371,6 +2371,196 @@ def test_release_stale_claims_own_worker_handoff_applies_once_scope_dead_after_c
     ).fetchone()["n"] == 0
 
 
+def test_release_stale_claims_handoff_ceiling_breaker_blocks_killproof_scope(
+    shims, conn,
+):
+    """Pass 11 (AO): a drain the SIGKILL escalation cannot clear is
+    bounded. After _OWN_WORKER_HANDOFF_DRAIN_BREAKER_TICKS consecutive
+    ceiling ticks with the scope still not provably empty, the task
+    blocks (needs_input) with the run ended and the scope kept on the
+    row for the operator; the row is not spawnable, exactly one
+    ``handoff_scope_stuck`` event names the unit and worker pid, and
+    later ticks neither extend nor warn."""
+    straggler = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_breaker", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_killproof(unit)  # stop job wedged server-side, forever
+    tid = kb.create_task(conn, title="breaker", assignee="w")
+    _deferred_handoff_row(
+        shims, conn, unit,
+        handoff={
+            "handoff": "changes_requested", "implementer": "w",
+            "reviewer": "r", "reason": "redo the edges",
+        },
+        tid=tid,
+    )
+    now = int(time.time())
+    # A live worker pid for the reason to name; the stale heartbeat
+    # keeps the generic live-scope extension out of the way so the
+    # handoff branch owns the row, and the marker is aged past the
+    # drain ceiling so every tick is a ceiling tick.
+    conn.execute(
+        "UPDATE tasks SET worker_pid=?, worker_pid_started_at=?, "
+        "last_heartbeat_at=? WHERE id=?",
+        (straggler, kb._worker_pid_start_time(straggler),
+         now - 7200, tid),
+    )
+    conn.execute(
+        "UPDATE task_events SET created_at=? "
+        "WHERE task_id=? AND kind='own_worker_handoff'",
+        (now - kb._OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS - 1, tid),
+    )
+    conn.commit()
+
+    def tick():
+        conn.execute(
+            "UPDATE tasks SET claim_expires=? WHERE id=?",
+            (int(time.time()) - 60, tid),
+        )
+        conn.commit()
+        return kb.release_stale_claims(conn)
+
+    # Ceiling ticks 1 and 2: escalated and held, the row stays running.
+    assert tick() == 0
+    assert tick() == 0
+    assert conn.execute(
+        "SELECT status FROM tasks WHERE id=?", (tid,),
+    ).fetchone()["status"] == "running"
+
+    # Ceiling tick 3: the breaker fires — blocked, not spawnable.
+    assert tick() == 0
+    row = conn.execute(
+        "SELECT status, block_kind, claim_lock, claim_expires, "
+        "worker_pid, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "blocked"
+    assert row["block_kind"] == "needs_input"
+    assert row["claim_lock"] is None
+    assert row["claim_expires"] is None
+    assert row["worker_pid"] is None
+    assert row["worker_scope"] == unit  # kept for the operator
+    # The run ended terminally.
+    run = conn.execute(
+        "SELECT status, outcome, ended_at FROM task_runs "
+        "WHERE task_id=? ORDER BY id DESC LIMIT 1",
+        (tid,),
+    ).fetchone()
+    assert run["status"] == "blocked"
+    assert run["outcome"] == "blocked"
+    assert run["ended_at"] is not None
+    # One stuck event naming the unit and the worker pid.
+    stuck = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='handoff_scope_stuck'", (tid,),
+    ).fetchall()
+    assert len(stuck) == 1
+    payload = json.loads(stuck[0]["payload"])
+    assert payload["scope"] == unit
+    assert payload["worker_pid"] == straggler
+    assert "scope will not drain" in payload["reason"]
+    assert unit in payload["reason"]
+    assert str(straggler) in payload["reason"]
+    # The escalation happened first (once), and no handoff or reclaim
+    # ever applied.
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='handoff_stop_escalated'", (tid,),
+    ).fetchone()["n"] == 1
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind IN ('changes_requested', 'review_requested', "
+        "'reclaimed')", (tid,),
+    ).fetchone()["n"] == 0
+    # Not spawnable: a claim against the blocked row fails.
+    assert kb.claim_task(conn, tid, claimer="other:host:2") is None
+    # Later ticks do nothing: no more extensions, no second event.
+    assert tick() == 0
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='handoff_scope_stuck'", (tid,),
+    ).fetchone()["n"] == 1
+
+
+def test_release_stale_claims_handoff_ceiling_dies_before_breaker_applies_once(
+    shims, conn,
+):
+    """Pass 11 (AO), the breaker's other half: a scope that verifies
+    dead before the third ceiling tick never trips it — the existing
+    contract holds and the handoff applies exactly once, per payload."""
+    straggler = shims.stubborn_sleeper()
+    unit = kb._kanban_worker_scope_unit("t_breakdone", 1)
+    shims.write_unit(unit, [straggler])
+    shims.arm_killproof(unit)
+    tid = kb.create_task(conn, title="breaker averted", assignee="w")
+    _deferred_handoff_row(
+        shims, conn, unit,
+        handoff={
+            "handoff": "changes_requested", "implementer": "w",
+            "reviewer": "r", "reason": "redo the edges",
+        },
+        tid=tid,
+    )
+    now = int(time.time())
+    conn.execute(
+        "UPDATE tasks SET worker_pid=NULL, worker_pid_started_at=NULL, "
+        "last_heartbeat_at=? WHERE id=?",
+        (now - 7200, tid),
+    )
+    conn.execute(
+        "UPDATE task_events SET created_at=? "
+        "WHERE task_id=? AND kind='own_worker_handoff'",
+        (now - kb._OWN_WORKER_HANDOFF_MAX_DRAIN_SECONDS - 1, tid),
+    )
+    conn.commit()
+
+    # Two ceiling ticks: escalated and held.
+    for _ in range(2):
+        conn.execute(
+            "UPDATE tasks SET claim_expires=? WHERE id=?",
+            (int(time.time()) - 60, tid),
+        )
+        conn.commit()
+        assert kb.release_stale_claims(conn) == 0
+    assert conn.execute(
+        "SELECT status FROM tasks WHERE id=?", (tid,),
+    ).fetchone()["status"] == "running"
+
+    # The wedged stop clears server-side and the straggler dies before
+    # the third ceiling tick: the scope is verifiably empty.
+    shims.clear_killproof(unit)
+    os.kill(straggler, signal.SIGKILL)
+    assert shims.wait_for(lambda: not kb._pid_alive(straggler))
+    conn.execute(
+        "UPDATE tasks SET claim_expires=? WHERE id=?",
+        (int(time.time()) - 60, tid),
+    )
+    conn.commit()
+
+    # Tick 3: the handoff applies once; the breaker never fires.
+    assert kb.release_stale_claims(conn) == 0
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"  # changes_requested landed per payload
+    assert row["claim_lock"] is None
+    assert row["worker_scope"] is None
+    events = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='changes_requested' ORDER BY id",
+        (tid,),
+    ).fetchall()
+    assert len(events) == 1
+    payload = json.loads(events[0]["payload"])
+    assert payload["deferred_handoff"] is True
+    assert payload["reason"] == "redo the edges"
+    assert conn.execute(
+        "SELECT count(*) AS n FROM task_events WHERE task_id=? "
+        "AND kind='handoff_scope_stuck'", (tid,),
+    ).fetchone()["n"] == 0
+
+
 def test_release_stale_claims_handoff_cas_miss_skips_fresh_heartbeat_row(
     shims, conn, monkeypatch,
 ):

@@ -462,7 +462,8 @@ function MessageList({
   );
 }
 
-function SessionRow({
+// Exported for a11y regression tests (SessionRow.a11y.test.tsx).
+export function SessionRow({
   session,
   snippet,
   searchQuery,
@@ -620,8 +621,26 @@ function SessionRow({
       className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
     >
       <div
+        // role="button" + tabIndex: iOS WebKit does not reliably synthesize a
+        // click event from a tap on a non-interactive element (its
+        // cursor:pointer tap heuristic is unreliable, especially when the tap
+        // lands on inline descendants like the title <span>), so the bare
+        // onClick above was dead on iOS Safari/Brave (#96918). Making the
+        // header an actual control fixes taps and adds keyboard access. Not a
+        // real <button> because the header contains nested interactive
+        // elements (checkbox, rename input, action buttons).
+        role="button"
+        tabIndex={0}
+        aria-expanded={isExpanded}
         className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
       >
         <span className="flex shrink-0 items-center pt-0.5">
           <Checkbox

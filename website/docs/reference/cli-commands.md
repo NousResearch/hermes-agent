@@ -1392,6 +1392,22 @@ Subcommands:
 | `setup` | Interactive provider selection and configuration. |
 | `status` | Show current memory provider config. |
 | `off` | Disable external provider (built-in only). |
+| `list` | Summarise built-in memory: entry counts and character usage against the configured limits for both `MEMORY.md` and `USER.md`. |
+| `show <target>` | Print every entry in one built-in store. `<target>` is `memory` or `user`. |
+| `delete <target> <substring>` | Delete the entry in `<target>` matching `<substring>`. Prompts for confirmation unless `--yes` / `-y` is passed. |
+
+Reviewing and pruning built-in memory:
+
+```bash
+hermes memory list
+hermes memory show user
+hermes memory delete memory "old project note"
+hermes memory delete user "stale preference" --yes
+```
+
+Character usage is reported against the `memory.memory_char_limit` and
+`memory.user_char_limit` values from your config, so the percentages match the
+limits the agent itself enforces.
 
 :::info Provider-specific subcommands
 When an external memory provider is active, it may register its own top-level `hermes <provider>` command for provider-specific management (e.g. `hermes honcho` when Honcho is active). Inactive providers do not expose their subcommands. Run `hermes --help` to see what's currently wired in.

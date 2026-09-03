@@ -555,6 +555,127 @@ def _is_server_injected_param_rejection(error_msg: str, provider: str) -> bool:
             return False
         return True
     return False
+# Local-inference memory/resource-ceiling rejections (oMLX / MLX memory guard,
+# llama.cpp/vLLM OOM, Metal/CUDA allocation ceilings).  The server aborts on a
+# GPU/unified-memory PREFILL peak — NOT a context-window limit — yet the
+# rejection text often suggests "reduce context length" / "reduce context size"
+# as a remediation hint, which collides with _CONTEXT_OVERFLOW_PATTERNS.
+# Compressing conversation history cannot lower a prefill memory peak (the
+# conversation is typically far below the window), so routing these into the
+# compress-and-shrink loop burns max_compression_attempts, re-hits the wedged
+# server with each compression call, and ends in "Cannot compress further" →
+# destructive session reset.  These tokens reference memory/allocation/ceiling/
+# guard wording exclusively (never a token or window count), so they are
+# disjoint from genuine context-window-overflow language.  Must be checked
+# BEFORE context_overflow at every classification site.  See issue #52261.
+_MEMORY_CEILING_PATTERNS = [
+    "memory guard",                      # "prefill memory guard rejected"
+    "memory limit exceeded",             # "process memory limit exceeded"
+    # Neither of the next two is load-bearing, and the list must not be pruned
+    # down to them.  oMLX builds the remediation tail from
+    # ``describe_ceiling_binding()``, whose branches vary BOTH: the noun before
+    # "ceiling" is "ceiling" / "static ceiling" / "dynamic ceiling" /
+    # "metal_cap ceiling" depending on which cap binds (and ties slash-join, so
+    # "static/metal_cap ceiling" is reachable), and "memory_guard_tier" is named
+    # in only some branches — the dynamic+custom branch says "Raise
+    # custom_ceiling_bytes in admin Memory settings" and the metal_cap branch
+    # says "Raise kernel iogpu.wired_limit_mb in Terminal" instead.  Nothing is
+    # left unguarded, because "memory limit exceeded" sits in the message PREFIX
+    # and survives every branch; these two just widen the net.
+    "memory_guard_tier",                 # "lower memory_guard_tier"
+    "dynamic ceiling",                   # "dynamic ceiling is 13.50 GB"
+    "memory ceiling",
+    "available memory",                  # "too large for available memory"
+    "out of memory",
+    "insufficient memory",
+    # Memory-accounting wording.  "prefill would require" was written against
+    # the oMLX build that reports "Prefill would require ~13.87 GB peak"; 0.5.7
+    # reworded the same sentence to "predicted peak would require ~78.57 GB"
+    # (pre-stream) and "predicted peak would exceed prefill safety cap 77.8GB"
+    # (mid-stream), so that entry silently stopped covering the release it was
+    # written for.  Both entries are kept — the older wording is still in the
+    # field — and the cap names below are added because they survive the verb
+    # change and appear in both 0.5.7 exits.  All of these name an allocation
+    # ceiling in BYTES, never a token or window count, so they remain disjoint
+    # from _CONTEXT_OVERFLOW_PATTERNS.
+    "prefill would require",             # "Prefill would require ~13.87 GB peak"
+    "predicted peak would",              # "predicted peak would require/exceed"
+    "prefill safety cap",                # "prefill safety cap is 77.76 GB"
+    "metal_cap",                         # "90% of metal_cap ceiling 86.40 GB"
+]
+
+# Structured error codes that unambiguously identify a local-inference memory/
+# resource-ceiling rejection at the source — before an OpenAI-compatible proxy
+# (LiteLLM) flattens the body and drops the code, and independent of message
+# wording (which can be reworded by the provider or the proxy).  oMLX returns
+# ``code: "prefill_memory_exceeded"`` (mirrored in ``omlx_code``) with
+# ``limit_bytes`` in *bytes* — definitively memory, not a token/window count.
+# Deliberately NARROW: only memory-prefill codes, never ``resource_exhausted``
+# (already mapped to rate_limit) or generic ``invalid_request_error``.
+#
+# ``prefill_memory_aborted`` is the SIBLING of ``prefill_memory_exceeded``:
+# oMLX's prefill-memory body builder picks between the two by exception type
+# (``PrefillMemoryAbortedError`` vs the rejection), so "exceeded" is the prompt
+# turned away at admission and "aborted" is the prompt admitted and then killed
+# mid-prefill.  Same guard, same wall, same recovery.  Today's aborted body
+# still says "memory guard" and "available memory", so it classifies correctly
+# through the message patterns; the code layer is the one that would not hold,
+# which is the layer that exists precisely for a reworded or proxy-stripped
+# body.
+#
+# ``omlx_prefill_memory_exceeded`` has NO KNOWN PRODUCER.  ``omlx_code`` is a
+# mirror of ``code`` rather than a prefixed variant, so the engine emits the
+# unprefixed spelling in both fields (the captured bodies in the tests show
+# exactly that), and this entry has never matched anything observed.  It is
+# retained rather than dropped because it cannot false-positive — no other
+# vendor will emit a string this specific — and because a namespacing proxy or
+# a later engine release is the obvious way it would start appearing.  Do not
+# read it as evidence that such a body exists.
+#
+# See issue #52261.
+_MEMORY_CEILING_ERROR_CODES = frozenset({
+    "prefill_memory_exceeded",
+    "prefill_memory_aborted",
+    "omlx_prefill_memory_exceeded",
+    "memory_limit_exceeded",
+})
+
+
+def _is_memory_ceiling(error_msg: str, error_code: str = "") -> bool:
+    """True when the body identifies a local-inference memory/resource ceiling.
+
+    Single detection predicate for every classification site (400, 500/502,
+    503/529, structured code, status-less message).  The structured code is
+    matched in ADDITION to the message patterns so a direct (non-proxied)
+    connection whose body carries ``code: "prefill_memory_exceeded"`` is caught
+    even when the message has been reworded and contains no memory substring;
+    a LiteLLM proxy strips the code, so the message patterns remain the
+    fallback there.  See issue #52261.
+    """
+    return (
+        (error_code or "").lower() in _MEMORY_CEILING_ERROR_CODES
+        or any(p in error_msg for p in _MEMORY_CEILING_PATTERNS)
+    )
+
+
+def _memory_ceiling_result(result_fn) -> ClassifiedError:
+    """The single recovery contract for a memory-ceiling rejection.
+
+    Transient server-side capacity condition: retry with backoff, NO
+    compression (it cannot relieve a prefill memory peak), NO session reset.
+    ``should_fallback`` is set because a local-inference memory wall stays
+    wedged until the server is restarted, so the durable recovery is failing
+    over to a roomier provider once the primary's retries are exhausted.
+
+    Centralised so the annotation cannot drift between detection routes — the
+    same rejection must classify identically whether it arrives as a 400, as a
+    5xx, as a structured code, or as a status-less streaming message.
+    """
+    return result_fn(
+        FailoverReason.overloaded,
+        retryable=True,
+        should_fallback=True,
+    )
 
 
 # OpenRouter aggregator policy-block patterns.
@@ -1468,6 +1589,13 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+        # Memory-ceiling rejection surfaced as a 5xx: the same local-inference
+        # servers that report overflow-as-500 below also report OOM/prefill
+        # aborts as 500/502, and their bodies carry the same "reduce context
+        # length" remediation hint.  Must precede the overflow check for the
+        # reason documented at _MEMORY_CEILING_PATTERNS.  See issue #52261.
+        if _is_memory_ceiling(error_msg, error_code):
+            return _memory_ceiling_result(result_fn)
         # Some local inference servers (notably llama.cpp / llama-server)
         # report context overflow with an HTTP 500 instead of the standard
         # 400/413. The request-validation guard above already ran, so any
@@ -1491,6 +1619,13 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
+        # Memory-ceiling guard, same as the 500/502 branch above.  This status
+        # pair is the likeliest 5xx home for a memory abort — the overflow
+        # comment below already names "model-load OOM" as a source — and the
+        # bare `overloaded` fallthrough would otherwise be reached only when
+        # the body happens to omit context wording.  See issue #52261.
+        if _is_memory_ceiling(error_msg, error_code):
+            return _memory_ceiling_result(result_fn)
         # Same overflow-as-5xx variant (server busy / model-load OOM, or a
         # Cloudflare/Tailscale hop relabeling the status). Route explicit
         # overflow bodies into compression; otherwise treat as transient
@@ -1509,6 +1644,25 @@ def _classify_by_status(
             )
         return result_fn(FailoverReason.overloaded, retryable=True)
 
+    # 507 Insufficient Storage — the local-inference model-LOAD path, which is
+    # a different guard from the prefill path above and does not arrive as a
+    # 400 or as a 500/503.  oMLX maps both ``ModelTooLargeError`` and
+    # ``InsufficientMemoryError`` to 507, and ``/v1/chat/completions``,
+    # ``/v1/completions`` and ``/v1/messages`` all reach them through
+    # ``get_engine_for_model`` → ``get_engine``, so an ordinary chat call can
+    # come back as "Model 'X' (33.95GB) does not fit under the dynamic memory
+    # ceiling (25.22GB) … raise memory_guard_tier".  Without this check the
+    # body falls to the generic "other 5xx" bucket below, which does retry but
+    # leaves ``should_fallback`` unset — and a model that does not fit under
+    # the host's memory ceiling does not start fitting within the retry
+    # budget, so the turn is stranded on the wedged host instead of failing
+    # over to a roomier provider.  That gap is exactly what
+    # _memory_ceiling_result exists to close.  Gated on the shared predicate,
+    # so a 507 with no memory wording (a real disk/storage exhaustion) keeps
+    # the generic 5xx treatment.  See issue #52261.
+    if status_code == 507 and _is_memory_ceiling(error_msg, error_code):
+        return _memory_ceiling_result(result_fn)
+
     # 408 Request Timeout — a transient timing failure the server itself flags
     # as safe to retry (RFC 9110 §15.5.9), not a malformed request. Commonly
     # emitted by reverse proxies sitting in front of self-hosted backends
@@ -1519,6 +1673,25 @@ def _classify_by_status(
     # aborts a 400 Bad Request.
     if status_code == 408:
         return result_fn(FailoverReason.timeout, retryable=True)
+
+    # 409 Conflict carrying memory-ceiling wording.  oMLX raises
+    # ``ModelLoadingError`` with "Model 'X' load aborted: process memory limit
+    # exceeded" and ``server.py`` maps it to 409, which reaches the generic
+    # "other 4xx" bucket below and is reported as ``format_error``,
+    # retryable=False — a transient memory abort called a malformed request.
+    # ``should_fallback`` is already set there so the turn is not stranded, but
+    # it is never retried against the primary either, even though the abort
+    # clears as soon as the host reclaims memory.
+    #
+    # UNLIKE the 507 branch above, this one is read from the engine's source,
+    # not from a captured response: no reporter has produced a 409 body.  It is
+    # included because it is the same guard and the same wall as the shapes
+    # that ARE captured, and because the predicate gate makes it inert
+    # otherwise — a 409 without memory wording (a genuine state conflict, e.g.
+    # a model swap already in progress) keeps the existing 4xx treatment.
+    # See issue #52261.
+    if status_code == 409 and _is_memory_ceiling(error_msg, error_code):
+        return _memory_ceiling_result(result_fn)
 
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:
@@ -1751,6 +1924,16 @@ def _classify_400(
             should_compress=False,
         )
 
+    # Local-inference memory/resource-ceiling rejection (oMLX/MLX memory guard,
+    # OOM).  Checked BEFORE context_overflow: the prompt is often tiny and the
+    # remediation hint ("reduce context length"/"reduce context size") collides
+    # with the overflow patterns, but compressing history cannot relieve a
+    # prefill memory peak — routing it into compression wedges the session into
+    # a "Cannot compress further" reset loop.  Without overflow wording it would
+    # instead fall through to a non-retryable ``format_error``.  See #52261.
+    if _is_memory_ceiling(error_msg, error_code_lower):
+        return _memory_ceiling_result(result_fn)
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
@@ -1861,6 +2044,15 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
+    # Local-inference memory-ceiling code (oMLX ``prefill_memory_exceeded`` and
+    # kin).  The structured code survives provider message rewording and is the
+    # only signal on a direct (non-proxied) connection whose message carries no
+    # memory substring.  Routed through the shared contract so a status-less
+    # code-only rejection is annotated exactly like the 400/5xx/message paths.
+    # See issue #52261.
+    if code_lower in _MEMORY_CEILING_ERROR_CODES:
+        return _memory_ceiling_result(result_fn)
+
     if code_lower in {"resource_exhausted", "throttled", "rate_limit_exceeded"}:
         return result_fn(
             FailoverReason.rate_limit,
@@ -1940,6 +2132,21 @@ def _classify_by_message(
             FailoverReason.image_too_large,
             retryable=True,
         )
+
+    # Local-inference memory/resource-ceiling rejection without an HTTP status
+    # (streaming / no-status APIError, e.g. "process memory limit exceeded" or
+    # "Prefill context too large for available memory").  Checked BEFORE the
+    # usage-limit/billing/rate-limit patterns below — NOT just before
+    # context_overflow — because oMLX's streaming memory abort
+    # ("Request aborted: process memory limit exceeded …") contains the
+    # substring "limit exceeded", which is a _USAGE_LIMIT_PATTERN.  With no
+    # transient signal it would disambiguate to billing (non-retryable, rotate
+    # credential) below — a different wrong bucket than context_overflow — so
+    # the memory guard must run first.  Compressing or rotating credentials
+    # cannot relieve a prefill memory peak; the correct recovery is the
+    # transient ``overloaded`` path (retry, no compression).  See issue #52261.
+    if _is_memory_ceiling(error_msg):
+        return _memory_ceiling_result(result_fn)
 
     # Usage-limit patterns need the same disambiguation as 402: some providers
     # surface "usage limit" errors without an HTTP status code.  A transient

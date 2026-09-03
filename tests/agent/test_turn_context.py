@@ -292,6 +292,59 @@ def test_prefetch_runs_for_substantive_user_message():
     assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
 
 
+# ── Implicit skill prefetch (Codex semantics, PR #95329+ follow-up) ────────
+#
+# When the user prompt word-boundary-mentions a skill name, the prologue
+# appends that skill's full instructions to the SAME ext_prefetch_cache the
+# memory manager fills — so the model has the skill on the first turn
+# without round-tripping skill_view() first. Zero cost when nothing matches.
+
+
+def test_skill_prefetch_appends_to_memory_prefetch():
+    agent, mm = _agent_with_memory_manager()
+    with patch(
+        "agent.skill_prefetch.build_skill_prefetch",
+        return_value="[Implicitly loaded skill: codex]\nfull instructions",
+    ):
+        ctx = _build(agent, user_message="research the codex harness")
+    assert ctx.ext_prefetch_cache == (
+        "REMEMBERED CONTEXT\n\n[Implicitly loaded skill: codex]\nfull instructions"
+    )
+
+
+def test_skill_prefetch_alone_without_memory_manager():
+    agent = _FakeAgent()  # no _memory_manager
+    with patch(
+        "agent.skill_prefetch.build_skill_prefetch",
+        return_value="[Implicitly loaded skill: codex]\nfull instructions",
+    ):
+        ctx = _build(agent, user_message="research the codex harness")
+    assert ctx.ext_prefetch_cache == "[Implicitly loaded skill: codex]\nfull instructions"
+
+
+def test_skill_prefetch_skipped_for_trivial_prompt():
+    agent = _FakeAgent()
+    with patch(
+        "agent.skill_prefetch.build_skill_prefetch",
+        return_value="should not fire",
+    ) as m:
+        _build(agent, user_message="hi!")
+    m.assert_not_called()
+    assert agent._memory_manager is None  # sanity: no memory either
+
+
+def test_skill_prefetch_failure_is_isolated():
+    agent = _FakeAgent()
+    with patch(
+        "agent.skill_prefetch.build_skill_prefetch",
+        side_effect=RuntimeError("boom"),
+    ):
+        ctx = _build(agent, user_message="research the codex harness")
+    # A prefetch failure must never break the turn.
+    assert ctx.ext_prefetch_cache == ""
+
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]

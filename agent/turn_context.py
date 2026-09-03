@@ -1597,6 +1597,27 @@ def build_turn_context(
             except Exception:
                 pass
 
+    # ── Implicit skill prefetch ─────────────────────────────────────────
+    # When the user prompt word-boundary-mentions a skill name, load that
+    # skill's full instructions into the same prefetch channel so the model
+    # has them on the first turn instead of round-tripping skill_view().
+    # Zero cost when nothing matches; bounded when several skills match.
+    # Same trivial-prompt gate as memory prefetch above (greetings carry no
+    # semantic signal worth scanning).
+    _skill_query = original_user_message if isinstance(original_user_message, str) else ""
+    if not is_trivial_prompt(_skill_query):
+        try:
+            from agent.skill_prefetch import build_skill_prefetch
+
+            _skill_prefetch = build_skill_prefetch(_skill_query)
+            if _skill_prefetch:
+                ext_prefetch_cache = (
+                    (ext_prefetch_cache + "\n\n" if ext_prefetch_cache else "")
+                    + _skill_prefetch
+                )
+        except Exception:
+            pass
+
     # ── api_content sidecar: persist what you send ──
     # The prefetch/plugin context above is injected into the API copy of this
     # turn's user message, never into the stored content — so on the next

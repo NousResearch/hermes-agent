@@ -34,6 +34,9 @@ import time
 #   turn 2: call execute_code print(1)
 #   turn 3: final text
 # --------------------------------------------------------------------------
+_REPLY_KB = [0]
+
+
 class _Fake(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):  # quiet
         pass
@@ -57,7 +60,7 @@ class _Fake(http.server.BaseHTTPRequestHandler):
             msg = {"role": "assistant", "content": None, "tool_calls": [tc]}
             finish = "tool_calls"
         else:
-            msg = {"role": "assistant", "content": "done"}
+            msg = {"role": "assistant", "content": "done " + ("x" * (_REPLY_KB[0] * 1024))}
             finish = "stop"
         if body.get("stream") is True:
             self.send_response(200)
@@ -107,7 +110,7 @@ def _snap(pid: int, db_path: str) -> dict:
         "threads": g("Threads"), "rss_mb": g("VmRSS") // 1024, "fds": len(os.listdir(f"/proc/{pid}/fd")),
         "tcp": int(tcp or 0), "pyright": kids.count("pyright"), "kernels": kids.count("hermes_kernel_runner"),
         "db_mb": round(os.path.getsize(db_path) / 2**20, 1) if os.path.exists(db_path) else 0,
-        "httpx_clients": _count_live("Client"), "session_dbs": _count_live("SessionDB"),
+        "httpx_clients": _count_live("Client"), "transports": _count_live("HTTPTransport"), "session_dbs": _count_live("SessionDB"), "live_agents": _count_live("AIAgent"),
     }
 
 
@@ -119,16 +122,22 @@ def main() -> None:
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--compare", nargs=2)
+    ap.add_argument("--reply-kb", type=int, default=0, help="pad each child's final reply to N KB (transcript-size realism)")
     a = ap.parse_args()
     if a.compare:
         b, c = (json.load(open(p)) for p in a.compare)
         print(f"| metric | {b['label']} | {c['label']} | delta |\n|---|---|---|---|")
-        for k in ("threads", "rss_mb", "fds", "tcp", "pyright", "kernels", "db_mb", "httpx_clients", "session_dbs"):
+        for k in ("threads", "rss_mb", "fds", "tcp", "pyright", "kernels", "db_mb", "httpx_clients", "transports", "session_dbs"):
             bv, cv = b["peak"][k], c["peak"][k]
             print(f"| {k} (peak) | {bv} | {cv} | {cv - bv:+} |")
+        for k in ("rss_mb", "live_agents", "db_mb", "threads"):
+            bv, cv = b["after"].get(k), c["after"].get(k)
+            if bv is not None and cv is not None:
+                print(f"| {k} (after, children done) | {bv} | {cv} | {cv - bv:+} |")
         print(f"| wall_s | {b['wall_s']} | {c['wall_s']} | {c['wall_s'] - b['wall_s']:+.1f} |")
         return
 
+    _REPLY_KB[0] = a.reply_kb
     home = tempfile.mkdtemp(prefix="hermes_bench_home_")
     os.environ["HERMES_HOME"] = home
     os.environ["TERMINAL_ENV"] = "local"
@@ -190,6 +199,8 @@ def main() -> None:
         sys.__stderr__.write(str(res)[:3000] + "\n")
     time.sleep(2.0)
     stop.set()
+    import gc
+    gc.collect()
     after = _snap(pid, db_path)
     try:
         parsed = json.loads(res)

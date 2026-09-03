@@ -220,3 +220,7 @@ native/fts5_cjk/*.so
 
 # Disposable profile created by scripts/probe_active_session_exclusivity.py
 .probe-home/
+
+# Change-manifest file backups (charter §12) live next to their source
+# for one-command rollback; never commit them.
+*.bak-deployhold-20260904

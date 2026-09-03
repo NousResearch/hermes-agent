@@ -4778,6 +4778,12 @@ def recompute_ready(
        counter would reset on every recovery cycle and the circuit
        breaker could never trip (#35072).
 
+    3. The task still carries a ``worker_scope`` (pass 12, AQ — e.g. a
+       drain-ceiling breaker row).  Promoting it would make it spawnable
+       beside a cgroup that may still be live, duplicating the run.  It
+       stays where it is until the scope is verified dead and cleared by
+       the pre-spawn scope sweep / verified-stop service.
+
     The effective failure limit resolves in the same order as the
     circuit breaker in ``_record_task_failure`` so the two never
     disagree about when a task is permanently blocked:
@@ -4792,12 +4798,22 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, "
+            "worker_scope "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if row["worker_scope"]:
+                # Pass 12 (AQ): a non-running row that still carries a
+                # worker scope is NEVER auto-promoted — doing so makes
+                # it spawnable beside a cgroup that may still be live
+                # (the drain-ceiling breaker's blocked rows keep their
+                # scope for the operator). It stays put until the scope
+                # is verified dead and cleared by the pre-spawn scope
+                # sweep / verified-stop service.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for explicit human intervention — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -7739,13 +7755,59 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Pass 12 (AQ): a blocked breaker row can still carry its
+    ``worker_scope`` (the drain-ceiling breaker keeps it for the
+    operator). Unblocking such a row would make it spawnable beside a
+    cgroup that may still be live, so the unblock is refused unless the
+    scope is verified dead at that moment — in which case the stale
+    pointer is cleared and the unblock proceeds.
     """
     now = int(time.time())
+    # Scope gate, probed OUTSIDE the write transaction (same shape as
+    # the own-worker handoff handler): one bus probe must not hold the
+    # DB write lock.
+    gate = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if (
+        gate is not None
+        and gate["status"] in ("blocked", "scheduled")
+        and gate["worker_scope"]
+    ):
+        scope_state = _kanban_scope_state(gate["worker_scope"])
+        if scope_state != "dead":
+            _log.warning(
+                "kanban: cannot unblock %s — worker scope %s is still "
+                "alive or unverified (state=%s); stop it first or wait "
+                "for the dispatcher's scope audit to clear it",
+                task_id, gate["worker_scope"], scope_state,
+            )
+            return False
     with write_txn(conn):
         current = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?",
+            "SELECT status, worker_scope FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+        if (
+            gate is not None
+            and gate["worker_scope"]
+            and current is not None
+            and current["status"] in ("blocked", "scheduled")
+            and current["worker_scope"] == gate["worker_scope"]
+        ):
+            # The gate above verified this unit dead — drop the stale
+            # pointer so the row this unblock makes spawnable no longer
+            # trips the not-spawnable-by-scope invariant. The equality
+            # guard means a scope that CHANGED since the probe is left
+            # for the audit (it was never verified).
+            conn.execute(
+                "UPDATE tasks SET worker_scope = NULL "
+                "WHERE id = ? AND status IN ('blocked', 'scheduled') "
+                "AND worker_scope IS ?",
+                (task_id, gate["worker_scope"]),
+            )
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if current and current["status"] == "blocked"
@@ -9083,6 +9145,18 @@ class DispatchResult:
     """Scope unit names stopped by :func:`reap_orphaned_worker_scopes`
     this tick — the audit backstop that guarantees no worker cgroup
     outlives its task row (leaked descendants, stale retry units)."""
+    scopes_cleared: list[str] = field(default_factory=list)
+    """Task ids whose stale ``worker_scope`` was cleared this tick by the
+    pre-spawn dead-scope sweep (pass 12, AQ) — non-running rows (drain-
+    ceiling breaker rows) whose unit is verified dead, making them
+    spawnable again."""
+    skipped_scope_live: list[tuple[str, str]] = field(default_factory=list)
+    """Spawn candidates skipped because the row still carries a
+    ``worker_scope`` (pass 12, AQ): the scope is alive or unverified, so
+    spawning would duplicate the run beside the cgroup. Entries are
+    ``(task_id, scope_unit)``. The recompute skip, the unblock gate, and
+    the pre-spawn sweep should prevent this from ever firing — an entry
+    here means a writer bypassed them (manual SQL, racy writer)."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -12103,6 +12177,62 @@ def reap_orphaned_worker_scopes(conn: sqlite3.Connection) -> list[str]:
     return reaped
 
 
+def clear_dead_worker_scopes_on_nonrunning_tasks(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Clear ``worker_scope`` on non-running rows whose unit is verified dead.
+
+    The row-side counterpart of :func:`reap_orphaned_worker_scopes`
+    (which stops the cgroup): the drain-ceiling breaker (pass 11, AO)
+    blocks a task with its scope deliberately retained for the operator,
+    and rows like that are never spawnable while the pointer remains —
+    ``recompute_ready`` skips them and ``unblock_task`` refuses them
+    (pass 12, AQ). Once the audit's verified stop lands and the unit
+    confirms dead, this sweep drops the stale pointer so the row becomes
+    spawnable again.
+
+    It runs BEFORE promotion in the dispatch tick, so a scope that died
+    since the last tick is cleared and its row promoted in the same
+    tick. Like the audit, each row costs a synchronous bus probe under
+    the dispatch lock, so the sweep is bounded per tick
+    (``_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK``); anything behind the
+    bound — or any unit not yet provably dead — waits for the next tick.
+
+    Returns the task ids whose scope was cleared. Safe to call every
+    tick; read-only rows (live/unknown/unsupported units) are untouched.
+    """
+    rows = conn.execute(
+        "SELECT id, worker_scope FROM tasks "
+        "WHERE status != 'running' AND worker_scope IS NOT NULL "
+        "ORDER BY created_at ASC, id ASC LIMIT ?",
+        (_SCOPE_AUDIT_SYNCHRONOUS_UNITS_PER_TICK,),
+    ).fetchall()
+    cleared: list[str] = []
+    for row in rows:
+        unit = row["worker_scope"]
+        if _kanban_scope_state(unit) != "dead":
+            continue  # live, draining, or unverifiable — the audit keeps
+            # requesting the verified stop; clear it once it confirms
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET worker_scope = NULL "
+                "WHERE id = ? AND status != 'running' AND worker_scope IS ?",
+                (row["id"], unit),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(
+                conn, row["id"], "worker_scope_cleared",
+                {"scope": unit, "reason": "scope verified dead"},
+            )
+        cleared.append(row["id"])
+        _log.info(
+            "kanban: cleared dead worker scope %s from task %s",
+            unit, row["id"],
+        )
+    return cleared
+
+
 def stop_all_scoped_workers(
     conn: sqlite3.Connection,
     *,
@@ -13576,7 +13706,12 @@ def _dispatch_once_locked(
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
-      8. Audit: stop any active worker scope that no running task claims
+      8. Pre-spawn scope sweep (pass 12, AQ): clear ``worker_scope`` from
+         non-running rows whose unit is verified dead, so breaker rows
+         whose scope finally died become spawnable this tick; rows that
+         still carry a scope are never promoted (``recompute_ready``
+         skips them) and never spawned (both spawn loops skip them).
+      9. Audit: stop any active worker scope that no running task claims
          (leaked descendants / stale retry units). The audit also runs
          when a concurrency or memory-pressure guard stands the tick
          down early — otherwise orphaned scopes could persist for as
@@ -13649,6 +13784,15 @@ def _dispatch_once_locked(
     # records failures and stops scopes.
     if not dry_run:
         result.late_spawn_failed = fail_unregistered_workers(conn)
+    # Pass 12 (AQ): drop worker scopes that are verified dead from
+    # non-running rows BEFORE promotion/spawning, so a breaker row whose
+    # scope finally died becomes spawnable in this same tick — and one
+    # whose scope is still live can never be promoted beside it
+    # (recompute_ready skips rows that still carry a scope).
+    if not dry_run:
+        result.scopes_cleared = clear_dead_worker_scopes_on_nonrunning_tasks(
+            conn,
+        )
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -13725,7 +13869,7 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, worker_scope FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -13734,7 +13878,7 @@ def _dispatch_once_locked(
     review_rows = []
     if review_dispatch_enabled():
         review_rows = conn.execute(
-            "SELECT id, assignee FROM tasks "
+            "SELECT id, assignee, worker_scope FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
             "ORDER BY priority DESC, created_at ASC"
         ).fetchall()
@@ -13805,6 +13949,22 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        if row["worker_scope"]:
+            # Pass 12 (AQ) invariant: a row that still carries a worker
+            # scope is never spawnable — recompute_ready, the unblock
+            # gate, and the pre-spawn dead-scope sweep should have kept
+            # it out of this queue. Skip (never spawn beside the cgroup)
+            # and surface the leak.
+            result.skipped_scope_live.append(
+                (row["id"], row["worker_scope"]),
+            )
+            _log.warning(
+                "kanban dispatch: skipped ready task %s — its row still "
+                "carries worker scope %s (alive or unverified); waiting "
+                "for the scope audit to clear it",
+                row["id"], row["worker_scope"],
+            )
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -14018,6 +14178,19 @@ def _dispatch_once_locked(
     for row in review_rows:
         if spawn_budget is not None and spawned >= spawn_budget:
             break
+        if row["worker_scope"]:
+            # Same pass 12 (AQ) invariant as the ready loop: never spawn
+            # beside a scope the row still claims.
+            result.skipped_scope_live.append(
+                (row["id"], row["worker_scope"]),
+            )
+            _log.warning(
+                "kanban dispatch: skipped review task %s — its row still "
+                "carries worker scope %s (alive or unverified); waiting "
+                "for the scope audit to clear it",
+                row["id"], row["worker_scope"],
+            )
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue

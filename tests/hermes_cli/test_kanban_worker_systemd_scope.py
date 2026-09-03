@@ -2561,6 +2561,155 @@ def test_release_stale_claims_handoff_ceiling_dies_before_breaker_applies_once(
     ).fetchone()["n"] == 0
 
 
+def _breaker_shaped_row(conn, unit, *, title="breaker shaped", assignee="elias"):
+    """A drain-ceiling breaker's output row: blocked (needs_input), claim
+    bookkeeping cleared, no 'blocked' event (so not sticky), and the
+    scope deliberately retained for the operator."""
+    tid = kb.create_task(conn, title=title, assignee=assignee)
+    conn.execute(
+        "UPDATE tasks SET status='blocked', block_kind='needs_input', "
+        "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+        "worker_pid_started_at=NULL, worker_registered_at=NULL, "
+        "worker_scope=? WHERE id=?",
+        (unit, tid),
+    )
+    conn.commit()
+    return tid
+
+
+def test_breaker_row_with_live_scope_is_never_spawnable(
+    shims, conn, kanban_home,
+):
+    """Pass 12 (AQ): a breaker row that still carries a LIVE worker scope
+    is never spawnable — recompute_ready leaves it blocked, unblock_task
+    refuses (the scope is alive, not verified dead), and the dispatch
+    spawn loop skips a scope-carrying row even if one lands in ready."""
+    _spawnable_profile(kanban_home)
+    straggler = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_aqlive", 1)
+    shims.write_unit(unit, [straggler])
+    tid = _breaker_shaped_row(conn, unit)
+
+    # recompute_ready: no promotion beside a live scope (the row carries
+    # no sticky 'blocked' event and no failures — without the skip this
+    # is exactly the row the old code auto-promoted).
+    assert kb.recompute_ready(conn) == 0
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id=?", (tid,),
+    ).fetchone()
+    assert row["status"] == "blocked"
+    assert row["worker_scope"] == unit
+
+    # unblock refuses: the scope is still alive, so the row must not
+    # become spawnable by hand either.
+    assert kb.unblock_task(conn, tid) is False
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id=?", (tid,),
+    ).fetchone()
+    assert row["status"] == "blocked"
+    assert row["worker_scope"] == unit
+
+    # Spawn-loop invariant: even a scope-carrying row parked in ready
+    # (manual SQL, a racy writer) is skipped, never claimed or spawned.
+    conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+    conn.commit()
+    spawns: list[str] = []
+
+    def never_spawn(task, workspace, board):
+        spawns.append(task.id)
+        return None
+
+    result = kb._dispatch_once_locked(conn, spawn_fn=never_spawn)
+
+    assert spawns == []
+    assert result.skipped_scope_live == [(tid, unit)]
+    assert result.spawned == []
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_scope FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"      # untouched: never claimed
+    assert row["claim_lock"] is None
+    assert row["worker_scope"] == unit
+
+
+def test_breaker_row_dead_scope_unblocks_and_spawns_once(
+    shims, conn, kanban_home,
+):
+    """Pass 12 (AQ), recovery by unblock: once the scope is verified dead,
+    unblock_task verifies the death itself, clears the stale pointer,
+    succeeds, and the dispatcher spawns exactly one worker for the row."""
+    _spawnable_profile(kanban_home)
+    # A unit that was never created on the bus: LoadState=not-found is a
+    # VERIFIED dead verdict (the audit's verified stop landed and the
+    # transient unit is gone).
+    dead_unit = kb._kanban_worker_scope_unit("t_aqdead", 1)
+    tid = _breaker_shaped_row(conn, dead_unit)
+
+    assert kb.unblock_task(conn, tid) is True
+    row = conn.execute(
+        "SELECT status, worker_scope FROM tasks WHERE id=?", (tid,),
+    ).fetchone()
+    assert row["status"] == "ready"
+    assert row["worker_scope"] is None
+
+    spawns: list[str] = []
+
+    def stub_spawn(task, workspace, board):
+        spawns.append(task.id)
+        return None
+
+    result = kb._dispatch_once_locked(conn, spawn_fn=stub_spawn)
+
+    assert spawns == [tid]
+    assert [s[0] for s in result.spawned] == [tid]
+    assert result.skipped_scope_live == []
+    assert conn.execute(
+        "SELECT worker_scope FROM tasks WHERE id=?", (tid,),
+    ).fetchone()["worker_scope"] is None
+
+
+def test_dispatch_dead_scope_sweep_clears_and_promotes_in_same_tick(
+    shims, conn, kanban_home,
+):
+    """Pass 12 (AQ), recovery by the sweep: the dead-scope pass runs
+    BEFORE promotion, so a breaker row whose scope died since the last
+    tick is cleared, promoted, and spawned exactly once — all in the
+    same tick."""
+    _spawnable_profile(kanban_home)
+    worker = shims.sleeper()
+    unit = kb._kanban_worker_scope_unit("t_aqsweep", 1)
+    shims.write_unit(unit, [worker])
+    tid = _breaker_shaped_row(conn, unit, title="breaker swept")
+
+    # The scope dies before the tick (cgroup empties; LoadState stays
+    # loaded but cgroup.procs reads empty — a verified dead verdict).
+    os.kill(worker, signal.SIGKILL)
+    assert shims.wait_for(lambda: not kb._pid_alive(worker))
+
+    spawns: list[str] = []
+
+    def stub_spawn(task, workspace, board):
+        spawns.append(task.id)
+        return None
+
+    result = kb._dispatch_once_locked(conn, spawn_fn=stub_spawn)
+
+    assert result.scopes_cleared == [tid]
+    assert result.skipped_scope_live == []
+    assert spawns == [tid]  # promoted and spawned, exactly once
+    row = conn.execute(
+        "SELECT status, worker_scope, claim_lock FROM tasks WHERE id=?",
+        (tid,),
+    ).fetchone()
+    assert row["worker_scope"] is None
+    cleared = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? "
+        "AND kind='worker_scope_cleared'", (tid,),
+    ).fetchone()
+    assert cleared and json.loads(cleared["payload"])["scope"] == unit
+
+
 def test_release_stale_claims_handoff_cas_miss_skips_fresh_heartbeat_row(
     shims, conn, monkeypatch,
 ):

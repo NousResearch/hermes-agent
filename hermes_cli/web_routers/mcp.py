@@ -312,6 +312,10 @@ async def test_mcp_server(
         "tools": [
             {
                 "name": t,
+                # Empty when the server doesn't set one — frontends should
+                # fall back to `name` for display. Additive key: older
+                # renderers built before this field existed simply ignore it.
+                "title": title,
                 "description": d,
                 **(
                     {"schema_chars": schema_chars[t]}
@@ -319,7 +323,7 @@ async def test_mcp_server(
                     else {}
                 ),
             }
-            for t, d in tools
+            for t, title, d in tools
         ],
         "prompts": details.get("prompts", 0),
         "resources": details.get("resources", 0),

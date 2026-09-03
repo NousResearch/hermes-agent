@@ -282,10 +282,13 @@ def _probe_single_server(
     *,
     details: Optional[dict] = None,
     truncate_descriptions: bool = True,
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str, str]]:
     """Temporarily connect to one MCP server, list its tools, disconnect.
 
-    Returns list of ``(tool_name, description)`` tuples.
+    Returns list of ``(tool_name, title, description)`` tuples. ``title`` is
+    the MCP spec's optional human-readable display name for the tool (e.g.
+    "abc xyz 123" for a tool named "abc_xyz_123"); it is "" when the server
+    doesn't set one, in which case callers should fall back to ``tool_name``.
     Raises on connection failure.
 
     ``details``: optional dict the probe fills with extra capability counts
@@ -317,7 +320,7 @@ def _probe_single_server(
             connect_timeout = 30.0
 
     _ensure_mcp_loop()
-    tools_found: List[Tuple[str, str]] = []
+    tools_found: List[Tuple[str, str, str]] = []
 
     async def _probe():
         server = await asyncio.wait_for(
@@ -325,13 +328,14 @@ def _probe_single_server(
         )
         try:
             for t in server._tools:
+                title = getattr(t, "title", "") or ""
                 desc = getattr(t, "description", "") or ""
                 # Truncate long descriptions for display — chỉ áp dụng khi
                 # caller không yêu cầu mô tả đầy đủ (mặc định True, giữ hành
                 # vi CLI cũ nguyên vẹn).
                 if truncate_descriptions and len(desc) > 80:
                     desc = desc[:77] + "..."
-                tools_found.append((t.name, desc))
+                tools_found.append((t.name, title, desc))
             if details is not None:
                 # Per-tool registry-schema sizes so the desktop can estimate the
                 # per-call token cost a server adds. Uses the SAME converted
@@ -596,7 +600,7 @@ def cmd_mcp_add(args):
     print()
     _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
     print()
-    for tool_name, desc in tools:
+    for tool_name, _title, desc in tools:
         short = desc[:60] + "..." if len(desc) > 60 else desc
         print(f"    {color(tool_name, Colors.GREEN):40s} {short}")
     print()
@@ -619,7 +623,7 @@ def cmd_mcp_add(args):
         # Interactive tool selection
         from hermes_cli.curses_ui import curses_checklist
 
-        labels = [f"{t[0]}  —  {t[1]}" for t in tools]
+        labels = [f"{t[0]}  —  {t[2]}" for t in tools]
         pre_selected = set(range(len(tools)))
 
         chosen = curses_checklist(
@@ -810,7 +814,7 @@ def cmd_mcp_test(args):
 
     if tools:
         print()
-        for tool_name, desc in tools:
+        for tool_name, _title, desc in tools:
             short = desc[:55] + "..." if len(desc) > 55 else desc
             print(f"    {color(tool_name, Colors.GREEN):36s} {short}")
     print()
@@ -1069,7 +1073,7 @@ def cmd_mcp_configure(args):
     # Interactive checklist
     from hermes_cli.curses_ui import curses_checklist
 
-    labels = [f"{t[0]}  —  {t[1]}" for t in all_tools]
+    labels = [f"{t[0]}  —  {t[2]}" for t in all_tools]
 
     chosen = curses_checklist(
         f"Select tools for '{name}'",

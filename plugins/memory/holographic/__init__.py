@@ -106,6 +106,21 @@ def _load_plugin_config() -> dict:
         return {}
 
 
+def _sanitize_path_segment(value: Any) -> str:
+    """Return one safe, non-empty path segment for a template value."""
+    segment = re.sub(r"[^\w-]+", "-", str(value or ""), flags=re.ASCII)
+    return segment.strip("-_") or "unknown"
+
+
+def _resolve_db_path(template: str, fallback: str, **placeholders: Any) -> str:
+    values = {key: _sanitize_path_segment(value) for key, value in placeholders.items()}
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError) as exc:
+        logger.warning("Invalid db_path_template %r: %s — using db_path %r", template, exc, fallback)
+        return fallback
+
+
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
 # ---------------------------------------------------------------------------
@@ -118,6 +133,7 @@ class HolographicMemoryProvider(MemoryProvider):
         self._store = None
         self._retriever = None
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
+        self._memory_mode = "hybrid"
 
     @property
     def name(self) -> str:
@@ -148,6 +164,8 @@ class HolographicMemoryProvider(MemoryProvider):
         _default_db = f"{display_hermes_home()}/memory_store.db"
         return [
             {"key": "db_path", "description": "SQLite database path", "default": _default_db},
+            {"key": "db_path_template", "description": "Optional scoped SQLite path template ({profile}, {platform}, {chat}, {user})", "default": ""},
+            {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "tools"]},
             {"key": "auto_extract", "description": "Auto-extract facts at session end", "default": "false", "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": "0.5"},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": "1024"},
@@ -155,9 +173,19 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home
-        _hermes_home = str(get_hermes_home())
+        _hermes_home = str(kwargs.get("hermes_home") or get_hermes_home())
         _default_db = _hermes_home + "/memory_store.db"
         db_path = self._config.get("db_path", _default_db)
+        db_path_template = self._config.get("db_path_template")
+        if isinstance(db_path_template, str) and db_path_template:
+            db_path = _resolve_db_path(
+                db_path_template,
+                db_path,
+                profile=kwargs.get("agent_identity", "default"),
+                platform=kwargs.get("platform", "cli"),
+                chat=kwargs.get("chat_id", ""),
+                user=kwargs.get("user_id_alt") or kwargs.get("user_id", ""),
+            )
         # Expand $HERMES_HOME in user-supplied paths so config values like
         # "$HERMES_HOME/memory_store.db" or "~/.hermes/memory_store.db" both
         # resolve to the active profile's directory.
@@ -177,6 +205,8 @@ class HolographicMemoryProvider(MemoryProvider):
             hrr_dim=hrr_dim,
         )
         self._session_id = session_id
+        memory_mode = self._config.get("memory_mode", "hybrid")
+        self._memory_mode = memory_mode if memory_mode in {"hybrid", "tools"} else "hybrid"
 
     def system_prompt_block(self) -> str:
         if not self._store:
@@ -202,6 +232,8 @@ class HolographicMemoryProvider(MemoryProvider):
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if self._memory_mode == "tools":
+            return ""
         if not self._retriever or not query:
             return ""
         try:

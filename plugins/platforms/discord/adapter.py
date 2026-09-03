@@ -7004,6 +7004,149 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _specialist_routing_settings(self) -> dict[str, Any]:
+        """Return validated, explicitly opted-in specialist routing settings."""
+        raw = self.config.extra.get("specialist_routing")
+        if not isinstance(raw, dict):
+            return {"enabled": False}
+        enabled = raw.get("enabled", False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in {"true", "1", "yes", "on"}
+        board = raw.get("board")
+        if not enabled or not isinstance(board, str) or not board.strip():
+            return {"enabled": False}
+        try:
+            threshold = float(raw.get("confidence_threshold", 0.80))
+        except (TypeError, ValueError):
+            threshold = 0.80
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            threshold = 0.80
+        try:
+            timeout = float(raw.get("timeout_seconds", 12))
+        except (TypeError, ValueError):
+            timeout = 12.0
+        profiles = raw.get("profiles")
+        if not isinstance(profiles, dict):
+            profiles = None
+        else:
+            profiles = {
+                str(name).strip(): str(description).strip()[:300]
+                for name, description in profiles.items()
+                if isinstance(name, str)
+                and isinstance(description, str)
+                and name.strip()
+                and description.strip()
+                and len(name.strip()) <= 80
+            }
+            if not profiles:
+                return {"enabled": False}
+        return {
+            "enabled": True,
+            "confidence_threshold": threshold,
+            "timeout_seconds": max(1.0, min(30.0, timeout)),
+            "model": str(raw.get("model") or "").strip(),
+            "board": board.strip(),
+            "profiles": profiles,
+        }
+
+    async def _classify_specialist_event(self, event: MessageEvent):
+        """Ask the bounded auxiliary router for one typed routing decision."""
+        settings = self._specialist_routing_settings()
+        from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+        from gateway.specialist_routing import classify_specialist_request
+
+        async def _classifier(messages):
+            response = await async_call_llm(
+                task="specialist_router",
+                model=settings["model"] or None,
+                messages=messages,
+                temperature=0.0,
+                max_tokens=180,
+                timeout=settings["timeout_seconds"],
+                reasoning_config={"enabled": False},
+            )
+            return extract_content_or_reasoning(response)
+
+        return await classify_specialist_request(
+            event.text,
+            _classifier,
+            threshold=settings["confidence_threshold"],
+            timeout=settings["timeout_seconds"],
+            profiles=settings["profiles"],
+        )
+
+    async def _maybe_route_specialist_event(self, event: MessageEvent) -> bool:
+        """Create a guarded specialist card, or return false for normal chat."""
+        settings = self._specialist_routing_settings()
+        if not settings.get("enabled") or event.message_type is not MessageType.TEXT:
+            return False
+        if not (event.text or "").strip() or getattr(event.source, "is_bot", False):
+            return False
+        try:
+            decision = await self._classify_specialist_event(event)
+        except Exception:
+            logger.warning("[Discord] specialist routing classifier failed", exc_info=True)
+            return False
+        if decision.kind.value == "general":
+            logger.info(
+                "[Discord] specialist routing fell through: %s",
+                decision.audit_reason,
+            )
+            return False
+        if decision.kind.value == "clarify":
+            await self.send(
+                event.source.chat_id,
+                content="Which configured specialist task should I start?",
+                reply_to=event.message_id,
+            )
+            return True
+        if not decision.dispatches:
+            return False
+        try:
+            from gateway.specialist_handoff import (
+                HandoffSource,
+                create_specialist_handoff,
+            )
+
+            platform = getattr(event.source.platform, "value", event.source.platform)
+            source = HandoffSource(
+                platform=str(platform),
+                chat_id=str(event.source.chat_id),
+                chat_type=str(event.source.chat_type or "group"),
+                user_id=(str(event.source.user_id) if event.source.user_id else None),
+                user_id_alt=(
+                    str(event.source.user_id_alt)
+                    if event.source.user_id_alt
+                    else None
+                ),
+                guild_id=(str(event.source.guild_id) if event.source.guild_id else None),
+                thread_id=(
+                    str(event.source.thread_id) if event.source.thread_id else None
+                ),
+                message_id=str(event.message_id or event.source.message_id or ""),
+                notifier_profile=getattr(event.source, "profile", None) or "default",
+            )
+            result = await asyncio.to_thread(
+                create_specialist_handoff,
+                decision=decision,
+                source=source,
+                request=event.text,
+                router_model=settings["model"] or "configured_auxiliary",
+                board=settings["board"],
+            )
+        except Exception:
+            logger.warning("[Discord] specialist routing handoff failed", exc_info=True)
+            return False
+        if not result.ok or not result.task_id:
+            logger.warning("[Discord] specialist routing handoff rejected: %s", result.reason)
+            return False
+        await self.send(
+            event.source.chat_id,
+            content=f"Planning `{result.task_id}` with `{decision.profile}`.",
+            reply_to=event.message_id,
+        )
+        return True
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -8659,6 +8802,9 @@ class DiscordAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+
+        if not recovered and await self._maybe_route_specialist_event(event):
+            return True
 
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.

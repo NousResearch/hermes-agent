@@ -568,6 +568,16 @@ def test_kanban_guidance_prompt_size_bounded():
     )
 
 
+def test_kanban_guidance_uses_runtime_board_selectors():
+    """Worker guidance must describe the resolved board, not claim that every
+    worker uses the default-profile database path."""
+    from agent.prompt_builder import KANBAN_GUIDANCE
+
+    assert "HERMES_KANBAN_DB" in KANBAN_GUIDANCE
+    assert "HERMES_KANBAN_BOARD" in KANBAN_GUIDANCE
+    assert "~/.hermes/kanban.db" not in KANBAN_GUIDANCE
+
+
 def test_kanban_guidance_orchestrator_decision_ownership():
     """The orchestrator section must carry the split-brain prevention
     contract: decisions are made by the orchestrator before fan-out and

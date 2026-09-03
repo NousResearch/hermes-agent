@@ -1526,7 +1526,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         tool_call_id = _pairing_tool_call_id(tool_call)
         blocked = False
         dispatched = False
-        execution_raised = False
         start_advanced = False
 
         def _advance_start(callback=None) -> None:
@@ -1550,17 +1549,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         try:
             try:
                 def _execute(next_args: dict[str, Any]) -> Any:
-                    return agent._invoke_tool(
-                        function_name,
-                        next_args,
-                        effective_task_id,
-                        tool_call_id,
-                        messages=messages,
-                        pre_tool_block_checked=True,
-                        skip_tool_request_middleware=True,
-                        skip_tool_execution_middleware=True,
-                        tool_request_middleware_trace=list(middleware_trace),
-                    )
+                    from model_tools import suppress_post_tool_call_hook
+
+                    # The batch executor owns the sole terminal event. Keeping
+                    # inner dispatch observationally silent also prevents a
+                    # non-cooperative worker from reporting late success after
+                    # timeout/cancellation has already terminalized the call.
+                    with suppress_post_tool_call_hook():
+                        return agent._invoke_tool(
+                            function_name,
+                            next_args,
+                            effective_task_id,
+                            tool_call_id,
+                            messages=messages,
+                            pre_tool_block_checked=True,
+                            skip_tool_request_middleware=True,
+                            skip_tool_execution_middleware=True,
+                            tool_request_middleware_trace=list(middleware_trace),
+                        )
 
                 managed = _run_agent_tool_execution_middleware(
                     agent,
@@ -1604,20 +1610,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     agent.interrupt("keyboard interrupt")
                 except Exception:
                     pass
-                cancelled_result = (
-                    _emit_cancelled_terminal_post_tool_call(
-                        agent,
-                        function_name=function_name,
-                        function_args=function_args,
-                        effective_task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                        start_time=start,
-                        middleware_trace=list(middleware_trace),
-                    )
-                    if dispatched
-                    else _cancelled_tool_result()
-                )
-                result = _ToolCancelledResult(cancelled_result)
+                result = _ToolCancelledResult(_cancelled_tool_result())
                 duration = time.time() - start
                 logger.info("tool %s cancelled (%.2fs)", function_name, duration)
                 results[index] = (
@@ -1632,7 +1625,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
                 return
             except Exception as tool_error:
-                execution_raised = True
                 dispatched = execution_state.has_started()
                 if isinstance(tool_error, _StartedToolError):
                     cause = tool_error.cause
@@ -1643,17 +1635,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 result = f"Error executing tool '{function_name}': {cause}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, cause, exc_info=True)
             duration = time.time() - start
-            if not blocked and (execution_raised or not dispatched):
-                _emit_terminal_post_tool_call(
-                    agent,
-                    function_name=function_name,
-                    function_args=function_args,
-                    result=result,
-                    effective_task_id=effective_task_id,
-                    tool_call_id=tool_call_id,
-                    duration_ms=int(duration * 1000),
-                    middleware_trace=list(middleware_trace),
-                )
             is_error, _ = _detect_tool_failure(function_name, result)
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
@@ -2041,8 +2022,35 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="error",
                     error_type="invalid_tool_arguments",
                     error_message="Tool arguments must be a valid JSON object",
+                    duration_ms=int(tool_duration * 1000),
                     middleware_trace=list(middleware_trace),
                 )
+            elif not blocked:
+                if isinstance(function_result, _ToolCancelledResult):
+                    _emit_terminal_post_tool_call(
+                        agent,
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=function_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=tool_call_id,
+                        duration_ms=int(tool_duration * 1000),
+                        status="cancelled",
+                        error_type="keyboard_interrupt",
+                        error_message="Tool execution cancelled by user interrupt",
+                        middleware_trace=list(middleware_trace),
+                    )
+                else:
+                    _emit_terminal_post_tool_call(
+                        agent,
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=function_result,
+                        effective_task_id=effective_task_id,
+                        tool_call_id=tool_call_id,
+                        duration_ms=int(tool_duration * 1000),
+                        middleware_trace=list(middleware_trace),
+                    )
             _receipt_cancelled = isinstance(function_result, _ToolCancelledResult)
             _receipt_timed_out = isinstance(function_result, _ToolTimeoutResult)
             if blocked:

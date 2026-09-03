@@ -2201,6 +2201,87 @@ class TestConcurrentToolExecution:
         assert post_calls[0]["middleware_trace"] == trace
         assert post_calls[0]["status"] == "timeout"
 
+    def test_concurrent_timeout_suppresses_late_success_hook(self, agent, monkeypatch):
+        import hermes_cli.lifecycle as lifecycle
+        import model_tools
+
+        callback_started = threading.Event()
+        release = threading.Event()
+        callback_returned = threading.Event()
+        hook_calls = []
+
+        def _dispatch(_name, _args, **_kwargs):
+            callback_started.set()
+            release.wait()
+            callback_returned.set()
+            return "late result"
+
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"q":"slow"}',
+            call_id="c1",
+        )
+        monkeypatch.setattr(
+            "agent.tool_executor._resolve_concurrent_tool_timeout", lambda: 1.0
+        )
+        monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        try:
+            with patch.object(model_tools.registry, "dispatch", side_effect=_dispatch):
+                agent._execute_tool_calls_concurrent(
+                    _mock_assistant_msg(content="", tool_calls=[tc]), [], "task-1"
+                )
+                assert callback_started.is_set()
+                release.set()
+                assert callback_returned.wait(timeout=1)
+        finally:
+            release.set()
+
+        post_calls = [
+            kwargs for name, kwargs in hook_calls if name == "post_tool_call"
+        ]
+        assert len(post_calls) == 1
+        assert post_calls[0]["tool_call_id"] == "c1"
+        assert post_calls[0]["status"] == "timeout"
+
+    def test_concurrent_blocked_call_emits_one_terminal_hook(self, agent, monkeypatch):
+        hook_calls = []
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments='{"q":"blocked"}',
+            call_id="c1",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            lambda *_args, **_kwargs: ("Blocked by policy", None),
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("blocked tool must not dispatch"),
+        ):
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=[tc]), [], "task-1"
+            )
+
+        post_calls = [
+            kwargs for name, kwargs in hook_calls if name == "post_tool_call"
+        ]
+        assert len(post_calls) == 1
+        assert post_calls[0]["tool_call_id"] == "c1"
+        assert post_calls[0]["status"] == "blocked"
+        assert post_calls[0]["error_type"] == "plugin_block"
+
     def test_concurrent_timeout_before_dispatch_prevents_late_callback(self, agent, monkeypatch):
         preflight_started = threading.Event()
         release = threading.Event()

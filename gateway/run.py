@@ -18795,6 +18795,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_loop_command(event)
         return "Agent is running — use /loop status / pause / stop mid-run, or /stop before setting a new loop."
 
+    def _evict_if_durably_reaped(self, session_key: str) -> None:
+        """#99106: evict a stale in-memory turn slot whose durable routing
+        row was already ended in state.db (e.g. ``ws_orphan_reap`` /
+        ``agent_close``) while the gateway stayed alive.
+
+        Extracted so every caller that treats ``_is_session_running(key)``
+        as proof of a live turn can evict a reaped slot FIRST -- including
+        the estop/pause gate in ``_handle_message``, which otherwise reads
+        the stale True and lets a paused gateway process a real turn for a
+        session that's already dead in state.db (the gate's own "steering
+        in-flight work" exception was never meant to cover a dead runtime
+        about to be silently re-created).
+
+        Idempotent and inert once the slot is gone: a second call for the
+        same key (or a stubbed/mocked session_store without the DB-backed
+        accessors this needs) is a cheap no-op.
+        """
+        if not self._is_session_running(session_key):
+            return
+        try:
+            _reap_store = getattr(self, "session_store", None)
+            # Use the public, lock-held accessors: peek_session_id resolves
+            # key -> session_id under the store lock, and returns a
+            # non-str on stubbed stores in bare test runners — both the
+            # isinstance() gate and the ``is True`` gate below keep this
+            # guard inert unless a real SessionStore answers.
+            _reap_peek = getattr(_reap_store, "peek_session_id", None)
+            _is_ended = getattr(_reap_store, "_is_session_ended_in_db", None)
+            _reap_sid = _reap_peek(session_key) if callable(_reap_peek) else None
+            if (
+                isinstance(_reap_sid, str)
+                and _reap_sid
+                and callable(_is_ended)
+                and _is_ended(_reap_sid) is True
+            ):
+                logger.warning(
+                    "Evicting stale _running_agents entry for %s — "
+                    "durable session %s is ended (reaped) in state.db; "
+                    "healing routing on next message (#99106)",
+                    session_key,
+                    _reap_sid,
+                )
+                self._invalidate_session_run_generation(
+                    session_key,
+                    reason="reaped_session_eviction",
+                )
+                self._release_running_agent_state(session_key)
+        except Exception:
+            logger.debug("reaped-session staleness check failed", exc_info=True)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -19046,6 +19096,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not _estop_allow:
                     try:
                         _estop_key = self._session_key_for_source(source)
+                        # #99106 parity: a session already ended in state.db
+                        # (ws_orphan_reap/agent_close) keeps its in-memory
+                        # turn slot alive, so _is_session_running below would
+                        # otherwise read a dead runtime as "in-flight work"
+                        # and let a paused gateway process a real turn for
+                        # it. Evict first so the check that follows sees the
+                        # true state.
+                        self._evict_if_durably_reaped(_estop_key)
                         _estop_state = self._peek_session_state(_estop_key)
                         if (
                             _estop_state is not None
@@ -19380,37 +19438,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # message falls through to the cold path and re-attaches or creates a
         # fresh session; /status then correctly shows 代理运行中: 否 before the
         # heal and a live turn after.
-        if self._is_session_running(_quick_key):
-            try:
-                _reap_store = getattr(self, "session_store", None)
-                # Use the public, lock-held accessors: peek_session_id resolves
-                # key -> session_id under the store lock, and returns a
-                # non-str on stubbed stores in bare test runners — both the
-                # isinstance() gate and the ``is True`` gate below keep this
-                # guard inert unless a real SessionStore answers.
-                _reap_peek = getattr(_reap_store, "peek_session_id", None)
-                _is_ended = getattr(_reap_store, "_is_session_ended_in_db", None)
-                _reap_sid = _reap_peek(_quick_key) if callable(_reap_peek) else None
-                if (
-                    isinstance(_reap_sid, str)
-                    and _reap_sid
-                    and callable(_is_ended)
-                    and _is_ended(_reap_sid) is True
-                ):
-                    logger.warning(
-                        "Evicting stale _running_agents entry for %s — "
-                        "durable session %s is ended (reaped) in state.db; "
-                        "healing routing on next message (#99106)",
-                        _quick_key,
-                        _reap_sid,
-                    )
-                    self._invalidate_session_run_generation(
-                        _quick_key,
-                        reason="reaped_session_eviction",
-                    )
-                    self._release_running_agent_state(_quick_key)
-            except Exception:
-                logger.debug("reaped-session staleness check failed", exc_info=True)
+        #
+        # Also called earlier, on ``_estop_key``, from the pause gate above
+        # (same key for the same ``source`` — see ``_session_key_for_source``)
+        # so a reaped slot can't be read as "in-flight work" and bypass a
+        # global pause. Idempotent: if that earlier call already evicted this
+        # slot, this is a cheap no-op.
+        self._evict_if_durably_reaped(_quick_key)
 
         if self._is_session_running(_quick_key):
             # Resolve the command once; every command's mid-run behavior is

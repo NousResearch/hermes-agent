@@ -144,6 +144,93 @@ async def test_reaped_session_message_reaches_cold_path(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reaped_session_does_not_bypass_global_pause(tmp_path):
+    """A reaped session's stale turn slot must not be read as "in-flight
+    work" by the estop/pause gate.
+
+    Before the fix, the pause gate's own _is_session_running(key) check ran
+    BEFORE the #99106 durable-reaped guard (which lives further down
+    _handle_message, after the gate has already returned). A session ended
+    in state.db while its in-memory slot stayed alive made the gate treat it
+    as a live "steering" turn and let the message through -- reaching the
+    cold path and getting a REAL agent reply -- despite the gateway being
+    globally paused.
+    """
+    store = _store(tmp_path)
+    src = _source(chat_id="555004")
+    entry = store.get_or_create_session(src)
+    key = store._generate_session_key(src)
+
+    runner = _make_runner(store)
+    agent = _DeadReapedAgent()
+    _occupy_turn_slot(runner, key, agent)
+
+    # The durable row is ended out from under the live slot (the reap).
+    store._db.end_session(entry.session_id, "ws_orphan_reap")
+    assert store._is_session_ended_in_db(entry.session_id) is True
+
+    event = MessageEvent(
+        text="hello, are you there?",
+        message_type=MessageType.TEXT,
+        source=src,
+    )
+
+    cold_path = AsyncMock(return_value="COLD_PATH_REPLY")
+    with (
+        patch("agent.estop.paused_reply", return_value="⏸️ Hermes is paused."),
+        patch.object(GatewayRunner, "_handle_message_with_agent", cold_path),
+        patch.object(GatewayRunner, "_run_post_turn_hooks", AsyncMock()),
+        patch.object(GatewayRunner, "_clear_durable_active_turn", AsyncMock()),
+        patch.object(GatewayRunner, "_persist_active_agents", lambda self: None),
+    ):
+        result = await runner._handle_message(event)
+
+    # The pause notice must win -- the reaped slot must not count as
+    # "in-flight work" the pause gate is supposed to let through.
+    assert result == "⏸️ Hermes is paused."
+    assert cold_path.await_count == 0
+    assert agent.interrupts == []
+
+
+@pytest.mark.asyncio
+async def test_alive_session_still_steers_through_global_pause(tmp_path):
+    """Control: a GENUINELY live (not reaped) session must still be allowed
+    through a global pause to steer/interrupt its in-flight turn -- the
+    #99106 guard must only evict provably-reaped slots, never a real one."""
+    store = _store(tmp_path)
+    src = _source(chat_id="555005")
+    store.get_or_create_session(src)
+    key = store._generate_session_key(src)
+
+    runner = _make_runner(store)
+    agent = _DeadReapedAgent()
+    _occupy_turn_slot(runner, key, agent)
+
+    event = MessageEvent(
+        text="steer while paused",
+        message_type=MessageType.TEXT,
+        source=src,
+    )
+
+    cold_path = AsyncMock(return_value="COLD_PATH_REPLY")
+    with (
+        patch("agent.estop.paused_reply", return_value="⏸️ Hermes is paused."),
+        patch.object(GatewayRunner, "_handle_message_with_agent", cold_path),
+        patch.object(GatewayRunner, "_agent_has_active_subagents", lambda self, a: False),
+        patch.object(
+            GatewayRunner,
+            "_session_has_compression_in_flight",
+            AsyncMock(return_value=False),
+        ),
+    ):
+        result = await runner._handle_message(event)
+
+    assert result is None
+    assert cold_path.await_count == 0
+    assert agent.interrupts == ["steer while paused"]
+
+
+@pytest.mark.asyncio
 async def test_alive_session_keeps_priority_interrupt_path(tmp_path):
     """Control: with the durable row still open, the PRIORITY interrupt
     fast-path must behave exactly as before (no eviction)."""

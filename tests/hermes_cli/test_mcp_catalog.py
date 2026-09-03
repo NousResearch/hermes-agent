@@ -897,3 +897,36 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+
+def test_bootstrap_commands_run_as_argv_not_shell(tmp_path):
+    """Catalog bootstrap must never go through a shell (#81365).
+
+    Shell metacharacters in a manifest bootstrap entry are literal argv
+    arguments: ``>`` must not create a file and a ``;``-chained command
+    must not run.
+    """
+    import hermes_cli.mcp_catalog as mc
+
+    pwned = tmp_path / "pwned"
+    marker = tmp_path / "marker"
+    # Under a shell, ``> pwned`` redirects (creating the file) and
+    # ``; touch marker`` chains a second command. As argv both are literal
+    # arguments to python3 and create nothing.
+    mc._run_bootstrap(
+        tmp_path,
+        ["python3 -c \"import sys; print(sys.argv)\" > pwned ; touch marker"],
+    )
+    assert not pwned.exists()
+    assert not marker.exists()
+
+
+def test_bootstrap_still_runs_plain_commands(tmp_path):
+    """Plain bootstrap commands keep working after the argv switch."""
+    import hermes_cli.mcp_catalog as mc
+
+    mc._run_bootstrap(
+        tmp_path,
+        ["python3 -c \"import pathlib; pathlib.Path('ok.txt').write_text('ok')\""],
+    )
+    assert (tmp_path / "ok.txt").read_text(encoding="utf-8") == "ok"

@@ -28,6 +28,7 @@ See references/mcp-catalog.md (this repo's skill) for the manifest schema.
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -468,12 +469,18 @@ def _install_root() -> Path:
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
-    Each command runs through the shell (so `&&` etc. work). The output is
-    streamed to the user's terminal for visibility.
+    Each command runs as an argv list — never through the shell — so shell
+    metacharacters in a catalog entry stay literal arguments and cannot
+    inject extra commands at install time (the catalog dir is
+    user-overridable via HERMES_OPTIONAL_MCPS). The output is streamed to
+    the user's terminal for visibility.
     """
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        argv = shlex.split(cmd)
+        if not argv:
+            continue
+        proc = subprocess.run(argv, cwd=str(cwd))
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"

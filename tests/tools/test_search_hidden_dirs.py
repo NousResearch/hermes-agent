@@ -13,12 +13,21 @@ Fix: _search_files (find) and _search_with_grep both now exclude hidden
 directories, matching ripgrep's default behavior.
 """
 
+import os
+import shutil
 import subprocess
 
 import pytest
 
 from tools.file_operations import ShellFileOperations
 from tools.environments.local import LocalEnvironment
+
+# Resolved via shutil.which (not `subprocess.run(["which", ...])`): the
+# latter raises FileNotFoundError on Windows — where there is no `which`
+# executable — at module import, from inside the skipif decorator
+# arguments, killing the whole file's collection (11 tests lost) instead
+# of skipping the two rg-gated tests.
+_HAS_RIPGREP = shutil.which("rg") is not None
 
 
 @pytest.fixture
@@ -53,6 +62,15 @@ def searchable_tree(tmp_path):
 class TestFindExcludesHiddenDirs:
     """_search_files uses find, which should exclude hidden directories."""
 
+    # `find` and the `which`-shimmed shell paths below are Unix tools;
+    # Windows has no find/which/grep in PATH by default, and the tests
+    # exercise shell command strings the LocalEnvironment only builds on
+    # POSIX.
+    _skip_windows = pytest.mark.skipif(
+        os.name == "nt", reason="find/which fallbacks are POSIX-only"
+    )
+
+    @_skip_windows
     def test_find_skips_hub_cache_files(self, searchable_tree):
         """find should not return files from .hub/ directory."""
         cmd = (
@@ -63,6 +81,7 @@ class TestFindExcludesHiddenDirs:
         assert ".hub" not in result.stdout
 
 
+    @_skip_windows
     def test_find_still_returns_visible_files(self, searchable_tree):
         """find should still return files from visible directories."""
         cmd = (
@@ -75,6 +94,10 @@ class TestFindExcludesHiddenDirs:
 class TestGrepExcludesHiddenDirs:
     """The real search_files grep fallback should search the default root."""
 
+    _skip_windows = pytest.mark.skipif(
+        os.name == "nt", reason="grep fallback is POSIX-only"
+    )
+
     @staticmethod
     def _grep_ops(searchable_tree, monkeypatch):
         ops = ShellFileOperations(
@@ -84,6 +107,7 @@ class TestGrepExcludesHiddenDirs:
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
         return ops
 
+    @_skip_windows
     def test_grep_fallback_finds_visible_content(self, searchable_tree, monkeypatch):
         """Searching ``.`` must not exclude the search root itself."""
         result = self._grep_ops(searchable_tree, monkeypatch).search(
@@ -96,6 +120,7 @@ class TestGrepExcludesHiddenDirs:
         assert result.total_count > 0
         assert any("SKILL.md" in match.path for match in result.matches)
 
+    @_skip_windows
     def test_grep_fallback_finds_dot_relative_subdirectory(
         self, searchable_tree, monkeypatch
     ):
@@ -110,6 +135,7 @@ class TestGrepExcludesHiddenDirs:
         assert result.total_count == 1
         assert result.matches[0].path.endswith("SKILL.md")
 
+    @_skip_windows
     def test_grep_fallback_skips_hub_cache(self, searchable_tree, monkeypatch):
         """The fallback must not expose cached community skill content."""
         result = self._grep_ops(searchable_tree, monkeypatch).search(
@@ -122,6 +148,7 @@ class TestGrepExcludesHiddenDirs:
         assert result.total_count == 0
         assert not result.matches
 
+    @_skip_windows
     def test_grep_fallback_skips_arbitrary_hidden_directory(
         self, searchable_tree, monkeypatch
     ):
@@ -141,7 +168,7 @@ class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        not _HAS_RIPGREP,
         reason="ripgrep not installed",
     )
     def test_rg_skips_hub_by_default(self, searchable_tree):
@@ -154,7 +181,7 @@ class TestRipgrepAlreadyExcludesHidden:
         assert "catalog.json" not in result.stdout
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        not _HAS_RIPGREP,
         reason="ripgrep not installed",
     )
     def test_rg_finds_visible_content(self, searchable_tree):

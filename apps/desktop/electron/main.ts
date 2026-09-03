@@ -16817,7 +16817,7 @@ ipcMain.on('hermes:translucency:support', event => {
 // shortcut edit), and survives self-relaunches because collectRelaunchArgs
 // only strips internal flags.
 ipcMain.on('hermes:launch-flags', event => {
-  event.returnValue = { localModels: process.argv.includes('--local') }
+  event.returnValue = { localModels: process.argv.includes('--local') || process.platform === 'win32' || process.platform === 'darwin' }
 })
 
 ipcMain.on('hermes:translucency', (_event, payload) => {

@@ -3212,15 +3212,7 @@ _TYPED_PROVIDER_ROUTING_KEYS = frozenset({
 
 
 def _provider_routing_extra(pr: dict) -> dict:
-    """Extract unrecognized provider_routing keys for OpenRouter passthrough.
-
-    Typed keys (sort/only/ignore/order/require_parameters/data_collection)
-    are consumed as agent attributes; anything else is forwarded as-is into
-    the request's provider object so current and future OpenRouter routing
-    fields (zdr, quantizations, max_price, throughput/latency thresholds,
-    allow_fallbacks, enforce_distillable_text, …) work without a Hermes
-    release per new field. Warns on each forwarded key so typos surface.
-    """
+    """Extract unrecognized provider_routing keys for OpenRouter passthrough (typed keys win; warn per key)."""
     extra: dict = {}
     for key, val in (pr or {}).items():
         if key in _TYPED_PROVIDER_ROUTING_KEYS:

@@ -6168,13 +6168,7 @@ def _load_service_tier() -> str | None:
 
 
 def _gateway_provider_routing_extra(pr: dict) -> dict:
-    """Extract unrecognized provider_routing keys for OpenRouter passthrough.
-
-    Shared semantics with gateway.run._provider_routing_extra (imported
-    lazily to avoid a module-level cycle): typed keys are consumed as
-    agent attributes; anything else is forwarded verbatim into the OpenRouter
-    provider object with a warning so typos surface.
-    """
+    """OpenRouter provider_routing passthrough (see gateway.run._provider_routing_extra)."""
     try:
         from gateway.run import _provider_routing_extra
 

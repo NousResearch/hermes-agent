@@ -5608,11 +5608,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
 
-        # General passthrough: unrecognized provider_routing keys are
-        # forwarded as-is into the OpenRouter provider object (typed keys
-        # above always win on conflict; a warning is logged for each
-        # unrecognized key so typos surface). Scoped to OpenRouter — the
-        # Nous profile is guarded separately (see #89430).
+        # General passthrough: unrecognized keys are forwarded into the OpenRouter provider object; typed keys win (see docs/provider_routing_passthrough.md).
         self._provider_extra: Dict[str, Any] = {}
         try:
             from gateway.run import _provider_routing_extra

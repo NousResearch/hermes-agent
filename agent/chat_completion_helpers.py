@@ -572,12 +572,7 @@ def _provider_preferences_for_agent(agent) -> Dict[str, Any]:
     if agent.provider_data_collection:
         preferences["data_collection"] = agent.provider_data_collection
     if getattr(agent, "provider_extra", None):
-        # OpenRouter passthrough: unrecognized provider_routing keys from
-        # config.yaml are merged here after the typed keys, which always
-        # win on conflict. Covers current and future OpenRouter provider
-        # preference fields (zdr, quantizations, max_price, throughput /
-        # latency thresholds, allow_fallbacks, enforce_distillable_text…)
-        # without requiring a Hermes release per new field.
+        # OpenRouter passthrough: unrecognized keys are forwarded into the provider object (typed keys win).
         for _extra_key, _extra_val in (agent.provider_extra or {}).items():
             if _extra_key in preferences:
                 logger.debug(

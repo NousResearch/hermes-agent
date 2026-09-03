@@ -11,11 +11,16 @@ Windows box over SSH).
 
 import pytest
 
-from tools.approval import detect_dangerous_command
+from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 def _is_dangerous(cmd: str) -> bool:
     res = detect_dangerous_command(cmd)
+    return bool(res[0]) if isinstance(res, tuple) else bool(res)
+
+
+def _is_hardline(cmd: str) -> bool:
+    res = detect_hardline_command(cmd)
     return bool(res[0]) if isinstance(res, tuple) else bool(res)
 
 
@@ -108,3 +113,51 @@ class TestWindowsPathVariant:
     ])
     def test_benign_paths_and_posix_escapes_unaffected(self, cmd):
         assert not _is_dangerous(cmd), f"should NOT be flagged: {cmd}"
+
+
+class TestHardlineWindowsDestructiveTier:
+    """The Windows destructive tier above (#69472) added Restart-Computer /
+    Stop-Computer and Format-Volume / format.com to the bypassable
+    DANGEROUS_PATTERNS only. Both are the direct Windows analogues of two
+    POSIX HARDLINE_PATTERNS rules — shutdown/reboot/halt/poweroff (system
+    power state, no recovery path) and mkfs (filesystem format, no recovery
+    path) — that ARE unconditionally blocked, even under yolo. Before this
+    fix Restart-Computer/Stop-Computer had NO detection at all (not even a
+    bypassable prompt), and Format-Volume/format.com could be waved through
+    with --yolo despite being exactly the kind of no-recovery-path
+    operation the hardline floor exists to stop.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        "Restart-Computer",
+        "Restart-Computer -Force",
+        "restart-computer -force",
+        "Stop-Computer",
+        "Stop-Computer -Force",
+    ])
+    def test_power_state_commands_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        "Format-Volume -DriveLetter D",
+        "format d: /fs:ntfs",
+        "format D: /y",
+    ])
+    def test_format_commands_are_hardline(self, cmd):
+        assert _is_hardline(cmd), f"should be hardline-blocked: {cmd}"
+
+    @pytest.mark.parametrize("cmd", [
+        # Not the destructive cmdlets at all.
+        "restart the computer manually",
+        "Get-Service | Restart-Service -Name spooler",
+        # diskpart is interactive and has non-destructive subcommands
+        # (list disk); it stays in DANGEROUS_PATTERNS only, matching how
+        # fdisk/parted are not in the POSIX hardline list either.
+        "diskpart /s wipe.txt",
+        # Bare "format" with no drive letter is cmd.exe's own usage/help
+        # invocation, not a format-in-progress.
+        "format",
+        "format /?",
+    ])
+    def test_benign_or_non_hardline_commands_not_flagged(self, cmd):
+        assert not _is_hardline(cmd), f"should NOT be hardline-blocked: {cmd}"

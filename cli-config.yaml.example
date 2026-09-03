@@ -1193,12 +1193,19 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
+  # Custom provider vocabularies: providers exposing bespoke thinking tiers
+  # outside this ladder can be targeted with the dict form — the effort value
+  # is sent verbatim:
+  #   reasoning_effort:
+  #     enabled: true
+  #     effort: thinking        # e.g. a relay whose tiers are fast/thinking
   reasoning_effort: "medium"
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,
   #      provider prefix optional). First match wins.
-  # Value: reasoning effort level (same options as reasoning_effort)
+  # Value: reasoning effort level (same options as reasoning_effort), or the
+  #        dict form above for custom provider vocabularies.
   # Override the global reasoning_effort for that specific model.
   # NOTE: no `hermes config set` support for this key -- edit YAML directly.
   # reasoning_overrides:
@@ -1206,6 +1213,9 @@ agent:
   #   "openai/gpt-5": "low"
   #   "claude-opus-4.6": "high"           # bare model name also works
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
+  #   "my-relay/lumo-max":                # custom tier names via dict form
+  #     enabled: true
+  #     effort: thinking
   reasoning_overrides: {}
 
   # Fast mode (OpenAI Priority Processing / xAI Grok 4.6 / Anthropic Fast Mode

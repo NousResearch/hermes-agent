@@ -1355,11 +1355,38 @@ def parse_reasoning_effort(effort) -> dict | None:
     in config.yaml and YAML hands us a bool, which must mean disabled, not
     "fall back to the default and keep thinking").
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
+
+    Custom provider vocabularies: some providers expose bespoke thinking
+    tiers outside this ladder (e.g. relays exposing ``fast``/``thinking``
+    instead of low..max). A bare string must stay strict so typos can't
+    silently reach the wire — to request a custom level, write the dict form
+    explicitly::
+
+        agent:
+          reasoning_effort:
+            enabled: true
+            effort: thinking
+
+    The level is passed through verbatim (same for dict entries under
+    ``agent.reasoning_overrides``). The wire layer already tolerates unknown
+    names — ``agent.reasoning_effort.clamp_effort`` passes through any effort
+    that isn't a recognized ladder level rather than guessing.
     """
     if effort is False:
         return {"enabled": False}
     if effort is None or effort is True:
         return None
+    if isinstance(effort, dict):
+        enabled = effort.get("enabled", True)
+        # ``or ""`` deliberately coerces falsy effort values (0, False) to the
+        # missing-effort path rather than stringifying them: a tier named "0"
+        # or "False" would be meaningless on any wire, and passing it through
+        # would turn a YAML typo into a bogus request field. Only non-empty
+        # strings are honored as custom levels.
+        inner = str(effort.get("effort") or "").strip()
+        if not inner:
+            return {"enabled": False} if enabled is False else None
+        return {"enabled": bool(enabled), "effort": inner}
     effort = str(effort)
     if not effort.strip():
         return None

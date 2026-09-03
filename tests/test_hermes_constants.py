@@ -506,6 +506,91 @@ class TestResolveReasoningConfig:
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
 
 
+class TestCustomReasoningVocabularies:
+    """Tests for dict-form reasoning_effort — custom provider vocabularies.
+
+    Some providers expose bespoke thinking tiers outside the canonical
+    ladder (e.g. relays serving ``fast``/``thinking`` instead of low..max).
+    Bare strings must stay strict (a typo like ``hgih`` must never reach the
+    wire), so custom levels are expressed with an explicit dict::
+
+        agent:
+          reasoning_effort:
+            enabled: true
+            effort: thinking
+
+    Contract: the dict is normalized and its effort passes through verbatim;
+    the wire layer's clamp policy already tolerates unknown level names.
+    """
+
+    def test_dict_form_passes_custom_level_through(self):
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": True, "effort": "thinking"}) == {
+            "enabled": True,
+            "effort": "thinking",
+        }
+        assert parse_reasoning_effort({"enabled": True, "effort": "fast"}) == {
+            "enabled": True,
+            "effort": "fast",
+        }
+
+    def test_dict_form_accepts_canonical_levels_too(self):
+        """Dict form is not restricted to custom names — high works the same."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": True, "effort": "high"}) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    def test_dict_form_disabled(self):
+        from hermes_constants import parse_reasoning_effort
+        # enabled: false disables regardless of any effort value present
+        assert parse_reasoning_effort({"enabled": False, "effort": "low"}) == {
+            "enabled": False,
+            "effort": "low",
+        }
+        # enabled: false with no effort key is still a clean disable
+        assert parse_reasoning_effort({"enabled": False}) == {"enabled": False}
+
+    def test_dict_form_missing_effort_returns_none(self):
+        """{enabled: true} with no effort level falls back to caller default."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": True}) is None
+        assert parse_reasoning_effort({}) is None
+
+    def test_bare_custom_string_stays_strict(self):
+        """Typos must NOT pass via bare strings — dict form is the only opt-in."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort("hgih") is None
+        assert parse_reasoning_effort("turbo") is None
+
+    def test_dict_overrides_in_reasoning_overrides(self):
+        """Dict values under agent.reasoning_overrides resolve per-model."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"lumo-max": {"enabled": True, "effort": "fast"}}
+        result = resolve_per_model_reasoning_effort("lumo-max", overrides)
+        assert result == {"enabled": True, "effort": "fast"}
+
+    def test_resolve_reasoning_config_dict_global(self):
+        """End-to-end: global agent.reasoning_effort as a dict resolves verbatim."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = {
+            "model": {"default": "lumo-max"},
+            "agent": {
+                "reasoning_effort": {"enabled": True, "effort": "thinking"},
+            },
+        }
+        assert resolve_reasoning_config(cfg) == {
+            "enabled": True,
+            "effort": "thinking",
+        }
+
+    def test_yaml_boolean_false_still_disables(self):
+        """Regression guard: YAML False (bool) still means disabled, not custom."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort(False) == {"enabled": False}
+
+
 class TestReasoningOverridesDefaultConfig:
     """Tests for the agent.reasoning_overrides default config key (Task 2)."""
 

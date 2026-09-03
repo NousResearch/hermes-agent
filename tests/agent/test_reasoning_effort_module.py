@@ -79,6 +79,19 @@ class TestClampEffort:
     def test_bespoke_level_passes_through(self):
         assert clamp_effort("turbo-9000", ("low", "high")) == "turbo-9000"
 
+    def test_custom_vocabulary_levels_pass_through(self):
+        """Contract pin for dict-form reasoning_effort (see
+        hermes_constants.parse_reasoning_effort): bespoke provider tier names
+        like fast/thinking must reach the wire verbatim. If a future change
+        tightens clamp_effort to reject unknown names instead of passing them
+        through, every dict-form config silently breaks while the parser-side
+        tests stay green — this test fails first and forces the call."""
+        for level in ("fast", "thinking"):
+            assert clamp_effort(level, OPENAI_COMPAT_WIRE_EFFORTS) == level
+            assert requested_effort(
+                {"enabled": True, "effort": level}
+            ) == level
+
     def test_empty_effort_passes_through(self):
         assert clamp_effort(None, ("low",)) is None
         assert clamp_effort("", ("low",)) == ""

@@ -61,11 +61,17 @@ class _FakeDB:
 
 
 class _FakeAgent:
-    def __init__(self, home: Path, title: str = "Bot Chat"):
+    def __init__(
+        self,
+        home: Path,
+        title: str = "Bot Chat",
+        platform: str = "cli",
+    ):
         self._session_db = _FakeDB(home, title)
         self.session_id = "sess-1"
-        self._session_title_hint = None
+        self._session_title_hint = title if title else None
         self._bot_mode_protocol = True
+        self.platform = platform
         self.tools: list = []
         self.valid_tool_names: set = set()
 
@@ -91,12 +97,104 @@ def test_injects_only_into_bot_chat_on_managed_install(tmp_path):
     ["", "My research chat", "Group: room-abc123", "handoff-12ab34cd"],
 )
 def test_never_injects_outside_bot_chat(tmp_path, title):
-    """CLI sessions, ordinary chats, group-room member sessions: no tool."""
+    """Non-Desktop sources (CLI, TUI, gateway, group-room, cron, kanban, subagent): no tool.
+
+    Each of these sessions carries a platform that is NOT "desktop", so even
+    a non-"Bot Chat" title stays tool-free — the narrow Desktop capability
+    must not widen to any other source.
+    """
     home = _managed_home(tmp_path)
-    agent = _FakeAgent(home, title=title)
+    agent = _FakeAgent(home, title=title, platform="cli")
     assert bot_mode_dm.ensure_message_agent_tool(agent) is False
     assert agent.tools == []
     assert agent.valid_tool_names == set()
+
+
+# ── Desktop chat-panel capability (the #94018 regression fix) ─────────────────
+#
+# A regular Desktop chat (non-"Bot Chat" title, platform == "desktop") is the
+# session whose @mention middleware instructs the agent to use message_agent.
+# It now MAY inject + send, so handoffs from any Desktop chat keep working —
+# while every other source remains title-gated/fail-closed as before.
+
+
+def test_desktop_chat_injects_tool(tmp_path):
+    """The original repro: a regular Desktop chat gets message_agent."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(
+        home, title="Investigation into the login bug", platform="desktop"
+    )
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    names = [t["function"]["name"] for t in agent.tools]
+    assert names == [bot_mode_dm.MESSAGE_AGENT_TOOL_NAME]
+    assert bot_mode_dm.MESSAGE_AGENT_TOOL_NAME in agent.valid_tool_names
+    # idempotent — byte-stable tool list across turns
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    assert len(agent.tools) == 1
+
+
+def test_desktop_chat_can_send(tmp_path, monkeypatch):
+    """The repro end-to-end: a regular Desktop chat CAN dispatch message_agent."""
+    calls = []
+    import tools.terminal_tool as terminal_tool_module
+
+    def fake_terminal_tool(command, **kwargs):
+        calls.append(command)
+        return json.dumps({"output": "started", "session_id": "proc_desktop1"})
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="A renamed research chat", platform="desktop")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="@researcher", message="please review this", agent=agent
+        )
+    )
+    assert result["status"] == "sent"
+    assert result["to"] == "@researcher"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "platform", ["cli", "tui", "webui", "cron", "kanban", "subagent"]
+)
+def test_non_desktop_sources_never_inject(tmp_path, platform):
+    """The capability stays narrow: only the Desktop chat panel is allowed."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Some plain chat", platform=platform)
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+    assert agent.tools == []
+
+
+@pytest.mark.parametrize(
+    "platform", ["cli", "tui", "webui", "cron", "kanban", "subagent"]
+)
+def test_non_desktop_sources_still_refuse_to_send(tmp_path, platform):
+    """Defense in depth: a forged send from any non-Desktop source is refused."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Ordinary chat", platform=platform)
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="hi", agent=agent)
+    )
+    assert "error" in result
+    assert "Bot Chat" in result["error"]
+
+
+def test_group_room_session_still_refused(tmp_path):
+    """Group-room member sessions remain tool-free even on Desktop env."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Group: room-abc123", platform="telegram")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+    assert agent.tools == []
+
+
+def test_desktop_chat_still_blocked_on_unmanaged_install(tmp_path):
+    """Managed-install check still applies: a Desktop chat on a plain install is tool-free."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    agent = _FakeAgent(home, title="Fresh chat", platform="desktop")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+    assert agent.tools == []
 
 
 def test_never_injects_on_unmanaged_install(tmp_path):

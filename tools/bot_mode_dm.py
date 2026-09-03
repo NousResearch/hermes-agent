@@ -17,12 +17,13 @@ blocks the sender's turn).
 
 Containment contract (MUST hold — reviewers check all three):
 - The tool schema is injected ONLY into a bot's canonical "Bot Chat"
-  session on Bot-Mode-managed installs — the exact same gate as the
-  protocol section in ``tools/bot_mode_probe.py``. It is NOT registered in
+  session on Bot-Mode-managed installs — OR a trusted Desktop chat-panel
+  session (``platform == "desktop"``) on a Bot-Mode-managed install, so
+  @bot handoffs keep working from any Desktop chat. It is NOT registered in
   the global tool registry, is NOT part of any toolset, and never appears
-  in CLI sessions, ordinary gateway chats, group-room member sessions
-  (titled "Group: …"), cron agents, or subagents.
-- Dispatch is title-gated again at execution time (defense in depth): a
+  in CLI sessions, the embedded TUI, ordinary gateway chats, group-room
+  member sessions (titled "Group: …"), cron agents, or subagents.
+- Dispatch is gated again at execution time (defense in depth): a
   forged call from a session that shouldn't have the tool returns a
   structured error instead of delivering.
 - Everything here is additive. The legacy protocol transports
@@ -61,6 +62,17 @@ MESSAGE_AGENT_TOOL_NAME = "message_agent"
 # Message body cap — generous for real work products, small enough that a
 # runaway paste can't turn one DM into a context bomb on the recipient.
 MESSAGE_MAX_CHARS = 16000
+
+# Capability: a trusted Desktop chat-panel session MAY use message_agent from
+# a regular (non-"Bot Chat") session so @bot handoffs keep working from any
+# chat. The Desktop proxy stamps its chat-panel sessions `platform ==
+# "desktop"` (tui_gateway._resolve_session_platform: HERMES_DESKTOP=1 without
+# HERMES_DESKTOP_TERMINAL). The embedded terminal pane is "tui", the CLI is
+# "cli", gateway/group-room members carry their platform, and cron / kanban /
+# subagent sessions carry "cron" / "kanban" / "subagent" — none of which is
+# "desktop", so the capability stays narrow and everything else remains
+# title-gated/fail-closed exactly as before.
+DESKTOP_PLATFORM = "desktop"
 
 # A runner normally owns and removes each file. This bounds the residual
 # plaintext lifetime if the machine dies after background-spawn acknowledgement
@@ -126,15 +138,33 @@ def message_agent_tool_schema() -> dict:
     }
 
 
+def _is_desktop_capable(agent: Any) -> bool:
+    """True when this session is a trusted Desktop chat-panel session.
+
+    The narrow regular-session capability: the Desktop's own chat panel
+    (``platform == "desktop"``) is the surface whose @mention middleware
+    instructs agents to use ``message_agent``. Only it gets the tool outside
+    the canonical "Bot Chat" session. Every other source (CLI, TUI, gateway /
+    group-room members, cron, kanban, subagents) returns False here and stays
+    title-gated as before.
+    """
+    try:
+        return str(getattr(agent, "platform", "") or "").strip() == DESKTOP_PLATFORM
+    except Exception:
+        return False
+
+
 def ensure_message_agent_tool(agent: Any) -> bool:
-    """Inject the ``message_agent`` schema into a Bot Chat agent's tool list.
+    """Inject the ``message_agent`` schema into a capable agent's tool list.
 
     Called once per turn from the conversation loop. Idempotent and
     deterministic for the life of a session: the gate (canonical Bot Chat
-    title on a Bot-Mode-managed install) is stable from the session's first
-    turn, so the tool list is byte-identical across turns — prompt-cache
-    safe. Every non-Bot-Chat session fails the gate on every turn and never
-    sees the schema. Never raises.
+    title on a Bot-Mode-managed install, OR a trusted Desktop chat-panel
+    session on a managed install) is stable from the session's first turn
+    within a given source, so the tool list is byte-identical across turns
+    — prompt-cache safe. Every other session (CLI, embedded TUI, gateway
+    chats, group-room members, cron, kanban, subagents) fails the gate on
+    every turn and never sees the schema. Never raises.
     """
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
@@ -149,7 +179,7 @@ def ensure_message_agent_tool(agent: Any) -> bool:
                     return True
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
+        if _session_title(agent) != BOT_CHAT_TITLE and not _is_desktop_capable(agent):
             return False
         # Managed-install check, NOT section non-emptiness: a profile whose
         # SOUL.md carries the legacy plugin-appended protocol text gets an
@@ -256,10 +286,11 @@ def message_agent_tool(
         from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
         title = _session_title(agent)
-        if title != BOT_CHAT_TITLE:
+        if title != BOT_CHAT_TITLE and not _is_desktop_capable(agent):
             return _err(
-                "message_agent is only available in a Bot Mode 'Bot Chat' session. "
-                "This session is not one; do not retry."
+                "message_agent is only available in a Bot Mode 'Bot Chat' session, "
+                "or a Desktop chat on a Bot Mode install. This session is neither; "
+                "do not retry."
             )
         if not is_bot_mode_managed(home):
             return _err(

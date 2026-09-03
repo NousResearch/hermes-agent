@@ -62,6 +62,14 @@ conservative at the waist.
   concern — as long as it integrates with the existing setup/config UX
   (`hermes tools`, `hermes setup`, auto-install) rather than bolting on a raw
   env var.
+- **Enforce a 2,000-physical-line ceiling for hand-maintained source and test
+  files.** New files must remain at or below 2,000 lines, and files already
+  below the ceiling must not cross it. A legacy file already above 2,000 lines
+  is inherited debt, not permission to grow: changes may not increase its
+  physical line count, and substantive new responsibility belongs in a focused
+  module. The ceiling is not a target—split earlier when responsibilities
+  diverge—and a bounded change does not require refactoring unrelated legacy
+  god-files.
 - **Refactor god-files into clean modules.** Extracting a multi-thousand-line
   cluster out of `cli.py` / `run_agent.py` / `gateway/run.py` into a focused
   mixin or module is wanted work, even when the diff is huge and mechanical

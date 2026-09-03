@@ -1,153 +1,127 @@
-"""SearXNG search — plugin form.
+"""SearXNG search provider.
 
-Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Same JSON
-API call (``/search?format=json``), same result normalization. The legacy
-in-tree module ``tools.web_providers.searxng`` was removed in the same
-commit that moved this code under ``plugins/``; this file is now the
-canonical implementation.
+Searches a self-hosted SearXNG instance through its plain-HTML results
+page (``GET /search?q=...``). This instance family (v2026+) returns 403
+for ``format=json`` and for POST with browser UAs, so the HTML results
+page is parsed directly. Search-only: ``web_extract`` is not supported
+(pair with firecrawl/tavily/exa for extraction).
 
-Search-only — SearXNG aggregates results from upstream engines but does not
-fetch/extract arbitrary URLs. ``supports_extract()`` returns False.
-
-Config keys this provider responds to::
-
-    web:
-      search_backend: "searxng"     # explicit per-capability
-      backend: "searxng"            # shared fallback
-
-Env var::
-
-    SEARXNG_URL=http://localhost:8080
+Instance base URL comes from ``SEARXNG_URL`` (config-aware env lookup).
 """
 
 from __future__ import annotations
 
+import html as _htmlmod
 import logging
-import os
-from typing import Any, Dict
+import re
+from typing import Any, Dict, List
 
-from agent.web_search_provider import WebSearchProvider
+import httpx
+
+from agent.web_search_provider import WebSearchProvider, get_provider_env
 
 logger = logging.getLogger(__name__)
 
+_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 "
+    "Safari/537.36"
+)
+_TIMEOUT = 15.0
 
-def _searxng_url() -> str:
-    """Return SEARXNG_URL from Hermes config-aware env, falling back to process env."""
-    try:
-        from hermes_cli.config import get_env_value
+# One search-result card in the v2026+ SPA results page.
+_ARTICLE_RE = re.compile(r'<article class="result[^"]*".*?</article>', re.S)
+# Title + URL live in <h3><a href="...">TITLE</a></h3> (title may nest
+# <span class="highlight">…</span>).
+_H3_LINK_RE = re.compile(r"<h3>.*?<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", re.S)
+# Description lives in <p class="content">…</p> when present.
+_CONTENT_RE = re.compile(r'<p class="content">(.*?)</p>', re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+# Markers on the no-hits page (instance answered but found nothing).
+_NO_RESULTS_MARKERS = ("No results were found", "response-error")
 
-        val = get_env_value("SEARXNG_URL")
-    except Exception:
-        val = None
-    if val is None:
-        val = os.getenv("SEARXNG_URL", "")
-    return (val or "").strip()
+
+def _clean(text: str) -> str:
+    return _TAG_RE.sub("", text).strip()
 
 
 class SearXNGWebSearchProvider(WebSearchProvider):
-    """Search via a user-hosted SearXNG instance."""
+    """Search-only provider backed by a self-hosted SearXNG instance."""
 
     @property
     def name(self) -> str:
         return "searxng"
 
-    @property
-    def display_name(self) -> str:
-        return "SearXNG"
-
     def is_available(self) -> bool:
-        """Return True when ``SEARXNG_URL`` is set."""
-        return bool(_searxng_url())
-
-    def supports_search(self) -> bool:
-        return True
+        return bool(get_provider_env("SEARXNG_URL"))
 
     def supports_extract(self) -> bool:
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a search against the configured SearXNG instance."""
-        import httpx
-
-        base_url = _searxng_url().rstrip("/")
-        if not base_url:
-            return {"success": False, "error": "SEARXNG_URL is not set"}
-
-        params: Dict[str, Any] = {
-            "q": query,
-            "format": "json",
-            "pageno": 1,
-        }
-
+        base = get_provider_env("SEARXNG_URL").rstrip("/")
+        if not base:
+            return {"success": False, "error": "SEARXNG_URL is not set."}
         try:
             resp = httpx.get(
-                f"{base_url}/search",
-                params=params,
-                timeout=15,
-                headers={"Accept": "application/json"},
+                f"{base}/search",
+                params={"q": query, "safesearch": "0"},
+                headers={
+                    "User-Agent": _UA,
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;"
+                        "q=0.9,image/webp,*/*;q=0.8"
+                    ),
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                },
+                timeout=_TIMEOUT,
+                follow_redirects=True,
             )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            logger.warning("SearXNG HTTP error: %s", exc)
-            return {
-                "success": False,
-                "error": f"SearXNG returned HTTP {exc.response.status_code}",
-            }
-        except httpx.RequestError as exc:
-            logger.warning("SearXNG request error: %s", exc)
-            return {
-                "success": False,
-                "error": f"Could not reach SearXNG at {base_url}: {exc}",
-            }
+        except httpx.HTTPError as exc:
+            return {"success": False, "error": f"SearXNG request failed: {exc}"}
+        if resp.status_code != 200:
+            return {"success": False, "error": f"SearXNG returned HTTP {resp.status_code}"}
 
-        try:
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("SearXNG response parse error: %s", exc)
-            return {
-                "success": False,
-                "error": "Could not parse SearXNG response as JSON",
-            }
+        results: List[Dict[str, Any]] = []
+        for article in _ARTICLE_RE.findall(resp.text):
+            m = _H3_LINK_RE.search(article)
+            if not m:
+                continue
+            url_, title_html = m.group(1), m.group(2)
+            title = _htmlmod.unescape(_clean(title_html))
+            if not title:
+                continue
+            desc = ""
+            cm = _CONTENT_RE.search(article)
+            if cm:
+                desc = _htmlmod.unescape(_clean(cm.group(1)))
+            results.append(
+                {
+                    "title": title,
+                    "url": url_,
+                    "description": desc,
+                    "position": len(results) + 1,
+                }
+            )
+            if len(results) >= limit:
+                break
 
-        raw_results = data.get("results", [])
+        if not results and any(marker in resp.text for marker in _NO_RESULTS_MARKERS):
+            # The instance answered but had no hits — a valid empty result.
+            return {"success": True, "data": {"web": []}}
 
-        # SearXNG may return a score field; sort descending and cap to limit.
-        sorted_results = sorted(
-            raw_results,
-            key=lambda r: float(r.get("score", 0)),
-            reverse=True,
-        )[:limit]
-
-        web_results = [
-            {
-                "title": str(r.get("title", "")),
-                "url": str(r.get("url", "")),
-                "description": str(r.get("content", "")),
-                "position": i + 1,
-            }
-            for i, r in enumerate(sorted_results)
-        ]
-
-        logger.info(
-            "SearXNG search '%s': %d results (from %d raw, limit %d)",
-            query,
-            len(web_results),
-            len(raw_results),
-            limit,
-        )
-
-        return {"success": True, "data": {"web": web_results}}
+        return {"success": True, "data": {"web": results}}
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
-            "name": "SearXNG",
-            "badge": "free · self-hosted",
-            "tag": "Free, privacy-respecting metasearch. Point SEARXNG_URL at your instance.",
+            "name": "SearXNG (self-hosted)",
+            "badge": "free",
+            "tag": "Search your own SearXNG instance — no API key needed.",
             "env_vars": [
                 {
                     "key": "SEARXNG_URL",
-                    "prompt": "SearXNG instance URL (e.g. http://localhost:8080)",
-                    "url": "https://searx.space/",
+                    "prompt": "SearXNG instance base URL",
+                    "url": "https://docs.searxng.org/",
                 },
             ],
         }

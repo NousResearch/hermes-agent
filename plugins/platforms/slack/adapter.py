@@ -1103,6 +1103,33 @@ def _is_slack_voice_clip(file_obj: Dict[str, Any]) -> bool:
     return name.startswith("audio_message")
 
 
+def _slash_command_pattern() -> re.Pattern:
+    """Regex matching every native slash the gateway dispatcher can serve.
+
+    Built from ``slack_native_slashes()`` (COMMAND_REGISTRY + plugin commands)
+    plus the skill slash slugs. Skills dispatch like any gateway command but
+    live outside COMMAND_REGISTRY, so without them here slack_bolt logs
+    "Unhandled request", never acks, and Slack shows "app did not respond"
+    even though the manifest declares the slash and the gateway could serve
+    it. Only manifest-declared slashes ever arrive, so matching every skill
+    slug over-approves nothing.
+    """
+    from hermes_cli.commands import slack_native_slashes
+
+    names = [name for name, _d, _h in slack_native_slashes()]
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        names += [k.lstrip("/") for k in get_skill_commands()]
+    except Exception:  # noqa: BLE001 - a failed skill scan must not stop Slack
+        logger.warning(
+            "[Slack] could not add skill slugs to the slash matcher", exc_info=True
+        )
+    if not names:  # pragma: no cover - registry always non-empty
+        return re.compile(r"^/hermes$")
+    return re.compile(r"^/(?:" + "|".join(re.escape(n) for n in names) + r")$")
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -2324,18 +2351,7 @@ class SlackAdapter(BasePlatformAdapter):
             # routes the command event through the socket regardless of the
             # manifest's request URL, but it will not deliver an event for
             # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
-            import re as _re
-
-            _slash_names = [name for name, _d, _h in slack_native_slashes()]
-            if _slash_names:
-                _slash_pattern = _re.compile(
-                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
-                )
-            else:  # pragma: no cover - registry always non-empty
-                _slash_pattern = _re.compile(r"^/hermes$")
-
-            @self._app.command(_slash_pattern)
+            @self._app.command(_slash_command_pattern())
             async def handle_hermes_command(ack, command):
                 slash = (command.get("command") or "").lstrip("/")
                 await ack(
@@ -2369,7 +2385,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Choice buttons use indexed action IDs so each ID is unique within
             # its actions block, as required by Slack's Block Kit schema.
             self._app.action(
-                _re.compile(r"^hermes_clarify_choice_\d+$")
+                re.compile(r"^hermes_clarify_choice_\d+$")
             )(self._handle_clarify_action)
             self._app.action("hermes_clarify_other")(self._handle_clarify_action)
 

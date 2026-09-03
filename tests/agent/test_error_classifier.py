@@ -68,6 +68,7 @@ class TestFailoverReason:
             "provider_policy_blocked",
             "content_policy_blocked",
             "thinking_signature", "long_context_tier",
+            "kimi_reasoning_replay",
             "oauth_long_context_beta_forbidden",
             "llama_cpp_grammar_pattern",
             "unknown",
@@ -689,6 +690,46 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Provider-specific: Kimi K3 reasoning-replay ──
+
+    def test_kimi_reasoning_replay_400_is_retryable_in_provider(self):
+        """Kimi K3 intermittently rejects a replayed encrypted-reasoning
+        signature with a 400 (base64 vs base64url validation asymmetry on
+        some upstream instances). Must be classified as a retryable
+        in-provider error (no fallback), NOT a non-retryable format_error
+        that leaks the turn to the fallback chain."""
+        e = MockAPIError(
+            "Error code: 400 - bad request",
+            status_code=400,
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "messages.1.content.0.signature: malformed encrypted "
+                        "reasoning content: invalid base64url encoding"
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e, provider="kimi-coding", model="k3-256k")
+        assert result.reason == FailoverReason.kimi_reasoning_replay
+        assert result.retryable is True
+        assert result.should_fallback is False
+
+    def test_kimi_reasoning_replay_pattern_is_specific(self):
+        """A normal 400 must still classify as format_error, proving the
+        kimi_reasoning_replay pattern is specific to the signature-replay
+        error and does not swallow generic bad requests."""
+        e = MockAPIError(
+            "Error code: 400 - bad request",
+            status_code=400,
+            body={"error": {"type": "invalid_request_error", "message": "Bad request"}},
+        )
+        result = classify_api_error(e, provider="kimi-coding", model="k3-256k")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
 
     # ── Provider-specific: llama.cpp grammar-parse ──
 

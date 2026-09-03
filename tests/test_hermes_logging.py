@@ -367,7 +367,9 @@ class TestAddRotatingHandler:
         handlers = [h for h in hermes_logging.rotating_file_handlers() if isinstance(h, RotatingFileHandler)]
         assert len(handlers) == 1
         # No _SessionFilter on the handler — record factory handles it
-        assert len(handlers[0].filters) == 0
+        # Global _SecretRedactionFilter is now on handler (truly global vs child loggers)
+        assert not any(type(f).__name__ == "_SessionFilter" for f in handlers[0].filters)
+        assert any(type(f).__name__ == "_SecretRedactionFilter" for f in handlers[0].filters)
 
         # But session_tag still works (via record factory)
         hermes_logging.set_session_context("factory_test")

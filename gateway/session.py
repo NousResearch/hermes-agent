@@ -3781,6 +3781,42 @@ class SessionStore:
             self._save()
             return entry
 
+    def adopt_turn_boundary_rollover(
+        self, session_key: str, *, active_work: bool = False
+    ) -> Optional[SessionEntry]:
+        """CAS-rebind a gateway route to a pending empty rollover child."""
+        if not session_key or active_work:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            parent_id = entry.session_id
+        db = self._db_for_key(session_key)
+        if db is None:
+            return None
+        try:
+            from session_rollover import TurnBoundaryRollover
+            child_id = TurnBoundaryRollover(db).adopt_at_turn_boundary(
+                parent_id, active_work=False
+            )
+        except Exception:
+            logger.debug("turn-boundary rollover adoption failed", exc_info=True)
+            return None
+        if not child_id:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            current = self._entries.get(session_key)
+            if current is None or current.session_id != parent_id:
+                return None
+            current.session_id = child_id
+            current.created_at = _now()
+            current.updated_at = _now()
+            self._save()
+            return current
+
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 

@@ -9270,6 +9270,18 @@ class AIAgent:
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        # Only a finished prior response can request this transition. It occurs
+        # before the inbound message is admitted and never copies/summarizes it.
+        try:
+            from session_rollover import adopt_agent_at_turn_boundary
+            adopt_agent_at_turn_boundary(
+                self,
+                active_work=bool(getattr(self, "_executing_tools", False))
+                or bool(getattr(self, "_active_children", ()) or ()),
+            )
+        except Exception:
+            logger.debug("turn-boundary rollover adoption failed", exc_info=True)
+
         # A review deliberately shares this agent's session_id for prompt-cache
         # parity. Fence review startup or interrupt an admitted request, then
         # await that request's exit before opening any live-turn Relay or task

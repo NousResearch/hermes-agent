@@ -857,6 +857,15 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Disabled by default. The trigger is derived from the active compressor,
+    # never from a fixed context-window token default.
+    "session_rollover": {
+        "enabled": False,
+        "ratio": 0.0,
+        "safety_margin_tokens": 0,
+        "threshold_tokens": None,
+    },
+
     "compression": {
         "enabled": True,
         "checkpoint_required": False, # Fail closed before lossy compaction unless an

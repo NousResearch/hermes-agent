@@ -9324,6 +9324,11 @@ def run_conversation(
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
+    try:
+        from session_rollover import mark_completed_turn
+        mark_completed_turn(agent, result)
+    except Exception:
+        logger.debug("turn-boundary rollover marking failed", exc_info=True)
     if _compression_timeout_exhausted:
         # Reuse the gateway's existing context-recovery contract (#98722,
         # salvaged from #98741). The bloated transcript remains intact while

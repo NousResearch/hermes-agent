@@ -685,3 +685,25 @@ session_reset:
 ```
 
 Platform-specific overrides can be set under `platforms.<name>.session_reset`.
+
+### Opt-in turn-boundary rollover
+
+`session_rollover` is disabled by default. It finishes the current response,
+then marks a session only when live prompt usage reaches a trigger resolved from
+the active model/provider window and actual compression threshold. On the next
+safe inbound turn it atomically closes the old session with
+`turn_boundary_rollover`, creates an empty child linked to it, and accepts the
+message once. The child keeps only the previous id and session_search guidance;
+Hermes copies, compacts, and summarizes no transcript.
+
+```yaml
+session_rollover:
+  enabled: true
+  ratio: 0.75
+  safety_margin_tokens: 2000
+  threshold_tokens: null # optional expert ceiling
+```
+
+The policy is re-read each turn and follows model switches and fallbacks. Its
+trigger is clamped below the active compression trigger. Live turns, tools, and
+delegated children defer adoption to a later safe boundary.

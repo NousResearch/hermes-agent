@@ -172,15 +172,26 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// WHATWG URL.pathname for file:///C:/Users/... is "/C:/Users/...". That
+// leading slash is neither a Windows path nor POSIX, and remote /api/fs
+// reads 404 when the gateway host is Windows.
+const WHATWG_WINDOWS_DRIVE_PATHNAME = /^\/([A-Za-z]:)(\/.*)?$/
+
+export function stripWhatwgWindowsDrivePrefix(pathname: string): string {
+  const match = pathname.match(WHATWG_WINDOWS_DRIVE_PATHNAME)
+
+  return match ? `${match[1]}${match[2] || '/'}` : pathname
+}
+
 export function filePathFromMediaPath(path: string): string {
   if (!path.startsWith('file:')) {
-    return path
+    return stripWhatwgWindowsDrivePrefix(path)
   }
 
   try {
-    return decodeURIComponent(new URL(path).pathname)
+    return stripWhatwgWindowsDrivePrefix(decodeURIComponent(new URL(path).pathname))
   } catch {
-    return path.replace(/^file:\/\//, '')
+    return stripWhatwgWindowsDrivePrefix(path.replace(/^file:\/\//, ''))
   }
 }
 

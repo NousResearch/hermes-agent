@@ -43,6 +43,16 @@ describe('filePathFromMediaPath', () => {
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
   })
+
+  it('strips the WHATWG leading slash from a Windows drive file URL', () => {
+    expect(filePathFromMediaPath('file:///C:/Users/demo/AppData/Local/hermes/images/upload_x.png')).toBe(
+      'C:/Users/demo/AppData/Local/hermes/images/upload_x.png'
+    )
+    expect(filePathFromMediaPath('file:///c:/Users/demo/a%20b.png')).toBe('c:/Users/demo/a b.png')
+    expect(filePathFromMediaPath('/C:/Users/demo/AppData/Local/hermes/images/upload_x.png')).toBe(
+      'C:/Users/demo/AppData/Local/hermes/images/upload_x.png'
+    )
+  })
 })
 
 describe('mediaExternalUrl', () => {
@@ -151,6 +161,32 @@ describe('resolveMediaDisplaySrc', () => {
     await expect(resolveMediaDisplaySrc('/Users/me/project/a b.png')).resolves.toBe('data:image/png;base64,ZHVtbXk=')
     expect(api).toHaveBeenCalledWith({
       path: '/api/fs/read-data-url?path=%2FUsers%2Fme%2Fproject%2Fa%20b.png',
+      profile: 'remote-work'
+    })
+  })
+
+  it('does not send a WHATWG-mangled /C:/ path to a remote Windows gateway', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
+
+    await expect(
+      resolveMediaDisplaySrc('file:///C:/Users/demo/AppData/Local/hermes/images/upload_x.png')
+    ).resolves.toBe('data:image/png;base64,ZHVtbXk=')
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=C%3A%2FUsers%2Fdemo%2FAppData%2FLocal%2Fhermes%2Fimages%2Fupload_x.png',
+      profile: 'remote-work'
+    })
+  })
+
+  it('does not send a WHATWG /C:/ pathname to the remote fs bridge', async () => {
+    vi.stubGlobal('window', { hermesDesktop: { api } })
+    $connection.set({ mode: 'remote', profile: 'remote-work' } as never)
+
+    await expect(
+      resolveMediaDisplaySrc('file:///C:/Users/demo/AppData/Local/hermes/images/upload_x.png')
+    ).resolves.toBe('data:image/png;base64,ZHVtbXk=')
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=C%3A%2FUsers%2Fdemo%2FAppData%2FLocal%2Fhermes%2Fimages%2Fupload_x.png',
       profile: 'remote-work'
     })
   })

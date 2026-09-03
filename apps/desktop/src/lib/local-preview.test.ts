@@ -133,6 +133,13 @@ describe('remote HTML previews', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
   })
 
+  it('decodes a Windows drive file URL without a leading slash pathname', () => {
+    expect(localPreviewTarget('file:///C:/Users/demo/AppData/Local/hermes/images/upload_x.png')).toMatchObject({
+      path: 'C:/Users/demo/AppData/Local/hermes/images/upload_x.png',
+      previewKind: 'image'
+    })
+  })
+
   it('opens ordinary targets without staging them', async () => {
     const openPreviewInBrowser = vi.fn(async () => undefined)
     const saveImageBuffer = vi.fn()

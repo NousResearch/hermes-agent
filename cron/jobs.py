@@ -4471,7 +4471,7 @@ def save_job_output(job_id: str, output: str):
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
 
-    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S_%f")
     output_file = job_output_dir / f"{timestamp}.md"
 
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')

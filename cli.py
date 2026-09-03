@@ -2565,6 +2565,17 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not info:
         return
 
+    # Release LSP workspace clients before removing the worktree
+    # to avoid leaking language server processes (tsserver, pyright, etc.)
+    try:
+        from agent.lsp import get_service
+        svc = get_service()
+        if svc:
+            svc.release_workspace(info["path"])
+    except Exception as e:
+        # Best-effort — LSP cleanup must not block worktree removal
+        logger.debug("LSP workspace release failed for %s: %s", info.get("path"), e)
+
     import subprocess
 
     wt_path = info["path"]

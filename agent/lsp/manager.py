@@ -662,8 +662,16 @@ class LSPService:
                 for key in self._clients
                 if self._last_used.get(key, 0) < cutoff
             ]
-            clients = [self._clients.pop(key) for key in idle_keys]
-            for key in idle_keys:
+            # Also check for deleted workspace roots
+            deleted_root_keys = [
+                key
+                for key in self._clients
+                if not os.path.exists(key[1])
+            ]
+            # Combine both sets
+            reap_keys = list(set(idle_keys) | set(deleted_root_keys))
+            clients = [self._clients.pop(key) for key in reap_keys]
+            for key in reap_keys:
                 self._last_used.pop(key, None)
         if clients:
             eventlog.log_reaped(
@@ -674,6 +682,80 @@ class LSPService:
                 *(client.shutdown() for client in clients),
                 return_exceptions=True,
             )
+
+    def release_workspace(self, workspace_root: str) -> int:
+        """Release all LSP clients for a specific workspace root.
+
+        Called when a git worktree is being removed to immediately shut down
+        associated language servers rather than waiting for idle timeout.
+        Returns the number of clients released.
+
+        Idempotent and best-effort — safe to call multiple times or for
+        paths that have no active clients.
+        """
+        if not self._enabled:
+            return 0
+
+        # Normalize the path
+        abs_root = os.path.abspath(workspace_root)
+        if not abs_root:
+            return 0
+
+        released_count = 0
+
+        with self._state_lock:
+            # Find all keys whose workspace_root matches or is under the given path
+            keys_to_release = []
+            for key in self._clients:
+                client_root = os.path.abspath(key[1])
+                # Match exact workspace or any child path (for multi-root servers)
+                if client_root == abs_root or client_root.startswith(abs_root + os.sep):
+                    keys_to_release.append(key)
+
+            # Also check _spawning to prevent re-insertion after release
+            for key in keys_to_release:
+                if key in self._spawning:
+                    # Cancel the spawn future
+                    fut = self._spawning.pop(key, None)
+                    if fut is not None and not fut.done():
+                        fut.cancel()
+
+            # Detach clients
+            clients = [self._clients.pop(key) for key in keys_to_release]
+            for key in keys_to_release:
+                self._last_used.pop(key, None)
+                self._broken.discard(key)
+
+            # Clear delta baseline entries under the workspace
+            baseline_keys_to_remove = [
+                path for path in self._delta_baseline
+                if path == abs_root or path.startswith(abs_root + os.sep)
+            ]
+            for path in baseline_keys_to_remove:
+                self._delta_baseline.pop(path, None)
+
+        # Shutdown clients outside the lock
+        if clients:
+            try:
+                self._loop.run(
+                    asyncio.gather(
+                        *(c.shutdown() for c in clients),
+                        return_exceptions=True,
+                    ),
+                    timeout=5.0,
+                )
+            except Exception as e:
+                logger.debug("Error shutting down released clients: %s", e)
+
+        released_count = len(clients)
+        if released_count:
+            eventlog.log_reaped(
+                [(c.server_id, c.workspace_root) for c in clients],
+                self._idle_timeout,
+            )
+            logger.info("LSP: released %d client(s) for workspace %s", released_count, workspace_root)
+
+        return released_count
 
     async def _shutdown_async(self) -> None:
         reaper = self._idle_reaper_task

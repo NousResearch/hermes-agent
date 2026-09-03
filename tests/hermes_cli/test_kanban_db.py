@@ -31,12 +31,12 @@ def kanban_home(tmp_path, monkeypatch):
 
 def _init_git_repo(repo: Path) -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "kanban@example.com"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Kanban Test"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -1190,7 +1190,52 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
     argv = kb._resolve_hermes_argv()
-    assert argv == [sys.executable, "-m", "hermes_cli.main"]
+    assert argv == [sys.executable, "-P", "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_avoids_current_venv_shell_shim(monkeypatch, tmp_path):
+    """The current venv shim must not make worker startup depend on PATH."""
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python3"
+    python.touch()
+    shim = bin_dir / "hermes"
+    shim.write_text("#!/bin/sh\nrealpath -- $0\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setenv("HERMES_BIN", str(shim))
+
+    assert kb._resolve_hermes_argv() == [str(python), "-P", "-m", "hermes_cli.main"]
+
+
+@pytest.mark.parametrize("suffix", [".cmd", ".bat"])
+def test_resolve_hermes_argv_uses_module_form_for_windows_batch_shims(
+    monkeypatch, tmp_path, suffix,
+):
+    shim = tmp_path / f"hermes{suffix}"
+    shim.touch()
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setenv("HERMES_BIN", str(shim))
+
+    assert kb._resolve_hermes_argv() == [
+        sys.executable, "-P", "-m", "hermes_cli.main",
+    ]
+
+
+def test_resolve_hermes_argv_preserves_explicit_path_outside_current_bin(
+    monkeypatch, tmp_path,
+):
+    current_bin = tmp_path / "current" / "bin"
+    current_bin.mkdir(parents=True)
+    python = current_bin / "python3"
+    python.touch()
+    external_bin = tmp_path / "external" / "bin"
+    external_bin.mkdir(parents=True)
+    shim = external_bin / "hermes"
+    shim.touch()
+    monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setenv("HERMES_BIN", str(shim))
+
+    assert kb._resolve_hermes_argv() == [str(shim)]
 
 
 def test_resolve_hermes_argv_module_actually_runs():
@@ -1211,12 +1256,41 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kb._resolve_hermes_argv()
-    r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
+    r = subprocess.run(
+        argv + ["--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+
+
+def test_module_hermes_argv_ignores_workspace_shadow_modules(tmp_path):
+    """Workers must not import task-workspace files as top-level modules."""
+    sentinel = tmp_path / "pwned.txt"
+    (tmp_path / "hermes_bootstrap.py").write_text(
+        f"open({str(sentinel)!r}, 'w').write('pwned')\n",
+        encoding="utf-8",
+    )
+
+    r = subprocess.run(
+        kb._module_hermes_argv() + ["--version"],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+
+    assert r.returncode == 0, f"stderr={r.stderr[:200]!r}"
+    assert not sentinel.exists(), "workspace hermes_bootstrap.py was imported"
 
 
 # ---------------------------------------------------------------------------

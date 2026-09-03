@@ -443,7 +443,14 @@ export const UserMessage: FC<{
         }
         messageId={messageId}
       >
-        <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
+        <ActionBarPrimitive.Root
+          // The bubble body lives inside this root (Edit wraps the prompt). Never
+          // autohide — ActionBarRoot returns null when hidden, which would make
+          // the submitted prompt vanish until hover (#101310, same class as Copy).
+          autohide="never"
+          className="relative w-full max-w-full"
+          data-slot="aui_user-bubble-actions"
+        >
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <ReactionPicker
               onOpenChange={setPickerOpen}

@@ -1577,6 +1577,16 @@ body.guest-pointer-lock :is(webview, iframe) {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
+/* #101310: after a provider error the turn has no streaming reply underneath,
+   so a clamped (or mask-faded) prompt reads as "send vanished until hover".
+   Lift the clamp for any turn that already carries an error alert. */
+[data-slot='aui_turn-pair']:has([role='alert']) .sticky-human-clamp {
+  max-height: none;
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
 /* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
    is safe and keeps sticky human edits from shoving the viewport; data-editing
    enables that path before React swaps in the inline editor. */

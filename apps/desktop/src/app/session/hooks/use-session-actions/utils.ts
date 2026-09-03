@@ -347,6 +347,20 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
     const previousTrimmed = previousVisibleText.trim()
     let preserved = message
 
+    // #101310: post-error hydrate can project an empty user twin at the same
+    // role-ordinal as the optimistic prompt (Grok fails before the submit is
+    // durable). Painting that shell drops the submitted text from the
+    // transcript until hover/copy still has it elsewhere. Keep the local body.
+    if (message.role === 'user' && previous.role === 'user' && !nextText && previousTrimmed) {
+      return {
+        ...message,
+        parts: previous.parts,
+        ...(message.attachmentRefs === undefined && previous.attachmentRefs?.length
+          ? { attachmentRefs: [...previous.attachmentRefs] }
+          : {})
+      }
+    }
+
     // #75825: resume can project an empty (or lagging) inflight assistant shell
     // at the same role-ordinal as the live stream row that still holds the
     // streamed text, reasoning and tool calls. Prefer that richer pending row

@@ -9882,6 +9882,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return bool(raw.get("yolo_mode"))
 
     @staticmethod
+    def session_follows_profile_config(
+        session_meta: Optional[Dict[str, Any]],
+    ) -> bool:
+        """True when resume must use the profile's CURRENT config, not stored pins.
+
+        Bot-Mode canonical Bot Chat sessions (plugin-owned forever DMs) and
+        rows explicitly marked ``follow_profile_config`` must always rebuild
+        from the active profile config — restoring stored model/provider is
+        what left bot DMs on stale providers after ``/model`` or config.yaml
+        changes (#89497, #97035). Normal 1:1 user chats return False.
+        """
+        if not session_meta:
+            return False
+        raw = session_meta.get("model_config")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        if raw.get("follow_profile_config"):
+            return True
+        title = str(session_meta.get("title") or "").strip()
+        return title == SessionDB.CANONICAL_BOT_CHAT_TITLE
+
+    @staticmethod
     def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Read the persisted runtime route off a session row dict.
 

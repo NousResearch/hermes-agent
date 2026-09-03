@@ -1905,7 +1905,10 @@ def _create_titled_session(title: str) -> Optional[str]:
         new_session_id = f"{timestamp_str}_{short_uuid}"
 
         db = SessionDB()
-        db.create_session(new_session_id, source="cli")
+        model_config = None
+        if title == SessionDB.CANONICAL_BOT_CHAT_TITLE:
+            model_config = {"follow_profile_config": True}
+        db.create_session(new_session_id, source="cli", model_config=model_config)
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:

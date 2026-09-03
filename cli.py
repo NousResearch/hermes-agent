@@ -9367,7 +9367,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Skips when the session has no model recorded or when the CLI was
         launched with an explicit ``-m`` override (user intent wins).
+        Bot-Mode Bot Chat sessions (and rows marked ``follow_profile_config``)
+        always use the profile's current config — same contract as the TUI
+        gateway's ``_stored_session_runtime_overrides`` (#89497, #97035).
         """
+        from hermes_state import SessionDB as _SessionDB
+
+        if _SessionDB.session_follows_profile_config(session_meta):
+            return
         stored_model = (session_meta or {}).get("model")
         if not stored_model:
             return
@@ -9377,7 +9384,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Stored provider/endpoint via the canonical row-level reader
         # (prefers model_config.gateway_runtime, falls back to the TUI
         # gateway's top-level keys).
-        from hermes_state import SessionDB as _SessionDB
         _stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
         stored_provider = _stored_runtime.get("provider") or None
         stored_base_url = _stored_runtime.get("base_url") or None
@@ -10559,15 +10565,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if self._session_db:
                 try:
+                    from hermes_state import SessionDB
+
                     self.agent._session_db_created = False
+                    _new_model_config = {
+                        "max_iterations": self.max_turns,
+                        "reasoning_config": self.reasoning_config,
+                    }
+                    if title == SessionDB.CANONICAL_BOT_CHAT_TITLE:
+                        _new_model_config["follow_profile_config"] = True
                     self._session_db.create_session(
                         session_id=self.session_id,
                         source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                         model=self.model,
-                        model_config={
-                            "max_iterations": self.max_turns,
-                            "reasoning_config": self.reasoning_config,
-                        },
+                        model_config=_new_model_config,
                     )
                     self.agent._session_db_created = True
                 except Exception:

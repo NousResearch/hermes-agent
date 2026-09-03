@@ -118,6 +118,45 @@ def test_restore_session_model_swaps_running_agent_in_place():
     assert calls["new_model"] == "glm-4.7"
 
 
+def test_restore_session_model_skips_bot_chat_title():
+    """Bot Chat DMs must use the profile's current config (#97035)."""
+    stub = _make_stub()
+    stub._restore_session_model({
+        "title": SessionDB.CANONICAL_BOT_CHAT_TITLE,
+        "model": "stale-model",
+        "model_config": json.dumps(
+            {"provider": "nous", "gateway_runtime": {"provider": "nous"}}
+        ),
+    })
+    assert stub.model == "ambient-model"
+    assert stub.provider == "openrouter"
+
+
+def test_restore_session_model_skips_follow_profile_config_marker():
+    stub = _make_stub()
+    stub._restore_session_model(_row(model_config={
+        "follow_profile_config": True,
+        "gateway_runtime": {"provider": "nous"},
+    }))
+    assert stub.model == "ambient-model"
+    assert stub.provider == "openrouter"
+
+
+def test_session_follows_profile_config_legacy_title_only():
+    row = {
+        "title": SessionDB.CANONICAL_BOT_CHAT_TITLE,
+        "model": "openai/gpt-5.6-luna-pro",
+        "model_config": json.dumps({"provider": "nous"}),
+    }
+    assert SessionDB.session_follows_profile_config(row) is True
+
+
+def test_session_follows_profile_config_normal_chat_is_false():
+    row = _row(model_config={"provider": "nous"})
+    row["title"] = "Project planning"
+    assert SessionDB.session_follows_profile_config(row) is False
+
+
 # ── _persist_model_switch_to_session ────────────────────────────────
 
 

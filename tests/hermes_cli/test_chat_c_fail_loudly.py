@@ -15,6 +15,8 @@ Two behaviors are fixed here:
    deterministic "send to this named thread, making it if needed" primitive.
 """
 
+import json
+
 import pytest
 
 
@@ -155,5 +157,10 @@ class TestChatCFailLoudlyOnStderr:
         db = SessionDB()
         try:
             assert db.get_session_title(args.resume) == "Bot Chat"
+            sess = db.get_session(args.resume)
+            raw_cfg = sess.get("model_config")
+            if isinstance(raw_cfg, str):
+                raw_cfg = json.loads(raw_cfg)
+            assert raw_cfg.get("follow_profile_config") is True
         finally:
             db.close()

@@ -17,6 +17,7 @@ Bug scenario (pre-fix):
 """
 
 import os
+import socket
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -390,7 +391,7 @@ class TestStoredPromptCwdDrift:
         return agent
 
     @staticmethod
-    def _host_block(cwd: str, hostname: str = "atlas") -> str:
+    def _host_block(cwd: str, hostname: str | None = None) -> str:
         """A stored prompt fragment shaped like the real host-info block.
 
         ``build_environment_hints`` always emits ``User home directory:``
@@ -401,7 +402,7 @@ class TestStoredPromptCwdDrift:
         """
         return (
             "Host: Linux (6.16.0)\n"
-            f"Machine hostname: {hostname}\n"
+            f"Machine hostname: {hostname or socket.gethostname()}\n"
             "User home directory: /home/tester\n"
             f"Current working directory: {cwd}\n"
         )
@@ -425,7 +426,10 @@ class TestStoredPromptCwdDrift:
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
         agent = self._make_agent()
-        stored_prompt = self._host_block("/project/current", hostname="atlas")
+        stored_prompt = (
+            self._host_block("/project/current", hostname="atlas")
+            + "\n# AGENTS.md\nMachine hostname: personal-pc\n"
+        )
 
         with (
             patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),

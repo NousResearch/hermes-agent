@@ -2334,7 +2334,7 @@ class PluginContext:
 
     # -- context reference registration -------------------------------------
 
-    def register_context_reference(self, provider) -> None:
+    def register_context_reference(self, provider) -> Optional[PluginRegistration]:
         """Register a custom @-prefix context reference provider.
 
         ``provider`` must be an instance of
@@ -2342,10 +2342,17 @@ class PluginContext:
         ``provider.prefix`` attribute defines the @-prefix (e.g. ``"issue"``
         creates ``@issue:...``).  Built-in prefixes (diff, staged, file,
         folder, git, url) are reserved and will be rejected.
+
+        Scoped to this manager's profile and tracked in the ownership
+        ledger like every other registration surface: two profiles
+        registering the same prefix in one multiplex process don't collide,
+        and unload/force-reload cleanly frees the prefix instead of leaving
+        a stale entry that permanently rejects re-registration.
         """
         from agent.context_references import (
             ContextReferenceProvider as _CRP,
             register_context_reference_provider as _register,
+            restore_context_reference_registration as _restore,
         )
 
         if not isinstance(provider, _CRP):
@@ -2354,19 +2361,32 @@ class PluginContext:
                 "that does not inherit from ContextReferenceProvider. Ignoring.",
                 self.manifest.name,
             )
-            return
+            return None
+        scope = self._manager.scope_key
+        prefix = provider.prefix.lower().strip()
         try:
-            _register(provider)
+            _register(provider, scope=scope)
         except ValueError as exc:
             logger.warning(
                 "Plugin '%s' context reference registration failed: %s",
                 self.manifest.name, exc,
             )
-            return
+            return None
+        handle = self._track_replacement(
+            "context_reference",
+            prefix,
+            slot=("context_reference", scope, prefix),
+            current=provider,
+            previous=None,
+            restore=lambda replacement: _restore(
+                prefix, provider, replacement, scope=scope
+            ),
+        )
         logger.info(
             "Plugin '%s' registered context reference: @%s:",
             self.manifest.name, provider.prefix,
         )
+        return handle
 
     # -- memory provider registration ---------------------------------------
 

@@ -46,6 +46,7 @@ from tools.terminal_tool import (
     get_active_env,
 )
 from tools.thread_context import propagate_context_to_thread
+from tools.thread_exhaustion import is_thread_start_exhaustion
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
@@ -873,7 +874,17 @@ def _run_sequential_tool_execution_middleware(
                 pass
 
     executor = DaemonThreadPoolExecutor(max_workers=1)
-    future = executor.submit(propagate_context_to_thread(_run))
+    try:
+        future = executor.submit(propagate_context_to_thread(_run))
+    except Exception as exc:
+        if not is_thread_start_exhaustion(exc):
+            raise
+        logger.warning(
+            "sequential tool worker unavailable; running %s inline: %s",
+            function_name,
+            exc,
+        )
+        return _run()
     # ``timeout_s`` disabled (None) still runs on the worker: the wait loop
     # below is what makes a non-cooperative tool interruptible at all, so
     # "no deadline" must not mean "no interrupt checks" (#86xxx class fix —
@@ -1543,6 +1554,37 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             submit_index,
                         )
                     except RuntimeError as submit_error:
+                        if is_thread_start_exhaustion(submit_error):
+                            if submit_index == 0:
+                                logger.warning(
+                                    "concurrent tool workers unavailable; falling back to sequential"
+                                )
+                                execute_tool_calls_sequential(
+                                    agent,
+                                    assistant_message,
+                                    messages,
+                                    effective_task_id,
+                                    api_call_count,
+                                    finalize=finalize,
+                                )
+                                return
+                            logger.warning(
+                                "thread exhaustion after %d concurrent tool(s); "
+                                "leaving unsubmitted calls as errors",
+                                submit_index,
+                            )
+                            for skipped_i, _tc, skipped_name, skipped_args, _scope_block in runnable_calls[submit_index:]:
+                                if results[skipped_i] is None:
+                                    results[skipped_i] = (
+                                        skipped_name,
+                                        skipped_args,
+                                        f"Error executing tool '{skipped_name}': no worker thread available",
+                                        0.0,
+                                        True,
+                                        False,
+                                        parsed_calls[skipped_i][3],
+                                    )
+                            break
                         if not _is_interpreter_shutdown_submit_error(submit_error):
                             raise
                         skipped_calls = runnable_calls[submit_index:]

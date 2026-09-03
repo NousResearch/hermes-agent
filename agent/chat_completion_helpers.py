@@ -47,6 +47,7 @@ from agent.message_sanitization import (
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool import is_persistent_env
+from tools.thread_exhaustion import is_thread_start_exhaustion
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
@@ -1294,6 +1295,7 @@ def direct_api_call(agent, api_kwargs: dict):
         name="direct-api-activity-hb",
         daemon=True,
     )
+    activity_hb_started = False
     # Resolve the budget BEFORE starting the heartbeat: the resolver may
     # raise (fail-closed contract), and a raise after start() would leak the
     # heartbeat thread — ticking last_activity_ts forever and masking real
@@ -1308,7 +1310,13 @@ def direct_api_call(agent, api_kwargs: dict):
     if hard_timeout is not None and "timeout" not in api_kwargs:
         api_kwargs = dict(api_kwargs)
         api_kwargs["timeout"] = hard_timeout
-    activity_hb.start()
+    try:
+        activity_hb.start()
+        activity_hb_started = True
+    except Exception as exc:
+        if not is_thread_start_exhaustion(exc):
+            raise
+        logger.warning("direct API activity heartbeat unavailable: %s", exc)
 
     def _on_stale() -> None:
         # Runs on the timer thread. It only aborts the in-flight sockets —
@@ -1377,7 +1385,8 @@ def direct_api_call(agent, api_kwargs: dict):
         with request_client_lock:
             request_state["done"] = True
         activity_hb_stop.set()
-        activity_hb.join(timeout=2.0)
+        if activity_hb_started:
+            activity_hb.join(timeout=2.0)
         if getattr(agent, "_active_request_abort", None) is _abort_active_request:
             agent._active_request_abort = None
         with request_client_lock:
@@ -1708,9 +1717,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
     agent._touch_activity("waiting for non-streaming API response")
 
     t = threading.Thread(target=_context_thread_target(_call), daemon=True)
-    t.start()
+    try:
+        t.start()
+    except Exception as exc:
+        if not is_thread_start_exhaustion(exc):
+            raise
+        logger.warning("API interrupt worker unavailable; running inline: %s", exc)
+        t = None
+        _call()
     _poll_count = 0
-    while t.is_alive():
+    while t is not None and t.is_alive():
         t.join(timeout=0.3)
         _poll_count += 1
 
@@ -5533,7 +5549,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         t = None
     else:
         t = threading.Thread(target=_context_thread_target(_run_call), daemon=True)
-        t.start()
+        try:
+            t.start()
+        except Exception as exc:
+            if not is_thread_start_exhaustion(exc):
+                raise
+            logger.warning("stream interrupt worker unavailable; running inline: %s", exc)
+            t = None
+            _run_call()
 
     def _call_alive() -> bool:
         return not _call_done.is_set()

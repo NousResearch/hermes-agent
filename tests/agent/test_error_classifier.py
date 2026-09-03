@@ -58,7 +58,7 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "upstream_rate_limit",
-            "overloaded", "server_error", "timeout",
+            "overloaded", "server_error", "timeout", "thread_exhaustion",
             "ssl_cert_verification",
             "context_overflow", "payload_too_large", "image_too_large",
             "image_corrupt",
@@ -74,6 +74,17 @@ class TestFailoverReason:
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
+
+
+class TestClassifyThreadExhaustion:
+    def test_thread_start_failure_is_not_unknown_retry(self):
+        result = classify_api_error(RuntimeError("can't start new thread"))
+        assert result.reason is FailoverReason.thread_exhaustion
+        assert result.retryable is False
+
+    def test_generic_runtime_error_remains_unknown(self):
+        result = classify_api_error(RuntimeError("boom"))
+        assert result.reason is FailoverReason.unknown
 
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────

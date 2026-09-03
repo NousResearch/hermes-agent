@@ -18,6 +18,22 @@ def test_entry_without_ttl_never_expires():
     assert sc.get_cached_entry("srv", "fp") is not None
 
 
+def test_zero_ttl_never_expires(monkeypatch):
+    # The mcp SDK declares ListToolsResult.ttl_ms with a default of 0, so a
+    # server that never sends ttlMs is read as 0 rather than None. Treating
+    # that as "already stale" makes the entry a permanent miss the moment it
+    # is written, which silently turns `lazy: true` into an eager spawn.
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    real_time = time.time
+    monkeypatch.setattr(sc.time, "time", lambda: real_time() + 86_400.0)
+    assert sc.get_cached_entry("srv", "fp") is not None
+
+
+def test_negative_ttl_never_expires():
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=-1)
+    assert sc.get_cached_entry("srv", "fp") is not None
+
+
 def test_entry_within_ttl_served():
     sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000)
     entry = sc.get_cached_entry("srv", "fp")

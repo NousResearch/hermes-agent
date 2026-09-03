@@ -71,7 +71,8 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     freshness hint. When the live discovery path recorded one, an entry
     older than its TTL is treated as a miss so the next startup re-probes
     the server instead of serving a stale manifest forever. Entries without
-    a recorded TTL (pre-2026 servers) keep the old never-expires behavior.
+    a positive recorded TTL (pre-2026 servers, and any server that leaves
+    ``ttlMs`` unset -- the SDK default is 0) keep the never-expires behavior.
     ``cacheScope`` is irrelevant here: this cache is per-user local disk,
     which satisfies even ``private``.
     """
@@ -83,7 +84,18 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    if isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float)):
+    # A non-positive TTL means "no freshness hint", not "already stale". The
+    # mcp SDK declares ``ListToolsResult.ttl_ms`` with a default of 0, and
+    # pydantic defaults are indistinguishable from an explicit 0 over
+    # attribute access -- so every server that does not send ``ttlMs`` lands
+    # here as 0. Expiring on that makes the entry a permanent miss the instant
+    # it is written, which silently degrades ``lazy: true`` servers into eager
+    # spawns forever (the cache lookup in register_mcp_servers never hits).
+    if (
+        isinstance(ttl_ms, (int, float))
+        and ttl_ms > 0
+        and isinstance(written_at, (int, float))
+    ):
         if (time.time() - written_at) * 1000.0 >= float(ttl_ms):
             return None
     return entry

@@ -710,6 +710,22 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _require_existing_named_board(board: Optional[str]) -> None:
+    """Reject stale opens of named boards removed by another process.
+
+    ``connect()`` creates its parent directory for fresh databases. Without
+    this guard, a gateway poll that captured a board slug before ``boards rm``
+    can recreate the removed board as an empty DB. Named boards must be
+    created through :func:`create_board`; only the legacy ``default`` board
+    may be initialized implicitly.
+    """
+    if board is None:
+        return
+    slug = _normalize_board_slug(board)
+    if slug and slug != DEFAULT_BOARD and not board_exists(slug):
+        raise FileNotFoundError(f"board {slug!r} does not exist")
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
@@ -2361,6 +2377,7 @@ def connect(
     if db_path is not None:
         path = db_path
     else:
+        _require_existing_named_board(board)
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
 

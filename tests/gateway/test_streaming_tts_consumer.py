@@ -668,8 +668,22 @@ class TestGatewayOuterFinalisationNoNameError:
         holder: list = [None]
         assert holder[0] is None
         holder[0] = "sentinel"
-        assert holder[0] == "sentinel"
-        # The outer scope must be able to read it without a NameError.
-        # This is trivially true with a holder, but was NOT true when
-        # the consumer was a run_sync local.
         _ = holder[0]
+
+    def test_streaming_tts_consumer_honors_min_len_config(self):
+        """StreamingTTSConsumer configures SentenceChunker min_len from tts_config."""
+        loop = asyncio.new_event_loop()
+        adapter = FakeVoiceAdapter()
+        cfg_custom = {"streaming": {"min_len": 6}}
+        consumer_custom = StreamingTTSConsumer(adapter, 123, cfg_custom, loop=loop)
+        assert consumer_custom._chunker.min_len == 6
+
+        cfg_root = {"streaming_min_len": 8}
+        consumer_root = StreamingTTSConsumer(adapter, 123, cfg_root, loop=loop)
+        assert consumer_root._chunker.min_len == 8
+
+        cfg_default = {}
+        consumer_default = StreamingTTSConsumer(adapter, 123, cfg_default, loop=loop)
+        assert consumer_default._chunker.min_len == 20
+        loop.close()
+

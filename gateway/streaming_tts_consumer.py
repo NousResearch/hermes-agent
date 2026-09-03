@@ -76,7 +76,20 @@ class StreamingTTSConsumer:
         # Resolve the streaming provider once. If unavailable, the consumer is
         # inactive and the gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
-        self._chunker = SentenceChunker()
+        min_len = 20
+        if isinstance(tts_config, dict):
+            streaming_cfg = tts_config.get("streaming")
+            if isinstance(streaming_cfg, dict) and "min_len" in streaming_cfg:
+                try:
+                    min_len = max(1, int(streaming_cfg["min_len"]))
+                except (TypeError, ValueError):
+                    min_len = 20
+            elif "streaming_min_len" in tts_config:
+                try:
+                    min_len = max(1, int(tts_config["streaming_min_len"]))
+                except (TypeError, ValueError):
+                    min_len = 20
+        self._chunker = SentenceChunker(min_len=min_len)
 
         if self._streamer is not None:
             self._audio_format = AudioFormat(

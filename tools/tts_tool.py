@@ -4379,7 +4379,20 @@ def stream_tts_to_speaker(
                     logger.warning("sounddevice OutputStream failed: %s", exc)
                     output_stream = None
 
-        chunker = SentenceChunker()
+        min_len = 20
+        if isinstance(tts_config, dict):
+            streaming_cfg = tts_config.get("streaming")
+            if isinstance(streaming_cfg, dict) and "min_len" in streaming_cfg:
+                try:
+                    min_len = max(1, int(streaming_cfg["min_len"]))
+                except (TypeError, ValueError):
+                    min_len = 20
+            elif "streaming_min_len" in tts_config:
+                try:
+                    min_len = max(1, int(tts_config["streaming_min_len"]))
+                except (TypeError, ValueError):
+                    min_len = 20
+        chunker = SentenceChunker(min_len=min_len)
         long_flush_len = 100
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates

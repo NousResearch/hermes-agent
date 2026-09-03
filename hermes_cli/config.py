@@ -352,6 +352,20 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+
+
+def invalidate_config_read_caches(config_path: Optional[Path] = None) -> None:
+    """Drop metadata-keyed config reads for one profile's config path.
+
+    Last-known-good state and managed-scope caches are deliberately retained;
+    the next load still applies their existing fallback and overlay semantics.
+    """
+    with _CONFIG_LOCK:
+        path_key = str(config_path if config_path is not None else get_config_path())
+        _LOAD_CONFIG_CACHE.pop(path_key, None)
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+
+
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({

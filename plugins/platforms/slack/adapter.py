@@ -6483,6 +6483,11 @@ class SlackAdapter(BasePlatformAdapter):
                     return
                 if allow_bots == "mentions" and not is_mentioned:
                     return
+        else:
+            # A message with no user id, or whose user is this bot, is not
+            # bot-to-bot traffic. Default the sender flag to False so the
+            # force-mention channel check below can rely on it being bound.
+            sender_is_bot_user = False
 
         if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -6539,6 +6544,21 @@ class SlackAdapter(BasePlatformAdapter):
                     return
             elif self._slack_strict_mention() and not is_mentioned:
                 return  # Strict mode: ignore until @-mentioned again
+            elif self._channel_forces_mention(channel_id) and not is_mentioned:
+                # Force-mention channel: an unmentioned message only reaches
+                # the bot when a human sent it (or one of the wake checks
+                # below approves it). Bot-to-bot traffic is suppressed here so
+                # a work channel shared with other bots does not become a
+                # free-for-all: a peer bot's status post or ack must not wake
+                # the agent. This is the "mature bot" behaviour for
+                # coordination channels.
+                if sender_is_bot_user:
+                    logger.debug(
+                        "[Slack] Ignoring unmentioned bot message in "
+                        "force-mention channel: channel=%s",
+                        channel_id,
+                    )
+                    return
             elif (
                 self._slack_thread_require_mention()
                 and is_thread_reply
@@ -9277,6 +9297,15 @@ class SlackAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _channel_forces_mention(self, channel_id: str) -> bool:
+        """Return True when a channel always requires a bot @mention.
+
+        A shortcut for the membership test against
+        ``_slack_require_mention_channels()`` used by the routing gate, so
+        the force-mention behaviour reads plainly at the call site.
+        """
+        return channel_id in self._slack_require_mention_channels()
 
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile optional regex wake-word patterns for channel triggers.

@@ -157,3 +157,26 @@ async def test_forced_channel_wake_checks_still_apply(adapter):
     adapter.handle_message.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_forced_channel_ignores_unmentioned_bot_message(adapter):
+    """An unmentioned bot message never wakes the agent in a forced channel.
+
+    In a ``require_mention_channels`` channel, a peer bot's status post or
+    acknowledgement must not trigger a turn even when the message is a reply
+    in a thread the agent previously joined. Without this guard the channel
+    becomes a free-for-all: every bot-to-bot message in an ongoing thread
+    starts a new agent run.
+    """
+    adapter.config.extra["require_mention"] = False
+    adapter.config.extra["require_mention_channels"] = CHANNEL_ID
+    adapter._mentioned_threads.add("100.000")
+
+    event = _event("ack from peer bot", ts="101.000", thread_ts="100.000")
+    event["user"] = "U_PEER_BOT"
+    event["bot_id"] = "B_PEER_BOT"
+
+    await adapter._handle_slack_message(event)
+
+    adapter.handle_message.assert_not_called()
+
+

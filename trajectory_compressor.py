@@ -30,6 +30,7 @@ Usage:
     python trajectory_compressor.py --input=data/my_run --sample_percent=10
 """
 
+import gzip
 import json
 import os
 import time
@@ -54,6 +55,33 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / ".env"
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+
+
+def _open_jsonl(path: Path, mode: str = "rt"):
+    """Open a JSONL path as text, transparently handling ``.jsonl.gz``."""
+    opener = gzip.open if str(path).endswith(".gz") else open
+    return opener(path, mode, encoding="utf-8")
+
+
+def _discover_jsonl_files(directory: Path) -> List[Path]:
+    """Return each plain or gzip JSONL input exactly once in stable order."""
+    return sorted(
+        {
+            path
+            for pattern in ("*.jsonl", "*.jsonl.gz")
+            for path in directory.glob(pattern)
+        }
+    )
+
+
+def _default_output_path(input_path: Path, suffix: str = "_compressed") -> Path:
+    """Build a plain JSONL output path without duplicating compression suffixes."""
+    name = input_path.name
+    if name.endswith(".gz"):
+        name = name[:-3]
+    if name.endswith(".jsonl"):
+        name = name[:-6]
+    return input_path.parent / f"{name}{suffix}.jsonl"
 
 
 def _response_finish_reason(response: Any) -> str:
@@ -1126,7 +1154,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         start_time = time.time()
         
         # Find all JSONL files
-        jsonl_files = sorted(input_dir.glob("*.jsonl"))
+        jsonl_files = _discover_jsonl_files(input_dir)
         
         if not jsonl_files:
             self.logger.warning("No JSONL files found in %s", input_dir)
@@ -1137,7 +1165,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         all_entries = []  # List of (file_path, entry_idx, entry)
         
         for file_path in jsonl_files:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with _open_jsonl(file_path) as f:
                 for line_num, line in enumerate(f):
                     line = line.strip()
                     if line:
@@ -1292,7 +1320,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if file_results[idx] is not None
             ]
             
-            with open(output_path, 'w', encoding='utf-8') as f:
+            with _open_jsonl(output_path, "wt") as f:
                 for entry in sorted_entries:
                     f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         
@@ -1503,11 +1531,14 @@ def main(
         if output:
             output_path = Path(output)
         else:
-            output_path = input_path.parent / (input_path.stem + compression_config.output_suffix + ".jsonl")
+            output_path = _default_output_path(
+                input_path,
+                compression_config.output_suffix,
+            )
         
         # Load entries from the single file
         entries = []
-        with open(input_path, 'r', encoding='utf-8') as f:
+        with _open_jsonl(input_path) as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if line:
@@ -1550,9 +1581,9 @@ def main(
             
             # Copy result to output path (merge all files in temp_output_dir)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, 'w', encoding='utf-8') as out_f:
+            with _open_jsonl(output_path, "wt") as out_f:
                 for jsonl_file in sorted(temp_output_dir.glob("*.jsonl")):
-                    with open(jsonl_file, 'r', encoding='utf-8') as in_f:
+                    with _open_jsonl(jsonl_file) as in_f:
                         for line in in_f:
                             out_f.write(line)
             
@@ -1589,9 +1620,10 @@ def main(
                 total_sampled = 0
                 
                 # Sample from each JSONL file
-                for jsonl_file in sorted(input_path.glob("*.jsonl")):
+                jsonl_files = _discover_jsonl_files(input_path)
+                for jsonl_file in jsonl_files:
                     entries = []
-                    with open(jsonl_file, 'r', encoding='utf-8') as f:
+                    with _open_jsonl(jsonl_file) as f:
                         for line in f:
                             line = line.strip()
                             if line:
@@ -1607,7 +1639,7 @@ def main(
                     
                     # Write sampled entries
                     temp_file = temp_input_dir / jsonl_file.name
-                    with open(temp_file, 'w', encoding='utf-8') as f:
+                    with _open_jsonl(temp_file, "wt") as f:
                         for entry in sampled_entries:
                             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
                 

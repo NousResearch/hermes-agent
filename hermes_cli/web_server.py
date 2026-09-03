@@ -140,6 +140,8 @@ except ImportError:
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
         )
 
+from hermes_cli.response_compression import SelectiveGZipMiddleware
+
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
@@ -726,6 +728,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SelectiveGZipMiddleware, minimum_size=1024, compresslevel=6)
 
 # ---------------------------------------------------------------------------
 # Endpoints that do NOT require the session token.  Everything else under

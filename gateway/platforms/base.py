@@ -7458,13 +7458,15 @@ class BasePlatformAdapter(ABC):
                 # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                    self._cleanup_finished_session_task(session_key, interrupt_event)
                     if (
-                        getattr(self, "close_after_turn", False) is True
-                        or getattr(event, "contractor_context", None) is not None
+                        (
+                            getattr(self, "close_after_turn", False) is True
+                            or getattr(event, "contractor_context", None) is not None
+                        )
+                        and session_key not in self._active_sessions
                     ):
                         self.clear_session(session_key)
-                    else:
-                        self._cleanup_finished_session_task(session_key, interrupt_event)
     
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]

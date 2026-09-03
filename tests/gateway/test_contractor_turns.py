@@ -123,6 +123,10 @@ def test_base_platform_exposes_explicit_stateless_turn_contract():
         target: Mock(),
         sibling: Mock(),
     }
+    adapter._text_debounce = {
+        target: SimpleNamespace(task=None),
+        sibling: SimpleNamespace(task=None),
+    }
 
     assert platform_base.BasePlatformAdapter.close_after_turn is False
     adapter.clear_session(target)
@@ -132,6 +136,7 @@ def test_base_platform_exposes_explicit_stateless_turn_contract():
         adapter._pending_messages,
         adapter._session_tasks,
         adapter._post_delivery_callbacks,
+        adapter._text_debounce,
     ):
         assert target not in store
         assert sibling in store
@@ -168,6 +173,53 @@ async def test_platform_clears_session_after_each_stateless_turn(
     assert adapter.clear_session.called is expected_clear
     assert session_key not in adapter._active_sessions
     assert session_key not in adapter._session_tasks
+
+
+@pytest.mark.asyncio
+async def test_stateless_contractor_unwind_preserves_command_owned_guard(tmp_path):
+    adapter = _test_adapter()
+    contractor_event = _event(tmp_path)
+    command_event = platform_base.MessageEvent(text="/reset", source=_source())
+    unwind_started = asyncio.Event()
+    resume_unwind = asyncio.Event()
+    command_started = asyncio.Event()
+    resume_command = asyncio.Event()
+
+    async def handle_event(event):
+        if event is command_event:
+            command_started.set()
+            await resume_command.wait()
+        return None
+
+    async def hold_contractor_unwind(event, _outcome):
+        if event is contractor_event:
+            unwind_started.set()
+            await resume_unwind.wait()
+
+    adapter._message_handler = handle_event
+    adapter.on_processing_complete = hold_contractor_unwind
+
+    await adapter.handle_message(contractor_event)
+    await asyncio.wait_for(unwind_started.wait(), timeout=1)
+    assert len(adapter._session_tasks) == 1
+    session_key, old_task = next(iter(adapter._session_tasks.items()))
+    old_guard = adapter._active_sessions[session_key]
+
+    command_task = asyncio.create_task(adapter.handle_message(command_event))
+    try:
+        await asyncio.wait_for(command_started.wait(), timeout=1)
+        command_guard = adapter._active_sessions[session_key]
+        assert command_guard is not old_guard
+
+        resume_unwind.set()
+        await asyncio.wait_for(asyncio.shield(old_task), timeout=1)
+
+        assert adapter._active_sessions.get(session_key) is command_guard
+        assert adapter._session_tasks.get(session_key) is old_task
+    finally:
+        resume_unwind.set()
+        resume_command.set()
+        await asyncio.wait_for(command_task, timeout=1)
 
 
 @pytest.mark.parametrize(

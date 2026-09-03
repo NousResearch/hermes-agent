@@ -3672,6 +3672,23 @@ def run_conversation(
                 elif _model_request_active is not None:
                     _model_request_active.set()
                 _redirect_crossed_response = False
+                # cached_main_model compression: capture the exact last-sent
+                # api_messages so a later summary request can reuse the live
+                # KV prefix (byte-for-byte what is in the provider's cache).
+                # Gated on the mode so users who don't enable it pay zero
+                # per-send cost; wrapped defensively — a capture hiccup must
+                # never break the send path. The compressor deep-copies, so
+                # this reference can be safely handed over and mutated later.
+                try:
+                    _cc = getattr(agent, "context_compressor", None)
+                    if (
+                        _cc is not None
+                        and getattr(_cc, "compression_mode", "auxiliary") == "cached_main_model"
+                        and isinstance(api_kwargs.get("messages"), list)
+                    ):
+                        _cc.set_last_sent_api_messages(api_kwargs["messages"])
+                except Exception:  # pragma: no cover - capture must never break the send path
+                    logger.debug("Failed to capture last-sent api_messages for compression", exc_info=True)
                 try:
                     response = run_llm_execution_middleware(
                         api_kwargs,

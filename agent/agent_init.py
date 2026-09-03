@@ -2300,6 +2300,27 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    # Compression mode (compression.mode). "auxiliary" (default) sends the
+    # summary request to a fresh single-user-message prompt on the auxiliary
+    # compression model — zero KV prefix reuse, so local llama.cpp / LM Studio
+    # servers pay a full cold prefill of the serialized middle turns.
+    # "cached_main_model" instead reuses the live conversation's already-cached
+    # KV slot: it sends the summary request to the MAIN model as the exact
+    # last-sent api_messages prefix (system + head + middle up to the cut)
+    # with a short instruction appended at the end, so llama.cpp only prefills
+    # the small tail. Falls back to auxiliary mode when no captured prefix is
+    # available or it ends in pending tool_calls (which would break strict
+    # wire alternation). Unknown values fall back to "auxiliary".
+    compression_mode = str(
+        _compression_cfg.get("mode", "auxiliary")
+    ).strip().lower()
+    if compression_mode not in {"auxiliary", "cached_main_model"}:
+        logger.warning(
+            "Unknown compression.mode %r — falling back to 'auxiliary'. "
+            "Valid values: auxiliary, cached_main_model.",
+            _compression_cfg.get("mode"),
+        )
+        compression_mode = "auxiliary"
     # Per-model threshold overrides: keys are substring-matched against the
     # model name (longest match wins). Empty dict = use the global threshold
     # for all models (backward compatible).
@@ -2871,6 +2892,7 @@ def init_agent(
             proactive_prune_min_reclaim_tokens=compression_proactive_prune_min_reclaim,
             min_tail_user_messages=compression_min_tail_users,
             tail_mode=compression_tail_mode,
+            compression_mode=compression_mode,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

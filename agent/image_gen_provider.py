@@ -318,21 +318,29 @@ def save_url_image(
     path = _images_cache_dir() / f"{prefix}_{ts}_{short}.{extension}"
 
     bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > max_bytes:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
-                )
-            fh.write(chunk)
+    try:
+        with path.open("wb") as fh:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    fh.close()
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                    raise ValueError(
+                        f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
+                    )
+                fh.write(chunk)
+    except Exception:
+        # Clean up partial file on any failure (network drop, timeout, etc.)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
 
     if bytes_written == 0:
         try:

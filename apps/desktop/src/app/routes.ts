@@ -136,6 +136,16 @@ export function isOverlayView(view: AppView): boolean {
   return OVERLAY_VIEWS.has(view)
 }
 
+/** Every overlay route as a WORKSPACE-RELATIVE path (the workspace pane's route
+ *  table is nested, so no leading slash). An overlay floats over whatever the
+ *  workspace is already showing, so the workspace route table has to keep the
+ *  chat mounted at these paths rather than render nothing. Derived from
+ *  APP_ROUTES ∩ OVERLAY_VIEWS so declaring a new overlay picks up the retained
+ *  chat by construction instead of silently detaching it again. */
+export const OVERLAY_ROUTE_PATHS: readonly string[] = APP_ROUTES.filter(route => OVERLAY_VIEWS.has(route.view)).map(
+  route => route.path.slice(SESSION_ROUTE_PREFIX.length)
+)
+
 /** The pathname of a router target. Every classifier below reasons about a
  *  PATH, but callers navigate to full targets (`/skills?tab=mcp`), and an
  *  unstripped query reaches the session-id parser — `/skills?tab=mcp` reads as

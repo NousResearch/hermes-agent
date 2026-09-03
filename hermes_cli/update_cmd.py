@@ -3771,6 +3771,30 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
+def _dismiss_stale_receipt_trigger() -> None:
+    """Rename a stale unfinished ``latest.json`` so it stops re-triggering.
+
+    An interrupted-update receipt whose ``plan.runtimes[].code_sha`` values
+    are permanently behind the current checkout HEAD would retrigger
+    ``_receipt_reports_stale_runtime()`` on every invocation, driving an
+    idempotent but noisy fleet restart on every ``hermes update`` — the
+    catch-up restart already ran, the obligation is discharged, only the
+    receipt is still pointing at the pre-update state (#98022).
+    """
+    try:
+        from hermes_cli.update_receipt import _receipt_dir, read_latest_receipt
+
+        receipt = read_latest_receipt()
+        if isinstance(receipt, dict) and _receipt_looks_unfinished(receipt):
+            path = _receipt_dir() / "latest.json"
+            try:
+                path.rename(path.with_name("latest.json.bak"))
+            except OSError:
+                path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _apply_pending_fleet_restart_catchup() -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
@@ -3784,6 +3808,7 @@ def _apply_pending_fleet_restart_catchup() -> None:
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
+        _dismiss_stale_receipt_trigger()
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)

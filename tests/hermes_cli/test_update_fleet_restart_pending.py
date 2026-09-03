@@ -518,3 +518,43 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+def test_stale_unfinished_receipt_dismissed_after_catchup(monkeypatch):
+    """An interrupted-update receipt re-triggers pending infinitely.
+    _dismiss_stale_receipt_trigger must rename it so the next check
+    sees nothing pending (#98022)."""
+    disk_sha = "e" * 40
+    stale_sha = "7" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    receipt_json = json.dumps(
+        {
+            "exit_code": 1,
+            "stop_reason": "KeyboardInterrupt: ",
+            "outcome": "failed",
+            "plan": {
+                "expected_sha": disk_sha,
+                "runtimes": [
+                    {
+                        "kind": "gateway",
+                        "profile": "default",
+                        "pid": 42,
+                        "code_sha": stale_sha,
+                    }
+                ],
+            },
+        }
+    )
+    receipt_path = receipt_dir / "latest.json"
+    receipt_path.write_text(receipt_json, encoding="utf-8")
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+    update_cmd._dismiss_stale_receipt_trigger()
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert not receipt_path.exists()
+    assert receipt_dir.joinpath("latest.json.bak").read_text(encoding="utf-8") == receipt_json

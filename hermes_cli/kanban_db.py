@@ -1265,6 +1265,7 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    resolved_base_sha: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -1289,6 +1290,9 @@ class Run:
             summary=row["summary"],
             metadata=meta,
             error=row["error"],
+            resolved_base_sha=(
+                row["resolved_base_sha"] if "resolved_base_sha" in row.keys() else None
+            ),
         )
 
 
@@ -1474,7 +1478,8 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    resolved_base_sha   TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -2688,6 +2693,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")}
+    if run_cols and "resolved_base_sha" not in run_cols:
+        _add_column_if_missing(
+            conn, "task_runs", "resolved_base_sha", "resolved_base_sha TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -7721,7 +7732,13 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+def _ensure_git_worktree(
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+    *,
+    base_ref: str = "HEAD",
+) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
@@ -7735,7 +7752,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
     else:
         cmd = [
             "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
-            str(target), "HEAD",
+            str(target), base_ref,
         ]
     result = subprocess.run(
         cmd,
@@ -7751,8 +7768,133 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         )
 
 
+_FULL_GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
+def _resolve_single_parent_base_sha(
+    conn: Optional[sqlite3.Connection], task: Task, repo_root: Path
+) -> Optional[str]:
+    """Return the completed direct parent's structured commit, if applicable."""
+    if conn is None:
+        return None
+    parents = conn.execute(
+        "SELECT p.id, p.status FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? ORDER BY p.id",
+        (task.id,),
+    ).fetchall()
+    if not parents:
+        return None
+    if len(parents) != 1:
+        raise ValueError(
+            f"task {task.id} has {len(parents)} parents; worktree base is ambiguous"
+        )
+    parent = parents[0]
+    if parent["status"] not in {"done", "archived"}:
+        raise ValueError(f"task {task.id} parent {parent['id']} is not completed")
+    run = conn.execute(
+        "SELECT outcome, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
+        (parent["id"],),
+    ).fetchone()
+    if run is None or run["outcome"] != "completed":
+        raise ValueError(
+            f"task {task.id} parent {parent['id']} has no successful terminal run"
+        )
+    try:
+        metadata = json.loads(run["metadata"]) if run["metadata"] else None
+    except (TypeError, json.JSONDecodeError):
+        metadata = None
+    commit = metadata.get("commit") if isinstance(metadata, dict) else None
+    if not isinstance(commit, str) or not _FULL_GIT_SHA_RE.fullmatch(commit):
+        raise ValueError(
+            f"task {task.id} parent {parent['id']} has no full metadata.commit SHA"
+        )
+    sha = commit.lower()
+    exists = subprocess.run(
+        ["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"],
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if exists.returncode != 0:
+        raise ValueError(
+            f"task {task.id} parent commit {sha} is unavailable in {repo_root}"
+        )
+    return sha
+
+
+def _record_resolved_base_sha(
+    conn: Optional[sqlite3.Connection], task: Task, sha: Optional[str]
+) -> None:
+    if conn is None or sha is None or task.current_run_id is None:
+        return
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET resolved_base_sha = ? WHERE id = ? AND ended_at IS NULL",
+            (sha, int(task.current_run_id)),
+        )
+        event = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' "
+            "ORDER BY id DESC LIMIT 1",
+            (task.id, int(task.current_run_id)),
+        ).fetchone()
+        if event is not None:
+            try:
+                payload = json.loads(event["payload"]) if event["payload"] else {}
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            payload["resolved_base_sha"] = sha
+            conn.execute(
+                "UPDATE task_events SET payload = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), int(event["id"])),
+            )
+
+
+def _ensure_task_worktree(
+    conn: Optional[sqlite3.Connection],
+    task: Task,
+    repo_root: Path,
+    target: Path,
+    branch_name: str,
+) -> None:
+    base_sha = _resolve_single_parent_base_sha(conn, task, repo_root)
+    _record_resolved_base_sha(conn, task, base_sha)
+    _ensure_git_worktree(
+        repo_root, target, branch_name, base_ref=base_sha or "HEAD"
+    )
+    if base_sha is None:
+        return
+    ancestry = subprocess.run(
+        ["git", "-C", str(target), "merge-base", "--is-ancestor", base_sha, "HEAD"],
+        capture_output=True,
+        text=True, encoding="utf-8", errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        dirty = subprocess.run(
+            ["git", "-C", str(target), "status", "--porcelain"],
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=30,
+            check=False,
+        ).stdout.strip()
+        state = "dirty" if dirty else "clean"
+        raise RuntimeError(
+            f"task {task.id} existing {state} worktree HEAD does not descend "
+            f"from resolved parent base {base_sha}; refusing to reset it"
+        )
+
+
 def _resolve_worktree_workspace(
-    task: Task, *, board: Optional[str] = None
+    task: Task,
+    *,
+    board: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> tuple[Path, str]:
     """Resolve + materialize a linked git worktree for ``task``.
 
@@ -7791,7 +7933,7 @@ def _resolve_worktree_workspace(
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        _ensure_task_worktree(conn, task, repo_root, target, branch_name)
         return target, branch_name
 
     requested = Path(task.workspace_path).expanduser()
@@ -7805,6 +7947,9 @@ def _resolve_worktree_workspace(
     if requested.exists() and _is_linked_worktree_checkout(requested):
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
+            repo_root = _git_toplevel(requested)
+            if repo_root is not None:
+                _ensure_task_worktree(conn, task, repo_root, requested, branch_name)
             return requested_resolved, actual_branch
         # The requested path is an existing checkout of a DIFFERENT
         # task's branch. Decompose children inherit the root's
@@ -7817,17 +7962,18 @@ def _resolve_worktree_workspace(
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
+                _ensure_task_worktree(conn, task, fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name
-        # No repo to anchor a fallback on (or the occupied path IS this
-        # task's own canonical worktree): keep the legacy reuse rather
-        # than failing dispatch.
+            _ensure_task_worktree(conn, task, fallback_root, requested, branch_name)
+        # No repo to anchor a fallback on: keep the legacy reuse rather than
+        # failing dispatch. When this is the task's own canonical worktree,
+        # the branch may differ but its ancestry was validated above.
         return requested_resolved, actual_branch or branch_name
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
         target = repo_root / ".worktrees" / task.id
-        _ensure_git_worktree(repo_root, target, branch_name)
+        _ensure_task_worktree(conn, task, repo_root, target, branch_name)
         return target, branch_name
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
@@ -7836,11 +7982,16 @@ def _resolve_worktree_workspace(
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    _ensure_task_worktree(conn, task, repo_root, requested, branch_name)
     return requested, branch_name
 
 
-def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+def resolve_workspace(
+    task: Task,
+    *,
+    board: Optional[str] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
     - ``scratch``: a fresh dir under ``<board-root>/workspaces/<id>/``,
@@ -7897,7 +8048,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        p, _branch_name = _resolve_worktree_workspace(task, board=board)
+        p, _branch_name = _resolve_worktree_workspace(
+            task, board=board, conn=conn
+        )
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -10244,7 +10397,7 @@ def _dispatch_once_locked(
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board, conn=conn)
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
@@ -10371,7 +10524,7 @@ def _dispatch_once_locked(
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board, conn=conn)
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:

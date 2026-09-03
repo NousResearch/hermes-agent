@@ -563,6 +563,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "status": r.status, "outcome": r.outcome,
                     "summary": r.summary, "error": r.error,
                     "metadata": r.metadata,
+                    "resolved_base_sha": r.resolved_base_sha,
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 

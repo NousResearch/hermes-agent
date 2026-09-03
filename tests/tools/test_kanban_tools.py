@@ -80,6 +80,23 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_serializes_resolved_run_base(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        base_sha = "a" * 40
+        kb._record_resolved_base_sha(conn, task, base_sha)
+    finally:
+        conn.close()
+
+    shown = json.loads(kt._handle_show({}))
+    assert shown["runs"][-1]["resolved_base_sha"] == base_sha
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

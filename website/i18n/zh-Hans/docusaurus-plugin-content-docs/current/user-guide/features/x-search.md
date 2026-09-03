@@ -79,16 +79,34 @@ agent 调用 `x_search` 时使用以下参数：
 | `to_date` | string | 可选，`YYYY-MM-DD` 格式的结束日期。 |
 | `enable_image_understanding` | boolean | 让 xAI 分析匹配帖子中附带的图片。 |
 | `enable_video_understanding` | boolean | 让 xAI 分析匹配帖子中附带的视频。 |
+| `output_schema` | object | 可选，用于严格结构化输出的 JSON Schema。解析后的结果返回在 `structured_output` 中，`answer` 保留原始 JSON 字符串。 |
+| `instructions` | string | 可选，控制响应样式的系统级指令。与 `previous_response_id` 同时设置时忽略此参数。 |
+| `previous_response_id` | string | 可选，用于继续已存储响应的 `response_id`。设置后，新响应会自动存储。 |
+| `store` | boolean | 是否让 xAI 保留响应，以供后续链式调用使用。默认为 `false`。 |
 
 工具返回的 JSON 包含：
 
 - `answer` — Grok 生成的综合文本回答
+- `response_id` — xAI 返回的响应标识符；可作为 `previous_response_id` 传入，以继续已存储的响应
+- `structured_output` — 与 `output_schema` 匹配的已解析 JSON；未请求 schema 或响应无法解析时为 `null`
 - `citations` — Responses API 顶层字段返回的引用
 - `inline_citations` — 从消息正文中提取的 `url_citation` 注释（每条包含 `url`、`title`、`start_index`、`end_index`）
 - `degraded` — 当设置了任意缩小范围的过滤器（`allowed_x_handles`、`excluded_x_handles`、`from_date`、`to_date`）且两个引用渠道均返回空时为 `true`。此时 `answer` 是基于模型自身知识合成的，而非来自 X 索引，应视为无来源内容。否则为 `false`（包括"未设置过滤器"的情况——宽泛的无来源回答只是一个回答，而非过滤器未命中）
 - `degraded_reason` — 列出哪些过滤器处于激活状态的简短字符串，当 `degraded` 为 `false` 时为 `null`
 - `credential_source` — OAuth 解析成功时为 `"xai-oauth"`，API 密钥解析成功时为 `"xai"`
 - `model`、`query`、`provider`、`tool`、`success`
+
+### 结构化输出与响应链
+
+如需结构化输出，请通过 `output_schema` 传入 JSON Schema。xAI 会被要求以严格模式遵循该 schema。原始 JSON 字符串仍保留在 `answer` 中，解析后的值返回在 `structured_output` 中。
+
+响应链要求先存储第一个响应：
+
+1. 首次调用时设置 `store=true`。
+2. 读取返回的 `response_id`。
+3. 后续调用时将该 ID 作为 `previous_response_id` 传入。
+
+设置 `previous_response_id` 的调用会自动存储，因此可继续使用其返回的 `response_id` 扩展响应链。xAI Responses API 中，`instructions` 与 `previous_response_id` 互斥；若同时提供，则以 `previous_response_id` 为准并忽略 `instructions`。
 
 ### 日期验证
 

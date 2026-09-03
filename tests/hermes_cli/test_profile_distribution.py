@@ -367,6 +367,36 @@ class TestInstall:
         with pytest.raises(DistributionError, match="requires Hermes"):
             install_distribution(str(staged), name="future")
 
+    def test_install_reinstalling_a_deleted_profile_clears_the_tombstone(self, profile_env):
+        """`hermes profile delete <name>` leaves a tombstone marker even
+        after the profile directory is fully removed, so profile_exists()
+        and list_profiles() keep hiding that name forever. Reinstalling a
+        distribution under the same name (a natural recovery flow — "I
+        deleted my bot by mistake, reinstall it") must clear that marker,
+        the same way create_profile() already does for the plain
+        `hermes profile create` path (#97xxx)."""
+        from hermes_cli.profiles import get_profile_dir, list_profiles, profile_exists
+        from hermes_constants import mark_named_profile_deleted, named_profile_is_deleted
+
+        staged = _make_staging_dir(profile_env, "recovered")
+        target_dir = get_profile_dir("recovered")
+
+        # Simulate the post-delete state left by `hermes profile delete`:
+        # tombstone marker written, directory fully removed.
+        mark_named_profile_deleted(target_dir)
+        assert not target_dir.exists()
+        assert named_profile_is_deleted(target_dir)
+
+        plan = install_distribution(str(staged), name="recovered")
+
+        assert plan.target_dir.is_dir()
+        assert not named_profile_is_deleted(plan.target_dir), (
+            "reinstalling under a deleted name must clear the tombstone, "
+            "or the profile stays invisible to every filtered listing"
+        )
+        assert profile_exists("recovered")
+        assert any(p.name == "recovered" for p in list_profiles())
+
 
 # ===========================================================================
 # Update — preserves user data, preserves config by default

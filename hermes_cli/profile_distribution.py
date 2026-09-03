@@ -674,6 +674,7 @@ def install_distribution(
         check_alias_collision,
         create_wrapper_script,
     )
+    from hermes_constants import clear_named_profile_deleted, named_profile_is_deleted
 
     with tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
         plan = plan_install(source, Path(tmp), override_name=name)
@@ -684,6 +685,18 @@ def install_distribution(
                 "Use `hermes profile update` to upgrade in place, "
                 "or pass --force to overwrite."
             )
+
+        # A profile deleted via `hermes profile delete` leaves a tombstone
+        # marker (profiles/.deleted/<name>) even after its directory is fully
+        # removed, so plan.existing is False here and this looks like any
+        # other fresh install. Clear the tombstone before creating the
+        # directory — otherwise every listing/serving path that filters on
+        # named_profile_is_deleted() (list_profiles, profiles_to_serve, ...)
+        # keeps hiding the freshly-installed profile forever, even though it
+        # was fully installed on disk. Mirrors create_profile()'s handling of
+        # the same reinstall-under-a-deleted-name case in hermes_cli/profiles.py.
+        if not plan.existing and named_profile_is_deleted(plan.target_dir):
+            clear_named_profile_deleted(plan.target_dir)
 
         # Fresh install: config.yaml comes from the distribution.
         _bootstrap_user_dirs(plan.target_dir)

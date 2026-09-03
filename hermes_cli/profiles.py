@@ -1251,7 +1251,6 @@ def create_profile(
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    clear_named_profile_deleted(profile_dir)
 
     # Resolve clone source
     source_dir = None
@@ -1404,6 +1403,17 @@ def create_profile(
     # / launchd / windows) this is a no-op — the existing per-profile
     # unit-generation paths handle gateway lifecycle.
     _maybe_register_gateway_service(canon)
+
+    # Clear the tombstone only now that every materialization step above
+    # (mkdir, copytree/copy2 of a clone source, skill copy) has actually
+    # succeeded. Clearing it earlier — right after the pre-flight checks —
+    # would make a deleted profile name "live" (visible to profile_exists()/
+    # list_profiles()/profiles_to_serve()) even if a later step raised
+    # (disk full, permissions, a clone source file vanishing mid-copy),
+    # leaving a broken/partial profile masquerading as a real one instead of
+    # staying hidden behind its tombstone. Mirrors the same reordering used
+    # for the `hermes profile install` path in install_distribution().
+    clear_named_profile_deleted(profile_dir)
 
     return profile_dir
 

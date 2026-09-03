@@ -1181,6 +1181,34 @@ def _tool_result_observer_fields(
     return "ok", None, None
 
 
+def _record_ares_consumed_outcome(
+    settlement: Any,
+    *,
+    function_name: str,
+    function_args: Dict[str, Any],
+    mission_ref: Optional[str],
+    state: str,
+    duration_ms: int,
+    error_type: Optional[str],
+    error_message: Optional[str],
+) -> None:
+    """Settle one consumed permit through its consume-time adapter only."""
+    from ares_runtime.collaboration import digest as _ares_digest
+
+    facts = settlement.facts
+    settlement.record_receipt({
+        "tool_name": function_name,
+        "mission_ref": mission_ref,
+        "permit_ref": facts.get("canonical_permit_ref") or facts.get("permit_ref"),
+        "preflight_receipt": facts.get("receipt_artifact"),
+        "args_digest": _ares_digest(function_args),
+        "state": state,
+        "error_type": error_type,
+        "error_message": error_message,
+        "duration_ms": duration_ms,
+    })
+
+
 def _emit_post_tool_call_hook(
     *,
     function_name: str,
@@ -1282,11 +1310,13 @@ def handle_function_call(
     # calls must be exact or denied, never repaired into authority-bearing input.
     _ares_permit = None
     _ares_schema = None
+    _ares_canary_context = None
     _ares_canary_enabled = False
     _ares_mission_ref = task_id or os.getenv("ARES_MISSION_REF")
     try:
-        from ares_runtime.collaboration import dispatcher_boundary, production_permit_canary_enabled
-        _ares_canary_enabled = production_permit_canary_enabled(session_id=session_id)
+        from ares_runtime.collaboration import dispatcher_boundary, production_permit_canary_context, production_permit_canary_enabled
+        _ares_canary_context = production_permit_canary_context(session_id=session_id)
+        _ares_canary_enabled = _ares_canary_context is not None or production_permit_canary_enabled(session_id=session_id)
         if os.getenv("ARES_STRICT_EFFECT_TOOL_ARGS_V1", "0") == "1" or _ares_canary_enabled:
             for _ares_definition in get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
@@ -1306,6 +1336,7 @@ def handle_function_call(
             # legacy coercion; single-use consumption waits for final payload.
             authorize_permit=True,
             consume_permit=False,
+            production_context=_ares_canary_context,
         )
         if not _ares_allowed:
             return tool_error(f"ARES_EFFECT_DENIED:{_ares_code}")
@@ -1585,12 +1616,11 @@ def handle_function_call(
                     session_id=session_id,
                     schema=_ares_schema,
                     authorize_permit=True,
+                    consume_permit=True,
+                    production_context=_ares_canary_context,
                 )
                 if not _ares_allowed:
-                    result = tool_error(f"ARES_EFFECT_DENIED:{_ares_code}")
-                    from ares_runtime.collaboration import record_receipt
-                    record_receipt({"tool_name": function_name, "mission_ref": _ares_mission_ref, "state": "denied", "reason": _ares_code})
-                    return result
+                    return tool_error(f"ARES_EFFECT_DENIED:{_ares_code}")
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
@@ -1626,6 +1656,27 @@ def handle_function_call(
                     turn_id=turn_id or "",
                     api_request_id=api_request_id or "",
                 )
+        except Exception as _effect_error:
+            if _ares_canary_enabled and _ares_permit is not None:
+                duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+                try:
+                    _record_ares_consumed_outcome(
+                        _ares_permit,
+                        function_name=function_name,
+                        function_args=function_args,
+                        mission_ref=_ares_mission_ref,
+                        state="ambiguous",
+                        duration_ms=duration_ms,
+                        error_type=type(_effect_error).__name__,
+                        error_message=str(_effect_error),
+                    )
+                except Exception as _receipt_error:
+                    logger.error(
+                        "Ares ambiguous outcome receipt recording failed: %s",
+                        _receipt_error,
+                    )
+                    raise RuntimeError("ARES_EFFECT_RECEIPT_FAILED") from _effect_error
+            raise
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
@@ -1636,19 +1687,17 @@ def handle_function_call(
 
         if _ares_canary_enabled and _ares_permit is not None:
             try:
-                from ares_runtime.collaboration import record_receipt, digest as _ares_digest
                 _status, _error_type, _error_message = _tool_result_observer_fields(function_name, result)
-                record_receipt({
-                    "tool_name": function_name,
-                    "mission_ref": _ares_mission_ref,
-                    "permit_ref": _ares_permit.get("canonical_permit_ref") or _ares_permit.get("permit_ref"),
-                    "preflight_receipt": _ares_permit.get("receipt_artifact"),
-                    "args_digest": _ares_digest(function_args),
-                    "state": _status,
-                    "error_type": _error_type,
-                    "error_message": _error_message,
-                    "duration_ms": duration_ms,
-                })
+                _record_ares_consumed_outcome(
+                    _ares_permit,
+                    function_name=function_name,
+                    function_args=function_args,
+                    mission_ref=_ares_mission_ref,
+                    state=_status,
+                    duration_ms=duration_ms,
+                    error_type=_error_type,
+                    error_message=_error_message,
+                )
             except Exception as _receipt_error:
                 logger.error("Ares receipt recording failed: %s", _receipt_error)
                 return tool_error("ARES_EFFECT_RECEIPT_FAILED")

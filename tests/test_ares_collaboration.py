@@ -4,6 +4,7 @@ import socket
 import struct
 import threading
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
@@ -168,6 +169,78 @@ def test_production_canary_requires_complete_well_typed_transport_before_activat
         mission_ref="mission:1",
         session_id="session:canary",
     ) == (True, None, None)
+
+
+def test_production_outcome_receipt_uses_exact_consumption_adapter(monkeypatch):
+    config = _production_canary_config()
+    recorded = []
+    consumed = []
+
+    recorder = DaemonPermitReceiptAdapter(config["ares"]["permit_daemon"])
+
+    def consume(**kwargs):
+        consumed.append(kwargs)
+        return {
+            "canonical_permit_ref": "permit:one",
+            "receipt_artifact": {"receipt_digest": "a" * 64},
+        }
+
+    monkeypatch.setattr(recorder, "validate_and_consume_call", consume)
+    monkeypatch.setattr(recorder, "record_receipt", lambda receipt: recorded.append(dict(receipt)))
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: config, raising=False)
+    monkeypatch.setattr(
+        DaemonPermitReceiptAdapter,
+        "from_ares_config",
+        lambda provided: recorder if provided == config else None,
+    )
+    receipt = {
+        "permit_ref": "permit:one",
+        "preflight_receipt": {"receipt_digest": "a" * 64},
+        "state": "ok",
+        "duration_ms": 7,
+        "error_type": None,
+    }
+
+    class WrongAmbientAdapter:
+        def validate_and_consume(
+            self,
+            *,
+            mission_ref: str,
+            tool_name: str,
+            args_digest: str,
+            target_ref: str,
+        ) -> Mapping[str, Any]:
+            raise AssertionError("production must ignore the ambient test adapter")
+
+        def record_receipt(self, receipt: Mapping[str, Any]) -> None:
+            raise AssertionError("production must ignore the ambient test adapter")
+
+    token = permit_adapter(WrongAmbientAdapter())
+    try:
+        allowed, code, settlement = dispatcher_boundary(
+            "write_file",
+            {"path": "/tmp/exact.txt", "content": "exact"},
+            mission_ref="mission:one",
+            session_id="session:canary",
+        )
+    finally:
+        reset_permit_adapter(token)
+
+    assert (allowed, code) == (True, None)
+    assert settlement is not None
+    assert settlement.facts["canonical_permit_ref"] == "permit:one"
+    settlement.record_receipt(receipt)
+    assert recorded == [receipt]
+    assert len(consumed) == 1
+
+    assert dispatcher_boundary(
+        "write_file",
+        {"path": "/tmp/exact.txt", "content": "exact"},
+        mission_ref="mission:one",
+        session_id="session:other",
+    ) == (True, None, None)
+    assert len(consumed) == 1
+    assert recorded == [receipt]
 
 
 def event_exists(ref: str) -> bool:
@@ -351,7 +424,7 @@ def test_daemon_permit_digest_command_rejects_malformed_output(tmp_path):
         adapter.canonical_args_digest({"path": "x"})
 
 
-def test_daemon_permit_argument_digest_is_daemon_owned(monkeypatch, tmp_path):
+def test_production_dispatcher_ignores_ambient_test_adapter(monkeypatch, tmp_path):
     monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: _production_canary_config(), raising=False)
     adapter = DaemonPermitReceiptAdapter({
         "socket_path": str(tmp_path / "unneeded.sock"),
@@ -366,7 +439,7 @@ def test_daemon_permit_argument_digest_is_daemon_owned(monkeypatch, tmp_path):
         )
     finally:
         reset_permit_adapter(token)
-    assert (allowed, code) == (False, "TEST_ONLY_ECHO_DISABLED")
+    assert (allowed, code) == (False, "DESKTOP_APPROVAL_SCOPE_DENIED")
 
 
 def test_daemon_permit_call_is_exact_test_only_echo_sequence(tmp_path):
@@ -549,6 +622,94 @@ def test_daemon_production_per_call_adapter_forwards_opaque_witness_and_exact_wr
         target_ref="path:approved-result",
     )
     assert (outcome.state, outcome.code) == (PermitBridgeState.CONSUMED, "PERMIT_CONSUMED")
+
+
+def test_production_dispatcher_records_issue_consume_effect_and_outcome_without_context_adapter(monkeypatch, tmp_path):
+    from model_tools import handle_function_call
+
+    socket_path = tmp_path / "daemon-e2e.sock"
+    target = tmp_path / "allowed.txt"
+    witness = {"daemon_verifies": "opaque-signed-witness"}
+    seen = []
+
+    def issued(request):
+        seen.append("issue")
+        assert request["request"] == {"kind": "permit_issue_production", "witness": witness}
+        return {
+            "request_id": request["request_id"],
+            "permit_id": "permit:e2e",
+            "binding": {"issued_binding": "opaque"},
+        }
+
+    def consumed(request):
+        seen.append("consume")
+        assert request["request"]["kind"] == "permit_consume"
+        assert request["request"]["permit_id"] == "permit:e2e"
+        assert request["request"]["call"] == {
+            "tool": "write_file",
+            "args": {"path": str(target), "content": "exact"},
+            "frozen_clock": None,
+        }
+        return {
+            "request_id": request["request_id"],
+            "permit_id": "permit:e2e",
+            "evidence": {},
+            "preflight_artifact": {},
+            "receipt_artifact": {"receipt_digest": "a" * 64},
+        }
+
+    def recorded(request):
+        seen.append("outcome")
+        assert request["request"]["kind"] == "permit_outcome_record"
+        assert request["request"]["permit_id"] == "permit:e2e"
+        assert request["request"]["preflight_receipt_digest"] == "a" * 64
+        reported = request["request"]["reported"]
+        assert reported["state"] == "succeeded"
+        assert reported["error_type"] is None
+        assert isinstance(reported["duration_ms"], int) and reported["duration_ms"] >= 0
+        return {
+            "request_id": request["request_id"],
+            "permit_id": "permit:e2e",
+            "outcome_artifact": {"receipt_digest": "b" * 64, "state": "succeeded"},
+        }
+
+    thread = _serve_permit_responses(socket_path, issued, consumed, recorded)
+    config = _production_canary_config()
+    config["ares"]["permit_daemon"].update({
+        "socket_path": str(socket_path),
+        "worktree_root": str(tmp_path),
+    })
+    monkeypatch.setattr(collaboration, "_load_runtime_config", lambda: config, raising=False)
+    monkeypatch.setattr(
+        GatewayProductionApprovalWitnessProvider,
+        "issue_witness",
+        lambda self, **_kwargs: witness,
+    )
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: False)
+    monkeypatch.setattr("hermes_cli.observability.handles_hook", lambda _name: False)
+    monkeypatch.setattr("acp_adapter.edit_approval.maybe_require_edit_approval", lambda *_args, **_kwargs: None)
+
+    def dispatch(_tool_name, args, **_kwargs):
+        Path(args["path"]).write_text(args["content"], encoding="utf-8")
+        return json.dumps({"bytes_written": len(args["content"])})
+
+    monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+    result = handle_function_call(
+        "write_file",
+        {"path": str(target), "content": "exact"},
+        task_id="mission:e2e",
+        session_id="session:canary",
+        skip_pre_tool_call_hook=True,
+        skip_tool_request_middleware=True,
+        skip_tool_execution_middleware=True,
+    )
+    thread.join(timeout=2)
+
+    assert json.loads(result) == {"bytes_written": 5}
+    assert target.read_text(encoding="utf-8") == "exact"
+    assert seen == ["issue", "consume", "outcome"]
+    assert not thread.is_alive()
 
 
 def test_daemon_production_mode_defaults_deny_without_witness_provider(tmp_path):

@@ -30,6 +30,232 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_production_canary_records_outcome_through_exact_consumption_owner(self, monkeypatch):
+        import ares_runtime.collaboration as collaboration
+
+        recorded = []
+
+        class Settlement:
+            facts = {
+                "canonical_permit_ref": "permit:one",
+                "receipt_artifact": {"receipt_digest": "a" * 64},
+            }
+
+            def record_receipt(self, receipt):
+                recorded.append(dict(receipt))
+
+        settlement = Settlement()
+
+        def fake_boundary(_tool_name, _args, **kwargs):
+            if kwargs.get("consume_permit", True):
+                return True, None, settlement
+            return True, None, None
+
+        monkeypatch.setattr(collaboration, "production_permit_canary_enabled", lambda **_kwargs: True)
+        monkeypatch.setattr(collaboration, "dispatcher_boundary", fake_boundary)
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_args, **_kwargs: json.dumps({"ok": True}))
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: False)
+        monkeypatch.setattr("hermes_cli.observability.handles_hook", lambda _name: False)
+        monkeypatch.setattr("acp_adapter.edit_approval.maybe_require_edit_approval", lambda *_args, **_kwargs: None)
+
+        result = handle_function_call(
+            "write_file",
+            {"path": "/tmp/exact.txt", "content": "exact"},
+            task_id="mission:one",
+            session_id="session:canary",
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+        assert json.loads(result) == {"ok": True}
+        assert len(recorded) == 1
+        receipt = recorded[0]
+        assert receipt["permit_ref"] == "permit:one"
+        assert receipt["preflight_receipt"] == settlement.facts["receipt_artifact"]
+        assert receipt["state"] == "ok"
+        assert receipt["error_type"] is None
+        assert isinstance(receipt["duration_ms"], int) and receipt["duration_ms"] >= 0
+
+    def test_production_canary_records_ambiguous_outcome_when_dispatch_raises(self, monkeypatch):
+        import ares_runtime.collaboration as collaboration
+
+        recorded = []
+
+        class Settlement:
+            facts = {
+                "canonical_permit_ref": "permit:ambiguous",
+                "receipt_artifact": {"receipt_digest": "b" * 64},
+            }
+
+            def record_receipt(self, receipt):
+                recorded.append(dict(receipt))
+
+        settlement = Settlement()
+        monkeypatch.setattr(collaboration, "production_permit_canary_enabled", lambda **_kwargs: True)
+        monkeypatch.setattr(
+            collaboration,
+            "dispatcher_boundary",
+            lambda _tool, _args, **kwargs: (
+                (True, None, settlement) if kwargs.get("consume_permit", True) else (True, None, None)
+            ),
+        )
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: False)
+        monkeypatch.setattr("hermes_cli.observability.handles_hook", lambda _name: False)
+        monkeypatch.setattr("acp_adapter.edit_approval.maybe_require_edit_approval", lambda *_args, **_kwargs: None)
+
+        result = json.loads(
+            handle_function_call(
+                "write_file",
+                {"path": "/tmp/exact.txt", "content": "exact"},
+                task_id="mission:one",
+                session_id="session:canary",
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+        )
+
+        assert "error" in result
+        assert len(recorded) == 1
+        receipt = recorded[0]
+        assert receipt["permit_ref"] == "permit:ambiguous"
+        assert receipt["state"] == "ambiguous"
+        assert receipt["error_type"] == "RuntimeError"
+
+    def test_production_canary_does_not_report_success_when_outcome_recording_fails(self, monkeypatch):
+        import ares_runtime.collaboration as collaboration
+
+        class Settlement:
+            facts = {
+                "canonical_permit_ref": "permit:receipt-fails",
+                "receipt_artifact": {"receipt_digest": "c" * 64},
+            }
+
+            def record_receipt(self, _receipt):
+                raise RuntimeError("receipt transport unavailable")
+
+        settlement = Settlement()
+        monkeypatch.setattr(collaboration, "production_permit_canary_enabled", lambda **_kwargs: True)
+        monkeypatch.setattr(
+            collaboration,
+            "dispatcher_boundary",
+            lambda _tool, _args, **kwargs: (
+                (True, None, settlement) if kwargs.get("consume_permit", True) else (True, None, None)
+            ),
+        )
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_args, **_kwargs: json.dumps({"ok": True}))
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: False)
+        monkeypatch.setattr("hermes_cli.observability.handles_hook", lambda _name: False)
+        monkeypatch.setattr("acp_adapter.edit_approval.maybe_require_edit_approval", lambda *_args, **_kwargs: None)
+
+        result = json.loads(
+            handle_function_call(
+                "write_file",
+                {"path": "/tmp/exact.txt", "content": "exact"},
+                task_id="mission:one",
+                session_id="session:canary",
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+        )
+
+        assert result == {"error": "ARES_EFFECT_RECEIPT_FAILED"}
+
+    def test_production_canary_records_returned_tool_error_as_failed_outcome(self, monkeypatch):
+        import ares_runtime.collaboration as collaboration
+
+        recorded = []
+
+        class Settlement:
+            facts = {
+                "canonical_permit_ref": "permit:tool-error",
+                "receipt_artifact": {"receipt_digest": "d" * 64},
+            }
+
+            def record_receipt(self, receipt):
+                recorded.append(dict(receipt))
+
+        settlement = Settlement()
+        monkeypatch.setattr(collaboration, "production_permit_canary_enabled", lambda **_kwargs: True)
+        monkeypatch.setattr(
+            collaboration,
+            "dispatcher_boundary",
+            lambda _tool, _args, **kwargs: (
+                (True, None, settlement) if kwargs.get("consume_permit", True) else (True, None, None)
+            ),
+        )
+        tool_result = json.dumps({"error": "known tool failure"})
+        monkeypatch.setattr("model_tools.registry.dispatch", lambda *_args, **_kwargs: tool_result)
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: False)
+        monkeypatch.setattr("hermes_cli.observability.handles_hook", lambda _name: False)
+        monkeypatch.setattr("acp_adapter.edit_approval.maybe_require_edit_approval", lambda *_args, **_kwargs: None)
+
+        result = handle_function_call(
+            "write_file",
+            {"path": "/tmp/exact.txt", "content": "exact"},
+            task_id="mission:one",
+            session_id="session:canary",
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True,
+        )
+
+        assert result == tool_result
+        assert len(recorded) == 1
+        assert recorded[0]["state"] == "error"
+        assert recorded[0]["error_type"] == "tool_error"
+
+    def test_production_canary_final_denial_never_records_outcome(self, monkeypatch):
+        import ares_runtime.collaboration as collaboration
+
+        calls = []
+
+        def fake_boundary(_tool_name, _args, **kwargs):
+            calls.append(kwargs.get("consume_permit", True))
+            if kwargs.get("consume_permit", True):
+                return False, "PERMIT_DENIED", None
+            return True, None, None
+
+        monkeypatch.setattr(collaboration, "production_permit_canary_enabled", lambda **_kwargs: True)
+        monkeypatch.setattr(collaboration, "dispatcher_boundary", fake_boundary)
+        monkeypatch.setattr(
+            collaboration,
+            "record_receipt",
+            lambda _receipt: (_ for _ in ()).throw(AssertionError("unconsumed denial must not record an outcome")),
+        )
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda _name: False)
+        monkeypatch.setattr("hermes_cli.observability.handles_hook", lambda _name: False)
+        monkeypatch.setattr("acp_adapter.edit_approval.maybe_require_edit_approval", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            "model_tools.registry.dispatch",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("denied call must not dispatch")),
+        )
+
+        result = json.loads(
+            handle_function_call(
+                "write_file",
+                {"path": "/tmp/exact.txt", "content": "exact"},
+                task_id="mission:one",
+                session_id="session:canary",
+                skip_pre_tool_call_hook=True,
+                skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+        )
+
+        assert result == {"error": "ARES_EFFECT_DENIED:PERMIT_DENIED"}
+        assert calls == [False, True]
 
 
     def test_post_tool_call_receives_non_negative_integer_duration_ms(self):

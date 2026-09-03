@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -413,3 +413,39 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+# ── signal-initiated shutdowns write the planned-restart marker ───────────
+
+
+@pytest.mark.asyncio
+async def test_signal_shutdown_writes_startup_notification_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.0
+    runner._signal_initiated_shutdown = True
+
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.write_runtime_status"),
+        patch("agent.auxiliary_client.shutdown_cached_clients"),
+    ):
+        await runner.stop()
+
+    marker = tmp_path / ".restart_pending.json"
+    assert marker.exists()
+    assert json.loads(marker.read_text())["reason"] == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_plain_stop_does_not_write_startup_notification_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.0
+
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.write_runtime_status"),
+        patch("agent.auxiliary_client.shutdown_cached_clients"),
+    ):
+        await runner.stop()
+
+    assert not (tmp_path / ".restart_pending.json").exists()

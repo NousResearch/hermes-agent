@@ -44,6 +44,7 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.no_progress_warn_after == 2
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
+    assert cfg.total_failure_halt_after == 12
     assert cfg.no_progress_block_after == 5
 
 
@@ -60,6 +61,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
             "hard_stop_after": {
                 "exact_failure": 6,
                 "same_tool_failure": 7,
+                "total_failure": 9,
                 "idempotent_no_progress": 8,
             },
         }
@@ -72,6 +74,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_warn_after == 5
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
+    assert cfg.total_failure_halt_after == 9
     assert cfg.no_progress_block_after == 8
 
 
@@ -142,16 +145,101 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_hard_stop_enabled_halts_failures_spread_across_tool_names_and_arguments():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_halt_after=99,
+            total_failure_halt_after=4,
+        )
+    )
+
+    calls = [
+        ("object_get", {"type": "device"}),
+        ("object_search", {"type": "rack"}),
+        ("object_list", {"type": "server"}),
+        ("cronjob", {"action": "create"}),
+    ]
+    decisions = [
+        controller.after_call(tool_name, args, '{"error":"boom"}', failed=True)
+        for tool_name, args in calls
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "allow", "allow", "halt"]
+    assert decisions[-1].code == "total_failure_halt"
+    assert decisions[-1].count == 4
+    assert controller.halt_decision == decisions[-1]
 
 
+def test_total_failure_count_resets_for_each_turn():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_halt_after=99,
+            total_failure_halt_after=2,
+        )
+    )
+
+    assert controller.after_call("first", {}, "error", failed=True).action == "allow"
+    controller.reset_for_turn()
+    assert controller.after_call("second", {}, "error", failed=True).action == "allow"
 
 
+def test_total_failure_budget_excludes_failure_tolerant_diagnostic_tools():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_halt_after=99,
+            total_failure_halt_after=2,
+        )
+    )
+
+    for index in range(4):
+        decision = controller.after_call(
+            "terminal",
+            {"command": f"diagnostic-{index}"},
+            '{"error":"boom"}',
+            failed=True,
+        )
+        assert not decision.should_halt
+
+    assert controller.after_call("object_get", {"id": 1}, "error", failed=True).action == "allow"
+    halted = controller.after_call("object_search", {"id": 2}, "error", failed=True)
+    assert halted.code == "total_failure_halt"
+    assert halted.count == 2
 
 
+def test_successful_mutation_resets_total_failure_budget():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_halt_after=99,
+            total_failure_halt_after=2,
+        )
+    )
+
+    assert controller.after_call("object_get", {"id": 1}, "error", failed=True).action == "allow"
+    controller.after_call("patch", {"path": "x.py"}, '{"success":true}', failed=False)
+    assert controller.after_call("object_search", {"id": 2}, "error", failed=True).action == "allow"
 
 
+def test_same_tool_halt_takes_precedence_over_total_failure_halt():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_halt_after=2,
+            total_failure_halt_after=2,
+        )
+    )
 
-
+    assert controller.after_call("object_get", {"id": 1}, "error", failed=True).action == "allow"
+    halted = controller.after_call("object_get", {"id": 2}, "error", failed=True)
+    assert halted.code == "same_tool_failure_halt"
 
 
 def test_skill_read_tools_are_idempotent_and_block_repeated_identical_success_output():

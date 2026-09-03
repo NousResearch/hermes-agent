@@ -167,6 +167,7 @@ class ToolCallGuardrailConfig:
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
+    total_failure_halt_after: int = 12
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
@@ -223,6 +224,10 @@ class ToolCallGuardrailConfig:
             same_tool_failure_halt_after=_positive_int(
                 hard_stop_after.get("same_tool_failure", data.get("same_tool_failure_halt_after")),
                 defaults.same_tool_failure_halt_after,
+            ),
+            total_failure_halt_after=_positive_int(
+                hard_stop_after.get("total_failure", data.get("total_failure_halt_after")),
+                defaults.total_failure_halt_after,
             ),
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
@@ -420,6 +425,7 @@ class ToolCallGuardrailController:
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
+        self._total_failure_count = 0
         # signature -> a mutating call succeeded since its last failure
         self._progress_since_failure: dict[ToolCallSignature, bool] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
@@ -565,6 +571,30 @@ class ToolCallGuardrailController:
                 self._halt_decision = decision
                 return decision
 
+            # Keep diagnostic tools out of the cross-tool budget for the same
+            # reason they are exempt from same-tool halts: distinct red
+            # commands are evidence-gathering, not a stuck retry loop.
+            if same_tool_halt_eligible:
+                self._total_failure_count += 1
+            if (
+                self.config.hard_stop_enabled
+                and self._total_failure_count >= self.config.total_failure_halt_after
+            ):
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="total_failure_halt",
+                    message=(
+                        f"Stopped after {self._total_failure_count} failed tool calls this turn. "
+                        "The failures span too many attempts to keep retrying safely; "
+                        "stop and report the blocker or choose a verified approach."
+                    ),
+                    tool_name=tool_name,
+                    count=self._total_failure_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+
             if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
                 return ToolGuardrailDecision(
                     action="warn",
@@ -603,6 +633,7 @@ class ToolCallGuardrailController:
             for sig in list(self._exact_failure_counts):
                 self._progress_since_failure[sig] = True
             self._same_tool_failure_counts.clear()
+            self._total_failure_count = 0
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

@@ -100,6 +100,22 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertEqual(second["kernel"]["reused"], True)
         self.assertEqual(second["kernel"]["execution_count"], 2)
 
+    def test_kernel_spill_caps_unicode_by_encoded_bytes(self):
+        """Generated runner never spills more than its byte budget for Unicode."""
+        spill_cap = 5_000_000
+        with _kernel_config():
+            result = _run("print('界' * 5000001)")
+            spill_path = result.get("stdout_spill_path")
+            self.assertIsNotNone(spill_path, result)
+            with open(spill_path, "rb") as f:
+                spilled = f.read()
+
+        self.assertLessEqual(
+            len(spilled),
+            spill_cap + len(f"\n\n[... spill capped ...]".encode()),
+        )
+        spilled.decode("utf-8")
+
     def test_reset_discards_state(self):
         with _kernel_config():
             _run("x = 41")

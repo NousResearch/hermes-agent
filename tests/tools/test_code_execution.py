@@ -18,7 +18,9 @@ import pytest
 import json
 import os
 import socket
+import tempfile
 import time
+from pathlib import Path
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -59,6 +61,8 @@ from tools.code_execution_tool import (
     _TOOL_DOC_LINES,
     _execute_remote,
     _format_interrupted_output,
+    _spill_full_stdout,
+    MAX_SPILLED_STDOUT_BYTES,
 )
 from tools.registry import registry
 
@@ -777,6 +781,37 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("small output", result["output"])
         self.assertNotIn("TRUNCATED", result["output"])
+
+
+    def test_spill_caps_unicode_by_encoded_bytes(self):
+        """Spills honor their byte cap and retain valid UTF-8 at the boundary."""
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch("hermes_constants.get_hermes_dir", return_value=Path(tmpdir) / "exec"):
+            spill_path = _spill_full_stdout("界" * (MAX_SPILLED_STDOUT_BYTES + 1))
+            if spill_path is None:
+                self.fail("expected stdout spill path")
+            with open(spill_path, "rb") as f:
+                spilled = f.read()
+
+        self.assertLessEqual(
+            len(spilled),
+            MAX_SPILLED_STDOUT_BYTES + len(
+                f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]".encode()
+            ),
+        )
+        self.assertTrue(spilled.decode("utf-8").endswith("bytes ...]"))
+
+    def test_spill_preserves_unicode_at_exact_byte_cap(self):
+        """Unicode output that encodes exactly to the cap is not marked capped."""
+        text = "界" * (MAX_SPILLED_STDOUT_BYTES // len("界".encode())) + "ab"
+        self.assertEqual(len(text.encode()), MAX_SPILLED_STDOUT_BYTES)
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch("hermes_constants.get_hermes_dir", return_value=Path(tmpdir) / "exec"):
+            spill_path = _spill_full_stdout(text)
+            if spill_path is None:
+                self.fail("expected stdout spill path")
+            with open(spill_path, encoding="utf-8") as f:
+                self.assertEqual(f.read(), text)
 
 
     def test_remote_large_output_gets_truncation_metadata(self):

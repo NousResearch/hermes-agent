@@ -187,19 +187,20 @@ def _bounded(text, spill_name=None):
     Returns (clipped_text, clipped?, spill_path_or_empty). Spill is
     best-effort — a failed write degrades to plain clipping.
     """
-    if len(text) <= _CAPTURE_LIMIT:
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= _CAPTURE_LIMIT:
         return text, False, ""
     spill_path = ""
     if _SPILL_DIR and spill_name:
         try:
             spill_path = os.path.join(_SPILL_DIR, spill_name)
             with open(spill_path, "w", encoding="utf-8", errors="replace") as f:
-                f.write(text[:_SPILL_CAP])
-                if len(text) > _SPILL_CAP:
+                f.write(encoded[:_SPILL_CAP].decode("utf-8", errors="ignore"))
+                if len(encoded) > _SPILL_CAP:
                     f.write("\\n\\n[... spill capped ...]")
         except Exception:
             spill_path = ""
-    return text[: _CAPTURE_LIMIT], True, spill_path
+    return encoded[:_CAPTURE_LIMIT].decode("utf-8", errors="ignore"), True, spill_path
 
 
 def _reply(payload):

@@ -168,9 +168,13 @@ def _spill_full_stdout(stdout_text: str) -> Optional[str]:
         import hashlib
         from hermes_constants import get_hermes_dir
 
-        if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
+        stdout_bytes = stdout_text.encode("utf-8", errors="replace")
+        if len(stdout_bytes) > MAX_SPILLED_STDOUT_BYTES:
+            # Slice encoded data, then drop only an incomplete final sequence.
+            # The marker is intentionally outside the cap so readers know the
+            # spill is incomplete.
             stdout_text = (
-                stdout_text[:MAX_SPILLED_STDOUT_BYTES]
+                stdout_bytes[:MAX_SPILLED_STDOUT_BYTES].decode("utf-8", errors="ignore")
                 + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]"
             )
         cache_dir = get_hermes_dir("cache/exec", "exec_spill")

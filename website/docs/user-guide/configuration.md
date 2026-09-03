@@ -2445,6 +2445,36 @@ web:
 
 **Self-hosted Firecrawl:** Set `FIRECRAWL_API_URL` to point at your own instance. When a custom URL is set, the API key becomes optional (set `USE_DB_AUTHENTICATION=*** on the server to disable auth).
 
+### Authenticated extraction (`web.request_headers`)
+
+`web_extract` can attach extra request headers to specific hosts, so paywalled
+or private endpoints (a private GitHub repo's REST API, an internal wiki) can be
+read instead of returning a login or 404 page.
+
+```yaml
+web:
+  request_headers:
+    # Exact host, or a leading dot for "this domain and its subdomains".
+    api.github.com:
+      Authorization: "Bearer ${GITHUB_TOKEN}"
+      Accept: "application/vnd.github+json"
+    .internal.example.com:
+      X-Api-Key: "${INTERNAL_WIKI_KEY}"
+```
+
+- **Secrets stay in `.env`.** Header values may reference environment variables
+  as `${VAR}`; the credential itself never lands in `config.yaml`. If the
+  variable is unset, that header is dropped rather than sent as a literal
+  `${VAR}`.
+- **Headers are host-scoped.** A token configured for one host is never
+  attached to another. Patterns are exact-match, or `.example.com` to include
+  subdomains and the apex — a bare `*` is deliberately *not* a wildcard.
+- **Headers go to the target site**, not to the extraction provider's own API.
+
+Note that this only helps endpoints that accept token auth. `github.com`'s HTML
+pages are session-cookie only and return 404 to any token-bearing client — use
+`api.github.com` (or the `gh` CLI) for private repositories.
+
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
 **Exa:** Set `EXA_API_KEY` in `~/.hermes/.env`. Supports `category` filtering (`company`, `research paper`, `news`, `people`, `personal site`, `pdf`) and domain/date filters.

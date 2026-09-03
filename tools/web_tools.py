@@ -156,6 +156,99 @@ def _load_web_config() -> dict:
         return {}
 
 
+def _host_of(url: str) -> str:
+    """Lowercased hostname for ``url``; ``""`` when unparseable.
+
+    ``urlparse`` raises ValueError on malformed authorities (e.g. an
+    unterminated IPv6 literal), which must not break extraction.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _host_matches(pattern: str, host: str) -> bool:
+    """Match a config host pattern against ``host``.
+
+    Exact match, or a leading-dot suffix pattern (``.example.com``) that
+    also matches the apex (``example.com``). Deliberately NOT a general
+    glob: a bare ``*`` would send credentials to every host scraped.
+    """
+    pattern = (pattern or "").strip().lower()
+    if not pattern or not host:
+        return False
+    if pattern.startswith("."):
+        return host == pattern[1:] or host.endswith(pattern)
+    return host == pattern
+
+
+def resolve_request_headers(url: str) -> Dict[str, str]:
+    """Return configured extra request headers for ``url``.
+
+    Reads ``web.request_headers`` from config.yaml — a mapping of host
+    pattern to header dict::
+
+        web:
+          request_headers:
+            api.github.com:
+              Authorization: "Bearer ${GITHUB_TOKEN}"
+
+    Header VALUES may reference environment variables as ``${VAR}`` so the
+    credential itself stays in ``.env`` and never lands in config.yaml
+    (repo convention: config.yaml carries behavior, .env carries secrets).
+    An unset variable drops that single header rather than sending the
+    literal ``${VAR}`` upstream.
+
+    Only headers whose host pattern matches are returned, so a token
+    configured for one host is never attached to another. Never raises.
+    """
+    try:
+        mapping = _load_web_config().get("request_headers") or {}
+        if not isinstance(mapping, dict):
+            return {}
+        host = _host_of(url)
+        if not host:
+            return {}
+
+        resolved: Dict[str, str] = {}
+        for pattern, headers in mapping.items():
+            if not isinstance(headers, dict):
+                continue
+            if not _host_matches(str(pattern), host):
+                continue
+            for name, raw in headers.items():
+                value = _expand_env_refs(str(raw))
+                if value:
+                    resolved[str(name)] = value
+        return resolved
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _expand_env_refs(value: str) -> str:
+    """Expand ``${VAR}`` refs; return ``""`` if any referenced var is unset.
+
+    Returning empty (rather than a partially expanded string) keeps an
+    unset credential from being sent as a literal ``${VAR}`` header.
+    """
+    import re as _re
+
+    missing = False
+
+    def _sub(match: "_re.Match[str]") -> str:
+        nonlocal missing
+        resolved = _env_value(match.group(1))
+        if not resolved:
+            missing = True
+        return resolved
+
+    expanded = _re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, value)
+    return "" if missing else expanded
+
+
 # The built-in web backends whose availability is driven by hardcoded
 # env-var / package / OAuth probes below. Any name NOT in this set is a
 # candidate plugin-registered provider and must be resolved through the

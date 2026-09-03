@@ -6,8 +6,9 @@ import { RichBoundary } from './rich-boundary'
 import type { RichFenceProps } from './types'
 
 // Root renderer for fenced code blocks: a language → lazy-renderer table. Each
-// renderer is its own split chunk (mermaid pulls in the mermaid lib, svg pulls
-// in DOMPurify), loaded only when a block of that language actually appears.
+// renderer is split and loaded only when a block of that language appears. The
+// Mermaid renderer defers its heavier runtime import until after its source
+// fallback has had a chance to paint.
 const LAZY_FENCE: Record<string, LazyExoticComponent<ComponentType<RichFenceProps>>> = {
   mermaid: lazy(() => import('./mermaid-embed')),
   svg: lazy(() => import('./svg-embed'))

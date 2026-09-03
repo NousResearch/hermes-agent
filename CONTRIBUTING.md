@@ -210,6 +210,48 @@ scripts/run_tests.sh
 pytest tests/ -v
 ```
 
+### Pre-commit hooks
+
+`.pre-commit-config.yaml` runs the following on every commit:
+
+| Tool | What it catches | Where it runs |
+|------|-----------------|---------------|
+| **pre-commit-hooks** (12 hooks) | trailing whitespace, missing EOF newline, merge conflict markers, files > 500 KB, malformed YAML/JSON/TOML, case-conflicting filenames, scripts without shebangs, accidentally-committed `BEGIN ... PRIVATE KEY` blocks, CRLF → LF | every file |
+| **ruff** (`ruff-check` + `ruff-format`) | PLW1514 (unspecified-encoding on Windows), unused imports, formatting drift, future rule additions | `*.py`, `*.pyi`, `*.ipynb` |
+| **ESLint** (ui-tui + web) | unused imports, exhaustive-deps violations, react-compiler diagnostics, sort-imports, no-fallthrough | `ui-tui/src/**`, `ui-tui/packages/**`, `web/src/**` |
+| **gitleaks** | AWS / GCP / Azure keys, GitHub PATs, OpenAI / Anthropic / HuggingFace tokens, Stripe keys, generic high-entropy strings, PEM private keys | every file |
+
+```bash
+# One-time install (the hook is then triggered automatically on `git commit`)
+uv tool install pre-commit
+pre-commit install
+
+# Run the full suite against the working tree (matches CI)
+pre-commit run --all-files
+
+# Run a single hook
+pre-commit run ruff-check --all-files
+pre-commit run gitleaks --all-files
+
+# Update pinned hook versions
+pre-commit autoupdate
+```
+
+**Skipping a hook** (use sparingly):
+
+```bash
+git commit --no-verify    # emergency-only — CI will still run all hooks
+```
+
+**Why these four and not also Black / mypy / prettier:**
+
+- `ruff` replaces Black, isort, and pyupgrade — adding them would just duplicate the same work.
+- `ty` (the type checker) is a slow, advisory run in `.github/workflows/lint.yml`; running it on every commit adds 10–30s for marginal value.
+- `prettier` formatting on `ui-tui/` and `web/` is opt-in via `npm run fmt` — we don't force it pre-commit to keep PRs focused on logic.
+- `gitleaks` fills a gap: no other tool in the repo currently scans for accidentally-committed secrets. See `SECURITY.md` for context on past supply-chain incidents.
+
+**CI enforcement:** `.github/workflows/pre-commit.yml` runs `pre-commit run --all-files` on every PR; red build = block merge.
+
 ---
 
 ## Project Structure

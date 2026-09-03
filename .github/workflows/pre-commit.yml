@@ -1,0 +1,152 @@
+name: Pre-commit Hooks
+
+# Runs the hooks defined in `.pre-commit-config.yaml`. CI counterpart to a
+# developer's local `pre-commit install` setup — the goal is that
+# `pre-commit run --all-files` here catches what a `--no-verify` commit
+# would slip past locally.
+#
+# Hooks run:
+#   - pre-commit/pre-commit-hooks (12 universal hygiene hooks)
+#   - astral-sh/ruff-pre-commit  (ruff-check + ruff-format)
+#   - local                      (eslint-ui-tui, eslint-web)
+#   - gitleaks                   (secret scan)
+#
+# ----------------------------------------------------------------------------
+# Rollout posture (read before promoting to a required check)
+# ----------------------------------------------------------------------------
+# This workflow runs the full pre-commit suite and is **non-blocking** for
+# now (`continue-on-error: true`). The reason: the ui-tui and web/ workspaces
+# have pre-existing ESLint errors that pre-date this workflow. Failing the
+# required-check would block every PR touching unrelated code, which is a
+# worse outcome than leaving the gate advisory for one release cycle.
+#
+# Plan to tighten in a follow-up:
+#   1. File a follow-up task to clear the existing ESLint errors (tracked
+#      in the same dashboard project as this one).
+#   2. Once that lands, remove `continue-on-error: true` so the workflow
+#      becomes a required check.
+#
+# In the meantime, the .pre-commit-config.yaml + CONTRIBUTING.md updates
+# mean *contributors* get all hooks locally when they `pre-commit install`,
+# so new code is held to the standard from this PR forward.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-commit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit-all:
+    name: pre-commit run --all-files
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true   # see "Rollout posture" above
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # gitleaks scans full git history
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Install npm dependencies for ESLint workspaces
+        # The two ESLint hooks (`eslint-ui-tui`, `eslint-web`) shell out
+        # to `npm run lint[:fix]` inside their workspaces. Those scripts
+        # need node_modules available; install in each because the root
+        # package.json has no eslint dev-dep.
+        run: |
+          cd ui-tui && npm ci
+          cd ../web && npm ci
+
+      - name: Run pre-commit against the full tree
+        # `pipx run` would also work, but a fixed install pins the version
+        # to the same `4.x` declared in pyproject.toml so CI is
+        # reproducible.
+        run: |
+          pipx install pre-commit==4.6.0
+          pre-commit run --all-files --show-diff-on-failure
+
+  pre-commit-changed:
+    # Diff-aware job: only run hooks against the files this PR actually
+    # changed. If a contributor follows the local `pre-commit install`
+    # convention, this job will be green even while `pre-commit-all`
+    # is still advisory-failing on pre-existing repo issues.
+    #
+    # This is what gate-keeps new code without blocking merges on old
+    # problems.
+    name: pre-commit run (changed files only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0  # need merge-base for diff against main
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Install npm dependencies for ESLint workspaces
+        run: |
+          cd ui-tui && npm ci
+          cd ../web && npm ci
+
+      - name: Collect changed file list
+        id: changed
+        # For PRs, diff against the merge base with main. For pushes to
+        # main, the diff is HEAD~1..HEAD.
+        # Output a single space-separated string into `files` so the next
+        # step can pass it directly to `pre-commit run --files`.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          else
+            BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          # List files that differ between base and HEAD, in the working
+          # tree (not the index — gitleaks/ruff hooks care about content
+          # not staging). Strip the noisy output directories that are
+          # already covered by .pre-commit-config.yaml's `exclude:`.
+          mapfile -t FILES < <(git diff --name-only --diff-filter=ACMRT "${BASE_SHA}" HEAD | grep -vE '^(website/|web/dist/|ui-tui/dist/|node_modules/|\.venv/)' || true)
+          JOINED=$(printf '%s ' "${FILES[@]}")
+          # Trim trailing space so the shell expansion in the next step
+          # is clean.
+          JOINED="${JOINED%% }"
+          echo "files=${JOINED}" >> "$GITHUB_OUTPUT"
+          echo "Changed files: ${#FILES[@]}"
+
+      - name: Run pre-commit against changed files
+        if: steps.changed.outputs.files != ''
+        # `pass_filenames: false` hooks (eslint-ui-tui, eslint-web,
+        # gitleaks) ignore --files, so this job is effectively a no-op
+        # for them — they only run when the file is in their scope and
+        # that's enforced by the `files:` regex in the hook config.
+        # `pass_filenames: true` hooks (ruff, trailing-whitespace, etc.)
+        # honour --files and will run on just the changed set.
+        run: |
+          pipx install pre-commit==4.6.0
+          # shellcheck disable=SC2086
+          pre-commit run --files ${{ steps.changed.outputs.files }} --show-diff-on-failure

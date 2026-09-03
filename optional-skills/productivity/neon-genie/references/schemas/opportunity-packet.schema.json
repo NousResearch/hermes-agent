@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Opportunity Packet",
+  "type": "object",
+  "required": [
+    "blocked_transition",
+    "outcome_model",
+    "system_topology",
+    "opportunity_thesis",
+    "validation_path",
+    "completion_proof",
+    "scorecard",
+    "promotion_state"
+  ],
+  "properties": {
+    "blocked_transition": {},
+    "outcome_model": {},
+    "system_topology": {},
+    "opportunity_thesis": {},
+    "validation_path": {},
+    "completion_proof": {
+      "description": "Externally checkable success criterion (what proves the transition is done)"
+    },
+    "scorecard": {},
+    "promotion_state": {},
+    "proof_path": {
+      "description": "Ordered steps to obtain completion_proof"
+    }
+  },
+  "additionalProperties": true
+}

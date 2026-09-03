@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -446,6 +447,57 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
         return bool(suggest_prefixed_model_id((provider or "").strip(), name))
     except Exception:
         return False
+
+
+# Local-inference model-load failures.  Backends such as llama.cpp's
+# llama-server and LM Studio report a failed model load (missing/corrupt
+# weights file, not enough memory for the quant) as an HTTP 500 — a
+# deterministic server-side condition.  The generic "5xx → retryable
+# server_error" rule then blind-retries the same model against the same
+# server until the budget is exhausted and the turn is dropped: re-firing
+# the identical request cannot make the server load the weights.  Same
+# endpoint-state family as the "model unloaded" case in #62765, but with
+# the opposite fallback decision — the request was never served here, so a
+# configured fallback model can still take the turn instead of dropping it
+# (the generic model_not_found form: retryable=False, should_fallback=True).
+#
+# Matched via explicit model-load phrasings rather than bare substrings:
+# llama-server puts the model id between the two halves ("model name=<id>
+# failed to load"), so no fixed phrase covers it, while a bare "failed to
+# load" would also swallow unrelated load failures.  The earlier
+# load-phrase + "model" co-occurrence guard was too loose: a credential or
+# adapter load failure whose text merely mentions a model elsewhere
+# ("failed to load credentials for model provider") also satisfied it and
+# was misrouted to the terminal, no-retry path — so each pattern now names
+# the model itself as the thing being loaded (or the llama-server
+# model-first split).  ``error_msg`` is already lowercased by
+# ``classify_api_error``; ``_is_model_load_failure`` lowercases again so it
+# also holds when called directly.
+_MODEL_LOAD_FAILURE_PATTERNS = [
+    # llama-server: "model name=<id> failed to load" (model id splits the
+    # phrase, model named first).
+    r"model\b.*\bfailed to load\b",
+    # Load verb with the model itself as the object ("the" optional).
+    r"failed to load (?:the )?model\b",
+    r"unable to load (?:the )?model\b",
+    r"error loading (?:the )?model\b",
+    "model load failed",
+    "load model failed",
+]
+
+
+def _is_model_load_failure(error_msg: str) -> bool:
+    """True when the message names a model-side load failure.
+
+    See ``_MODEL_LOAD_FAILURE_PATTERNS`` for why each pattern is anchored
+    to an explicit model-load phrasing instead of the earlier load-phrase
+    + "model" co-occurrence guard (which misfired on non-model load
+    failures that merely mention a model elsewhere in the text).
+    """
+    msg = (error_msg or "").lower()
+    return any(
+        re.search(p, msg) for p in _MODEL_LOAD_FAILURE_PATTERNS
+    )
 
 
 # Malformed-message-array 400s.  Deterministic request-shape rejections that
@@ -1473,6 +1525,18 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
+        # A local-inference server that failed to load the model weights
+        # (llama-server / LM Studio answering 500, see #102044) is
+        # deterministic on this endpoint — the identical retry cannot make
+        # the server load the weights — so stop the blind same-model retry
+        # and let a configured fallback model serve the turn instead of
+        # dropping it.
+        if _is_model_load_failure(error_msg):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
         # Some local inference servers (notably llama.cpp / llama-server)
         # report context overflow with an HTTP 500 instead of the standard
         # 400/413. The request-validation guard above already ran, so any
@@ -2055,6 +2119,15 @@ def _classify_by_message(
 
     # Model not found patterns
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # Local-inference model-load failures raised by shims without an HTTP
+    # status — same routing as the 500/502 branch in _classify_by_status.
+    if _is_model_load_failure(error_msg):
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,

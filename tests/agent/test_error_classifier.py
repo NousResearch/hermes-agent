@@ -921,6 +921,108 @@ class TestClassifyApiError:
         assert result.message == "Internal server error occurred"
 
 
+class TestModelLoadFailure5xx:
+    """A local-inference server (llama.cpp llama-server / LM Studio) that
+    fails to load the model weights answers HTTP 500 with a deterministic
+    error.  The classifier must stop the blind same-model retry
+    (retryable=False) and let a configured fallback model serve the turn
+    (should_fallback=True) — the generic model_not_found form, NOT the
+    no-fallback "model unloaded" form of #62765.  See issue #102044 and
+    _MODEL_LOAD_FAILURE_PATTERNS in agent/error_classifier.py."""
+
+    def test_500_llama_server_model_name_failed_to_load(self):
+        # Exact wording observed from llama-server in issue #102044: the
+        # model id sits between "model" and "failed to load", so only the
+        # co-occurrence guard matches it.
+        e = MockAPIError(
+            "HTTP 500: model name=LFM2.5-2.6B-DSpark-Q8_0 failed to load",
+            status_code=500,
+        )
+        result = classify_api_error(
+            e, provider="custom", model="LFM2.5-2.6B-DSpark-Q8_0"
+        )
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_502_lm_studio_failed_to_load_model(self):
+        # Mixed-case LM Studio wording — matching must be case-insensitive.
+        e = MockAPIError("Failed to load model", status_code=502)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_500_error_loading_model_weights(self):
+        e = MockAPIError(
+            "HTTP 500: error loading model weights", status_code=500
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_500_load_failure_without_model_word_stays_retryable(self):
+        # Co-occurrence guard: "failed to load" without "model" is not a
+        # model-load signal — keep the generic retryable 5xx handling.
+        e = MockAPIError(
+            "HTTP 500: failed to load credentials", status_code=500
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_500_generic_internal_error_stays_retryable(self):
+        # Untouched 500s keep the retryable server_error classification.
+        e = MockAPIError("Internal Server Error", status_code=500)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_message_only_wrapper_routes_model_load_failure(self):
+        # Shim exceptions without an HTTP status reach the same routing
+        # through _classify_by_message.
+        e = MockAPIError("llama-server: unable to load model")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_500_credential_load_failure_mentioning_model_stays_retryable(self):
+        # Regression (PR review): the old load-phrase + "model"
+        # co-occurrence guard misfired on non-model load failures whose
+        # text mentions a model elsewhere — here a credential load for a
+        # model provider.  Misrouting it to the terminal model_not_found
+        # path would send a fixable auth/config problem straight to
+        # fallback with no retry, so it must stay retryable.
+        e = MockAPIError(
+            "HTTP 500: failed to load credentials for model provider",
+            status_code=500,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_500_adapter_load_failure_for_model_runtime_stays_retryable(self):
+        # Same false-positive family: an adapter/runtime load failure that
+        # merely names "model" is not a model-load failure.
+        e = MockAPIError(
+            "HTTP 500: failed to load provider adapter for model runtime",
+            status_code=500,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_message_only_credential_load_failure_stays_retryable(self):
+        # The status-less shim path (_classify_by_message) shares the same
+        # narrowed patterns: the model must be the thing being loaded, not
+        # just mentioned in the message.
+        e = MockAPIError("failed to load credentials for model provider")
+        result = classify_api_error(e)
+        assert result.retryable is True
+
+
 # ── Test: Adversarial / edge cases (from live testing) ─────────────────
 
 class TestAdversarialEdgeCases:

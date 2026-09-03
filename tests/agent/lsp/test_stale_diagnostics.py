@@ -17,6 +17,7 @@ The contract under test:
 - A slow-but-eventually-correct server ("slow_push") is waited on,
   honouring the configured ``lsp.wait_timeout``.
 """
+
 from __future__ import annotations
 
 import os
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import LSPClient
+from agent.lsp.client import LSPClient, file_uri, uri_to_path
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -46,10 +47,6 @@ def _client(workspace: Path, script: str, **env_extra: str) -> LSPClient:
     )
 
 
-
-
-
-
 @pytest.mark.asyncio
 async def test_slow_push_is_waited_for(tmp_path: Path):
     """A server that re-checks slowly (but within budget) gets waited on,
@@ -61,20 +58,45 @@ async def test_slow_push_is_waited_for(tmp_path: Path):
     await client.start()
     try:
         v0 = await client.open_file(str(f), language_id="python")
-        assert await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+        assert await client.wait_for_diagnostics(
+            str(f), v0, mode="document", timeout=2.0
+        )
         assert len(client.diagnostics_for(str(f), fresh_only=True)) == 1
 
         f.write_text("good code\n")
         v1 = await client.open_file(str(f), language_id="python")
-        fresh = await client.wait_for_diagnostics(str(f), v1, mode="document", timeout=5.0)
+        fresh = await client.wait_for_diagnostics(
+            str(f), v1, mode="document", timeout=5.0
+        )
         assert fresh is True, "slow push within budget must satisfy the wait"
         assert client.diagnostics_for(str(f), fresh_only=True) == []
     finally:
         await client.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_stale_pull_result_dropped_when_change_races(tmp_path: Path):
+    """A pull answered for pre-edit content must not read as fresh after
+    a didChange raced past it (version-tag anchoring)."""
+    f = tmp_path / "x.py"
+    f.write_text("bad code\n")
 
+    client = _client(tmp_path, "clean")
+    await client.start()
+    try:
+        v0 = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), v0, mode="document", timeout=2.0)
+        doc = client._docs[uri_to_path(file_uri(str(f)))]
+        assert doc.fresh_pull()
 
+        # Simulate an edit racing in: the version bump invalidates the
+        # stored pull without any explicit clearing.
+        f.write_text("good code\n")
+        await client.open_file(str(f), language_id="python")
+        assert not doc.fresh_pull()
+        assert client.diagnostics_for(str(f), fresh_only=True) == []
+    finally:
+        await client.shutdown()
 
 
 # ---------------------------------------------------------------------------

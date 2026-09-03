@@ -113,6 +113,8 @@ test('baseSshOptions carries the house ControlMaster/BatchMode/accept-new policy
   assert.match(joined, /BatchMode=yes/)
   assert.match(joined, /StrictHostKeyChecking=accept-new/)
   assert.match(joined, /ExitOnForwardFailure=yes/)
+  assert.match(joined, /ServerAliveInterval=15/)
+  assert.match(joined, /ServerAliveCountMax=3/)
   assert.match(joined, /ConnectTimeout=15/)
   assert.ok(!joined.includes('StrictHostKeyChecking=no'), 'never disables host-key checking')
 })

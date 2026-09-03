@@ -693,6 +693,17 @@ export function useGatewayBoot({
         if (switchToken !== null) {
           endGatewaySwitch(switchToken)
         }
+
+        // The switch suppressed reconnect scheduling for its whole duration
+        // (the onState guard skips while switching), and HermesGateway
+        // de-dupes identical states — so a socket left closed/errored by a
+        // failed re-dial emits NO further transition and would sit dead until
+        // a manual reload. Re-arm here, after the flag clears: an assistant
+        // turn completing server-side while this socket is dead is exactly the
+        // missing-message defect (persisted but never painted).
+        if (!cancelled && !gatewayOpen() && !$gatewaySwitching.get()) {
+          scheduleReconnect()
+        }
       }
     }
 

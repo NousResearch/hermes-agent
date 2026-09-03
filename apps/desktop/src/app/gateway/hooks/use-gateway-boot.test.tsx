@@ -1323,6 +1323,51 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($awaitingResponse.get()).toBe(false)
   })
 
+  it('FIX: a soft switch whose re-dial fails still auto-retries — no permanently dead socket (missing-messages repro)', async () => {
+    // The missing-message defect. A soft switch (connection/mode apply) calls
+    // gateway.close() FIRST, which sets state 'closed'. If the subsequent
+    // re-dial then fails, connect() sets 'error' and softSwitch's catch runs
+    // failDesktopBoot — which only paints, it schedules NOTHING. The boot-retry
+    // timer belongs to boot(), not softSwitch.
+    //
+    // Worse, HermesGateway.setState() de-dupes identical states, so once the
+    // socket is parked on 'closed'/'error' no FURTHER transition is emitted —
+    // the onState listener never fires again and scheduleReconnect() is never
+    // reached. The socket stays dead until the user hits Cmd+R.
+    //
+    // That matches the incident exactly: a deliberate client close (code 1005)
+    // followed by 668s with ZERO ws-ticket mints in the NPM access log, while
+    // the agent turn completed server-side and was persisted but never painted.
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    // The re-dial after the deliberate close cannot reach the backend.
+    FakeWebSocket.mode = 'fail'
+    const socketsBeforeSwitch = FakeWebSocket.instances.length
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+
+    // The switch failed, so we are not open.
+    expect($gatewayState.get()).not.toBe('open')
+
+    // Now let real time pass — far beyond the 15s backoff cap. A healthy
+    // client must keep re-dialing; the incident showed it never did.
+    for (let i = 0; i < 8; i += 1) {
+      await advanceBackoff()
+    }
+
+    // Before the fix this stays flat: the socket is parked dead forever and
+    // any assistant output produced meanwhile never reaches the UI.
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketsBeforeSwitch + 1)
+
+    // And when the backend comes back, the client must recover ON ITS OWN.
+    FakeWebSocket.mode = 'open'
+    await advanceBackoff()
+    expect($gatewayState.get()).toBe('open')
+  })
+
   it('manual reconnect revalidates, re-resolves, re-mints, and re-dials the dropped socket', async () => {
     const desktop = fakeDesktop()
 

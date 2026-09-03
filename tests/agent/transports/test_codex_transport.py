@@ -141,6 +141,47 @@ class TestCodexBuildKwargs:
         assert message_item["status"] == "in_progress"
         assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
 
+    def test_github_responses_drops_connection_bound_reasoning(self, transport):
+        messages = [{
+            "role": "assistant",
+            "content": "done",
+            "codex_reasoning_items": [{
+                "type": "reasoning",
+                "encrypted_content": "copilot-connection-bound-ciphertext",
+                "summary": [{"type": "summary_text", "text": "analysis"}],
+            }],
+        }]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses=True,
+        )
+
+        assert all(item.get("type") != "reasoning" for item in kw["input"])
+        assert any(item.get("content") == "done" for item in kw["input"])
+
+    def test_github_preflight_drops_reintroduced_reasoning(self, transport):
+        message = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "done"}],
+        }
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "continue"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"input": [{
+                "type": "reasoning",
+                "encrypted_content": "copilot-connection-bound-ciphertext",
+            }, message]},
+        )
+
+        preflight = transport.preflight_kwargs(kw, is_github_responses=True)
+
+        assert preflight["input"] == [message]
+
 
 
     def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
@@ -166,6 +207,24 @@ class TestCodexBuildKwargs:
         )
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
+
+    def test_non_github_responses_keeps_encrypted_reasoning(self, transport):
+        messages = [{
+            "role": "assistant",
+            "content": "done",
+            "codex_reasoning_items": [{
+                "type": "reasoning",
+                "encrypted_content": "portable-ciphertext",
+            }],
+        }]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_codex_backend=True,
+        )
+
+        reasoning = next(item for item in kw["input"] if item.get("type") == "reasoning")
+        assert reasoning["encrypted_content"] == "portable-ciphertext"
 
     @pytest.mark.parametrize("model", [
         "gpt-5.5",

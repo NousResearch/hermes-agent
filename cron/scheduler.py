@@ -782,6 +782,23 @@ _running_fire_owners: dict[str, dict[object, tuple[Optional[str], Path]]] = {}
 # process sweep cannot reach the worker's transient scope.
 _restart_safe_waiter_job_ids: set[str] = set()
 _running_lock = threading.Lock()
+_allow_unscoped_worker: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "cron_allow_unscoped_worker", default=False
+)
+
+
+@contextlib.contextmanager
+def allow_unscoped_cron_worker():
+    """Permit a detached cron worker outside a managed systemd gateway.
+
+    Used by immediate ``hermes cron run`` / ``cronjob(action='run')`` so the
+    one-shot caller is only a waiter. Ticker fires must not use this.
+    """
+    token = _allow_unscoped_worker.set(True)
+    try:
+        yield
+    finally:
+        _allow_unscoped_worker.reset(token)
 
 # Wall-clock (time.time()) instant each in-flight job id was claimed by
 # ``_submit_with_guard``, plus the future that owns its release (a pending
@@ -8134,15 +8151,24 @@ def _wait_for_external_cron_worker(
 
 
 def _launch_external_cron_worker(job: dict) -> bool:
-    """Launch *job* outside a managed gateway cgroup when required.
+    """Launch *job* in a detached worker that owns the durable execution.
 
-    Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology, failure to
-    establish the transient scope raises: falling back would recreate the
-    restart interruption this handoff exists to prevent.
+    Managed systemd gateway: the child is wrapped in a transient user scope
+    so a gateway restart cannot kill it with the service cgroup.  Failure to
+    establish that scope raises — falling back would recreate the restart
+    interruption this handoff exists to prevent.
+
+    Immediate ``hermes cron run`` / ``cronjob(action='run')`` (the
+    ``_hermes_allow_unscoped_worker`` flag): launch the same worker without
+    systemd-run.  The child starts a new session so a caller timeout/SIGTERM
+    of the one-shot CLI process cannot take the execution owner with it.
+    Ticker fires stay in-process outside managed topology (return False).
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
+    allow_unscoped = bool(
+        job.get("_hermes_allow_unscoped_worker") or _allow_unscoped_worker.get()
+    )
     handoff_dir = _get_hermes_home() / "cron" / "external-workers"
     payload_path = handoff_dir / f"{execution_id}.json"
     ack_path = handoff_dir / f"{execution_id}.ready"
@@ -8166,7 +8192,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
     )
     if scoped_command == command:
-        return False
+        if not allow_unscoped:
+            return False
+        scoped_command = command
 
     if mark_execution_handoff_pending(execution_id) is None:
         raise RuntimeError(
@@ -8181,9 +8209,14 @@ def _launch_external_cron_worker(job: dict) -> bool:
     fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as payload_file:
+            payload_job = {
+                key: value
+                for key, value in job.items()
+                if key != "_hermes_allow_unscoped_worker"
+            }
             json.dump(
                 {
-                    "job": job,
+                    "job": payload_job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
                 },

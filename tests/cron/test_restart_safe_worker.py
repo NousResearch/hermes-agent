@@ -328,6 +328,65 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     popen.assert_not_called()
 
 
+def test_launch_external_worker_unscoped_when_cli_direct_run_asks(
+    monkeypatch, tmp_path
+):
+    """Immediate hermes cron run must detach even outside a managed gateway."""
+    import cron.scheduler as scheduler
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, *, unit_suffix: command,
+    )
+    monkeypatch.setattr(
+        scheduler, "mark_execution_handoff_pending",
+        Mock(return_value={"id": "exec-cli"}),
+    )
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+            return self.returncode
+
+    spawned = []
+
+    def popen(command, **kwargs):
+        spawned.append((command, kwargs))
+        ack_index = command.index("--ack-file") + 1
+        Path(command[ack_index]).write_text(
+            json.dumps({"pid": 7777, "execution_id": "exec-cli"}),
+            encoding="utf-8",
+        )
+        return FakeProcess()
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    statuses = iter(
+        [
+            {"id": "exec-cli", "status": "running"},
+            {"id": "exec-cli", "status": "completed"},
+        ]
+    )
+    monkeypatch.setattr(
+        scheduler, "get_execution",
+        Mock(side_effect=lambda _execution_id: next(statuses)),
+    )
+
+    with scheduler.allow_unscoped_cron_worker():
+        assert scheduler._launch_external_cron_worker(
+            {"id": "job-cli", "execution_id": "exec-cli"}
+        ) is True
+    assert spawned
+    assert spawned[0][1]["start_new_session"] is True
+    assert spawned[0][0][0:2] == [sys.executable, "-m"]
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 

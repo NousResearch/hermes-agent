@@ -1335,4 +1335,18 @@ describe('isSessionRemote (#94640)', () => {
 
     expect(isSessionRemote('stored-2')).toBe(true)
   })
+
+  it('uploads bytes when the ambient SSH tunnel is remote but a stale owner route is local', () => {
+    $connection.set({ mode: 'remote', remoteKind: 'ssh' } as never)
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'stale-local', mode: 'local', profile: 'default' },
+        runtimeId: 'rt-ssh',
+        storedSessionId: 'stored-ssh'
+      }
+    ])
+
+    expect(isSessionRemote('rt-ssh')).toBe(true)
+    expect(isSessionRemote('stored-ssh')).toBe(true)
+  })
 })

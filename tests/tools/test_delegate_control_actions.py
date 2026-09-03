@@ -11,6 +11,7 @@ backgrounded) and never consume the per-turn subagent spawn cap.
 import json
 import weakref
 
+import tools.delegate_tool as delegate_tool_module
 from tools.delegate_tool import (
     _handle_control_action,
     _is_descendant_of,
@@ -75,6 +76,23 @@ def test_grandchild_is_descendant():
     mid = _StubChild(parent)
     grandchild = _StubChild(mid)
     assert _is_descendant_of(grandchild, parent) is True
+
+
+def test_nested_child_notification_owner_is_root_conversation():
+    root = _StubParent()
+    root.session_id = "root-session"
+    orchestrator = _StubChild(root)
+    orchestrator.session_id = "orchestrator-session"
+    orchestrator._parent_session_id = "root-session"
+    nested_child = _StubChild(orchestrator)
+    nested_child.session_id = "nested-session"
+    nested_child._parent_session_id = "orchestrator-session"
+
+    resolver = getattr(
+        delegate_tool_module, "_resolve_owner_agent_session_id", None
+    )
+    assert resolver is not None, "nested ownership needs an explicit resolver"
+    assert resolver(orchestrator, nested_child) == "root-session"
 
 
 def test_foreign_agent_is_not_descendant():
@@ -424,6 +442,7 @@ def test_attribution_resolves_live_child():
         assert info["subagent_id"] == "sa-0-attr0001"
         assert info["goal"] == "test goal"
         assert info["delegation_id"] == "deleg_attr_1"
+        assert info["owner_agent_session_id"] == "sess-attr-1"
     finally:
         _unregister_subagent("sa-0-attr0001")
 
@@ -444,6 +463,7 @@ def test_attribution_survives_child_completion():
     assert info is not None
     assert info["delegation_id"] == "deleg_attr_2"
     assert info["goal"] == "test goal"
+    assert info["owner_agent_session_id"] == "sess-attr-2"
 
 
 def test_attribution_unknown_task_id_is_none():
@@ -522,6 +542,28 @@ def test_child_completion_notification_suppressed_by_default(monkeypatch):
     assert results == []
     # NOT requeued — children never drain notify events; requeueing would
     # pin the event in the queue forever.
+    assert reg.completion_queue.qsize() == 0
+
+
+def test_child_nonzero_completion_is_visible_by_default(monkeypatch):
+    """Noise suppression must never hide a failed child-owned process."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    event = _child_completion_evt(
+        task_id="sa-9-failure0001", sid="proc_childfailure01"
+    )
+    event["exit_code"] = 7
+    event["output"] = "ERROR_VISIBILITY_CANARY"
+    reg.completion_queue.put(event)
+
+    results = reg.drain_notifications()
+
+    assert len(results) == 1
+    assert results[0][0]["exit_code"] == 7
+    assert "ERROR_VISIBILITY_CANARY" in results[0][1]
     assert reg.completion_queue.qsize() == 0
 
 

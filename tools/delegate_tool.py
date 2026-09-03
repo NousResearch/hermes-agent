@@ -222,11 +222,13 @@ def format_subagent_failure_line(
 def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Resolve a process task_id to its originating delegation, if any.
 
-    Children run their terminal sessions under ``task_id == subagent_id``
-    (see _run_single_child's child_task_id), so a background process spawned
-    by a subagent carries that id in ``ProcessSession.task_id``. Returns
-    ``{subagent_id, goal, delegation_id}`` for live AND recently-finished
-    children, or None when the task_id is not a known subagent.
+    Children invoke terminal tools under ``task_id == subagent_id`` (see
+    _run_single_child's child_task_id). Shared execution backends may collapse
+    ``ProcessSession.task_id`` to a sandbox key, so notification routing stamps
+    the raw child id separately in ``ProcessSession.owner_task_id``. Returns
+    ``{subagent_id, goal, delegation_id, owner_agent_session_id}`` for live AND
+    recently-finished children, or None when the task_id is not a known
+    subagent.
     """
     if not task_id or not isinstance(task_id, str):
         return None
@@ -237,6 +239,7 @@ def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]
                 "subagent_id": task_id,
                 "goal": record.get("goal"),
                 "delegation_id": record.get("delegation_id"),
+                "owner_agent_session_id": record.get("owner_agent_session_id"),
             }
         retained = _recent_subagents.get(task_id)
         if retained is not None:
@@ -244,8 +247,48 @@ def get_subagent_attribution(task_id: Optional[str]) -> Optional[Dict[str, Any]]
                 "subagent_id": task_id,
                 "goal": retained.get("goal"),
                 "delegation_id": retained.get("delegation_id"),
+                "owner_agent_session_id": retained.get("owner_agent_session_id"),
             }
     return None
+
+
+def _resolve_owner_agent_session_id(parent_agent: Any, child: Any) -> str:
+    """Return the root conversation that owns a delegation subtree."""
+    cursor = parent_agent
+    seen: set[int] = set()
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        parent_ref = getattr(cursor, "_delegate_parent_ref", None)
+        if not callable(parent_ref):
+            break
+        try:
+            ancestor = parent_ref()
+        except Exception:
+            ancestor = None
+        if ancestor is None:
+            break
+        cursor = ancestor
+
+    if cursor is not parent_agent:
+        root_session_id = str(getattr(cursor, "session_id", "") or "")
+        if root_session_id:
+            return root_session_id
+
+    is_delegated_parent = (
+        hasattr(parent_agent, "_delegate_parent_ref")
+        or str(getattr(parent_agent, "platform", "") or "") == "subagent"
+        or int(getattr(parent_agent, "_delegate_depth", 0) or 0) > 0
+    )
+    if is_delegated_parent:
+        inherited = str(getattr(parent_agent, "_parent_session_id", "") or "")
+        if inherited:
+            return inherited
+
+    return str(
+        getattr(child, "_parent_session_id", "")
+        or getattr(parent_agent, "session_id", "")
+        or ""
+    )
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -2797,13 +2840,12 @@ def _run_single_child(
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
-        # Durable ownership spine: the OWNING CONVERSATION's session id (the
-        # same lineage the delivery path routes completions by). Sourced from
-        # the child's _parent_session_id stamp so it stays correct even when
-        # parent_agent has been rebuilt between dispatch and this run.
-        _owner_agent_session_id = (
-            str(getattr(child, "_parent_session_id", "") or "")
-            or str(getattr(parent_agent, "session_id", "") or "")
+        # Durable ownership spine: the ROOT conversation's session id (the
+        # same lineage the delivery path routes completions by). Nested
+        # orchestrators inherit the root rather than becoming a new owner;
+        # rebuilt parents fall back to their durable parent-session stamp.
+        _owner_agent_session_id = _resolve_owner_agent_session_id(
+            parent_agent, child
         )
         _delegation_id = getattr(child, "_delegation_id", None)
         _register_subagent(

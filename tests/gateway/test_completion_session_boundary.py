@@ -334,3 +334,63 @@ def test_parent_session_id_survives_checkpoint_recovery(tmp_path, monkeypatch):
     assert registry.get("proc_recovered").parent_session_id == "sess-spawner"
     assert len(registry.pending_watchers) == 1
     assert registry.pending_watchers[0]["parent_session_id"] == "sess-spawner"
+
+
+def _watch_evt(parent_session_id="sess-closed", task_id="sa-0-watch"):
+    return {
+        "type": "watch_match",
+        "session_id": "proc_watch",
+        "session_key": "agent:main:telegram:dm:123",
+        "parent_session_id": parent_session_id,
+        "pattern": "FAIL",
+        "command": "build",
+        "output": "FAIL\n",
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "123",
+        "task_id": task_id,
+    }
+
+
+def test_watch_match_from_user_closed_session_is_dropped(monkeypatch):
+    """Watch events must use the same /new preflight as completions."""
+    import queue as queue_mod
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(), send=AsyncMock())
+    runner = _runner(
+        adapter,
+        session_db=_SessionDB(
+            {"ended_at": 1786288000.0, "end_reason": "session_reset"}
+        ),
+    )
+    classifier = AsyncMock(return_value="terminal")
+    runner._classify_completion_target = classifier
+    monkeypatch.setattr(
+        ProcessRegistry,
+        "should_surface_process_notification",
+        staticmethod(lambda evt, surface_child=None: True),
+    )
+    completion_queue = queue_mod.Queue()
+    completion_queue.put(_watch_evt("sess-closed"))
+    asyncio.run(runner._drain_watch_notifications(completion_queue))
+
+    classifier.assert_awaited_once_with("sess-closed")
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+def test_watch_match_from_live_session_still_delivers(monkeypatch):
+    import queue as queue_mod
+
+    adapter = SimpleNamespace(handle_message=AsyncMock(), send=AsyncMock())
+    runner = _runner(adapter, session_db=_SessionDB({"ended_at": None}))
+    completion_queue = queue_mod.Queue()
+    completion_queue.put(_watch_evt("sess-live", task_id="task"))
+    monkeypatch.setattr(
+        ProcessRegistry,
+        "should_surface_process_notification",
+        staticmethod(lambda evt, surface_child=None: True),
+    )
+    asyncio.run(runner._drain_watch_notifications(completion_queue))
+
+    assert adapter.handle_message.await_count + adapter.send.await_count == 1

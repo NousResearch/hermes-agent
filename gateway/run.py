@@ -28190,7 +28190,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if self._load_background_notifications_mode() == "off":
             return
 
+        from tools.process_registry import ProcessRegistry
+
+        retry_events: list[dict] = []
         for evt in watch_events:
+            if not ProcessRegistry.should_surface_process_notification(evt):
+                continue
+            parent_session_id = str(evt.get("parent_session_id") or "").strip()
+            if parent_session_id:
+                try:
+                    verdict = await self._classify_completion_target(parent_session_id)
+                except Exception as exc:
+                    logger.error("Watch notification preflight error: %s", exc)
+                    retry_events.append(evt)
+                    continue
+                if verdict == "terminal":
+                    logger.info(
+                        "Dropping watch notification %s after user session boundary "
+                        "(/new) for parent %s",
+                        evt.get("session_id"),
+                        parent_session_id,
+                    )
+                    continue
+                if verdict == "retry":
+                    retry_events.append(evt)
+                    continue
             synth_text = _format_gateway_process_notification(evt)
             if not synth_text:
                 continue
@@ -28198,6 +28222,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await self._inject_watch_notification(synth_text, evt)
             except Exception as exc:
                 logger.error("Watch notification injection error: %s", exc)
+        for evt in retry_events:
+            completion_queue.put(evt)
 
     async def _inject_watch_notification(
         self, synth_text: str, evt: dict,
@@ -29109,7 +29135,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Skip if the agent already consumed the result via wait/log.
                 # poll() is read-only and intentionally does NOT mark consumed
                 # (#10156) — a status check must not suppress this delivery turn.
-                from tools.process_registry import format_process_notification, process_registry as _pr_check
+                from tools.process_registry import (
+                    ProcessRegistry,
+                    format_process_notification,
+                    process_registry as _pr_check,
+                )
+                if not ProcessRegistry.should_surface_process_notification(
+                    {
+                        "type": "completion",
+                        "task_id": getattr(session, "task_id", "") or "",
+                        "owner_task_id": (
+                            getattr(session, "owner_task_id", "")
+                            or getattr(session, "task_id", "")
+                            or ""
+                        ),
+                        "exit_code": session.exit_code,
+                        "completion_reason": getattr(
+                            session, "completion_reason", "exited"
+                        ),
+                    }
+                ):
+                    break
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from agent.redact import redact_terminal_output
                     from tools.ansi_strip import strip_ansi
@@ -29147,6 +29193,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "completion_reason": getattr(session, "completion_reason", "exited"),
                         "termination_source": getattr(session, "termination_source", ""),
                         "output": _out,
+                        "task_id": getattr(session, "task_id", "") or "",
+                        "owner_task_id": (
+                            getattr(session, "owner_task_id", "")
+                            or getattr(session, "task_id", "")
+                            or ""
+                        ),
                         # Spawning conversation's session-db id (stamped at
                         # spawn time in terminal_tool). Lets the delivery
                         # pre-flight drop this completion when the user closed

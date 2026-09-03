@@ -152,6 +152,51 @@ async def test_consumed_completion_skips_raw_notification(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_successful_child_completion_uses_owner_id_for_surface_policy(
+    monkeypatch, tmp_path
+):
+    """A collapsed execution key must not erase raw child ownership."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo done",
+            task_id="default",
+            owner_task_id="sa-0-gateway-owner",
+            completion_reason="exited",
+            termination_source="",
+            parent_session_id="root-session",
+            started_at=1234.5,
+        )
+    ]
+    monkeypatch.setattr(
+        pr_module,
+        "process_registry",
+        _FakeRegistry(sessions, consumed=False),
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    enqueue = AsyncMock(return_value=True)
+    runner._enqueue_process_completion_notification = enqueue
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+
+    await runner._run_process_watcher(watcher)
+
+    enqueue.assert_not_awaited()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_consumed_completion_skips_raw_notification_without_agent_notify(
     monkeypatch, tmp_path
 ):

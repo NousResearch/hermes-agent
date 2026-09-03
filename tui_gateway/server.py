@@ -12624,7 +12624,7 @@ def _notification_poller_loop(
     same way (status.update + agent turn) — the delivery path
     tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
     """
-    from tools.process_registry import process_registry, format_process_notification
+    from tools.process_registry import ProcessRegistry, format_process_notification, process_registry
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
     _last_kanban_poll = 0.0
@@ -12723,6 +12723,8 @@ def _notification_poller_loop(
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
             continue
+        if not ProcessRegistry.should_surface_process_notification(evt):
+            continue
 
         text = format_process_notification(evt)
         if not text:
@@ -12813,6 +12815,8 @@ def _notification_poller_loop(
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if not ProcessRegistry.should_surface_process_notification(evt):
             continue
         text = format_process_notification(evt)
         if not text:

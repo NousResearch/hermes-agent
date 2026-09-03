@@ -545,6 +545,8 @@ def _credentials_candidates(extra: Optional[dict] = None) -> List[Path]:
     configured = str(_get_scoped_secret("BUZZ_CREDENTIALS_FILE", "") or "").strip() or str(
         (extra or {}).get("credentials_file", "") or ""
     ).strip()
+    if not configured and not _profile_scoped():
+        configured = str((_read_profile_buzz_extra() or {}).get("credentials_file", "") or "").strip()
     if configured:
         return [Path(configured).expanduser()]
     if _is_multiplex_active():
@@ -3029,31 +3031,118 @@ class BuzzAdapter(BasePlatformAdapter):
 # Plugin registration
 # ---------------------------------------------------------------------------
 
-def _profile_buzz_extra() -> dict:
-    """Read ``buzz.extra`` from the active profile's config.yaml (scoped path).
+_STR_BRIDGED_EXTRA_KEYS = (
+    "relay_url", "cli_path", "home_channel", "transport",
+)
+_NOT_NONE_BRIDGED_EXTRA_KEYS = (
+    "poll_interval", "channels", "allowed_users", "reaction_only_users",
+)
+_PRESENCE_BRIDGED_EXTRA_KEYS = (
+    "allow_all_users", "require_mention", "reply_in_thread", "reply_to_mode",
+)
 
-    Only meaningful inside a secondary profile scope, where the hermes-home
-    override points at that profile's home. Used by ``check_requirements``
-    (which has no PlatformConfig argument) so the multiplex gate consults the
-    profile's own configuration instead of the process env. Best-effort: any
-    failure yields an empty mapping and the caller fails closed.
-    """
+def _profile_buzz_extra() -> dict:
+    """Return the effective Buzz extra for a scoped profile."""
     if not _profile_scoped():
         return {}
+    return _read_profile_buzz_extra()
+
+
+def _read_profile_buzz_extra() -> dict:
+    """Resolve Buzz configuration using the gateway loader's source order.
+
+    The startup requirement gate has no PlatformConfig, so it must reproduce
+    the loader's legacy base, YAML overlay, managed overlay, and plugin bridge
+    semantics without mutating process-global environment state.
+    """
+    yaml_read_ok = True
     try:
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
 
-        cfg = read_user_config_raw(Path(get_hermes_home()) / "config.yaml")
+        home = Path(get_hermes_home())
+        config_yaml_path = home / "config.yaml"
+        cfg = read_user_config_raw(config_yaml_path)
     except Exception:
-        return {}
+        cfg = {}
+        yaml_read_ok = False
+        home = None
+    if home is None:
+        try:
+            from hermes_constants import get_hermes_home
+            home = Path(get_hermes_home())
+        except Exception:
+            return {}
+    config_yaml_path = home / "config.yaml"
     if not isinstance(cfg, dict):
-        return {}
-    buzz = ((cfg.get("gateway") or {}).get("platforms") or {}).get("buzz")
-    if not isinstance(buzz, dict):
-        return {}
-    extra = buzz.get("extra", buzz)
-    return extra if isinstance(extra, dict) else {}
+        cfg = {}
+    if yaml_read_ok and config_yaml_path.exists():
+        try:
+            from hermes_cli import managed_scope
+            cfg = managed_scope.apply_managed_overlay(cfg)
+        except Exception:
+            pass
+
+    legacy_extra = {}
+    try:
+        legacy_path = home / "gateway.json"
+        if legacy_path.exists():
+            with open(legacy_path, "r", encoding="utf-8") as f:
+                legacy = json.load(f) or {}
+            legacy_plat = (legacy.get("platforms") or {}).get("buzz")
+            if isinstance(legacy_plat, dict) and isinstance(legacy_plat.get("extra"), dict):
+                legacy_extra = legacy_plat["extra"]
+    except Exception:
+        pass
+
+    def section(source, key):
+        value = source.get(key) if isinstance(source, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    def block(source, key):
+        value = source.get(key) if isinstance(source, dict) else None
+        return value if isinstance(value, dict) else None
+
+    def extra_only(value):
+        value = value.get("extra") if isinstance(value, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    def extra_or_bare(value):
+        if not isinstance(value, dict):
+            return {}
+        value = value.get("extra", value)
+        return value if isinstance(value, dict) else {}
+
+    gateway = section(cfg, "gateway")
+    gateway_platforms = section(gateway, "platforms")
+    platforms = section(cfg, "platforms")
+    nested_blocks = (
+        block(gateway_platforms, "buzz"),
+        block(platforms, "buzz"),
+        block(gateway, "buzz"),
+    )
+    merged = dict(legacy_extra)
+    for value in nested_blocks:
+        merged.update(extra_only(value))
+
+    top = block(cfg, "buzz")
+    if _profile_scoped():
+        return merged
+
+    bridge = next((value for value in (top, nested_blocks[0], nested_blocks[1]) if value is not None), {})
+    bridge_extra = extra_or_bare(bridge)
+    for key in _STR_BRIDGED_EXTRA_KEYS:
+        if bridge_extra.get(key):
+            merged[key] = bridge_extra[key]
+    for key in _NOT_NONE_BRIDGED_EXTRA_KEYS:
+        if key in bridge_extra and bridge_extra[key] is not None:
+            merged[key] = bridge_extra[key]
+    for key in _PRESENCE_BRIDGED_EXTRA_KEYS:
+        if key in bridge_extra:
+            merged[key] = bridge_extra[key]
+    for key, value in extra_or_bare(top).items():
+        merged.setdefault(key, value)
+    return merged
 
 
 def check_requirements() -> bool:
@@ -3070,7 +3159,9 @@ def check_requirements() -> bool:
     # Scope-aware read: the gate runs before per-profile scopes install, and
     # BUZZ_RELAY_URL can be externally managed just like the key (#95216).
     if not (_get_scoped_secret("BUZZ_RELAY_URL", "") or "").strip():
-        return False
+        relay = str(_read_profile_buzz_extra().get("relay_url") or "").strip()
+        if not relay:
+            return False
     return bool(_resolve_private_key())
 
 

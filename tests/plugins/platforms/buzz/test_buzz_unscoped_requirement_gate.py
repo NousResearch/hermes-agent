@@ -42,6 +42,124 @@ def _install_fake_scope(monkeypatch, secrets):
     return calls
 
 
+class TestConfigOnlyRequirementGate:
+    def test_config_yaml_relay_and_credentials_file_pass(self, monkeypatch, tmp_path):
+        import json
+        import yaml
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        import plugins.platforms.buzz.adapter as adapter
+
+        credentials = tmp_path / "credentials.json"
+        credentials.write_text(json.dumps({"nsec": "nsec1config-only"}), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "gateway": {"platforms": {"buzz": {"extra": {
+                "relay_url": "https://config.relay",
+                "credentials_file": str(credentials),
+            }}}},
+        }), encoding="utf-8")
+        for name in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CREDENTIALS_FILE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(adapter, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "empty")
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            assert adapter.check_requirements() is True
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_composed_nested_config_and_legacy_base_pass(self, monkeypatch, tmp_path):
+        import json
+        import yaml
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        import plugins.platforms.buzz.adapter as adapter
+
+        credentials = tmp_path / "credentials.json"
+        credentials.write_text(json.dumps({"nsec": "nsec1composed"}), encoding="utf-8")
+        (tmp_path / "gateway.json").write_text(json.dumps({
+            "platforms": {"buzz": {"extra": {"relay_url": "https://legacy.relay"}}},
+        }), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "platforms": {"buzz": {"extra": {"credentials_file": str(credentials)}}},
+        }), encoding="utf-8")
+        for name in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CREDENTIALS_FILE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(adapter, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "empty")
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            assert adapter.check_requirements() is True
+            assert adapter._credentials_candidates() == [credentials]
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_explicit_null_credentials_file_keeps_default_fallback(self, monkeypatch, tmp_path):
+        import json
+        import yaml
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        import plugins.platforms.buzz.adapter as adapter
+
+        credentials_dir = tmp_path / "credentials"
+        credentials_dir.mkdir()
+        credentials = credentials_dir / "default-credentials.json"
+        credentials.write_text(json.dumps({"nsec": "nsec1null-credentials"}), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "platforms": {"buzz": {"extra": {
+                "relay_url": "https://config.relay",
+                "credentials_file": None,
+            }}},
+        }), encoding="utf-8")
+        for name in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CREDENTIALS_FILE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(adapter, "_DEFAULT_CREDENTIALS_DIR", credentials_dir)
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            assert adapter._credentials_candidates() == [credentials]
+            assert adapter.check_requirements() is True
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_explicit_null_relay_fails_gate_without_loader_relay(self, monkeypatch, tmp_path):
+        import yaml
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        import plugins.platforms.buzz.adapter as adapter
+
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "platforms": {"buzz": {"extra": {
+                "relay_url": None,
+            }}},
+        }), encoding="utf-8")
+        for name in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CREDENTIALS_FILE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("BUZZ_PRIVATE_KEY", "stub-private-key")
+        monkeypatch.setattr(adapter, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "empty")
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            assert adapter.check_requirements() is False
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_invalid_yaml_preserves_legacy_gateway_json(self, monkeypatch, tmp_path):
+        import json
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        import plugins.platforms.buzz.adapter as adapter
+
+        credentials = tmp_path / "credentials.json"
+        credentials.write_text(json.dumps({"nsec": "nsec1invalid-yaml"}), encoding="utf-8")
+        (tmp_path / "gateway.json").write_text(json.dumps({
+            "platforms": {"buzz": {"extra": {
+                "relay_url": "https://legacy.relay",
+                "credentials_file": str(credentials),
+            }}},
+        }), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text("gateway: [", encoding="utf-8")
+        for name in ("BUZZ_RELAY_URL", "BUZZ_PRIVATE_KEY", "BUZZ_CREDENTIALS_FILE"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(adapter, "_DEFAULT_CREDENTIALS_DIR", tmp_path / "empty")
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            assert adapter.check_requirements() is True
+        finally:
+            reset_hermes_home_override(token)
+
+
 class TestRequirementGateSeesExternalSecrets:
     def test_externally_managed_key_passes_gate(self, monkeypatch):
         import plugins.platforms.buzz.adapter as adapter

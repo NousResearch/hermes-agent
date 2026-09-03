@@ -48,6 +48,26 @@ import {
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
 
+// Proxy support for environments behind an HTTP proxy (e.g., mainland China)
+const PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
+// Mask credentials in any logged proxy URL (user:pass@host -> user:***@host).
+// Greedy password match up to the LAST '@' so passwords containing '@' are fully masked.
+function maskProxyUrl(url) {
+  return typeof url === 'string'
+    ? url.replace(/(\/\/[^:@/]+):(.+)@/, '$1:***@')
+    : url;
+}
+let proxyAgent = null;
+if (PROXY_URL) {
+  try {
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    proxyAgent = new HttpsProxyAgent(PROXY_URL);
+    console.log(`🔗 Using proxy: ${maskProxyUrl(PROXY_URL)}`);
+  } catch (e) {
+    console.warn(`⚠️  Could not load https-proxy-agent, falling back to direct connection: ${e.message}`);
+  }
+}
+
 // Parse CLI args
 const args = process.argv.slice(2);
 function getArg(name, defaultVal) {
@@ -410,6 +430,8 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    agent: proxyAgent || undefined,
+    fetchAgent: proxyAgent || undefined,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {

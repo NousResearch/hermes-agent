@@ -15,7 +15,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import get_env_value, get_hermes_home, load_config
+from hermes_cli.env_loader import resolve_env_sources
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -151,8 +152,28 @@ def show_status(args):
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
 
-    env_path = get_env_path()
-    print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+    # Report the files load_hermes_dotenv() actually reads — including the
+    # project-root .env that setup-hermes.sh creates — instead of assuming
+    # ~/.hermes/.env is the only candidate.  Reusing the loader's own
+    # resolution is what keeps this line and `hermes doctor` in agreement
+    # (#102023).
+    # Pass the home explicitly: get_hermes_home() honors the profile override
+    # and the platform-native default (%LOCALAPPDATA%\hermes on Windows), which
+    # a bare HERMES_HOME lookup would miss.  doctor resolves it the same way, so
+    # the two commands stay aligned on every platform.
+    project_env_path = PROJECT_ROOT / ".env"
+    env_sources = resolve_env_sources(
+        hermes_home=get_hermes_home(),
+        project_env=project_env_path,
+    )
+    if not env_sources:
+        env_state = "not found"
+    elif env_sources == [project_env_path]:
+        # Same wording doctor uses for this case, so the two cannot disagree.
+        env_state = "exists (in project directory)"
+    else:
+        env_state = "exists"
+    print(f"  .env file:    {check_mark(bool(env_sources))} {env_state}")
 
     try:
         config = load_config()

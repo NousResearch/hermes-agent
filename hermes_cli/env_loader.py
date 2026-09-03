@@ -471,6 +471,50 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
+def resolve_env_sources(
+    *,
+    hermes_home: str | os.PathLike | None = None,
+    project_env: str | os.PathLike | None = None,
+) -> list[Path]:
+    """Return the ``.env`` files ``load_hermes_dotenv`` reads, in load order.
+
+    Pure resolution: nothing is parsed and ``os.environ`` is left untouched.
+
+    This is the single source of truth for *which* files count.  The reporting
+    commands (``hermes status``, ``hermes doctor``) call it instead of
+    re-deriving the answer from ``get_env_path()`` or a hand-rolled project-root
+    fallback, so their output cannot drift from what the loader actually reads
+    (#102023).
+
+    ``.op.env`` is deliberately excluded: it bootstraps the 1Password service
+    token rather than carrying user configuration, and ``load_hermes_dotenv``
+    likewise keeps it out of its return value.
+
+    ``hermes_home`` defaults to the same bare ``HERMES_HOME`` lookup
+    ``load_hermes_dotenv`` performs.  Callers reporting to a user should pass
+    ``get_hermes_home()`` instead, so the profile override and the
+    platform-native default are honored.
+    """
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+
+    sources: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (home_path / ".env", Path(project_env) if project_env else None):
+        if candidate is None or not candidate.exists():
+            continue
+        # A checkout used as its own HERMES_HOME points both candidates at one
+        # file; list (and therefore load) it once.
+        try:
+            key = candidate.resolve()
+        except OSError:  # pragma: no cover - unusual filesystems
+            key = candidate
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(candidate)
+    return sources
+
+
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -524,15 +568,15 @@ def load_hermes_dotenv(
 
     loaded: list[Path] = []
     user_env = home_path / ".env"
-    project_env_path = Path(project_env) if project_env else None
+    # Resolve once, through the same helper the reporting commands call, so
+    # `hermes status` / `hermes doctor` describe exactly this set (#102023).
+    sources = resolve_env_sources(hermes_home=home_path, project_env=project_env)
 
     # Normalize safe formatting and remove invalid NUL bytes before parsing.
-    if user_env.exists():
-        _sanitize_env_file_if_needed(user_env)
-    if project_env_path and project_env_path.exists():
-        _sanitize_env_file_if_needed(project_env_path)
+    for source in sources:
+        _sanitize_env_file_if_needed(source)
 
-    if user_env.exists():
+    if user_env in sources:
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
         # Mirror reload_env() known-key cleanup so inherited Hermes keys
@@ -553,9 +597,12 @@ def load_hermes_dotenv(
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         _load_dotenv_with_fallback(op_env, override=False)
 
-    if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
-        loaded.append(project_env_path)
+    # `override=not loaded` keeps the documented precedence: the project .env
+    # only fills gaps when the user .env was loaded, but overrides stale
+    # shell-exported values when it is the sole source.
+    for project_source in (p for p in sources if p != user_env):
+        _load_dotenv_with_fallback(project_source, override=not loaded)
+        loaded.append(project_source)
 
     # External secret sources are skipped in two updater situations:
     # 1. ``load_external_secrets=False`` — the caller is an ``update``

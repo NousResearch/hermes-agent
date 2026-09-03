@@ -19,7 +19,7 @@ from hermes_cli.config import (
     is_nix_install_method,
     recommended_update_command_for_method,
 )
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.env_loader import load_hermes_dotenv, resolve_env_sources
 from hermes_constants import display_hermes_home
 from hermes_constants import agent_browser_runnable
 
@@ -1478,9 +1478,13 @@ def run_doctor(args):
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.
     managed_scope_check()
-    # Check ~/.hermes/.env (primary location for user config)
+    # Check ~/.hermes/.env (primary location for user config).  The candidates
+    # come from the loader's own resolver rather than a second hand-rolled
+    # fallback, so doctor, `hermes status` and load_hermes_dotenv() cannot
+    # disagree about which files count (#102023).
     env_path = HERMES_HOME / '.env'
-    if env_path.exists():
+    env_sources = resolve_env_sources(hermes_home=HERMES_HOME, project_env=PROJECT_ROOT / '.env')
+    if env_path in env_sources:
         check_ok(f"{_DHH}/.env file exists")
         
         # Prefer UTF-8 (.env is written as UTF-8 elsewhere). Fall back to
@@ -1496,9 +1500,8 @@ def run_doctor(args):
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")
     else:
-        # Also check project root as fallback
-        fallback_env = PROJECT_ROOT / '.env'
-        if fallback_env.exists():
+        # Any remaining candidate is the project-root fallback.
+        if env_sources:
             check_ok(".env file exists (in project directory)")
         else:
             check_fail(f"{_DHH}/.env file missing")

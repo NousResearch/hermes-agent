@@ -6021,6 +6021,24 @@ class SlackAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    @staticmethod
+    def _claimed_message_ts(event: Optional[dict]) -> str:
+        """Return the ts the impl will claim for ``event``.
+
+        ``_handle_slack_message_impl`` rebinds ``event`` to the inner
+        ``message`` dict for ``message_changed`` before it claims, so the
+        outer event ts is NOT the claimed key on the edit path — the very
+        path the release guard exists for. Derive the same value here rather
+        than stashing it on ``self``: Slack delivers events concurrently and
+        both wrapper and impl are re-entrant, so instance state would race.
+        """
+        event = event or {}
+        if event.get("subtype") == "message_changed":
+            inner = event.get("message")
+            if isinstance(inner, dict):
+                return str(inner.get("ts") or "")
+        return str(event.get("ts") or "")
+
     async def _handle_slack_message(
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
@@ -6035,7 +6053,7 @@ class SlackAdapter(BasePlatformAdapter):
         the claim before re-raising. A ts that was already claimed before we
         started (the sequential-suppression case) is left untouched.
         """
-        _ts = str((event or {}).get("ts") or "")
+        _ts = self._claimed_message_ts(event)
         # getattr: bare test doubles (object.__new__) may lack the map.
         _claims = getattr(self, "_processed_message_ts", None)
         _was_claimed = bool(_ts) and _claims is not None and _ts in _claims

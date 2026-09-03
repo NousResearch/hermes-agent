@@ -318,7 +318,7 @@ declare global {
        *  local-models GUI surfaces. Absent/false = every local surface hides. */
       localModelsEnabled?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
-      setKeepAwake?: (on: boolean) => void
+      setKeepAwake?: (mode: 'always' | 'off' | 'while-working') => void
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>

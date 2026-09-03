@@ -4810,6 +4810,58 @@ def _respawn_storm_backoff() -> None:
         logger.debug("respawn-storm breaker check failed (non-fatal): %s", _be)
 
 
+# Config key: gateway.slow_callback_seconds. Unset/0 = off.
+_SLOW_CALLBACK_KEY = "slow_callback_seconds"
+
+
+def _apply_loop_stall_diagnostics(loop, raw) -> bool:
+    """Turn on asyncio's own slow-callback reporting when configured.
+
+    ``shutdown_watchdog`` probes the running loop every 30s and exits the process after 3
+    consecutive misses, then dumps every thread stack — one sample taken ~90 seconds after a
+    stall started, which is why six stalls across 2026-08-31..09-02 produced six different
+    main-thread stacks and no culprit: the dump shows where the loop was when it was shot, not
+    where it got stuck. With ``set_debug(True)`` and ``slow_callback_duration = N``, asyncio
+    names the callback itself, in real time, for any handle holding the loop longer than N.
+
+    Off by default (debug mode adds coroutine-origin tracking to every callback); turn it on
+    while hunting a stall via ``gateway.slow_callback_seconds: 5``, then off again.
+
+    Returns True when diagnostics were enabled. Never raises: a diagnostic must not be the
+    reason a gateway fails to boot.
+    """
+    if raw is None:
+        return False
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("gateway.%s=%r is not a number; loop stall diagnostics stay off",
+                       _SLOW_CALLBACK_KEY, raw)
+        return False
+    if seconds <= 0:
+        return False
+    try:
+        loop.set_debug(True)
+        loop.slow_callback_duration = seconds
+    except Exception as exc:
+        logger.warning("could not enable loop stall diagnostics (%s); continuing without them", exc)
+        return False
+    logger.info(
+        "loop stall diagnostics ON: callbacks holding the event loop longer than %.3gs will be "
+        "logged by name (gateway.%s)", seconds, _SLOW_CALLBACK_KEY)
+    return True
+
+
+def _configured_slow_callback_seconds():
+    """Read ``gateway.slow_callback_seconds`` from config; None when unreadable."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        return cfg_get(load_config_readonly(), "gateway", _SLOW_CALLBACK_KEY, default=None)
+    except Exception:
+        return None
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground. verbose 1=INFO/2+=DEBUG on stderr; quiet: no stderr logs; replace:
     kill an existing instance first (avoids systemd restart loops); force: skip the supervised guard."""
@@ -4874,7 +4926,16 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     success = False
     try:
-        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+        async def _start_gateway_with_diagnostics():
+            # Inside the coroutine so there is a running loop to configure;
+            # asyncio.run(debug=True) cannot set slow_callback_duration, and
+            # its 0.1s default would bury the log.
+            _apply_loop_stall_diagnostics(
+                asyncio.get_running_loop(), _configured_slow_callback_seconds()
+            )
+            return await start_gateway(replace=replace, verbosity=verbosity)
+
+        success = asyncio.run(_start_gateway_with_diagnostics())
         _exit_diag("asyncio.run.returned", success=success)
     except KeyboardInterrupt:
         # Detached Windows runs absorb SIGINT above; keep the handler for console runs.

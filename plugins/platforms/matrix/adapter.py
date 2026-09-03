@@ -1177,7 +1177,12 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _connect_setup_e2ee(self, client: Any, api: Any, state_store: Any) -> bool:
         """Set up the Olm machine + crypto store. Returns False when connect must abort."""
-        if not _check_e2ee_deps():
+        # On a worker thread: the import chain behind this check is `mautrix.crypto`, which
+        # `python -X importtime` measures at 2.21s. Run inline, it holds the event loop for that
+        # long on every connect -- and connect() runs again on every reconnect. Two of the six
+        # event-loop stalls observed 2026-08-31..09-02 were sitting in exactly this import when
+        # the watchdog killed the gateway.
+        if not await asyncio.to_thread(_check_e2ee_deps):
             if self._e2ee_mode == "optional":
                 logger.warning(
                     "Matrix: E2EE optional but dependencies are missing. Continuing without "

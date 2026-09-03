@@ -1,7 +1,11 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
 from pathlib import Path
+import sys
 import tomllib
+
+import pytest
+from packaging.markers import Marker, default_environment
 
 def _load_optional_dependencies():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
@@ -15,6 +19,33 @@ def _load_package_data():
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
     return tool["setuptools"]["package-data"]
+
+
+def _load_uv_lock():
+    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
+    with lock_path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def _locked_package(name):
+    packages = [package for package in _load_uv_lock()["package"] if package["name"] == name]
+    assert len(packages) == 1, f"expected one {name!r} package in uv.lock, got {packages}"
+    return packages[0]
+
+
+def _wake_marker_environment(version, *, sys_platform="linux", platform_machine="x86_64"):
+    environment = default_environment()
+    environment.update(
+        {
+            "python_version": f"{version[0]}.{version[1]}",
+            "python_full_version": f"{version[0]}.{version[1]}.0",
+            "extra": "wake",
+            "sys_platform": sys_platform,
+            "platform_system": "Darwin" if sys_platform == "darwin" else "Linux",
+            "platform_machine": platform_machine,
+        }
+    )
+    return environment
 
 
 def test_matrix_extra_not_in_all():
@@ -41,6 +72,117 @@ def test_matrix_extra_not_in_all():
         "matrix must not appear in [all] — it's lazy-installed via "
         "tools/lazy_deps.py LAZY_DEPS['platform.matrix']. Found: "
         f"{matrix_in_all}"
+    )
+
+
+def test_wake_openwakeword_has_explicit_python_platform_compatibility_boundary():
+    """The Linux tflite path is limited to CPython 3.11, not non-Linux."""
+    optional_dependencies = _load_optional_dependencies()
+    wake = optional_dependencies["wake"]
+
+    openwakeword_spec = next(spec for spec in wake if spec.startswith("openwakeword==0.6.0"))
+    marker = Marker(openwakeword_spec.split(";", 1)[1].strip())
+    assert marker.evaluate(_wake_marker_environment((3, 11), sys_platform="linux")) is True
+    assert marker.evaluate(_wake_marker_environment((3, 12), sys_platform="linux")) is False
+    assert marker.evaluate(
+        _wake_marker_environment((3, 13), sys_platform="darwin", platform_machine="arm64")
+    ) is True
+    assert marker.evaluate(
+        _wake_marker_environment((3, 12), sys_platform="win32", platform_machine="AMD64")
+    ) is True
+
+
+def test_wake_lock_markers_preserve_linux_boundary_and_darwin_bridge():
+    """The lock follows the platform-aware project marker."""
+    optional_dependencies = _load_optional_dependencies()
+    project_spec = next(
+        spec for spec in optional_dependencies["wake"] if spec.startswith("openwakeword==")
+    )
+    project_marker = Marker(project_spec.split(";", 1)[1].strip())
+
+    locked_root = _locked_package("hermes-agent")
+    locked_spec = next(
+        requirement
+        for requirement in locked_root["metadata"]["requires-dist"]
+        if requirement["name"] == "openwakeword"
+    )
+    locked_marker = Marker(locked_spec["marker"])
+
+    environments = {
+        "linux-cp311": _wake_marker_environment((3, 11), sys_platform="linux"),
+        "linux-cp312": _wake_marker_environment((3, 12), sys_platform="linux"),
+        "linux-cp314": _wake_marker_environment((3, 14), sys_platform="linux"),
+        "darwin-arm64-cp312": _wake_marker_environment(
+            (3, 12), sys_platform="darwin", platform_machine="arm64"
+        ),
+        "darwin-arm64-cp313": _wake_marker_environment(
+            (3, 13), sys_platform="darwin", platform_machine="arm64"
+        ),
+        "windows-amd64-cp312": _wake_marker_environment(
+            (3, 12), sys_platform="win32", platform_machine="AMD64"
+        ),
+    }
+    expected = {
+        "linux-cp311": True,
+        "linux-cp312": False,
+        "linux-cp314": False,
+        "darwin-arm64-cp312": True,
+        "darwin-arm64-cp313": True,
+        "windows-amd64-cp312": True,
+    }
+    for name, environment in environments.items():
+        assert project_marker.evaluate(environment) is expected[name], name
+        assert locked_marker.evaluate(environment) is expected[name], name
+
+    assert locked_spec["specifier"] == "==0.6.0"
+    assert "extra == 'wake'" in locked_spec["marker"]
+
+    openwakeword = _locked_package("openwakeword")
+    tflite_dependency = next(
+        dependency
+        for dependency in openwakeword["dependencies"]
+        if dependency["name"] == "tflite-runtime"
+    )
+    assert tflite_dependency["marker"] == "sys_platform == 'linux'"
+
+    ai_edge_spec = next(
+        requirement
+        for requirement in locked_root["metadata"]["requires-dist"]
+        if requirement["name"] == "ai-edge-litert" and requirement["marker"]
+    )
+    assert ai_edge_spec["marker"] == "sys_platform == 'darwin' and extra == 'wake'"
+    assert ai_edge_spec["specifier"] == "==2.1.6"
+
+
+def test_tflite_lock_contains_supported_cp311_linux_architectures():
+    """The lock retains all three published CPython 3.11 Linux wheels."""
+    wheels = _locked_package("tflite-runtime")["wheels"]
+    wheel_urls = [wheel["url"] for wheel in wheels]
+    for architecture in ("x86_64", "aarch64", "armv7l"):
+        assert any("cp311" in url and architecture in url for url in wheel_urls), architecture
+    assert not any("cp312" in url or "cp313" in url or "cp314" in url for url in wheel_urls)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux"
+    or sys.implementation.name != "cpython"
+    or sys.version_info[:2] != (3, 11),
+    reason="wake import smoke runs on CPython 3.11 Linux only",
+)
+def test_supported_wake_runtime_import_smoke():
+    """Import the locked tflite/openWakeWord path when the wake extra is present.
+
+    Lean test environments intentionally do not install the optional ``wake``
+    extra. On a CPython 3.11 Linux job that does install it, both imports must
+    succeed; otherwise this test reports an explicit, actionable skip.
+    """
+    pytest.importorskip(
+        "tflite_runtime.interpreter",
+        reason="install the optional wake extra to run the CPython 3.11 smoke",
+    )
+    pytest.importorskip(
+        "openwakeword.model",
+        reason="install the optional wake extra to run the CPython 3.11 smoke",
     )
 
 

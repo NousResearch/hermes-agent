@@ -8,8 +8,10 @@ process-wide singleton lifecycle.
 
 import multiprocessing
 import os
+import subprocess
 import sys
 import threading
+import textwrap
 import time
 import types
 from pathlib import Path
@@ -17,6 +19,19 @@ from pathlib import Path
 import pytest
 
 import tools.wake_word as ww
+
+
+@pytest.fixture(autouse=True)
+def _allow_legacy_openwakeword_test_paths(monkeypatch):
+    """Keep pre-existing engine tests focused on their own behavior.
+
+    The compatibility boundary is exercised explicitly below; other tests use
+    fake openWakeWord modules and must remain portable across the test runner's
+    Python version. Simulate the supported interpreter for those legacy tests,
+    while individual boundary tests can override it with a real 3.12+ value.
+    """
+    if sys.version_info[:2] >= (3, 12):
+        monkeypatch.setattr(sys, "version_info", (3, 11, 0, "final", 0))
 
 
 # ── Config helpers ───────────────────────────────────────────────────────
@@ -100,6 +115,7 @@ def _voice_loop_ready(monkeypatch, stt=True, tts=True):
 def test_requirements_openwakeword_available(monkeypatch):
     _voice_loop_ready(monkeypatch)
     monkeypatch.setattr(ww, "_audio_available", lambda: True)
+    monkeypatch.setattr("tools.lazy_deps.openwakeword_unsupported_reason", lambda: None)
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
     r = ww.check_wake_word_requirements(
         {"provider": "openwakeword", "phrase": "hey hermes"}
@@ -107,6 +123,113 @@ def test_requirements_openwakeword_available(monkeypatch):
     assert r["available"] is True
     assert r["provider"] == "openwakeword"
     assert r["phrase"] == "hey hermes"
+
+
+def test_requirements_openwakeword_unsupported_python_fails_closed(monkeypatch):
+    """Python 3.12+ must report remediation without attempting lazy install."""
+    import tools.lazy_deps as lazy_deps
+
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(
+        lazy_deps.sys,
+        "version_info",
+        (3, 13, 0, "final", 0),
+    )
+    monkeypatch.setattr(
+        lazy_deps,
+        "is_available",
+        lambda feature: pytest.fail("availability must not trigger an install"),
+    )
+    monkeypatch.setattr(
+        lazy_deps,
+        "_allow_lazy_installs",
+        lambda: pytest.fail("installer policy must not be probed"),
+    )
+    monkeypatch.setattr(ww, "_audio_available", lambda: pytest.fail("audio probe is unnecessary"))
+    monkeypatch.setattr(
+        ww, "_local_input_device_ready", lambda: pytest.fail("mic probe is unnecessary")
+    )
+
+    result = ww.check_wake_word_requirements({"provider": "openwakeword"})
+
+    reason = lazy_deps.openwakeword_unsupported_reason()
+    assert reason is not None
+    assert "Python 3.11" in reason
+    assert "another configured wake provider" in reason
+    assert "LiteRT" in reason
+    assert result["available"] is False
+    assert result["deps_available"] is False
+    assert result["hint"] == reason
+    assert "Python 3.11" in result["hint"]
+
+
+def test_openwakeword_engine_rejects_unsupported_python_before_lazy_install(monkeypatch):
+    import tools.lazy_deps as lazy_deps
+
+    monkeypatch.setattr(
+        lazy_deps.sys,
+        "version_info",
+        (3, 14, 0, "final", 0),
+    )
+    monkeypatch.setattr(
+        lazy_deps,
+        "ensure",
+        lambda *args, **kwargs: pytest.fail("incompatible wake deps must not install"),
+    )
+
+    with pytest.raises(RuntimeError, match="Python 3.12 or newer") as exc_info:
+        ww._OpenWakeWordEngine({"provider": "openwakeword"})
+    message = str(exc_info.value)
+    assert "Python 3.11" in message
+    assert "another configured wake provider" in message
+    assert "LiteRT" in message
+
+
+def test_wake_modules_import_without_optional_dependencies():
+    """Lazy wake modules remain importable when every optional stack is absent."""
+    repo_root = Path(__file__).resolve().parents[2]
+    script = textwrap.dedent(
+        """
+        import builtins
+
+        optional_roots = {
+            "ai_edge_litert",
+            "numpy",
+            "onnxruntime",
+            "openwakeword",
+            "pvporcupine",
+            "sherpa_onnx",
+            "sounddevice",
+            "tflite_runtime",
+        }
+        real_import = builtins.__import__
+
+        def reject_optional(name, globals=None, locals=None, fromlist=(), level=0):
+            if name.partition(".")[0] in optional_roots:
+                raise ModuleNotFoundError(f"blocked optional dependency: {name}")
+            return real_import(name, globals, locals, fromlist, level)
+
+        builtins.__import__ = reject_optional
+        import tools.lazy_deps
+        import tools.wake_word
+        """
+    )
+    environment = os.environ.copy()
+    existing_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        str(repo_root)
+        if not existing_pythonpath
+        else os.pathsep.join((str(repo_root), existing_pythonpath))
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
@@ -212,6 +335,7 @@ def _install_fake_openwakeword(monkeypatch):
     monkeypatch.setitem(sys.modules, "openwakeword", oww)
     monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    monkeypatch.setattr("tools.lazy_deps.openwakeword_unsupported_reason", lambda: None)
     return calls
 
 
@@ -225,6 +349,58 @@ def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
     )
     assert calls["download"] == [["/models/hey_hermes.onnx"]]
     assert eng._labels == ["hey_hermes"]
+
+
+@pytest.mark.parametrize("python_minor", [12, 13])
+def test_darwin_arm64_openwakeword_uses_existing_tflite_bridge(monkeypatch, python_minor):
+    """Darwin ARM64 remains available on CPython 3.12/3.13 via the bridge."""
+    import tools.lazy_deps as lazy_deps
+
+    real_reason = lazy_deps.openwakeword_unsupported_reason
+    _install_fake_openwakeword(monkeypatch)
+    monkeypatch.setattr(lazy_deps, "openwakeword_unsupported_reason", real_reason)
+    monkeypatch.setattr(lazy_deps.sys, "version_info", (3, python_minor, 0, "final", 0))
+    monkeypatch.setattr(lazy_deps.sys, "platform", "darwin")
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: True)
+
+    bridge_calls = []
+    monkeypatch.setattr(
+        ww,
+        "ensure_tflite_runtime",
+        lambda: bridge_calls.append("bridge") or True,
+    )
+
+    # Exercise the production capability gate on both supported Darwin minors;
+    # this must not be replaced by a hand-written test-only reason.
+    assert real_reason() is None
+    engine = ww._OpenWakeWordEngine({"provider": "openwakeword"})
+
+    assert engine._labels == ["hey_hermes"]
+    assert bridge_calls == ["bridge"]
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("python_minor", [12, 13])
+def test_windows_openwakeword_uses_onnx_path_without_linux_tflite_gate(monkeypatch, python_minor):
+    """Windows keeps openWakeWord's ONNX path on future Python minors."""
+    import tools.lazy_deps as lazy_deps
+
+    real_reason = lazy_deps.openwakeword_unsupported_reason
+    _install_fake_openwakeword(monkeypatch)
+    monkeypatch.setattr(lazy_deps, "openwakeword_unsupported_reason", real_reason)
+    monkeypatch.setattr(lazy_deps.sys, "version_info", (3, python_minor, 0, "final", 0))
+    monkeypatch.setattr(lazy_deps.sys, "platform", "win32")
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
+    monkeypatch.setattr(
+        ww,
+        "ensure_tflite_runtime",
+        lambda: pytest.fail("Windows ONNX path must not probe the tflite bridge"),
+    )
+
+    assert real_reason() is None
+    engine = ww._OpenWakeWordEngine({"provider": "openwakeword"})
+
+    assert engine._labels == ["hey_hermes"]
 
 
 def test_bundled_hey_hermes_model_ships_on_disk():
@@ -318,6 +494,7 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
     monkeypatch.setitem(sys.modules, "openwakeword", oww)
     monkeypatch.setitem(sys.modules, "openwakeword.model", model_mod)
     monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+    monkeypatch.setattr("tools.lazy_deps.openwakeword_unsupported_reason", lambda: None)
     monkeypatch.setattr(ww, "ensure_tflite_runtime", lambda: True)
     return ww._OpenWakeWordEngine({"provider": "openwakeword", **cfg_wake})
 

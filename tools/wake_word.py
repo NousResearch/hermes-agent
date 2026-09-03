@@ -68,6 +68,13 @@ class WakeWordInUse(RuntimeError):
     """Raised when another surface or process owns the wake-word listener."""
 
 
+def _openwakeword_unsupported_reason() -> Optional[str]:
+    """Return the shared compatibility-boundary reason, if applicable."""
+    from tools import lazy_deps
+
+    return lazy_deps.openwakeword_unsupported_reason()
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -535,6 +542,14 @@ class _OpenWakeWordEngine(_Engine):
     def __init__(self, cfg: Dict[str, Any]):
         from tools import lazy_deps
 
+        unsupported = _openwakeword_unsupported_reason()
+        if unsupported:
+            # Do this before lazy_deps.ensure(): on Python 3.12+ the resolver
+            # cannot produce the tflite-runtime dependency of openWakeWord 0.6.0.
+            # Do not offer an incompatible lazy install or silently switch to
+            # the unverified LiteRT bridge.
+            raise RuntimeError(f"Wake word unavailable: {unsupported}.")
+
         lazy_deps.ensure("wake.openwakeword", prompt=False)
 
         import openwakeword
@@ -908,8 +923,16 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
         feature = "wake.sherpa"
     else:
         feature = "wake.openwakeword"
-    deps_ok = lazy_deps.is_available(feature)
-    lazy_ok = lazy_deps._allow_lazy_installs()
+    unsupported = (
+        _openwakeword_unsupported_reason()
+        if feature == "wake.openwakeword"
+        else None
+    )
+    # A known-incompatible Python runtime is unavailable even when lazy
+    # installs are enabled. Do not probe installer policy in that case; the
+    # boundary must fail closed before an install attempt.
+    deps_ok = False if unsupported else lazy_deps.is_available(feature)
+    lazy_ok = False if unsupported else lazy_deps._allow_lazy_installs()
     # The audio probe imports sounddevice + numpy — two of the very packages
     # the lazy installer would fetch — so it can only be trusted once the
     # feature's deps are installed. On a fresh install (deps missing, lazy
@@ -929,12 +952,17 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     # The tflite backend needs a runtime openWakeWord doesn't declare off Linux.
     # Report it as a real remediation instead of arming a detector that can't fire.
     tflite_ok = True
-    if provider not in ("porcupine", "sherpa", "sherpa-onnx", "kws", "open"):
+    if (
+        not unsupported
+        and provider not in ("porcupine", "sherpa", "sherpa-onnx", "kws", "open")
+    ):
         framework = resolve_inference_framework(cfg)
         if framework == "tflite":
             tflite_ok = ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok
 
-    if provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
+    if unsupported:
+        hint = unsupported
+    elif provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
         key_ok = False
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
     elif not deps_ok and not lazy_ok:
@@ -950,7 +978,16 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
         hint = (f"Wake word needs {missing} configured — run `hermes tools` "
                 f"(Voice section) or see the voice-mode docs.")
 
-    capture_mode = resolve_capture_mode(cfg)
+    capture_mode = (
+        (
+            "client"
+            if str(_get(cfg, "capture") or "auto").strip().lower()
+            in ("client", "remote", "external")
+            else "local"
+        )
+        if unsupported
+        else resolve_capture_mode(cfg)
+    )
     local_input_ok = _local_input_device_ready() if deps_ok else False
     # Client capture needs deps (engine) but not a server-side PortAudio device.
     if capture_mode == "client":

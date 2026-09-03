@@ -85,6 +85,36 @@ class TestAllowlist:
         assert ld.feature_install_command("not.real") is None
         assert ld.feature_install_command("not.real", venv_pip=True) is None
 
+    def test_openwakeword_linux_python_boundary(self):
+        assert ld.openwakeword_supported((3, 11), sys_platform="linux") is True
+        assert ld.openwakeword_supported((3, 12), sys_platform="linux") is False
+        assert ld.openwakeword_supported((3, 14), sys_platform="linux") is False
+
+    def test_openwakeword_darwin_bridge_is_not_blocked_by_linux_tflite_boundary(self):
+        assert ld.openwakeword_supported((3, 12), sys_platform="darwin") is True
+        assert ld.openwakeword_supported((3, 13), sys_platform="darwin") is True
+
+    def test_openwakeword_windows_onnx_path_is_not_blocked_by_linux_tflite_boundary(self):
+        assert ld.openwakeword_supported((3, 12), sys_platform="win32") is True
+        assert ld.openwakeword_supported((3, 13), sys_platform="win32") is True
+
+    def test_openwakeword_unsupported_fails_before_pip(self, monkeypatch):
+        monkeypatch.setattr(ld, "openwakeword_supported", lambda: False)
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(
+            ld,
+            "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip must not run for unsupported Python"),
+        )
+        monkeypatch.setattr(
+            ld,
+            "_allow_lazy_installs",
+            lambda: pytest.fail("installer policy must not be probed"),
+        )
+
+        with pytest.raises(ld.FeatureUnavailable, match="Python 3.12"):
+            ld.ensure("wake.openwakeword", prompt=False)
+
     def test_feature_install_command_venv_pip_targets_interpreter(self):
         # venv_pip=True must target the running interpreter's pip (correct in
         # every install layout, immune to PEP 668) and carry the same specs

@@ -84,9 +84,23 @@ By default the phrase is **"hey hermes"** — a model for it ships with Hermes, 
 it works out of the box with no training. (On first use, openWakeWord downloads
 its shared feature-extraction models — a small one-time fetch.)
 
-Both are lazy-installed the first time you enable the wake word (desktop
+Wake engines are lazy-installed the first time you enable the wake word (desktop
 installs made with `--include-desktop` pre-install them, so the ear works
-instantly). To install ahead of time:
+instantly). The released openWakeWord 0.6.0 path has an explicit platform-aware
+compatibility boundary: its Linux `tflite-runtime` dependency has published
+wheels only for CPython 3.11. On Linux, that means openWakeWord is supported on
+CPython 3.11 for x86_64, aarch64, and armv7l where the existing wheels resolve.
+On macOS ARM64, the dependency remains selectable on supported CPython 3.12 and
+3.13 runtimes and the existing `ai-edge-litert` bridge supplies the tflite path.
+It is not a silent replacement for the Linux runtime. On Linux Python 3.12 and
+newer Hermes reports openWakeWord unavailable and does not attempt an
+incompatible lazy install; use Python 3.11, select sherpa or Porcupine, or wait
+for the upstream LiteRT-based release. Windows uses openWakeWord's ONNX path;
+the Linux-only `tflite-runtime` boundary does not disable it.
+
+The normal `[all]` profile deliberately does not include the `wake` extra, so
+this optional compatibility boundary cannot break a regular all-features sync.
+To install ahead of time:
 
 ```bash
 cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"

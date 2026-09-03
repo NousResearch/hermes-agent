@@ -221,7 +221,7 @@ voice = [
 # [wake]+[voice] so the ear works instantly; CLI-only installs lazy-install on
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
-  "openwakeword==0.6.0",
+  "openwakeword==0.6.0; python_version < '3.12' or sys_platform != 'linux'",
   "onnxruntime==1.27.0",
   "sherpa-onnx==1.13.4",
   "sentencepiece==0.2.2",

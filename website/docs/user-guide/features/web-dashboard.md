@@ -151,6 +151,49 @@ Close the browser tab and the PTY is reaped cleanly on the server. Re-opening sp
 
 To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
 
+### Neon Genie wizard
+
+When the [Neon Genie](https://github.com/Zero-State-LLC/NeonGenie) skill is
+installed, the **Neon Genie** sidebar page (`/neon-genie`) provides a guided
+brief builder for product and opportunity work. It does not execute a strategy
+by itself. It prepares an evidence-bound prompt and hands that prompt to the
+real Hermes Chat session.
+
+Install the skill once, then reload Hermes:
+
+```bash
+hermes skills install scrimshawlife-ctrl/NeonGenie/skills/neon-genie
+hermes dashboard
+```
+
+The wizard walks through four steps:
+
+1. **Mission** — choose product audit, opportunity mining, zero-option,
+   commercial, fragmentation, evidence, agentic services, audit delivery, or a
+   Wayfinder handoff.
+2. **Context** — state the requested outcome, current and desired states,
+   affected user, known evidence, constraints, and explicit exclusions.
+3. **Guardrails** — decide whether public research is allowed, optionally cap
+   research fetches, and confirm drafting and human-review boundaries.
+4. **Review** — inspect the generated prompt, copy it, then open Chat.
+
+The generated prompt preserves Neon Genie's operating contract:
+
+- use the smallest sufficient profile set;
+- label important claims `OBSERVED`, `INFERRED`, `SPECULATIVE`, or
+  `NOT_COMPUTABLE`;
+- research public gaps only when allowed;
+- turn missing private facts into DataRequests instead of guesses;
+- fail closed when proof, buyer, access, or authority is missing;
+- never grant spending, publishing, outreach, repository mutation, or execution
+  authority.
+
+The browser must allow clipboard access for **Copy and open Chat**. If copying
+fails, the wizard stays on the review step so the prompt is not lost. You can
+select and copy the generated prompt manually. The selected dashboard profile
+also applies to the Chat session, so install or enable Neon Genie for that
+profile before submitting the prompt.
+
 ### Connecting Hermes Desktop to a remote backend
 
 Hermes Desktop normally launches its own local backend, but it can also attach to a dashboard running on a remote machine (a VM, a homelab box, etc.) via **Settings → Gateways → Remote gateway**. This is the most common source of "Desktop says the backend is ready but chat never works" reports, because Desktop's readiness check verifies less than the live chat connection actually needs.

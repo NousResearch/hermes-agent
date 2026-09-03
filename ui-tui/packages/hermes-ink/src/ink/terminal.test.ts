@@ -93,7 +93,7 @@ describe('skipKittyKeyboardProtocol', () => {
     }
   })
 
-  it.each(['iTerm.app', 'kitty', 'WezTerm', 'tmux', 'windows-terminal', 'vscode'])(
+  it.each(['iTerm.app', 'kitty', 'WezTerm', 'tmux', 'windows-terminal', 'vscode', 'alacritty'])(
     'keeps the dual push for %s',
     async terminal => {
       const { env } = await import('../utils/env.js')
@@ -108,4 +108,19 @@ describe('skipKittyKeyboardProtocol', () => {
       }
     }
   )
+})
+
+describe('supportsExtendedKeys — alacritty (Kitty keyboard protocol is always-on in Alacritty itself)', () => {
+  it('reports support for alacritty', async () => {
+    const { env } = await import('../utils/env.js')
+    const { supportsExtendedKeys } = await import('./terminal.js')
+    const saved = env.terminal
+
+    try {
+      env.terminal = 'alacritty'
+      expect(supportsExtendedKeys()).toBe(true)
+    } finally {
+      env.terminal = saved
+    }
+  })
 })

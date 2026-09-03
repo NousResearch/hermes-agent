@@ -153,6 +153,44 @@ def test_unknown_terminal_does_not_enable_extended_enter_keys():
     assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "unknown"}) is False
 
 
+def test_alacritty_term_program_is_allowlisted_for_extended_enter_keys():
+    """Alacritty implements the Kitty keyboard protocol unconditionally
+    (`kitty_keyboard: true` in its own config derivation) but Hermes must
+    still ask it to enable extended key reporting to receive distinct
+    Shift+Enter sequences."""
+    import cli as cli_mod
+
+    assert cli_mod._terminal_supports_extended_enter_keys({"TERM_PROGRAM": "alacritty"}) is True
+
+
+def test_alacritty_term_var_is_allowlisted_for_extended_enter_keys():
+    """Alacritty does not set TERM_PROGRAM by default — only TERM=alacritty
+    and the ALACRITTY_WINDOW_ID / ALACRITTY_SOCKET env vars it exports."""
+    import cli as cli_mod
+
+    assert cli_mod._terminal_supports_extended_enter_keys({"TERM": "alacritty"}) is True
+    assert (
+        cli_mod._terminal_supports_extended_enter_keys(
+            {"TERM": "xterm-256color", "ALACRITTY_WINDOW_ID": "94212259512240"}
+        )
+        is True
+    )
+    assert (
+        cli_mod._terminal_supports_extended_enter_keys(
+            {"TERM": "xterm-256color", "ALACRITTY_SOCKET": "/run/user/1000/Alacritty-wayland-1.sock"}
+        )
+        is True
+    )
+
+
+def test_alacritty_is_not_treated_as_ghostty():
+    """Alacritty must get the full dual-protocol push, not the Ghostty-only
+    modifyOtherKeys exception."""
+    import cli as cli_mod
+
+    assert cli_mod._is_ghostty_terminal({"TERM": "alacritty", "ALACRITTY_WINDOW_ID": "1"}) is False
+
+
 # ---------------------------------------------------------------------------
 # Ghostty: must push ONLY modifyOtherKeys, not the Kitty keyboard protocol —
 # see cli._is_ghostty_terminal for the full rationale (#87630).

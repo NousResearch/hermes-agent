@@ -33,6 +33,10 @@ function detectTerminal(): TerminalName {
     return 'windows-terminal'
   }
 
+  if (process.env.TERM?.includes('alacritty') || process.env.ALACRITTY_WINDOW_ID) {
+    return 'alacritty'
+  }
+
   return process.env.TERM ?? null
 }
 

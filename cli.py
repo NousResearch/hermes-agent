@@ -4417,11 +4417,13 @@ def _terminal_supports_extended_enter_keys(env: Optional[Mapping[str, str]] = No
     term = (env.get("TERM") or "").strip().lower()
     if env.get("WT_SESSION"):
         return True
-    if term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode"}:
+    if term_program in {"iTerm.app", "WezTerm", "ghostty", "vscode", "alacritty"}:
         return True
     if env.get("KITTY_WINDOW_ID") or "kitty" in term:
         return True
     if term == "xterm-ghostty":
+        return True
+    if "alacritty" in term or env.get("ALACRITTY_WINDOW_ID") or env.get("ALACRITTY_SOCKET"):
         return True
     if term.startswith("tmux") or term_program.lower() == "tmux":
         return True

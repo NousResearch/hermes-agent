@@ -7509,25 +7509,46 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 # subscription-feature checks) call it many times per render — `hermes tools` → "All Platforms"
 # was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
 # single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
-# path + mtime so that profile switches do not share a process memo and
+# path + content digest so that profile switches do not share a process memo and
 # `hermes auth login/logout/add/remove` invalidate naturally on the next call.
+#
+# Content-digest-keyed, not mtime-keyed: this cache stores the live Nous
+# access_token (see _compute_nous_auth_status below), so it guards credential
+# identity, not just a parse. A (path, mtime) signature is the right idiom for
+# a config cache, but an external metadata-preserving copy of auth.json
+# (dotfile sync, backup/restore, `rsync -a`) can replace the file's bytes
+# while restoring its original mtime — a stat-only key would never detect
+# that and would keep serving a stale (or entirely different) access_token
+# for the life of the TTL window. Same class of bug already fixed for the
+# Vertex SA credential cache (agent/vertex_adapter.py's _read_sa_file) and
+# for this file's own _load_global_auth_store()/_oauth_heal_clean_marks
+# caches; hashing the content closes the same gap here.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[Tuple[float, str, Optional[str], Dict[str, Any]]] = None
 
-# mtime-keyed memo for _load_global_auth_store(): (path, mtime_ns, store).
+# content-digest-keyed memo for _load_global_auth_store(): (path, sha256, store).
 # Same invalidation contract as _nous_auth_status_cache — the global auth
 # file changes only when a global-scope auth write touches it.
 _global_auth_store_cache: Optional[Tuple[str, int, Dict[str, Any]]] = None
 
 
-def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
+def _auth_file_cache_key() -> Tuple[str, Optional[str]]:
+    """(resolved auth.json path, sha256-of-content) cache key.
+
+    Fingerprints the file's CONTENT, not stat metadata — see the module
+    comment above _nous_auth_status_cache for why a credential cache can't
+    use a stat-only key. The file is a few KB of JSON; one read + sha256 per
+    cache PROBE is noise next to the OAuth refresh POST this cache exists to
+    avoid.
+    """
     auth_file = _auth_file_path()
     try:
         auth_file_key = str(auth_file.resolve(strict=False))
     except Exception:
         auth_file_key = str(auth_file)
     try:
-        return auth_file_key, auth_file.stat().st_mtime
+        digest = hashlib.sha256(auth_file.read_bytes()).hexdigest()
+        return auth_file_key, digest
     except FileNotFoundError:
         return auth_file_key, None
     except Exception:
@@ -7555,27 +7576,27 @@ def get_nous_auth_status() -> Dict[str, Any]:
     as a healthy login. If provider state is absent, fall back to the credential
     pool for the just-logged-in / not-yet-promoted case.
 
-    The returned snapshot is memoised for ~15s keyed on the auth.json mtime,
-    so menu/status surfaces that ask repeatedly don't trigger one refresh POST
-    per call. Login/logout flows write to auth.json and therefore invalidate
-    the cache automatically; tests can also call
+    The returned snapshot is memoised for ~15s keyed on the auth.json content
+    digest, so menu/status surfaces that ask repeatedly don't trigger one
+    refresh POST per call. Login/logout flows write to auth.json and
+    therefore invalidate the cache automatically; tests can also call
     ``invalidate_nous_auth_status_cache()`` explicitly.
     """
     global _nous_auth_status_cache
     now = time.monotonic()
-    auth_file_key, mtime = _auth_file_cache_key()
+    auth_file_key, digest = _auth_file_cache_key()
     cached = _nous_auth_status_cache
     if cached is not None:
-        cached_at, cached_auth_file_key, cached_mtime, cached_status = cached
+        cached_at, cached_auth_file_key, cached_digest, cached_status = cached
         if (
             cached_auth_file_key == auth_file_key
-            and cached_mtime == mtime
+            and cached_digest == digest
             and (now - cached_at) < _NOUS_AUTH_STATUS_CACHE_TTL
         ):
             return dict(cached_status)
 
     status = _compute_nous_auth_status()
-    _nous_auth_status_cache = (now, auth_file_key, mtime, dict(status))
+    _nous_auth_status_cache = (now, auth_file_key, digest, dict(status))
     return status
 
 

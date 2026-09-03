@@ -180,6 +180,24 @@ _BILLING_ERROR_CODES = frozenset({
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
+# Anthropic subscription *entitlement* gate, surfaced as HTTP 400.  When a
+# Claude Pro/Max subscription must enable extra usage to keep serving, native
+# Anthropic returns a 400 whose body reads like "Third-party apps now draw from
+# your extra usage. To continue, enable extra usage in your account settings."
+# This is a billing/entitlement condition, not a malformed request — without
+# this it fell through to the generic ``format_error`` bucket, so the user got
+# an opaque "format error" instead of actionable billing guidance and no
+# credential rotation fired.  Patterns are deliberately specific (an account
+# *action* on extra usage) so they do NOT collide with the 429 rolling-cap /
+# long-context tier gate, which is "extra usage" + "long context" and is
+# classified separately as ``long_context_tier`` on the 429 path.
+_ENTITLEMENT_PATTERNS = [
+    "draw from your extra usage",
+    "enable extra usage",
+    "exceed your extra usage",
+    "extra usage allowance",
+]
+
 # Patterns that indicate rate limiting (transient, will resolve)
 _RATE_LIMIT_PATTERNS = [
     "rate limit",
@@ -1782,6 +1800,17 @@ def _classify_400(
             should_rotate_credential=True,
             should_fallback=True,
         )
+    # Anthropic subscription entitlement gate ("extra usage") arrives as a 400.
+    # Treat as billing (rotate + fall back + surface billing guidance) rather
+    # than the generic format_error. Checked before _BILLING_PATTERNS since the
+    # phrasing is distinct; both converge on FailoverReason.billing.
+    if any(p in error_msg for p in _ENTITLEMENT_PATTERNS):
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(
             FailoverReason.billing,
@@ -1971,6 +2000,18 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.overloaded,
             retryable=True,
+        )
+
+    # Entitlement gate ("extra usage") when surfaced without a status code.
+    # Must come BEFORE the generic billing check so the specific entitlement
+    # phrasing is classified here. Guard against the long-context tier phrasing
+    # so it isn't swallowed here (that path stays retryable on the 429 branch).
+    if any(p in error_msg for p in _ENTITLEMENT_PATTERNS) and "long context" not in error_msg:
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
         )
 
     # Billing patterns

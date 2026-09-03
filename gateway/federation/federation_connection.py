@@ -488,6 +488,14 @@ class FederationConnectionManager:
                             target_id=did,
                             payload={"timestamp": now},
                         )
+                        # Sign the ping exactly like the join gate above —
+                        # `send()` is the only other place signing happens,
+                        # and this loop bypasses it. Without a signature the
+                        # peer's receive loop drops every ping ("bad
+                        # signature") and the link never stays alive when
+                        # require_auth is on (the default).
+                        if self.auth_token:
+                            ping.sign(self.auth_token)
                         await ws.send(ping.to_json())
                     except Exception:
                         await self._close_connection(did)

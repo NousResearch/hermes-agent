@@ -1074,13 +1074,30 @@ def create_federation_adapter(
     offline_threshold_s: int = 30,
     heartbeat_interval_s: int = 60,
 ) -> FederationAdapter:
-    """Factory function to create a federation adapter from config values."""
+    """Factory function to create a federation adapter from config values.
+
+    ``auth_token`` resolution: an explicit token (config.yaml / caller)
+    wins; otherwise the federation secret store (macOS Keychain or the
+    encrypted-file fallback) is consulted via ``resolve_auth_token``.
+    This keeps plaintext config working while making the keychain a real,
+    live source — previously the store had no callers on this path.
+    """
+    resolved_token = auth_token
+    if not resolved_token and require_auth:
+        # Only probe the store when auth is actually required — an
+        # allow_insecure/no-auth local setup must not pick up a stray
+        # keychain entry and silently change its trust posture.
+        try:
+            from gateway.federation.secret_store import resolve_auth_token
+            resolved_token = resolve_auth_token(None)
+        except Exception as e:  # store unavailable → stay unauthenticated
+            logger.debug("Federation: secret-store token lookup skipped: %s", e)
     config = FederationConfig(
         enabled=enabled,
         mode=mode,
         device_id=device_id,
         ws_port=ws_port,
-        auth_token=auth_token,
+        auth_token=resolved_token,
         require_auth=require_auth,
         tls_cert=tls_cert,
         tls_key=tls_key,

@@ -415,6 +415,52 @@ def set_token(key: str, value: str) -> None:
     get_default_store().set(key, value)
 
 
+# Key names probed when resolving the federation auth token from the store.
+# Covers both bare and dotted forms so tokens stored under either convention
+# (e.g. via `hermes fed` tooling or manual `security add-generic-password`)
+# are found. SecretStore._namespaced() adds the `hermes.federation.` prefix.
+_AUTH_TOKEN_STORE_KEYS = (
+    "auth_token",
+    "cluster_secret",
+    "federation.auth_token",
+    "federation.cluster_secret",
+)
+
+
+def resolve_auth_token(explicit: Optional[str] = None) -> Optional[str]:
+    """Live read path for the federation auth token.
+
+    Precedence: an explicit value (config.yaml / caller argument) always
+    wins; otherwise consult the secret store (macOS Keychain, or the
+    encrypted-file fallback elsewhere). This is the wiring that puts
+    ``SecretStore`` on the runtime path — before it existed the store was
+    orphaned (no callers outside this module) and the token only worked
+    from plaintext ``config.yaml`` (community review on #76661).
+
+    Returns the token string, or None when neither source has one.
+    """
+    if explicit:
+        return explicit
+    try:
+        store = get_default_store()
+    except Exception as e:
+        log.debug("federation secret store unavailable: %s", e)
+        return None
+    for key in _AUTH_TOKEN_STORE_KEYS:
+        try:
+            ts = store.get(key)
+        except Exception as e:
+            log.debug("secret store lookup for %r failed: %s", key, e)
+            continue
+        if ts:
+            log.info(
+                "Federation: auth token resolved from secret store (key=%s)",
+                key,
+            )
+            return str(ts)
+    return None
+
+
 __all__ = [
     "SecretStore",
     "SecretBackend",
@@ -423,4 +469,5 @@ __all__ = [
     "get_default_store",
     "get_token",
     "set_token",
+    "resolve_auth_token",
 ]

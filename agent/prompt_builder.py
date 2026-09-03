@@ -1062,6 +1062,13 @@ PLATFORM_HINTS = {
         "sticker. Never draw sticker-like PNGs and send them as images, and "
         "bare Unicode emoji is not a substitute."
     ),
+    "ag_ui": (
+        "You are responding through an AG-UI protocol server. "
+        "The frontend is an AG-UI-compatible application (CopilotKit, custom React UI, "
+        "mobile app, or similar). Use plain text; avoid markdown formatting. "
+        "Tool calls, approvals, and state updates are streamed as structured AG-UI "
+        "events — do not describe them in prose. Keep responses concise and natural."
+    ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "

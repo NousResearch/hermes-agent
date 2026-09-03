@@ -46,6 +46,54 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    @pytest.mark.parametrize("capability", [None, False])
+    def test_title_generation_omits_response_format_without_capability(self, capability):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            response = MagicMock()
+            response.choices = [MagicMock()]
+            response.choices[0].message.content = '{"title": "Fix login"}'
+            return response
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title(
+                "fix login", response_format_supported=capability
+            ) == "Fix login"
+
+        assert "extra_body" not in captured_kwargs
+        assert "response_format" not in captured_kwargs
+
+    def test_title_generation_sends_response_format_when_capability_supported(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            response = MagicMock()
+            response.choices = [MagicMock()]
+            response.choices[0].message.content = '{"title": "Fix login"}'
+            return response
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title(
+                "fix login", response_format_supported=True
+            ) == "Fix login"
+
+        response_format = captured_kwargs["extra_body"]["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["name"] == "session_title"
+        assert response_format["json_schema"]["schema"]["required"] == ["title"]
+
+    def test_title_generation_parses_plain_prose_without_response_format(self):
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = "Fix login flow on mobile"
+
+        with patch("agent.title_generator.call_llm", return_value=response):
+            assert generate_title(
+                "fix login", response_format_supported=None
+            ) == "Fix login flow on mobile"
 
 
     def test_strips_think_blocks(self):

@@ -1,9 +1,10 @@
 # MCP OAuth Credential Store Delivery Plan
 
-Status: Proposed
+Status: Proposed (reconciled with design-review updates 2026-09-03)
 Date: 2026-09-01
 Related architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md)
 Related requirements: [`../requirements/mcp-oauth-credential-store-requirements.md`](../requirements/mcp-oauth-credential-store-requirements.md)
+Related design review: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (findings F-0..F-8)
 
 ## 1. Delivery strategy
 
@@ -15,7 +16,7 @@ Deliver the architecture as eight independently demonstrable pull requests. Each
 | 1 | Shared library facade | All current file operations route through one store interface, with no format change |
 | 2 | Unified lifecycle service | CLI, dashboard, and Desktop/TUI invoke the same authorization service |
 | 3 | Transactional reauthorization | Failed OAuth flows cannot modify active credentials |
-| 4 | Safe refresh concurrency | Absolute expiration, proactive refresh, CAS revisions, and bounded 401 recovery |
+| 4 | Safe refresh concurrency | Restart- and clock-robust expiration, proactive refresh, CAS revisions, and bounded 401 recovery |
 | 5 | Coherent file bundles | One atomic versioned bundle replaces separate live files |
 | 6 | Apple Keychain backend | CLI, TUI, gateway, cron, and Desktop share Keychain-backed credentials |
 | 7 | Migration and cleanup | Verified legacy migration, diagnostics, and removal of obsolete paths |
@@ -55,12 +56,13 @@ Wrap the existing file layout without changing behavior or storage format.
 
 ### Deliverables
 
-- `OAuthIdentity`.
+- `OAuthIdentity` (carries `profile_home: Path`; the identity digest is derived, not a field).
 - Legacy-compatible credential model.
 - Typed errors.
 - `OAuthCredentialStore` protocol.
 - `LegacyFileOAuthCredentialStore`.
 - Profile-scoped backend factory.
+- Centralize profile-home canonicalization on the shared `hermes_home_key()` helper (also migrate `MCPOAuthManager._key()` and `profiles.profile_matches_home()` onto it).
 - Backend contract tests.
 - Route all token, client, and metadata reads and writes through the facade.
 
@@ -97,6 +99,7 @@ Centralize authorization policy before changing transaction behavior.
 - Dashboard interaction adapter.
 - Desktop/TUI callback-relay adapter.
 - Shared status and deletion operations.
+- Failure classifier and stable typed lifecycle codes, including `authorization_endpoint_unavailable` for a transient endpoint failure; `AuthorizationResult` gains its final shape (a `probe` outcome field).
 - Convert `MCPOAuthManager` to memory-only eviction semantics.
 
 At this stage, the service may internally preserve the existing persistence flow. The accomplishment is eliminating three independently evolving implementations.
@@ -111,7 +114,7 @@ TUI auth ───────┘
 
 ### Merge gate
 
-- Each surface produces the same typed outcome for success, cancellation, timeout, and missing token.
+- Each surface produces the same typed outcome for success, cancellation, browser timeout, a transient authorization-endpoint failure, and a missing token.
 - Reconnect invokes memory eviction only.
 - Explicit removal invokes durable deletion.
 - UI session records own browser progress, not credential rollback.
@@ -126,7 +129,10 @@ This chunk provides the user-visible fix for the current failed-reauthorization 
 - Fresh authorization begins without exposing the active token to the SDK.
 - Client registration and metadata remain in memory during the flow.
 - Successful flow validates and commits staged state.
-- Failed, cancelled, or timed-out flow discards staged state.
+- Failed, cancelled, or timed-out flow discards staged state; a `rejected` probe aborts after one retry.
+- An indeterminate MCP probe commits the staged bundle rather than discarding it, recorded as probe-deferred.
+- A transient pre-token endpoint failure is retried once, then returns `authorization_endpoint_unavailable` without touching the active credential.
+- The compatibility backend commits legacy records in a fixed order (metadata, then client, then token).
 - Per-credential administrative lock shared by CLI, dashboard, and TUI.
 
 ### Demonstration
@@ -143,11 +149,17 @@ Active token: OLD
     ├── successful reauthorization obtains NEW
     │
     └── active token becomes NEW
+
+Active token: OLD
+    │
+    ├── new token obtained; MCP probe times out
+    │
+    └── active token becomes NEW (probe-deferred)
 ```
 
 ### Merge gate
 
-- Active credentials remain byte-for-byte unchanged after every pre-commit failure point.
+- Active credentials change only on a positive commit (probe-confirmed or probe-deferred); every genuine failure leaves them byte-for-byte unchanged.
 - Two explicit reauthorization attempts serialize or return `reauthorization_in_progress`.
 - Public MCP initialization without a token is not reported as authenticated.
 - Existing rollback code is removed, not retained as a fallback.
@@ -158,7 +170,7 @@ This is the target chunk for closing issue #76590.
 
 ### Deliverables
 
-- Persist `accepted_at_utc` and `expires_at`.
+- Persist `accepted_at_utc`, `expires_at`, and `original_expires_in` (the last never recomputed on load).
 - Implement expiration states:
 
   - `valid`
@@ -172,9 +184,10 @@ This is the target chunk for closing issue #76590.
 refresh_window = min(60 seconds, token_lifetime × 10%)
 ```
 
-- Add bundle revisions.
+- Apply a wall-clock plausibility guard before classification: an implausible elapsed time demotes to `unknown` (demote-only, never shortens `expires_at`).
+- Add bundle revisions, carried inside the token record (unified into one bundle in Chunk 5).
 - Commit refresh using compare-and-swap.
-- Preserve omitted refresh tokens.
+- Preserve omitted refresh tokens; a refresh with a new `expires_in` re-anchors `original_expires_in`.
 - Bound 401 recovery to one reload/refresh retry.
 
 ### Demonstration
@@ -191,6 +204,7 @@ refresh_window = min(60 seconds, token_lifetime × 10%)
 - Background execution returns `reauthorization_required` without opening a browser.
 - Short-lived tokens use ten percent of their lifetime rather than a fixed 60-second window.
 - Refresh responses that omit `refresh_token` retain the current refresh token.
+- A gross backward wall-clock step demotes classification to `unknown` rather than extending apparent validity.
 
 ## 7. Chunk 5: Introduce the coherent versioned file backend
 
@@ -202,12 +216,12 @@ Change the storage format only after lifecycle behavior is stable.
 mcp-credentials/v1/<identity-digest>.json
 ```
 
-- One bundle containing token, client, metadata, issuer, expiry, and revision.
-- Atomic same-directory temporary write and `os.replace`.
+- One bundle containing token, client, metadata, issuer, expiry, and revision (no stored `profile_id`; identity is the digest-named file's location).
+- Atomic same-directory temporary write and `os.replace`; the revision lives inside the envelope, never a separate manifest.
 - Mutation locks.
 - Directory mode `0700` and file mode `0600` on POSIX.
 - Parent-directory `fsync` where supported.
-- Backend-neutral revision watching replaces token-file mtime watching.
+- Backend-neutral revision watching replaces token-file mtime watching; the revision is consulted only at rebuild decision points, held under a short in-memory TTL, never probed per request.
 
 Migration may initially be lazy: read legacy state, construct a bundle in memory, and write the new format only after verification.
 
@@ -229,10 +243,10 @@ Migration may initially be lazy: read legacy state, construct a bundle in memory
 ### Deliverables
 
 - `AppleKeychainOAuthCredentialStore`.
-- Stable service and account naming.
+- Stable service and account naming; the account is the identity digest, validated against the requesting identity on load.
 - Exact-item load, replace, and delete.
 - Read-back verification.
-- Typed handling for locked, unavailable, denied, and timed-out Keychain operations.
+- Typed handling for locked, unavailable, denied, and timed-out Keychain operations, and for duplicate items matching one identity (`credential_ambiguous`, fail closed — never act on an arbitrary match).
 - Profile-scoped configuration:
 
 ```yaml
@@ -255,18 +269,20 @@ mcp:
 - Secrets do not appear in subprocess arguments, logs, or debug bundles.
 - The backend works without Electron installed.
 - A locked or unavailable configured Keychain never creates a plaintext replacement.
+- A revision-safe request never spawns `security` on the per-request path.
+- Two items matching one identity fail closed rather than one being chosen.
 
 ## 9. Chunk 7: Migration, diagnostics, and cleanup
 
 ### Deliverables
 
-- Idempotent migration from legacy files to a versioned file bundle or Keychain.
+- Idempotent migration from legacy files to a versioned file bundle or Keychain, carrying the full token time model (including `original_expires_in`).
 - Destination write and read-back verification before legacy deletion.
 - Conflict handling when destination and legacy credentials differ.
 - A safe diagnostic command, for example:
 
 ```bash
-hermes mcp auth-status todoist
+hermes mcp credentials status todoist
 ```
 
 - An explicit backend migration command, for example:
@@ -274,6 +290,8 @@ hermes mcp auth-status todoist
 ```bash
 hermes mcp credentials migrate --to apple-keychain
 ```
+
+- A `hermes mcp credentials repair <server> --keep <item-id>` command to resolve duplicate Keychain items (never auto-selects).
 
 - Remove obsolete:
 
@@ -296,10 +314,10 @@ Legacy files present
 ### Merge gate
 
 - Interrupted migration resumes safely.
-- Conflicting credentials are never resolved by timestamp alone.
+- Conflicting credentials, and duplicate Keychain items, are never resolved automatically.
 - Downgrade does not silently export Keychain credentials to plaintext.
 - Repository search confirms only migration code reads the legacy paths.
-- Diagnostics reveal no token, authorization code, or client-secret values.
+- Diagnostics reveal no token, authorization code, client-secret value, or more than an 8-hex revision prefix.
 
 ## 10. Proposed pull-request sequence
 
@@ -316,7 +334,7 @@ Each pull request must demonstrate a behavioral invariant. Abstraction, Keychain
 
 ## 11. Cross-chunk rules
 
-- Use `get_hermes_home()` for profile-scoped paths.
+- Use `get_hermes_home()` for profile-scoped paths, canonicalized through `hermes_home_key()` where an identity or digest is derived.
 - Use `scripts/run_tests.sh`; do not invoke pytest directly.
 - Preserve existing credentials or include verified migration in the same chunk.
 - Do not add model-visible tools for credential management.

@@ -1978,14 +1978,20 @@ def _reasoning_config_for_wire(agent):
     applies its own default.
     """
     cfg = agent.reasoning_config
-    if _consume_ephemeral_reasoning_off(agent):
+    ephemeral_off = _consume_ephemeral_reasoning_off(agent)
+    if getattr(agent, "_reasoning_disable_rejected", False):
+        # The route rejects disables. Resend exactly what the session has
+        # been sending — the user's own config — so the retry lands on the
+        # same provider cache key as every prior request. Only a config that
+        # is itself a disable is dropped (omitted → route default), and that
+        # session has never sent anything else, so nothing warm is lost.
+        if isinstance(cfg, dict) and (
+            cfg.get("enabled") is False or cfg.get("effort") == "none"
+        ):
+            return None
+        return cfg
+    if ephemeral_off:
         cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
-    if (
-        getattr(agent, "_reasoning_disable_rejected", False)
-        and isinstance(cfg, dict)
-        and (cfg.get("enabled") is False or cfg.get("effort") == "none")
-    ):
-        return None
     return cfg
 
 

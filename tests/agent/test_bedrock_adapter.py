@@ -265,6 +265,139 @@ class TestConvertMessagesToConverse:
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
 
+    def test_wire_guard_repairs_trailing_assistant_without_mutating_input(self):
+        from agent.bedrock_adapter import ensure_converse_user_tail
+
+        kwargs = {
+            "modelId": "eu.anthropic.claude-sonnet-5",
+            "messages": [
+                {"role": "user", "content": [{"text": "Hello"}]},
+                {"role": "assistant", "content": [{"text": "Hi"}]},
+            ],
+        }
+
+        repaired = ensure_converse_user_tail(kwargs)
+
+        assert kwargs["messages"][-1]["role"] == "assistant"
+        assert repaired["messages"][-1] == {
+            "role": "user",
+            "content": [{"text": "Continue from the previous assistant message."}],
+        }
+
+    def test_wire_guard_leaves_tool_use_tail_alone(self):
+        """A toolUse tail needs a real toolResult, not a synthetic user turn.
+
+        Repairing it would swap "does not support assistant message prefill"
+        for "Expected toolResult blocks" — still a non-retryable 400.
+        """
+        from agent.bedrock_adapter import ensure_converse_user_tail
+
+        kwargs = {
+            "modelId": "eu.anthropic.claude-sonnet-5",
+            "messages": [
+                {"role": "user", "content": [{"text": "Run it"}]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"text": "Starting."},
+                        {"toolUse": {"toolUseId": "t1", "name": "terminal", "input": {}}},
+                    ],
+                },
+            ],
+        }
+
+        assert ensure_converse_user_tail(kwargs) is kwargs
+
+    def test_wire_guard_leaves_prefill_tolerant_model_alone(self):
+        """Pre-4.6 Claude accepts prefill and the agent loop relies on it.
+
+        conversation_loop.py appends a `_thinking_prefill` assistant turn to
+        continue a thinking-only response; repairing that tail here would
+        silently break the mechanism on models that never rejected it.
+        """
+        from agent.bedrock_adapter import ensure_converse_user_tail
+
+        for model_id in (
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "anthropic.claude-sonnet-4-5-v1:0",
+            "meta.llama3-70b-instruct-v1:0",
+        ):
+            kwargs = {
+                "modelId": model_id,
+                "messages": [
+                    {"role": "user", "content": [{"text": "Hello"}]},
+                    {"role": "assistant", "content": [{"text": "Hi"}]},
+                ],
+            }
+            assert ensure_converse_user_tail(kwargs) is kwargs, model_id
+
+    def test_wire_guard_passes_through_user_tail(self):
+        from agent.bedrock_adapter import ensure_converse_user_tail
+
+        kwargs = {
+            "modelId": "eu.anthropic.claude-sonnet-5",
+            "messages": [{"role": "user", "content": [{"text": "Hello"}]}],
+        }
+        assert ensure_converse_user_tail(kwargs) is kwargs
+
+    def test_prefill_rejecting_model_gate_matrix(self):
+        from agent.bedrock_adapter import model_rejects_assistant_prefill
+
+        rejects = [
+            "eu.anthropic.claude-sonnet-5",
+            "eu.anthropic.claude-opus-5",
+            "anthropic.claude-sonnet-4-6-20260101-v1:0",
+            "anthropic.claude-opus-4.6",
+            "us.anthropic.claude-fable-5",
+            "anthropic.claude-haiku-4-6-v1:0",
+        ]
+        tolerates = [
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "anthropic.claude-sonnet-4-5-v1:0",
+            "anthropic.claude-opus-4-1-v1:0",
+            "meta.llama3-70b-instruct-v1:0",
+            "amazon.nova-pro-v1:0",
+            "",
+            None,
+        ]
+        assert [model_rejects_assistant_prefill(m) for m in rejects] == [True] * len(rejects)
+        assert [model_rejects_assistant_prefill(m) for m in tolerates] == [False] * len(tolerates)
+
+    def test_text_after_tool_use_is_removed_as_assistant_prefill(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        messages = [
+            {"role": "user", "content": "Run both tools"},
+            {
+                "role": "assistant",
+                "content": "Starting.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "first", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "second", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "Streamed prefill fragment."},
+            {"role": "tool", "tool_call_id": "call_1", "content": "one"},
+            {"role": "tool", "tool_call_id": "call_2", "content": "two"},
+        ]
+
+        _system, converted = convert_messages_to_converse(messages)
+        assistant_blocks = converted[1]["content"]
+
+        assert [next(iter(block)) for block in assistant_blocks] == [
+            "text",
+            "toolUse",
+            "toolUse",
+        ]
+
 
 
 

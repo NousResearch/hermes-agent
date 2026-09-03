@@ -956,6 +956,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         # bedrock responses like chat_completions responses.
         from agent.bedrock_adapter import (
             _get_bedrock_runtime_client,
+            ensure_converse_user_tail,
             invalidate_runtime_client,
             is_stale_connection_error,
             normalize_converse_response,
@@ -963,6 +964,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         )
         region = api_kwargs.pop("__bedrock_region__", "us-east-1")
         api_kwargs.pop("__bedrock_converse__", None)
+        api_kwargs = ensure_converse_user_tail(api_kwargs)
         client = _get_bedrock_runtime_client(region)
         try:
             raw_response = client.converse(**api_kwargs)
@@ -3721,6 +3723,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 from agent import relay_llm
                 from agent.bedrock_adapter import (
                     _get_bedrock_runtime_client,
+                    ensure_converse_user_tail,
                     invalidate_runtime_client,
                     is_stale_connection_error,
                     is_streaming_access_denied_error,
@@ -3735,6 +3738,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     final_kwargs = dict(next_api_kwargs)
                     region = final_kwargs.pop("__bedrock_region__", "us-east-1")
                     final_kwargs.pop("__bedrock_converse__", None)
+                    final_kwargs = ensure_converse_user_tail(final_kwargs)
                     client = _get_bedrock_runtime_client(region)
                     try:
                         raw_response = client.converse_stream(**final_kwargs)

@@ -867,6 +867,7 @@ def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
 # non-whitespace text"). A lone space is whitespace and is rejected too — the
 # placeholder MUST itself be non-whitespace. Ref: issue #9486.
 _EMPTY_TEXT_PLACEHOLDER = "(empty)"
+_NO_PREFILL_USER_TAIL = "Continue from the previous assistant message."
 
 
 def _safe_text(text) -> str:
@@ -880,6 +881,110 @@ def _safe_text(text) -> str:
     if not isinstance(text, str):
         text = str(text)
     return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
+
+
+def model_rejects_assistant_prefill(model: str) -> bool:
+    """Return whether *model* hard-rejects a trailing assistant message.
+
+    Claude Sonnet/Opus/Haiku 4.6+ and the Fable family answer a trailing
+    assistant message with a non-retryable ValidationException ("This model
+    does not support assistant message prefill. The conversation must end
+    with a user message."), which bricks the session: the model never gets
+    another request through to recover.
+
+    Older Claude models accept the prefill and Hermes uses it deliberately
+    (conversation_loop.py appends a `_thinking_prefill` assistant turn to
+    continue a thinking-only response), so the gate must stay narrow —
+    repairing the tail for a model that tolerates prefill would silently
+    change semantics the agent loop depends on.
+
+    Matching is done on the bare family name so Bedrock's regional inference
+    profiles ("eu.anthropic.claude-sonnet-5", "apac.anthropic.…") and plain
+    model IDs resolve identically.
+    """
+    if not model or not isinstance(model, str):
+        return False
+    name = model.rsplit("/", 1)[-1].lower()
+    # Strip Bedrock's region prefix + vendor namespace: "eu.anthropic.claude-…"
+    if "anthropic." in name:
+        name = name.split("anthropic.", 1)[1]
+    if "claude-fable" in name:
+        return True
+    match = re.search(r"claude-(?:sonnet|opus|haiku)-(\d+)(?:[-.](\d+))?", name)
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return (major, minor) >= (4, 6)
+
+
+def ensure_converse_user_tail(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Return wire kwargs whose conversation cannot end in assistant prefill.
+
+    Repairs the tail on the outgoing wire payload only; the stored transcript
+    is never mutated (a shallow copy carries a fresh messages list).
+
+    Two tails are deliberately left alone:
+
+    * anything but a plain assistant tail (a user tail is already valid), and
+    * an assistant tail whose content contains a `toolUse` block. Bedrock
+      requires the very next message to carry the matching `toolResult`;
+      injecting a synthetic user turn there trades one ValidationException
+      for another ("Expected toolResult blocks…"). Those tails need real tool
+      results, not a fake continuation.
+    """
+    messages = kwargs.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return kwargs
+    if not model_rejects_assistant_prefill(kwargs.get("modelId") or ""):
+        return kwargs
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "assistant":
+        return kwargs
+    content = last.get("content")
+    if isinstance(content, list) and any(
+        isinstance(block, dict) and "toolUse" in block for block in content
+    ):
+        return kwargs
+
+    repaired = dict(kwargs)
+    repaired["messages"] = list(messages) + [{
+        "role": "user",
+        "content": [{"text": _NO_PREFILL_USER_TAIL}],
+    }]
+    return repaired
+
+
+def _normalize_assistant_tool_tail(content_blocks: List[Dict]) -> List[Dict]:
+    """Drop streamed prefill *text* that got merged in after a toolUse block.
+
+    Hermes merges consecutive assistant turns to keep Bedrock's strict
+    alternation. When a turn is interrupted mid-stream, a bare preamble
+    assistant message can land *after* the turn that already carries the
+    tool calls, and the merge appends its text behind the `toolUse` blocks.
+    Bedrock rejects that ordering, so the stray text is dropped.
+
+    Only `text` blocks are dropped. `reasoningContent` after a `toolUse` is
+    legitimate — interleaved thinking emits reasoning between tool calls and
+    those blocks carry signatures Bedrock replays; dropping them breaks
+    interleaved thinking (regression caught by
+    TestNormalizeConverseResponse::test_interleaved_reasoning_and_tools_keep_exact_order).
+    """
+    if not any(isinstance(block, dict) and "toolUse" in block for block in content_blocks):
+        return content_blocks
+
+    normalized: List[Dict] = []
+    tool_use_seen = False
+    for block in content_blocks:
+        is_dict = isinstance(block, dict)
+        if is_dict and "toolUse" in block:
+            tool_use_seen = True
+            normalized.append(block)
+        elif tool_use_seen and is_dict and set(block) == {"text"}:
+            continue
+        else:
+            normalized.append(block)
+    return normalized
 
 
 def _convert_content_to_converse(content) -> List[Dict]:
@@ -1093,10 +1198,13 @@ def convert_messages_to_converse(
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
                 converse_msgs[-1]["content"].extend(content_blocks)
+                converse_msgs[-1]["content"] = _normalize_assistant_tool_tail(
+                    converse_msgs[-1]["content"]
+                )
             else:
                 converse_msgs.append({
                     "role": "assistant",
-                    "content": content_blocks,
+                    "content": _normalize_assistant_tool_tail(content_blocks),
                 })
             continue
 
@@ -1568,7 +1676,7 @@ def build_converse_kwargs(
         # inferenceConfig is optional on the wire; don't send an empty object.
         del kwargs["inferenceConfig"]
 
-    return kwargs
+    return ensure_converse_user_tail(kwargs)
 
 
 def call_converse(

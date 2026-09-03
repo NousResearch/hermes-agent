@@ -1,0 +1,1285 @@
+{
+  "acceptedFormats": [
+    ".blend",
+    ".glb",
+    ".fbx",
+    ".obj"
+  ],
+  "counts": {
+    "missing": 36,
+    "present": 0,
+    "required": 36
+  },
+  "pipeline": {
+    "animation": "rig_and_animate_after_master_validation",
+    "retopology": "derive_smart_low_poly_lods_from_master",
+    "source": "full_resolution_high_poly_master_assets",
+    "textureBake": "bake_2k_default_4k_hero_pbr_from_master"
+  },
+  "productionReady": false,
+  "productionUse": "production_source_intake",
+  "rejectedProductionSources": [
+    "raw_scene_crop_image_to_3d",
+    "floating_blob_meshes",
+    "simple_mascot_generator",
+    "flat_reference_planes"
+  ],
+  "requiredAssets": [
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Concave lunar colony basin",
+      "heroAsset": true,
+      "id": "terrain-colony-basin",
+      "kind": "terrain",
+      "role": "environment",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/terrain-colony-basin.blend",
+        "lunar-city/master-assets/sources/terrain-colony-basin.glb",
+        "lunar-city/master-assets/sources/terrain-colony-basin.fbx",
+        "lunar-city/master-assets/sources/terrain-colony-basin.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Ground-conforming city road network",
+      "heroAsset": false,
+      "id": "road-network-primary",
+      "kind": "road",
+      "role": "navigation",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/road-network-primary.blend",
+        "lunar-city/master-assets/sources/road-network-primary.glb",
+        "lunar-city/master-assets/sources/road-network-primary.fbx",
+        "lunar-city/master-assets/sources/road-network-primary.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Lunar orbit skybox/background",
+      "heroAsset": false,
+      "id": "skybox-lunar-orbit",
+      "kind": "skybox",
+      "role": "environment",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.blend",
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.glb",
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.fbx",
+        "lunar-city/master-assets/sources/skybox-lunar-orbit.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Library",
+      "heroAsset": true,
+      "id": "building-library",
+      "kind": "building",
+      "role": "knowledge",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-library.blend",
+        "lunar-city/master-assets/sources/building-library.glb",
+        "lunar-city/master-assets/sources/building-library.fbx",
+        "lunar-city/master-assets/sources/building-library.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Research Lab",
+      "heroAsset": true,
+      "id": "building-research-lab",
+      "kind": "building",
+      "role": "research",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-research-lab.blend",
+        "lunar-city/master-assets/sources/building-research-lab.glb",
+        "lunar-city/master-assets/sources/building-research-lab.fbx",
+        "lunar-city/master-assets/sources/building-research-lab.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Arts Studio",
+      "heroAsset": true,
+      "id": "building-arts-studio",
+      "kind": "building",
+      "role": "creative",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-arts-studio.blend",
+        "lunar-city/master-assets/sources/building-arts-studio.glb",
+        "lunar-city/master-assets/sources/building-arts-studio.fbx",
+        "lunar-city/master-assets/sources/building-arts-studio.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Engineering Workshop",
+      "heroAsset": true,
+      "id": "building-engineering-workshop",
+      "kind": "building",
+      "role": "engineering",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-engineering-workshop.blend",
+        "lunar-city/master-assets/sources/building-engineering-workshop.glb",
+        "lunar-city/master-assets/sources/building-engineering-workshop.fbx",
+        "lunar-city/master-assets/sources/building-engineering-workshop.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Operations Depot",
+      "heroAsset": true,
+      "id": "building-operations-depot",
+      "kind": "building",
+      "role": "operations",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-operations-depot.blend",
+        "lunar-city/master-assets/sources/building-operations-depot.glb",
+        "lunar-city/master-assets/sources/building-operations-depot.fbx",
+        "lunar-city/master-assets/sources/building-operations-depot.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Release Gatehouse",
+      "heroAsset": true,
+      "id": "building-release-gatehouse",
+      "kind": "building",
+      "role": "release",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-release-gatehouse.blend",
+        "lunar-city/master-assets/sources/building-release-gatehouse.glb",
+        "lunar-city/master-assets/sources/building-release-gatehouse.fbx",
+        "lunar-city/master-assets/sources/building-release-gatehouse.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Triage Clinic",
+      "heroAsset": true,
+      "id": "building-triage-clinic",
+      "kind": "building",
+      "role": "medical",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-triage-clinic.blend",
+        "lunar-city/master-assets/sources/building-triage-clinic.glb",
+        "lunar-city/master-assets/sources/building-triage-clinic.fbx",
+        "lunar-city/master-assets/sources/building-triage-clinic.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Council Hall",
+      "heroAsset": true,
+      "id": "building-council-hall",
+      "kind": "building",
+      "role": "governance",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-council-hall.blend",
+        "lunar-city/master-assets/sources/building-council-hall.glb",
+        "lunar-city/master-assets/sources/building-council-hall.fbx",
+        "lunar-city/master-assets/sources/building-council-hall.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Review Office",
+      "heroAsset": true,
+      "id": "building-review-office",
+      "kind": "building",
+      "role": "review",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-review-office.blend",
+        "lunar-city/master-assets/sources/building-review-office.glb",
+        "lunar-city/master-assets/sources/building-review-office.fbx",
+        "lunar-city/master-assets/sources/building-review-office.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Archive",
+      "heroAsset": true,
+      "id": "building-archive",
+      "kind": "building",
+      "role": "archive",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-archive.blend",
+        "lunar-city/master-assets/sources/building-archive.glb",
+        "lunar-city/master-assets/sources/building-archive.fbx",
+        "lunar-city/master-assets/sources/building-archive.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Break Garden",
+      "heroAsset": true,
+      "id": "building-break-garden",
+      "kind": "building",
+      "role": "rest",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/building-break-garden.blend",
+        "lunar-city/master-assets/sources/building-break-garden.glb",
+        "lunar-city/master-assets/sources/building-break-garden.fbx",
+        "lunar-city/master-assets/sources/building-break-garden.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Owl archivist leader",
+      "heroAsset": true,
+      "id": "leader-owl-archivist",
+      "kind": "leader",
+      "role": "knowledge",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-owl-archivist.blend",
+        "lunar-city/master-assets/sources/leader-owl-archivist.glb",
+        "lunar-city/master-assets/sources/leader-owl-archivist.fbx",
+        "lunar-city/master-assets/sources/leader-owl-archivist.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Fox scientist leader",
+      "heroAsset": true,
+      "id": "leader-fox-scientist",
+      "kind": "leader",
+      "role": "research",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-fox-scientist.blend",
+        "lunar-city/master-assets/sources/leader-fox-scientist.glb",
+        "lunar-city/master-assets/sources/leader-fox-scientist.fbx",
+        "lunar-city/master-assets/sources/leader-fox-scientist.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Raccoon artist leader",
+      "heroAsset": true,
+      "id": "leader-raccoon-artist",
+      "kind": "leader",
+      "role": "creative",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-raccoon-artist.blend",
+        "lunar-city/master-assets/sources/leader-raccoon-artist.glb",
+        "lunar-city/master-assets/sources/leader-raccoon-artist.fbx",
+        "lunar-city/master-assets/sources/leader-raccoon-artist.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Eagle councillor leader",
+      "heroAsset": true,
+      "id": "leader-eagle-councillor",
+      "kind": "leader",
+      "role": "governance",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-eagle-councillor.blend",
+        "lunar-city/master-assets/sources/leader-eagle-councillor.glb",
+        "lunar-city/master-assets/sources/leader-eagle-councillor.fbx",
+        "lunar-city/master-assets/sources/leader-eagle-councillor.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Badger engineer leader",
+      "heroAsset": true,
+      "id": "leader-badger-engineer",
+      "kind": "leader",
+      "role": "engineering",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-badger-engineer.blend",
+        "lunar-city/master-assets/sources/leader-badger-engineer.glb",
+        "lunar-city/master-assets/sources/leader-badger-engineer.fbx",
+        "lunar-city/master-assets/sources/leader-badger-engineer.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Gold medic leader",
+      "heroAsset": true,
+      "id": "leader-gold-medic",
+      "kind": "leader",
+      "role": "medical",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-gold-medic.blend",
+        "lunar-city/master-assets/sources/leader-gold-medic.glb",
+        "lunar-city/master-assets/sources/leader-gold-medic.fbx",
+        "lunar-city/master-assets/sources/leader-gold-medic.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Hawk reviewer leader",
+      "heroAsset": true,
+      "id": "leader-hawk-reviewer",
+      "kind": "leader",
+      "role": "review",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.blend",
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.glb",
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.fbx",
+        "lunar-city/master-assets/sources/leader-hawk-reviewer.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Owl historian leader",
+      "heroAsset": true,
+      "id": "leader-owl-historian",
+      "kind": "leader",
+      "role": "archive",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/leader-owl-historian.blend",
+        "lunar-city/master-assets/sources/leader-owl-historian.glb",
+        "lunar-city/master-assets/sources/leader-owl-historian.fbx",
+        "lunar-city/master-assets/sources/leader-owl-historian.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Audit worker robot",
+      "heroAsset": false,
+      "id": "worker-audit",
+      "kind": "worker",
+      "role": "audit",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-audit.blend",
+        "lunar-city/master-assets/sources/worker-audit.glb",
+        "lunar-city/master-assets/sources/worker-audit.fbx",
+        "lunar-city/master-assets/sources/worker-audit.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Operations worker robot",
+      "heroAsset": false,
+      "id": "worker-operations",
+      "kind": "worker",
+      "role": "operations",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-operations.blend",
+        "lunar-city/master-assets/sources/worker-operations.glb",
+        "lunar-city/master-assets/sources/worker-operations.fbx",
+        "lunar-city/master-assets/sources/worker-operations.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Release worker robot",
+      "heroAsset": false,
+      "id": "worker-release",
+      "kind": "worker",
+      "role": "release",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-release.blend",
+        "lunar-city/master-assets/sources/worker-release.glb",
+        "lunar-city/master-assets/sources/worker-release.fbx",
+        "lunar-city/master-assets/sources/worker-release.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Research worker robot",
+      "heroAsset": false,
+      "id": "worker-research",
+      "kind": "worker",
+      "role": "research",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-research.blend",
+        "lunar-city/master-assets/sources/worker-research.glb",
+        "lunar-city/master-assets/sources/worker-research.fbx",
+        "lunar-city/master-assets/sources/worker-research.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Review worker robot",
+      "heroAsset": false,
+      "id": "worker-review",
+      "kind": "worker",
+      "role": "review",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-review.blend",
+        "lunar-city/master-assets/sources/worker-review.glb",
+        "lunar-city/master-assets/sources/worker-review.fbx",
+        "lunar-city/master-assets/sources/worker-review.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Support worker robot",
+      "heroAsset": false,
+      "id": "worker-support",
+      "kind": "worker",
+      "role": "support",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/worker-support.blend",
+        "lunar-city/master-assets/sources/worker-support.glb",
+        "lunar-city/master-assets/sources/worker-support.fbx",
+        "lunar-city/master-assets/sources/worker-support.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Curious child robot",
+      "heroAsset": false,
+      "id": "child-curious",
+      "kind": "child",
+      "role": "child",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-curious.blend",
+        "lunar-city/master-assets/sources/child-curious.glb",
+        "lunar-city/master-assets/sources/child-curious.fbx",
+        "lunar-city/master-assets/sources/child-curious.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Social child robot",
+      "heroAsset": false,
+      "id": "child-social",
+      "kind": "child",
+      "role": "child",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-social.blend",
+        "lunar-city/master-assets/sources/child-social.glb",
+        "lunar-city/master-assets/sources/child-social.fbx",
+        "lunar-city/master-assets/sources/child-social.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Bold child robot",
+      "heroAsset": false,
+      "id": "child-bold",
+      "kind": "child",
+      "role": "child",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-bold.blend",
+        "lunar-city/master-assets/sources/child-bold.glb",
+        "lunar-city/master-assets/sources/child-bold.fbx",
+        "lunar-city/master-assets/sources/child-bold.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Cautious child robot",
+      "heroAsset": false,
+      "id": "child-cautious",
+      "kind": "child",
+      "role": "child",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/child-cautious.blend",
+        "lunar-city/master-assets/sources/child-cautious.glb",
+        "lunar-city/master-assets/sources/child-cautious.fbx",
+        "lunar-city/master-assets/sources/child-cautious.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 120000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "hero",
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Dispatcher companion cube",
+      "heroAsset": true,
+      "id": "dispatcher-cube",
+      "kind": "dispatcher",
+      "role": "dispatcher",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/dispatcher-cube.blend",
+        "lunar-city/master-assets/sources/dispatcher-cube.glb",
+        "lunar-city/master-assets/sources/dispatcher-cube.fbx",
+        "lunar-city/master-assets/sources/dispatcher-cube.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Colony bus / tram",
+      "heroAsset": false,
+      "id": "vehicle-bus",
+      "kind": "vehicle",
+      "role": "transport",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/vehicle-bus.blend",
+        "lunar-city/master-assets/sources/vehicle-bus.glb",
+        "lunar-city/master-assets/sources/vehicle-bus.fbx",
+        "lunar-city/master-assets/sources/vehicle-bus.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "In-world status signage set",
+      "heroAsset": false,
+      "id": "prop-status-signage",
+      "kind": "prop",
+      "role": "state",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/prop-status-signage.blend",
+        "lunar-city/master-assets/sources/prop-status-signage.glb",
+        "lunar-city/master-assets/sources/prop-status-signage.fbx",
+        "lunar-city/master-assets/sources/prop-status-signage.obj"
+      ],
+      "status": "missing"
+    },
+    {
+      "acceptance": {
+        "minimumTriangleCount": 45000,
+        "rejectIf": [
+          "raw_scene_crop_relief_mesh",
+          "floating_blob",
+          "simple_mascot_placeholder",
+          "flat_billboard_or_reference_plane",
+          "unriggable_single_lump"
+        ],
+        "requiresLods": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "requiresPbrBake": true,
+        "requiresRecognizableSilhouette": true,
+        "requiresRetopology": true,
+        "sourceQuality": "full_resolution_high_poly_master"
+      },
+      "displayName": "Repair and recovery tool set",
+      "heroAsset": false,
+      "id": "prop-repair-tools",
+      "kind": "prop",
+      "role": "recovery",
+      "selectedSource": null,
+      "sourceCandidates": [
+        "lunar-city/master-assets/sources/prop-repair-tools.blend",
+        "lunar-city/master-assets/sources/prop-repair-tools.glb",
+        "lunar-city/master-assets/sources/prop-repair-tools.fbx",
+        "lunar-city/master-assets/sources/prop-repair-tools.obj"
+      ],
+      "status": "missing"
+    }
+  ],
+  "schemaVersion": 1,
+  "sourceDirectory": "lunar-city/master-assets/sources",
+  "validation": {
+    "failsClosedUntilEveryRequiredMasterExists": true,
+    "requiresNoPrivateProfileIdentifiers": true,
+    "requiresNoRawSoulContent": true,
+    "requiresPbrTextureBake": true,
+    "requiresPerAssetLods": true,
+    "requiresPerAssetRetopologyPlan": true,
+    "requiresRecognizableReferenceSilhouette": true
+  }
+}

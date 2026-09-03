@@ -27,6 +27,7 @@ describe('Lunar City asset manifest', () => {
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetGlb).toBe('lunar-city/hero-assets/lunar-city-hero-assets.glb')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetManifest).toBe('lunar-city/hero-assets/hero-assets-manifest.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.heroAssetPreview).toBe('lunar-city/hero-assets/lunar-city-hero-assets.png')
+    expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetManifest).toBe('lunar-city/master-assets/master-asset-manifest.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.profileManifest).toBe('lunar-city/profile-assets.json')
     expect(LUNAR_CITY_ASSET_MANIFEST.assets.filter(asset => asset.kind === 'building')).toHaveLength(8)
     expect(LUNAR_CITY_ASSET_MANIFEST.assets.filter(asset => asset.kind === 'character')).toHaveLength(19)
@@ -235,5 +236,71 @@ describe('Lunar City asset manifest', () => {
     expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.blend'))).toBe(true)
     expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.glb'))).toBe(true)
     expect(existsSync(join(process.cwd(), 'public/lunar-city/generated-3d/lunar-city-generated-assets-board.png'))).toBe(true)
+  })
+
+  it('fails closed until production high-poly master assets exist', () => {
+    const manifest = JSON.parse(
+      readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/master-asset-manifest.json'), 'utf8')
+    ) as {
+      counts: { missing: number; present: number; required: number }
+      pipeline: {
+        animation: string
+        retopology: string
+        source: string
+        textureBake: string
+      }
+      productionReady: boolean
+      productionUse: string
+      rejectedProductionSources: string[]
+      requiredAssets: Array<{
+        acceptance: {
+          minimumTriangleCount: number
+          rejectIf: string[]
+          requiresLods: string[]
+          sourceQuality: string
+        }
+        heroAsset: boolean
+        id: string
+        selectedSource: string | null
+        status: string
+      }>
+      validation: Record<string, boolean>
+    }
+
+    expect(manifest.productionUse).toBe('production_source_intake')
+    expect(manifest.productionReady).toBe(false)
+    expect(manifest.pipeline.source).toBe('full_resolution_high_poly_master_assets')
+    expect(manifest.pipeline.retopology).toBe('derive_smart_low_poly_lods_from_master')
+    expect(manifest.pipeline.textureBake).toBe('bake_2k_default_4k_hero_pbr_from_master')
+    expect(manifest.rejectedProductionSources).toEqual([
+      'raw_scene_crop_image_to_3d',
+      'floating_blob_meshes',
+      'simple_mascot_generator',
+      'flat_reference_planes'
+    ])
+    expect(manifest.counts).toEqual({ required: 36, present: 0, missing: 36 })
+    expect(manifest.requiredAssets).toHaveLength(36)
+    expect(manifest.validation.failsClosedUntilEveryRequiredMasterExists).toBe(true)
+    expect(manifest.validation.requiresNoRawSoulContent).toBe(true)
+    expect(manifest.validation.requiresNoPrivateProfileIdentifiers).toBe(true)
+
+    const ids = manifest.requiredAssets.map(asset => asset.id)
+    expect(ids).toContain('leader-fox-scientist')
+    expect(ids).toContain('leader-owl-archivist')
+    expect(ids).toContain('worker-review')
+    expect(ids).toContain('building-research-lab')
+    expect(ids).toContain('building-release-gatehouse')
+    expect(ids).toContain('terrain-colony-basin')
+    expect(ids).toContain('skybox-lunar-orbit')
+
+    for (const asset of manifest.requiredAssets) {
+      expect(asset.status).toBe('missing')
+      expect(asset.selectedSource).toBeNull()
+      expect(asset.acceptance.sourceQuality).toBe('full_resolution_high_poly_master')
+      expect(asset.acceptance.rejectIf).toContain('floating_blob')
+      expect(asset.acceptance.rejectIf).toContain('simple_mascot_placeholder')
+      expect(asset.acceptance.rejectIf).toContain('flat_billboard_or_reference_plane')
+      expect(asset.acceptance.minimumTriangleCount).toBeGreaterThanOrEqual(asset.heroAsset ? 120000 : 45000)
+    }
   })
 })

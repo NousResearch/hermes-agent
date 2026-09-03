@@ -4901,11 +4901,14 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
-                # Audio messages may fail with 99992402 when using thread_id routing.
-                # Try replying to the last message in the thread, then fall back to chat_id.
+                # Uploaded attachments may fail with 99992402 when using
+                # thread_id routing. Try replying to the last message in the
+                # thread, then fall back to chat_id so a valid upload is not
+                # silently lost. This covers voice, document, and video
+                # attachments without changing their normal success path.
                 if (not self._response_succeeded(message_response)
                         and getattr(message_response, "code", None) == 99992402
-                        and resolved_message_type == "audio"
+                        and resolved_message_type in {"audio", "file", "media"}
                         and (metadata or {}).get("thread_id")):
                     # Try reply API with thread_id as reply anchor
                     thread_msg_id = (metadata or {}).get("reply_to_message_id")
@@ -4914,7 +4917,10 @@ class FeishuAdapter(BasePlatformAdapter):
                             (metadata or {}).get("thread_id")
                         )
                     if thread_msg_id:
-                        logger.info("[Feishu] Audio: retrying via reply API in thread")
+                        logger.info(
+                            "[Feishu] Attachment (%s): retrying via reply API in thread",
+                            resolved_message_type,
+                        )
                         message_response = await self._feishu_send_with_retry(
                             chat_id=chat_id,
                             msg_type=resolved_message_type,
@@ -4923,7 +4929,10 @@ class FeishuAdapter(BasePlatformAdapter):
                             metadata=metadata,
                         )
                     if not self._response_succeeded(message_response):
-                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                        logger.warning(
+                            "[Feishu] Attachment (%s) send failed in thread, retrying with chat_id",
+                            resolved_message_type,
+                        )
                         message_response = await self._feishu_send_with_retry(
                             chat_id=chat_id,
                             msg_type=resolved_message_type,

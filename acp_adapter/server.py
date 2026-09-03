@@ -242,6 +242,7 @@ _LIST_SESSIONS_PAGE_SIZE = 50
 # inventory, and the current model is always kept via the fallback insert below.
 ACP_MAX_MODELS_PER_PROVIDER = 200
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
+_ACP_AUXILIARY_UPDATE_WAITER_TIMEOUT_SECONDS = 5.0
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
     "application/json",
@@ -1030,16 +1031,30 @@ class HermesACPAgent(acp.Agent):
         )
 
     async def _send_usage_update(self, state: SessionState) -> None:
-        """Send ACP native context usage to the connected client."""
+        """Wait briefly for an optional context-usage notification.
+
+        This bounds Hermes's detached waiter only.  ACP 0.9's shared sender may
+        already be blocked writing the notification after this coroutine is
+        cancelled, so terminal responses must be queued before scheduling it.
+        """
         if not self._conn:
             return
         update = self._build_usage_update(state)
         if update is None:
             return
         try:
-            await self._conn.session_update(
-                session_id=state.session_id,
-                update=update,
+            await asyncio.wait_for(
+                self._conn.session_update(
+                    session_id=state.session_id,
+                    update=update,
+                ),
+                timeout=_ACP_AUXILIARY_UPDATE_WAITER_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Stopped waiting for ACP usage update for session %s; "
+                "the shared ACP transport may still be blocked",
+                state.session_id,
             )
         except Exception:
             logger.warning(
@@ -1117,7 +1132,7 @@ class HermesACPAgent(acp.Agent):
             logger.debug("Could not send ACP session info update for %s", session_id, exc_info=True)
 
     def _schedule_usage_update(self, state: SessionState) -> None:
-        """Schedule native context indicator refresh after ACP responses."""
+        """Defer usage so the current terminal response enters ACP's FIFO first."""
         if not self._conn:
             return
         loop = asyncio.get_running_loop()
@@ -1871,7 +1886,7 @@ class HermesACPAgent(acp.Agent):
                 if self._conn:
                     update = acp.update_agent_message_text(response_text)
                     await self._conn.session_update(session_id, update)
-                    await self._send_usage_update(state)
+                    self._schedule_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
         # If the client sends another regular text prompt while this ACP session
@@ -2213,7 +2228,7 @@ class HermesACPAgent(acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
 
-        await self._send_usage_update(state)
+        self._schedule_usage_update(state)
 
         stop_reason = "cancelled" if cancelled else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)

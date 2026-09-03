@@ -377,6 +377,40 @@ async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch,
     ), "Expected degraded-mode warning when all adapters are missing"
 
 
+@pytest.mark.asyncio
+async def test_runner_surfaces_missing_adapter_in_runtime_status(monkeypatch, tmp_path):
+    """A platform whose adapter can't be created must be visible in runtime
+    status (OOF-208).
+
+    Before this, an enabled platform with a missing dependency/binary (e.g.
+    Buzz without the buzz CLI baked into the hosted image) simply vanished:
+    not in platforms{}, no error code anywhere — dashboards and the health
+    briefing couldn't attribute the outage. The no-adapter branch must park
+    the platform as state=fatal with a specific error code."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(runner, "_create_adapter", lambda platform, cfg: None)
+
+    ok = await runner.start()
+
+    # Gateway keeps running for cron (#5196)...
+    assert ok is True
+    state = read_runtime_status()
+    assert state["gateway_state"] == "running"
+    # ...but the parked platform is now attributable in status.
+    entry = state["platforms"]["telegram"]
+    assert entry["state"] == "fatal"
+    assert entry["error_code"] == "adapter_unavailable"
+    assert entry["needs_attention"] is True
+    assert "missing dependency" in entry["error_message"]
+
+
 class _NonRetryableFailureAdapter(BasePlatformAdapter):
     """Simulates a fatal config error like token collision."""
     def __init__(self):

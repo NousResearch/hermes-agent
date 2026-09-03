@@ -3258,6 +3258,27 @@ class TestCredentialResolution:
 # ── Env enablement / registration / standalone send ──────────────────────
 
 
+class TestConnectMissingBinary:
+    """connect() with no binary must park the platform as RETRYABLE (OOF-208).
+
+    Defense-in-depth behind the check_requirements gate: if the binary
+    vanishes between the passive check and connect(), the failure must go to
+    the reconnect queue (operator can install the binary live), never to
+    startup_nonretryable_errors, which hard-exits the gateway (exit 78)
+    when no other platform connected.
+    """
+
+    @pytest.mark.asyncio
+    async def test_connect_missing_cli_is_retryable(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter.cli_path = ""
+        ok = await adapter.connect()
+        assert ok is False
+        assert adapter.has_fatal_error
+        assert adapter.fatal_error_code == "cli_missing"
+        assert adapter.fatal_error_retryable is True
+
+
 class TestEnvEnablement:
 
     def test_returns_none_when_unconfigured(self):

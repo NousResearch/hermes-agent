@@ -1286,3 +1286,114 @@ class TestSupervisionExhaustionHasAnOwner:
 
         assert runner.state["live"] == 0
         assert not runner._background_tasks
+
+
+
+class TestAdapterUnavailableRetry:
+    """create_adapter() returning None must NOT evict from the retry queue.
+
+    OOF-208 review round 2: a None adapter usually means check_fn failed —
+    a missing binary/SDK the operator can install while the gateway is up
+    (e.g. dropping the buzz CLI in place). The old code deleted the queue
+    entry on the first tick, so live recovery was impossible: the platform
+    could only come back via a full gateway restart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_none_adapter_keeps_platform_queued_with_backoff(self):
+        runner = _make_runner()
+        runner._update_platform_runtime_status = MagicMock()
+
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+            "queued_at": time.monotonic() - 5,
+        }
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=None) as create_mock:
+            runner._running = True
+            call_count = 0
+
+            async def fake_sleep(n):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    runner._running = False
+                await real_sleep(0)
+
+            with patch("asyncio.sleep", side_effect=fake_sleep):
+                await runner._platform_reconnect_watcher()
+
+        assert create_mock.called
+        info = runner._failed_platforms.get(Platform.TELEGRAM)
+        assert info is not None, (
+            "platform must stay queued when adapter creation returns None — "
+            "eviction makes live recovery (installing the missing binary) "
+            "impossible without a gateway restart"
+        )
+        assert info["attempts"] == 2
+        assert info["next_retry"] > time.monotonic(), "backoff must be applied"
+        # Runtime status must say retrying/adapter_unavailable, not vanish.
+        states = [
+            kwargs
+            for _, kwargs in runner._update_platform_runtime_status.call_args_list
+        ]
+        assert any(
+            k.get("platform_state") == "retrying"
+            and k.get("error_code") == "adapter_unavailable"
+            for k in states
+        )
+
+    @pytest.mark.asyncio
+    async def test_recovers_once_adapter_becomes_available(self):
+        """End-to-end: binary missing on the first tick, present on the
+        second — the platform must connect without a gateway restart."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._schedule_resume_pending_sessions = MagicMock(return_value=0)
+
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+            "queued_at": time.monotonic() - 5,
+        }
+
+        succeed_adapter = StubAdapter(succeed=True)
+        # First probe: requirements not met (None). Second probe: available.
+        create_results = [None, succeed_adapter]
+
+        def fake_create(platform, config):
+            return create_results.pop(0) if create_results else succeed_adapter
+
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", side_effect=fake_create):
+            with patch("gateway.run.build_channel_directory", create=True):
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    # Collapse the backoff so the second tick fires now.
+                    info = runner._failed_platforms.get(Platform.TELEGRAM)
+                    if info is not None:
+                        info["next_retry"] = time.monotonic() - 1
+                    if call_count > 25:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        assert Platform.TELEGRAM in runner.adapters, (
+            "platform must recover once the adapter becomes creatable"
+        )
+        assert Platform.TELEGRAM not in runner._failed_platforms
+        assert succeed_adapter.connect_calls == [True]
+

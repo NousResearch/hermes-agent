@@ -976,8 +976,19 @@ class BuzzAdapter(BasePlatformAdapter):
             self._set_fatal_error("config_missing", "BUZZ_RELAY_URL must be set", retryable=False)
             return False
         if not self.cli_path:
+            # retryable=True (OOF-208): a missing binary is an install-state
+            # problem, not a config contradiction — the operator can drop the
+            # binary in place while the gateway is up, and the reconnect
+            # watcher should then recover the platform. retryable=False here
+            # used to escalate to gateway_state=startup_failed + exit 78
+            # (whole gateway down) whenever Buzz was the only enabled
+            # platform. check_requirements() stays config-only (#95216: an
+            # externally managed key must pass the gate even without the
+            # binary), so this connect() guard is the primary degradation
+            # path — the platform parks as retryable and recovers once the
+            # binary is installed.
             logger.error("Buzz: buzz CLI binary not found (set BUZZ_CLI_PATH or put 'buzz' on PATH)")
-            self._set_fatal_error("cli_missing", "buzz CLI binary not found", retryable=False)
+            self._set_fatal_error("cli_missing", "buzz CLI binary not found", retryable=True)
             return False
         try:
             self._private_key = _resolve_private_key(self._extra)

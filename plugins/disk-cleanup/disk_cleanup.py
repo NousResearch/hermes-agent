@@ -581,12 +581,19 @@ def guess_category(path: Path) -> Optional[str]:
             "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
             "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
             "auth.json", "hermes-agent",
+            # Hermes-managed runtime and language-server installations.
+            "node", "lsp",
             # User-authored and project trees — never auto-delete files
             # inside these just because they happen to be named test_* or
             # tmp_* (#75403, also #32164, #37721).
             "patches", "projects", "skins", "themes", "contributors",
             "profiles", "backups", "optional-skills",
         }:
+            return None
+        if not _EMPTY_DIR_SWEEP_PRUNE_DIRS.isdisjoint(rel.parts):
+            # Dependency and virtual-environment trees contain upstream test
+            # fixtures whose names are not evidence that Hermes created them
+            # (#83378).
             return None
         if top == "cron" or top == "cronjobs":
             # Only files under the disposable ``output/`` subtree are

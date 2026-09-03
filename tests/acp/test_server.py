@@ -61,7 +61,12 @@ def agent(mock_manager):
 async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    # Edit approval is a *mode*, never a config option. Other config options
+    # (e.g. the thought_level reasoning selector) may legitimately be
+    # advertised, so assert the invariant rather than an empty list.
+    assert not any(
+        option.id == "edit_approval_policy" for option in (resp.config_options or [])
+    )
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [(mode.id, mode.name) for mode in resp.modes.available_modes] == [
@@ -82,7 +87,9 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    assert not any(
+        option.id == "edit_approval_policy" for option in (update.config_options or [])
+    )
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -390,7 +397,14 @@ class TestSessionConfiguration:
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        # The point of this test is that the router accepts both stable
+        # methods and returns a well-formed payload. The exact option list is
+        # asserted by the config-option tests, so don't snapshot it here.
+        assert "configOptions" in config_result
+        assert not any(
+            option["id"] == "approval_mode"
+            for option in (config_result["configOptions"] or [])
+        )
 
 
 

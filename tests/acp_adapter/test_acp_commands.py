@@ -180,6 +180,28 @@ async def test_acp_advertises_and_applies_reasoning_level():
 
 
 @pytest.mark.asyncio
+async def test_acp_model_switch_keeps_agent_default_on_unparseable_effort():
+    """A corrupt persisted effort must not null the new agent's default."""
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    # Stand in for whatever reasoning config the rebuilt agent comes up with.
+    agent_default = {"enabled": True, "effort": "medium"}
+    fake.reasoning_config = agent_default
+
+    # Only reachable via a hand-edited DB: the set path validates first.
+    state.reasoning_effort = "not-a-real-effort"
+
+    await acp_agent.set_session_model(
+        session_id=state.session_id,
+        model_id="fake-provider:next-model",
+    )
+
+    # Default preserved (not overwritten with None) and the bad value dropped.
+    assert state.agent.reasoning_config == agent_default
+    assert state.reasoning_effort == ""
+
+
+@pytest.mark.asyncio
 async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     acp_agent, state, fake, _conn = make_agent_and_state()
     state.is_running = True

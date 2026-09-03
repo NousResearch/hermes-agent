@@ -2623,7 +2623,13 @@ class HermesACPAgent(acp.Agent):
             if reasoning_effort:
                 from hermes_constants import parse_reasoning_effort
 
-                state.agent.reasoning_config = parse_reasoning_effort(reasoning_effort)
+                # Same guard as _restore: a bad value must not clobber the
+                # freshly built agent's default reasoning config.
+                switched_config = parse_reasoning_effort(reasoning_effort)
+                if switched_config is None:
+                    state.reasoning_effort = ""
+                else:
+                    state.agent.reasoning_config = switched_config
             self.session_manager.save_session(session_id)
             logger.info(
                 "Session %s: model switched to %s via provider %s",

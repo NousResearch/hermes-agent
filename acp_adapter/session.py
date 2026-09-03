@@ -589,7 +589,13 @@ class SessionManager:
         if restored_reasoning_effort:
             from hermes_constants import parse_reasoning_effort
 
-            agent.reasoning_config = parse_reasoning_effort(restored_reasoning_effort)
+            # Keep the agent's own default when a persisted value is
+            # unparseable (e.g. a hand-edited DB) instead of nulling it.
+            restored_config = parse_reasoning_effort(restored_reasoning_effort)
+            if restored_config is None:
+                state.reasoning_effort = ""
+            else:
+                agent.reasoning_config = restored_config
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)

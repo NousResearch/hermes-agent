@@ -5978,6 +5978,10 @@ class TurnRunner:
             combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
         max_iterations = _current_max_iterations()
+        # Honor Phase-1 user-tier clamp stashed on user_config (#20744 / salvage #67898)
+        _tier_mi = (ctx.user_config or {}).get("_hermes_user_tier_max_iterations")
+        if isinstance(_tier_mi, int) and _tier_mi > 0:
+            max_iterations = min(max_iterations, _tier_mi)
 
         try:
             model, runtime_kwargs = self._runner._resolve_session_agent_runtime(
@@ -25534,6 +25538,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
+            # APPLY_USER_TIER_PHASE1 background path (#20744)
+            try:
+                from gateway.user_tier import apply_user_tier_to_agent_kwargs
+                _plat_cfg_bg = None
+                try:
+                    _plat_cfg_bg = (getattr(self, "config", None).platforms or {}).get(
+                        source.platform
+                    ) if getattr(self, "config", None) else None
+                except Exception:
+                    _plat_cfg_bg = None
+                enabled_toolsets, max_iterations, _tier_bg = apply_user_tier_to_agent_kwargs(
+                    source=source,
+                    enabled_toolsets=enabled_toolsets,
+                    max_iterations=max_iterations,
+                    user_config=user_config,
+                    platform_config=_plat_cfg_bg,
+                )
+            except Exception as _tier_bg_exc:
+                logger.debug("user_tier background resolve skipped: %s", _tier_bg_exc)
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source, model=model
             )
@@ -31373,6 +31396,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from agent.skill_utils import parse_config_string_list
 
         disabled_toolsets = parse_config_string_list(agent_cfg_local.get("disabled_toolsets")) or None
+        # APPLY_USER_TIER_PHASE1: clamp non-admin tool schema + optional max_iterations (#20744)
+        try:
+            from gateway.user_tier import apply_user_tier_to_agent_kwargs
+            _plat_cfg = None
+            try:
+                _plat_cfg = (getattr(self, "config", None).platforms or {}).get(
+                    source.platform
+                ) if getattr(self, "config", None) else None
+            except Exception:
+                _plat_cfg = None
+            enabled_toolsets, _tier_max_iters, _tier_dec = apply_user_tier_to_agent_kwargs(
+                source=source,
+                enabled_toolsets=enabled_toolsets,
+                max_iterations=_current_max_iterations(),
+                user_config=user_config,
+                platform_config=_plat_cfg,
+            )
+            # Stash for TurnRunner (re-resolves max_iterations separately)
+            user_config["_hermes_user_tier_max_iterations"] = _tier_dec.max_iterations
+            user_config["_hermes_user_tier_is_admin"] = _tier_dec.is_admin
+        except Exception as _tier_exc:
+            logger.debug("user_tier resolve skipped: %s", _tier_exc)
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

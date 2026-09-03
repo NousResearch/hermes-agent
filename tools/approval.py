@@ -1386,6 +1386,25 @@ _PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
+def _is_posix_absolute_home(path: str) -> bool:
+    """True for a single-segment POSIX absolute home such as ``/root``.
+
+    Distinguishes a one-component path that names a real directory from a
+    filesystem or drive root that merely looks like one. Only the
+    single-segment case needs this: multi-component paths already satisfy the
+    ordinary component count in :func:`_home_prefix_fold_regex`.
+
+    Refused: ``/`` (the filesystem root), ``//`` and ``//host`` (POSIX's
+    implementation-defined namespace, and the Windows UNC spelling), ``C:\\``
+    and ``C:/`` (drive roots, which have no leading separator), and ``/C:``
+    (a drive-letter spelling under a separator).
+    """
+    if not path.startswith("/") or path.startswith("//"):
+        return False
+    segment = path.strip("/")
+    return bool(segment) and "/" not in segment and ":" not in segment
+
+
 @functools.lru_cache(maxsize=64)
 def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* used as an absolute directory prefix.
@@ -1398,19 +1417,24 @@ def _home_prefix_fold_regex(path: str):
     patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
     required (``+``), so a bare home with no path under it is not folded.
 
-    Returns ``None`` for an unset or degenerate path — one with fewer than two
-    components below the root — so a stray HOME / HERMES_HOME such as ``/``,
-    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
-    because the resolved home is stable across calls on this hot path.
+    Returns ``None`` for an unset or degenerate path — one with no component
+    below the root, or a bare Windows drive/UNC root — so a stray HOME /
+    HERMES_HOME such as ``/``, ``C:\\`` or ``""`` cannot rewrite unrelated
+    filesystem prefixes. A single-segment POSIX home such as ``/root`` IS
+    folded: it names a real directory, not a filesystem root, and refusing it
+    left absolute-path writes to ``/root/.ssh/authorized_keys`` unmatched by the
+    ``~/.ssh``-anchored patterns while the ``~`` and ``$HOME`` spellings were
+    caught (#84639 — a persistence bypass whenever Hermes runs as root).
+    Cached because the resolved home is stable across calls on this hot path.
     """
     if not path:
         return None
     components = [c for c in re.split(r"[/\\]+", path) if c]
-    # Require at least two non-empty components below the root. For POSIX this
-    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
-    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
-    # while accepting a real home (``C:\\Users\\alice``).
-    if len(components) < 2:
+    if len(components) < 2 and not _is_posix_absolute_home(path):
+        # No component at all ("/"), or one component that is still a root
+        # rather than a directory (``C:\``, ``\\server``). Folding either would
+        # rewrite every absolute path in the command. A POSIX ``/root``-style
+        # home has one component but IS a directory, so it falls through.
         return None
     body = r"[/\\]+".join(re.escape(c) for c in components)
     # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows

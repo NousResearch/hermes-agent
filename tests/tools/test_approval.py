@@ -492,6 +492,77 @@ class TestSensitiveInPlaceEditPattern:
         assert key is None
 
 
+class TestSingleSegmentHomeFolding:
+    """A single-segment POSIX home (``/root``) must fold to ``~/`` too.
+
+    Regression #84639: ``_home_prefix_fold_regex`` required at least two path
+    components below the root, so ``/home/alice`` folded but ``/root`` did not.
+    Running as root, absolute-path writes to sensitive files were therefore
+    never matched by the ``~``-anchored patterns while the ``~`` and ``$HOME``
+    spellings were caught — a persistence bypass (plant an SSH key, append to
+    a shell rc) with no approval prompt. Measured before the fix: the absolute
+    form was flagged 0/3 where the tilde form was flagged 3/3.
+
+    A filesystem or drive root must still be refused, otherwise folding would
+    rewrite every absolute path in the command.
+    """
+
+    def test_root_home_absolute_sensitive_writes_are_flagged(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/root")
+        for cmd in (
+            "echo ssh-rsa AAAAB3 attacker >> /root/.ssh/authorized_keys",
+            "echo key | tee -a /root/.ssh/authorized_keys",
+            "cp /tmp/evil /root/.ssh/id_rsa",
+            "echo x >> /root/.netrc",
+            "echo evil >> /root/.bashrc",
+            "echo evil >> /root/.profile",
+        ):
+            dangerous, key, _ = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert key is not None, cmd
+
+    def test_root_home_matches_tilde_verdict(self, monkeypatch):
+        """The absolute and tilde spellings must agree, which is the invariant
+        the fold exists to provide."""
+        monkeypatch.setenv("HOME", "/root")
+        pairs = [
+            ("echo k >> /root/.ssh/authorized_keys", "echo k >> ~/.ssh/authorized_keys"),
+            ("cp /tmp/evil /root/.ssh/id_rsa", "cp /tmp/evil ~/.ssh/id_rsa"),
+            ("echo evil >> /root/.bashrc", "echo evil >> ~/.bashrc"),
+        ]
+        for absolute, tilde in pairs:
+            assert (
+                detect_dangerous_command(absolute)[0]
+                is detect_dangerous_command(tilde)[0]
+            ), absolute
+
+    def test_ordinary_root_home_paths_stay_unflagged(self, monkeypatch):
+        """Folding must not turn routine work under /root into a prompt."""
+        monkeypatch.setenv("HOME", "/root")
+        for cmd in (
+            "cat /root/notes.txt",
+            "cp report.txt /root/reports/out.txt",
+            "git -C /root/repo status",
+            "echo hi > /root/tmp.log",
+        ):
+            dangerous, key, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+            assert key is None, cmd
+
+    def test_degenerate_roots_are_still_refused(self):
+        """``/``, a bare drive root, and a bare UNC root must not fold."""
+        from tools.approval import _home_prefix_fold_regex
+
+        for degenerate in ("", "/", "//", "C:\\", "C:/", "\\\\server", "/C:"):
+            assert _home_prefix_fold_regex(degenerate) is None, degenerate
+
+    def test_real_homes_still_fold(self):
+        from tools.approval import _home_prefix_fold_regex
+
+        for real in ("/root", "/home/alice", "/Users/alice", "C:\\Users\\alice"):
+            assert _home_prefix_fold_regex(real) is not None, real
+
+
 class TestWindowsAbsolutePathFolding:
     """Windows absolute home / Hermes-home prefixes must fold to ~/ and
     ~/.hermes/ in dangerous-command detection.

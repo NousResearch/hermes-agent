@@ -724,12 +724,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             elif not prev_content and new_content is not None:
                 prev["content"] = new_content
                 content_rewritten = new_content != prev_content
-            # Carry reasoning_content from the later turn only if the
-            # earlier turn lacks it (strict thinking providers require a
-            # reasoning_content on the merged tool-call turn; the first
-            # non-empty one suffices).
+            # Carry reasoning fields from the later turn only if the
+            # earlier turn lacks them (strict thinking providers require
+            # reasoning on the merged tool-call turn; the first non-empty
+            # one suffices).
             if not prev.get("reasoning_content") and msg.get("reasoning_content"):
                 prev["reasoning_content"] = msg["reasoning_content"]
+            if not prev.get("reasoning") and msg.get("reasoning"):
+                prev["reasoning"] = msg["reasoning"]
+            if not prev.get("reasoning_details") and msg.get("reasoning_details"):
+                prev["reasoning_details"] = msg["reasoning_details"]
             # ``prev`` may carry an ``api_content`` sidecar (the exact bytes
             # previously sent to the API, e.g. a sanitize-divergence stamp —
             # see ``_flush_messages_to_session_db``) from BEFORE this merge.

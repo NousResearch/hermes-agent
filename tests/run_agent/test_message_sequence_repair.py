@@ -775,11 +775,51 @@ def test_repair_drops_stale_empty_tool_calls_on_merged_assistant():
     # A dummy agent object is enough — repair only reads message roles/content.
     agent = type("Agent", (), {})()
     n = repair_message_sequence(agent, messages)
-    assert n >= 0
     assistants = [m for m in messages if m.get("role") == "assistant"]
     assert len(assistants) == 1
     assert "tool_calls" not in assistants[0]
     assert "second" in assistants[0]["content"]
+
+
+def test_repair_preserves_reasoning_and_reasoning_details_on_merged_assistant():
+    """repair_message_sequence must preserve canonical reasoning and reasoning_details
+    when merging consecutive assistant messages if earlier message lacked them."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    agent = type("Agent", (), {})()
+
+    # Case 1: second message carries reasoning
+    messages_1 = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "thinking scaffold..."},
+        {"role": "assistant", "content": "final answer", "reasoning": "thought trace here"},
+    ]
+    repair_message_sequence(agent, messages_1)
+    assistants_1 = [m for m in messages_1 if m.get("role") == "assistant"]
+    assert len(assistants_1) == 1
+    assert assistants_1[0]["reasoning"] == "thought trace here"
+
+    # Case 2: second message carries reasoning_details
+    messages_2 = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "start"},
+        {"role": "assistant", "content": "end", "reasoning_details": [{"type": "thought", "text": "details"}]},
+    ]
+    repair_message_sequence(agent, messages_2)
+    assistants_2 = [m for m in messages_2 if m.get("role") == "assistant"]
+    assert len(assistants_2) == 1
+    assert assistants_2[0]["reasoning_details"] == [{"type": "thought", "text": "details"}]
+
+    # Case 3: first message already has reasoning, keep first
+    messages_3 = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "start", "reasoning": "first reasoning"},
+        {"role": "assistant", "content": "end", "reasoning": "second reasoning"},
+    ]
+    repair_message_sequence(agent, messages_3)
+    assistants_3 = [m for m in messages_3 if m.get("role") == "assistant"]
+    assert len(assistants_3) == 1
+    assert assistants_3[0]["reasoning"] == "first reasoning"
 
 
 def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():

@@ -12,6 +12,7 @@ def _make_adapter(
     require_mention=None,
     free_response_chats=None,
     free_response_topics=None,
+    mention_required_topics=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
     ignored_threads=None,
@@ -33,6 +34,8 @@ def _make_adapter(
         extra["free_response_chats"] = free_response_chats
     if free_response_topics is not None:
         extra["free_response_topics"] = free_response_topics
+    if mention_required_topics is not None:
+        extra["mention_required_topics"] = mention_required_topics
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
@@ -407,6 +410,28 @@ def test_free_response_topic_messages_are_dispatched_not_observed():
     other_topic = _group_message("side chatter", chat_id=-200, thread_id=32)
     assert adapter._should_process_message(other_topic) is False
     assert adapter._should_observe_unmentioned_group_message(other_topic) is True
+
+
+def test_mention_required_topic_overrides_whole_chat_free_response():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        mention_required_topics=["-200:31"],
+    )
+
+    restricted = _group_message("hello", chat_id=-200, thread_id=31)
+    assert adapter._should_process_message(restricted) is False
+    assert adapter._should_process_message(
+        _group_message(
+            "hi @hermes_bot",
+            chat_id=-200,
+            thread_id=31,
+            entities=[_mention_entity("hi @hermes_bot")],
+        )
+    ) is True
+    assert adapter._should_process_message(
+        _group_message("hello", chat_id=-200, thread_id=32)
+    ) is True
 
 
 def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():

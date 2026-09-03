@@ -9042,6 +9042,22 @@ class TelegramAdapter(BasePlatformAdapter):
         topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
         return f"{chat_id}:{topic_id}" in topics
 
+    def _telegram_is_mention_required_topic(self, message: Message) -> bool:
+        """True when a topic requires an explicit bot trigger."""
+        raw = self.config.extra.get("mention_required_topics", "")
+        if isinstance(raw, list):
+            topics = {str(part).strip() for part in raw if str(part).strip()}
+        else:
+            topics = {part.strip() for part in str(raw).split(",") if part.strip()}
+        if not topics:
+            return False
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if not chat_id:
+            return False
+        thread_id = self._effective_message_thread_id(message)
+        topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        return f"{chat_id}:{topic_id}" in topics
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
@@ -9553,6 +9569,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Only observe messages skipped by the require_mention gate.  If the
         # message would be processed normally, let the dispatcher handle it;
         # if require_mention is disabled, every group message is a request.
+        if self._telegram_is_mention_required_topic(message):
+            return False
         if chat_id_str in self._telegram_free_response_chats():
             return False
         if self._telegram_is_free_response_topic(message):
@@ -9937,11 +9955,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if guest_mention:
             return True
-        if chat_id_str in self._telegram_free_response_chats():
+        mention_required_topic = self._telegram_is_mention_required_topic(message)
+        if not mention_required_topic and chat_id_str in self._telegram_free_response_chats():
             return True
-        if self._telegram_is_free_response_topic(message):
+        if not mention_required_topic and self._telegram_is_free_response_topic(message):
             return True
-        if not self._telegram_require_mention():
+        if not mention_required_topic and not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
             return True

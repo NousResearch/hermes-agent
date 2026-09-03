@@ -1299,7 +1299,7 @@ def _classify_by_status(
         )
 
     if status_code == 402:
-        return _classify_402(error_msg, result_fn)
+        return _classify_402(error_msg, body, response_headers, result_fn)
 
     if status_code == 404:
         # Nous API currently surfaces HA/NAS credit depletion as a paid model
@@ -1575,18 +1575,25 @@ def _has_usage_limit_transient_signal(
     return False
 
 
-def _classify_402(error_msg: str, result_fn) -> ClassifiedError:
+def _classify_402(
+    error_msg: str,
+    body: dict,
+    response_headers,
+    result_fn,
+) -> ClassifiedError:
     """Disambiguate 402: billing exhaustion vs transient usage limit.
 
     The key insight from OpenClaw: some 402s are transient rate limits
     disguised as payment errors.  "Usage limit, try again in 5 minutes"
     is NOT a billing problem — it's a periodic quota that resets.
     """
-    # Check for transient usage-limit signals first
-    has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
-    has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
-
-    if has_usage_limit and has_transient_signal:
+    # A transient signal is authoritative on its own — a 402 carrying
+    # Retry-After (OpenRouter's in-flight concurrency-budget throttle does
+    # this while the message mentions only "available credits", matching
+    # neither _USAGE_LIMIT_PATTERNS nor _BILLING_PATTERNS) is a temporary
+    # refusal, not terminal exhaustion.  Structured evidence (body reset
+    # fields, response headers) is checked here exactly like the 429 path.
+    if _has_usage_limit_transient_signal(error_msg, body, response_headers):
         # Transient quota — treat as rate limit, not billing
         return result_fn(
             FailoverReason.rate_limit,

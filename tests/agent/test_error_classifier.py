@@ -165,6 +165,8 @@ class TestClassify402:
         """Plain 402 = billing."""
         result = _classify_402(
             "payment required",
+            {},
+            {},
             lambda reason, **kw: ClassifiedError(reason=reason, **kw),
         )
         assert result.reason == FailoverReason.billing
@@ -175,9 +177,37 @@ class TestClassify402:
         """402 with 'quota' + 'retry' = rate limit."""
         result = _classify_402(
             "quota exceeded, please retry after the window resets",
+            {},
+            {},
             lambda reason, **kw: ClassifiedError(reason=reason, **kw),
         )
         assert result.reason == FailoverReason.rate_limit
+
+    def test_retry_after_header_alone_is_rate_limit(self):
+        """A 402 whose message carries no transient wording but whose
+        response carries Retry-After is a temporary refusal — e.g.
+        OpenRouter's in-flight concurrency-budget throttle."""
+        result = _classify_402(
+            "in-flight request budget exceeded, credits still owed",
+            {},
+            {"Retry-After": "120"},
+            lambda reason, **kw: ClassifiedError(reason=reason, **kw),
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_body_retry_after_field_alone_is_rate_limit(self):
+        """A structured retry_after field in the error body carries the
+        same authority as the header — providers that mirror response
+        headers into the body still get a retryable verdict."""
+        result = _classify_402(
+            "in-flight request budget exceeded, credits still owed",
+            {"error": {"retry_after": 120}},
+            {},
+            lambda reason, **kw: ClassifiedError(reason=reason, **kw),
+        )
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
 
 
 
@@ -217,8 +247,36 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    def test_402_in_flight_budget_with_retry_after_is_rate_limit(self):
+        """Regression (#102517): OpenRouter refuses a request with 402 when
+        the estimated cost of in-flight requests exceeds the concurrency
+        budget, and answers with Retry-After.  The message mentions only
+        "available credits" (no usage-limit pattern), so without the
+        structured signal the classifier terminally aborted unattended
+        runs on a throttle that clears itself in two minutes."""
+        e = MockAPIError(
+            "This request would exceed your available credits given your "
+            "current in-flight requests. Retry after in-flight requests "
+            "settle, or add credits.",
+            status_code=402,
+            headers={"Retry-After": "120"},
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
 
-
+    def test_402_credits_message_without_transient_signal_still_billing(self):
+        """Guard: a 402 about credits with no retry hint — no Retry-After
+        header, no structured reset field, no transient wording — remains
+        terminal billing exhaustion."""
+        e = MockAPIError(
+            "This request would exceed your available credits. Add credits "
+            "to continue.",
+            status_code=402,
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
 
     def test_404_free_tier_model_block_is_billing(self):
         e = MockAPIError(

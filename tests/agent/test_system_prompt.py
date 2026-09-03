@@ -691,6 +691,38 @@ class TestSessionStartLike:
         start = _session_start_like(agent, now)
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
 
+    def test_display_tz_conversion_never_shifts_the_calendar_day(self, monkeypatch):
+        """Regression (t_70c45711): the session-id embedded stamp is a
+        box-local wall-clock reading. Converting it into a display timezone
+        that is far enough away from box-local can cross midnight and land
+        on a different calendar day/weekday than the session actually
+        started on — even though the box-local clock never left Sept 4.
+
+        This reproduces the exact scenario from the root-cause analysis:
+        box-local (machine) timezone is US/Pacific, session mints at 23:30
+        Sept 4, and the CONFIGURED display timezone (``now.tzinfo``) is
+        Asia/Kolkata — 13.5 hours ahead, well past the day boundary.
+        """
+        from agent.system_prompt import _session_start_like
+
+        class _FixedNow(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 9, 4, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+                return base if tz is None else base.astimezone(tz)
+
+        with patch("datetime.datetime", _FixedNow):
+            # Session minted 23:30 Sept 4 box-local (naive — matches how the
+            # session_id embedded timestamp and session_start are recorded).
+            now = datetime(2026, 9, 5, 3, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+            agent = SimpleNamespace(
+                session_id="20260904_233000_abc123",
+                session_start=datetime(2026, 9, 4, 23, 30),
+            )
+            start = _session_start_like(agent, now)
+        assert start.strftime("%Y-%m-%d") == "2026-09-04"
+        assert start.strftime("%A") == "Friday"
+
 
 def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     """Regression: a session that started on Jan 1 must still read

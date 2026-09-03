@@ -629,6 +629,42 @@ class GatewayAuthorizationMixin:
         if not user_id:
             return False
 
+        # Slack may grant specific users access in one channel without adding
+        # them to the platform-wide SLACK_ALLOWED_USERS allowlist. This keeps a
+        # private workflow channel usable by invited collaborators while
+        # preserving default-deny everywhere else. The map is intentionally
+        # channel -> explicit user IDs; no wildcard is honored here.
+        if (
+            source.platform == Platform.SLACK
+            and source.chat_type in {"group", "forum", "channel"}
+            and source.chat_id
+        ):
+            adapter = self._authorization_adapter(
+                source.platform,
+                profile=getattr(source, "profile", None),
+            )
+            extra = getattr(getattr(adapter, "config", None), "extra", None) or {}
+            channel_allowed_users = extra.get("channel_allowed_users")
+            if isinstance(channel_allowed_users, dict):
+                channel_allowed = _coerce_allow_set(
+                    channel_allowed_users.get(source.chat_id)
+                )
+                if user_id in channel_allowed:
+                    return True
+
+            # Private trigger-only reporting channels: Slack membership is the
+            # human access boundary. Honor invited members only when the same
+            # channel also has a hard trigger_only_channels gate, so this never
+            # opens DMs or other Slack channels.
+            trigger_only_channels = extra.get("trigger_only_channels")
+            member_channels = extra.get("trigger_only_member_channels")
+            if (
+                isinstance(trigger_only_channels, dict)
+                and source.chat_id in trigger_only_channels
+                and source.chat_id in _coerce_allow_set(member_channels)
+            ):
+                return True
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",

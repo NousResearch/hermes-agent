@@ -20,12 +20,14 @@ const ATTACHMENT_ID_RE = /^att_[0-9a-f]{32}$/
 export const ROOM_LINK_PROTOCOL_VERSION = 2
 
 export interface HostedRoomClientLimitations {
+  attachmentList?: boolean
   attachments: boolean
   automaticFailover: boolean
   crossGatewayMembers: boolean
 }
 
 export const HOSTED_ROOM_CLIENT_LIMITATIONS: HostedRoomClientLimitations = Object.freeze({
+  attachmentList: false,
   attachments: false,
   automaticFailover: false,
   crossGatewayMembers: true
@@ -36,6 +38,8 @@ function hostedCapabilityLimits(capabilities: Record<string, unknown>): HostedRo
 
   return {
     ...HOSTED_ROOM_CLIENT_LIMITATIONS,
+    attachmentList:
+      Array.isArray(capabilities.features) && capabilities.features.includes('attachment_metadata_catalog'),
     attachments: methods.includes('groups.attachment.put') && methods.includes('groups.attachment.read')
   }
 }

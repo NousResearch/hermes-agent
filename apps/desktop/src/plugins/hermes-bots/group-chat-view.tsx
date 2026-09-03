@@ -57,6 +57,7 @@ import {
   groupActivityTone
 } from './group-activity'
 import type { GroupActivityEntry } from './group-activity'
+import { GroupAttachmentDownload } from './group-attachment-download'
 import { filesToGroupAttachments, pickGroupAttachments } from './group-attachments'
 import {
   $groupChats,
@@ -76,6 +77,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { SharedFilesControl } from './group-files-view'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -105,7 +107,6 @@ import {
   beginHostedRoomMutation,
   disbandHostedGroupChat,
   markHostedRoomLocallyDeleted,
-  readHostedGroupChatAttachment,
   renameHostedGroupChat,
   retryFailedHostedRoomCommand,
   retryHostedGroupChat,
@@ -832,6 +833,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {someUnavailable ? availabilityLabel : b.group.memberCount(members.length)}
         </span>
       </Tip>
+      <SharedFilesControl group={group} room={room} />
       <Tip label={b.group.settingsHint(group)}>
         <Button
           aria-label={b.group.settingsLabel(group)}
@@ -1173,27 +1175,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </Button>
   )
 
-  const downloadAttachment = async (entry: GroupMessage, attachment: Attachment) => {
-    try {
-      const resolved = attachment.data ? attachment : await readHostedGroupChatAttachment(group, entry, attachment)
-
-      if (!resolved.data) {
-        throw new Error('Attachment data is unavailable.')
-      }
-
-      const link = document.createElement('a')
-
-      link.href = resolved.data
-      link.download = resolved.name || 'attachment'
-      link.style.display = 'none'
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-    } catch {
-      host.notify({ kind: 'error', message: b.group.attachmentDownloadFailed })
-    }
-  }
-
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
@@ -1309,21 +1290,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               {entry.images.map((img, imgIndex) =>
                 img.kind === 'pdf' || img.kind === 'file' || !img.data ? (
-                  <Tip key={`${entryKey}:img:${imgIndex}`} label={b.group.downloadAttachment}>
-                    <Button
-                      className="h-auto max-w-60 gap-1 border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
-                      onClick={() => void downloadAttachment(entry, img)}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Codicon
-                        className="shrink-0 text-[0.8rem]"
-                        name={img.kind === 'pdf' ? 'file-pdf' : img.kind === 'image' ? 'file-media' : 'file'}
-                      />
-                      <span className="truncate">{img.name || 'attached file'}</span>
-                      <Codicon className="shrink-0 text-[0.75rem]" name="cloud-download" />
-                    </Button>
-                  </Tip>
+                  <GroupAttachmentDownload
+                    attachment={img}
+                    group={group}
+                    key={`${entryKey}:img:${imgIndex}`}
+                    message={entry}
+                  />
                 ) : (
                   <img
                     alt={img.name || 'attached image'}

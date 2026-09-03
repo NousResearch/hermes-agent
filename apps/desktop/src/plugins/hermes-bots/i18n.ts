@@ -168,7 +168,25 @@ type BotsMessages = {
     composerPlaceholder: string
     attachHint: string
     downloadAttachment: string
+    attachedFile: string
+    downloadFile: (name: string) => string
     attachmentDownloadFailed: string
+    sharedFiles: string
+    sharedFilesDescription: (group: string) => string
+    searchSharedFiles: string
+    sharedFilesLoading: string
+    sharedFilesError: string
+    sharedFilesExpired: string
+    sharedFilesOffline: string
+    sharedFilesUnavailable: string
+    sharedFilesEmpty: string
+    sharedFilesPageEmpty: string
+    sharedFilesNoResults: string
+    sharedFilesRetry: string
+    olderFiles: string
+    newerFiles: string
+    returnToLatest: string
+    showLatest: string
     newThread: string
     reply: string
     replyInThread: string
@@ -451,7 +469,25 @@ const en: BotsMessages = {
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
     attachHint: 'Attach files — every responding bot sees them',
     downloadAttachment: 'Download attachment',
+    attachedFile: 'attached file',
+    downloadFile: name => `Download ${name}`,
     attachmentDownloadFailed: 'This attachment could not be downloaded.',
+    sharedFiles: 'Shared files',
+    sharedFilesDescription: group => `Files shared in ${group}.`,
+    searchSharedFiles: 'Search shared files',
+    sharedFilesLoading: 'Loading shared files',
+    sharedFilesError: 'Shared files could not be loaded',
+    sharedFilesExpired: 'This file list has expired.',
+    sharedFilesOffline: 'Shared files are offline',
+    sharedFilesUnavailable: 'File browsing is unavailable for this Group Chat.',
+    sharedFilesEmpty: 'No shared files',
+    sharedFilesPageEmpty: 'No files on this page',
+    sharedFilesNoResults: 'No matching files',
+    sharedFilesRetry: 'Retry',
+    olderFiles: 'Older files',
+    newerFiles: 'Newer files',
+    returnToLatest: 'Return to latest',
+    showLatest: 'Show latest',
     newThread: 'New Thread',
     reply: 'Reply',
     replyInThread: 'Reply in thread',
@@ -729,7 +765,25 @@ const ja: BotsMessages = {
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     downloadAttachment: '添付ファイルをダウンロード',
+    attachedFile: '添付ファイル',
+    downloadFile: name => `${name}をダウンロード`,
     attachmentDownloadFailed: 'この添付ファイルをダウンロードできませんでした。',
+    sharedFiles: '共有ファイル',
+    sharedFilesDescription: group => `${group}で共有されたファイルです。`,
+    searchSharedFiles: '共有ファイルを検索',
+    sharedFilesLoading: '共有ファイルを読み込み中',
+    sharedFilesError: '共有ファイルを読み込めませんでした',
+    sharedFilesExpired: 'このファイル一覧の有効期限が切れました。',
+    sharedFilesOffline: '共有ファイルはオフラインです',
+    sharedFilesUnavailable: 'このグループチャットではファイルを一覧表示できません。',
+    sharedFilesEmpty: '共有ファイルはありません',
+    sharedFilesPageEmpty: 'このページにファイルはありません',
+    sharedFilesNoResults: '一致するファイルはありません',
+    sharedFilesRetry: '再試行',
+    olderFiles: '古いファイル',
+    newerFiles: '新しいファイル',
+    returnToLatest: '最新に戻る',
+    showLatest: '最新を表示',
     newThread: '新しいスレッド',
     reply: '返信',
     replyInThread: 'スレッドで返信',
@@ -1003,7 +1057,25 @@ const zh: BotsMessages = {
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     downloadAttachment: '下载附件',
+    attachedFile: '附件',
+    downloadFile: name => `下载 ${name}`,
     attachmentDownloadFailed: '无法下载此附件。',
+    sharedFiles: '共享文件',
+    sharedFilesDescription: group => `${group} 中共享的文件。`,
+    searchSharedFiles: '搜索共享文件',
+    sharedFilesLoading: '正在加载共享文件',
+    sharedFilesError: '无法加载共享文件',
+    sharedFilesExpired: '此文件列表已过期。',
+    sharedFilesOffline: '共享文件当前离线',
+    sharedFilesUnavailable: '此群聊暂时无法浏览文件。',
+    sharedFilesEmpty: '没有共享文件',
+    sharedFilesPageEmpty: '此页没有文件',
+    sharedFilesNoResults: '没有匹配的文件',
+    sharedFilesRetry: '重试',
+    olderFiles: '较早的文件',
+    newerFiles: '较新的文件',
+    returnToLatest: '返回最新内容',
+    showLatest: '显示最新内容',
     newThread: '新帖子',
     reply: '回复',
     replyInThread: '在帖子中回复',
@@ -1276,7 +1348,25 @@ const zhHant: BotsMessages = {
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     downloadAttachment: '下載附件',
+    attachedFile: '附件',
+    downloadFile: name => `下載 ${name}`,
     attachmentDownloadFailed: '無法下載此附件。',
+    sharedFiles: '共享檔案',
+    sharedFilesDescription: group => `${group} 中共享的檔案。`,
+    searchSharedFiles: '搜尋共享檔案',
+    sharedFilesLoading: '正在載入共享檔案',
+    sharedFilesError: '無法載入共享檔案',
+    sharedFilesExpired: '此檔案清單已過期。',
+    sharedFilesOffline: '共享檔案目前離線',
+    sharedFilesUnavailable: '此群組聊天目前無法瀏覽檔案。',
+    sharedFilesEmpty: '沒有共享檔案',
+    sharedFilesPageEmpty: '此頁沒有檔案',
+    sharedFilesNoResults: '找不到相符的檔案',
+    sharedFilesRetry: '重試',
+    olderFiles: '較舊的檔案',
+    newerFiles: '較新的檔案',
+    returnToLatest: '返回最新內容',
+    showLatest: '顯示最新內容',
     newThread: '新討論串',
     reply: '回覆',
     replyInThread: '在討論串中回覆',
@@ -1429,7 +1519,58 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: {
+    group: {
+      attachedFile: 'ملف مرفق',
+      downloadFile: (name: string) => `تنزيل ${name}`,
+      attachmentDownloadFailed: 'تعذر تنزيل هذا المرفق.',
+      sharedFiles: 'الملفات المشتركة',
+      sharedFilesDescription: (group: string) => `الملفات المشتركة في ${group}.`,
+      searchSharedFiles: 'البحث في الملفات المشتركة',
+      sharedFilesLoading: 'جارٍ تحميل الملفات المشتركة',
+      sharedFilesError: 'تعذر تحميل الملفات المشتركة',
+      sharedFilesExpired: 'انتهت صلاحية قائمة الملفات هذه.',
+      sharedFilesOffline: 'الملفات المشتركة غير متصلة',
+      sharedFilesUnavailable: 'تصفح الملفات غير متاح لهذه المحادثة الجماعية.',
+      sharedFilesEmpty: 'لا توجد ملفات مشتركة',
+      sharedFilesPageEmpty: 'لا توجد ملفات في هذه الصفحة',
+      sharedFilesNoResults: 'لا توجد ملفات مطابقة',
+      sharedFilesRetry: 'إعادة المحاولة',
+      olderFiles: 'ملفات أقدم',
+      newerFiles: 'ملفات أحدث',
+      returnToLatest: 'العودة إلى الأحدث',
+      showLatest: 'عرض الأحدث'
+    }
+  },
+  ru: {
+    group: {
+      attachedFile: 'вложенный файл',
+      downloadFile: (name: string) => `Скачать ${name}`,
+      attachmentDownloadFailed: 'Не удалось скачать это вложение.',
+      sharedFiles: 'Общие файлы',
+      sharedFilesDescription: (group: string) => `Файлы, опубликованные в ${group}.`,
+      searchSharedFiles: 'Поиск общих файлов',
+      sharedFilesLoading: 'Загрузка общих файлов',
+      sharedFilesError: 'Не удалось загрузить общие файлы',
+      sharedFilesExpired: 'Срок действия этого списка файлов истёк.',
+      sharedFilesOffline: 'Общие файлы недоступны без подключения',
+      sharedFilesUnavailable: 'Просмотр файлов недоступен для этого группового чата.',
+      sharedFilesEmpty: 'Нет общих файлов',
+      sharedFilesPageEmpty: 'На этой странице нет файлов',
+      sharedFilesNoResults: 'Подходящие файлы не найдены',
+      sharedFilesRetry: 'Повторить',
+      olderFiles: 'Более старые файлы',
+      newerFiles: 'Более новые файлы',
+      returnToLatest: 'Вернуться к последним',
+      showLatest: 'Показать последние'
+    }
+  }
+}
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

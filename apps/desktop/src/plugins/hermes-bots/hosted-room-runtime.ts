@@ -1305,7 +1305,7 @@ async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
   return !pending
 }
 
-async function hostedRouteForRoom(room: GroupChat) {
+export async function hostedRouteForRoom(room: GroupChat) {
   const connectionId = String(room?.hostedConnectionId || '')
   const routes = await hostedDefaultRoutes()
   const authorityId = groupChatHostedGateway(room)
@@ -1756,8 +1756,16 @@ export async function readHostedGroupChatAttachment(group: string, message: Grou
   const route = room ? await hostedRouteForRoom(room) : null
   const roomId = String(room?.roomId || '')
   const eventId = String(message.eventId || message.id || '')
+  const current = $groupChats.get()[group]
 
-  if (!roomId || !route) {
+  if (
+    !roomId ||
+    !route ||
+    (message.roomId && message.roomId !== roomId) ||
+    current?.roomId !== roomId ||
+    current?.hosted !== room?.hosted ||
+    current?.hostedEpoch !== room?.hostedEpoch
+  ) {
     throw new Error('This Group Chat attachment is unavailable.')
   }
 

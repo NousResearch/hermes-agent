@@ -26,6 +26,49 @@ const zh = BOTS_LOCALES.zh
 const zhHant = BOTS_LOCALES['zh-hant']
 
 describe('BOTS_LOCALES', () => {
+  it('translates the shared-files journey in all six Desktop locales', () => {
+    const keys = [
+      'attachedFile',
+      'downloadFile',
+      'attachmentDownloadFailed',
+      'sharedFiles',
+      'sharedFilesDescription',
+      'searchSharedFiles',
+      'sharedFilesLoading',
+      'sharedFilesError',
+      'sharedFilesExpired',
+      'sharedFilesOffline',
+      'sharedFilesUnavailable',
+      'sharedFilesEmpty',
+      'sharedFilesPageEmpty',
+      'sharedFilesNoResults',
+      'sharedFilesRetry',
+      'olderFiles',
+      'newerFiles',
+      'returnToLatest',
+      'showLatest'
+    ]
+
+    for (const locale of ['en', 'ja', 'zh', 'zh-hant', 'ar', 'ru'] as const) {
+      const byPath = Object.fromEntries(leafEntries(BOTS_LOCALES[locale]))
+
+      for (const key of keys) {
+        const value = byPath[`group.${key}`]
+        expect(typeof value === 'function' || (typeof value === 'string' && value.trim().length > 0)).toBe(true)
+      }
+
+      expect((byPath['group.downloadFile'] as (name: string) => string)('FILE_SENTINEL')).toContain('FILE_SENTINEL')
+      expect((byPath['group.sharedFilesDescription'] as (group: string) => string)('GROUP_SENTINEL')).toContain(
+        'GROUP_SENTINEL'
+      )
+    }
+  })
+
+  it('describes unavailable browsing without denying existing attachment support', () => {
+    const byPath = Object.fromEntries(leafEntries(en))
+    expect(byPath['group.sharedFilesUnavailable']).toBe('File browsing is unavailable for this Group Chat.')
+  })
+
   it('covers the English key tree in every shipped locale', () => {
     expect(ja).toBeDefined()
     expect(zh).toBeDefined()

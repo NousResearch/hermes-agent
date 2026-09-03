@@ -124,9 +124,10 @@ export async function readHostedMessageAttachment(
   )
 
   const receipt = record(response?.attachment)
-  const contentBase64 = String(response?.content_base64 || '')
-  const mime = String(receipt?.mime || attachment.mime || '')
-  const receiptSize = Number(receipt?.size ?? attachment.size)
+  const contentBase64 = typeof response?.content_base64 === 'string' ? response.content_base64 : ''
+  const mime = typeof receipt?.mime === 'string' ? receipt.mime : ''
+  const receiptName = typeof receipt?.name === 'string' ? receipt.name : ''
+  const receiptSize = receipt?.size
 
   const decodedSize = Math.max(
     0,
@@ -136,10 +137,14 @@ export async function readHostedMessageAttachment(
 
   if (
     String(receipt?.attachment_id || '') !== attachmentId ||
+    typeof response?.content_base64 !== 'string' ||
+    !receiptName ||
+    (attachment.name !== undefined && receiptName !== attachment.name) ||
     contentBase64.length > MAX_BASE64_CHARS ||
-    !/^[A-Za-z0-9+/=]+$/.test(contentBase64) ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(contentBase64) ||
     !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i.test(mime) ||
     (attachment.mime !== undefined && mime !== attachment.mime) ||
+    typeof receiptSize !== 'number' ||
     !Number.isSafeInteger(receiptSize) ||
     receiptSize < 0 ||
     receiptSize > MAX_ATTACHMENT_BYTES ||
@@ -153,6 +158,6 @@ export async function readHostedMessageAttachment(
     ...attachment,
     data: `data:${mime};base64,${contentBase64}`,
     mime,
-    name: String(receipt?.name || attachment.name || 'attachment')
+    name: receiptName
   }
 }

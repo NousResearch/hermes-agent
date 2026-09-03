@@ -457,7 +457,13 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids the sweep may decompose — triage, minus escalations.
+
+    Tasks the unblock-loop breaker escalated into triage are skipped: they wait
+    there for a human, and the gateway's auto-decompose tick would otherwise
+    re-specify and promote them back into the worker pool every ~60s (see
+    ``kb.awaiting_human_after_block_loop``). Decomposing one by id still works.
+    """
     with kb.connect_closing() as conn:
         rows = kb.list_tasks(
             conn,
@@ -465,4 +471,4 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             limit=1000,
         )
-    return [row.id for row in rows]
+    return [row.id for row in rows if not kb.awaiting_human_after_block_loop(row)]

@@ -250,9 +250,15 @@ def specify_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column.
+    """Return task ids the sweep may specify — triage, minus escalations.
 
-    ``tenant`` narrows the sweep; ``None`` returns every triage task.
+    ``tenant`` narrows the sweep; ``None`` returns every eligible triage task.
+
+    Tasks the unblock-loop breaker escalated into triage are skipped: they are
+    parked there waiting for a human, and re-specifying them just promotes them
+    back into the worker pool for another futile cycle (see
+    ``kb.awaiting_human_after_block_loop``). Specifying one by id still works —
+    that *is* the human decision the breaker asked for.
     """
     with kb.connect_closing() as conn:
         tasks = kb.list_tasks(
@@ -261,4 +267,4 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
             tenant=tenant,
             include_archived=False,
         )
-    return [t.id for t in tasks]
+    return [t.id for t in tasks if not kb.awaiting_human_after_block_loop(t)]

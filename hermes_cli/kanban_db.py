@@ -135,6 +135,30 @@ BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
 
+def awaiting_human_after_block_loop(task: "Task") -> bool:
+    """True when this ``triage`` task was put there by the unblock-loop breaker.
+
+    ``block_task`` routes a repeatedly human-blocked task to ``triage`` (see
+    :data:`BLOCK_RECURRENCE_LIMIT`) precisely to take it *out* of the machine
+    loop until a human weighs in. But ``triage`` is also the input queue of the
+    specify/decompose sweep, which re-specifies whatever sits there and
+    promotes it back to ``todo`` — handing the card straight back to a worker
+    that already reported it cannot proceed without a human.
+
+    The escalated state is durable on the row: ``block_kind`` stays set to the
+    human kind and ``block_recurrences`` stays at or above the limit until a
+    successful ``complete_task`` clears them. A card a user dropped into triage
+    by hand has ``block_kind IS NULL`` and ``block_recurrences = 0``, so it is
+    unaffected.
+    """
+    return (
+        task.status == "triage"
+        and task.block_kind is not None
+        and task.block_kind != "dependency"
+        and task.block_recurrences >= BLOCK_RECURRENCE_LIMIT
+    )
+
+
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
 
@@ -6788,7 +6812,7 @@ def promote_task(
     force: bool = False,
     dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
-    """Manually promote a `todo` or `blocked` task to `ready`.
+    """Manually promote a `todo`, `blocked` or `triage` task to `ready`.
 
     Mirrors the automatic promotion done by ``recompute_ready`` but
     drives it from a deliberate operator action with an audit-trail
@@ -6797,6 +6821,19 @@ def promote_task(
     assignee or claim state. Returns ``(True, None)`` on success and
     ``(False, reason)`` if refused. ``dry_run=True`` validates the
     promotion would succeed without mutating state.
+
+    ``triage`` is accepted because it is the only cheap door back for a card
+    the unblock-loop breaker escalated there (see
+    :func:`awaiting_human_after_block_loop`): the specify/decompose sweep
+    deliberately skips those cards, ``unblock`` only applies to
+    ``blocked``/``scheduled``, and re-specifying by id costs an aux-LLM
+    rewrite of a card whose text is already correct. Promotion *is* the human
+    decision the breaker asked for, and it is recorded as an event.
+
+    ``block_kind``/``block_recurrences`` are deliberately NOT reset: if the
+    worker re-blocks for the same human reason, the card lands straight back
+    in ``triage`` instead of burning another unblock/re-block cycle. Only a
+    successful :func:`complete_task` clears the counter.
     """
     row = conn.execute(
         "SELECT status FROM tasks WHERE id = ?", (task_id,)
@@ -6805,10 +6842,10 @@ def promote_task(
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
-    if cur_status not in ("todo", "blocked"):
+    if cur_status not in ("todo", "blocked", "triage"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            f"'todo', 'blocked' or 'triage'"
         )
 
     if not force:
@@ -6831,20 +6868,29 @@ def promote_task(
     if dry_run:
         return True, None
 
+    released_escalation = bool(
+        cur_status == "triage"
+        and awaiting_human_after_block_loop(get_task(conn, task_id))
+    )
+
     with write_txn(conn):
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
+            "WHERE id = ? AND status IN ('todo', 'blocked', 'triage')",
             (task_id,),
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(
-            conn,
-            task_id,
-            "promoted_manual",
-            {"actor": actor, "reason": reason, "forced": force},
-        )
+        payload: dict[str, object] = {
+            "actor": actor,
+            "reason": reason,
+            "forced": force,
+            "from_status": cur_status,
+        }
+        if released_escalation:
+            # Audit trail: a human weighed in on a loop-breaker escalation.
+            payload["released_escalation"] = True
+        _append_event(conn, task_id, "promoted_manual", payload)
 
     return True, None
 

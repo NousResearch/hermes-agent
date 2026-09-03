@@ -990,6 +990,27 @@ class TestSkillShouldShow:
                       "fallback_for_tools": [], "requires_tools": []}
         assert _skill_should_show(conditions, set(), set()) is False
 
+    def test_requires_toolset_alias_passes_gate(self):
+        # "files" → "file" normalization allows skill to load
+        conditions = {"requires_toolsets": ["files"]}
+        assert _skill_should_show(conditions, set(), {"file"}) is True
+        assert _skill_should_show(conditions, set(), set()) is False
+
+    def test_requires_toolset_case_insensitive(self):
+        conditions = {"requires_toolsets": ["Terminal"]}
+        assert _skill_should_show(conditions, set(), {"terminal"}) is True
+
+    def test_fallback_for_alias_hides_when_primary_present(self):
+        # "files" alias should hide when "file" is available
+        conditions = {"fallback_for_toolsets": ["files"]}
+        assert _skill_should_show(conditions, set(), {"file"}) is False
+        assert _skill_should_show(conditions, set(), set()) is True
+
+    def test_unknown_toolset_still_gates(self):
+        # Normalization doesn't weaken the gate; non-existent names still fail
+        conditions = {"requires_toolsets": ["nonexistent_toolset_xyz"]}
+        assert _skill_should_show(conditions, set(), {"file", "terminal"}) is False
+
 
 
 
@@ -1017,6 +1038,20 @@ class TestBuildSkillsSystemPromptConditional:
             available_toolsets=set(),
         )
         assert "openhue" not in result
+
+    def test_requires_alias_skill_shown_when_canonical_present(self, monkeypatch, tmp_path):
+        # A skill declaring "files" should load when "file" is available
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "research" / "research-paper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: research-paper\ndescription: Paper writing\nmetadata:\n  hermes:\n    requires_toolsets: [files]\n---\n"
+        )
+        result = build_skills_system_prompt(
+            available_tools={"read_file", "write_file"},
+            available_toolsets={"file"},
+        )
+        assert "research-paper" in result
 
 
 

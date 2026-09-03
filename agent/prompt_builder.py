@@ -44,6 +44,22 @@ from agent.skill_utils import (
 )
 from utils import atomic_json_write
 
+
+# Common alias map for toolset names in skill metadata conditions
+_TOOLSET_ALIAS_MAP = {
+    "files": "file",
+}
+
+
+def _normalize_toolset_name(name: str) -> str:
+    """Normalize toolset name via alias map and case/strip."""
+    return _TOOLSET_ALIAS_MAP.get(name.strip().lower(), name.strip().lower())
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Normalize tool name via case/strip (no tool aliases defined yet)."""
+    return name.strip().lower()
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1809,23 +1825,48 @@ def _skill_should_show(
     at = available_tools or set()
     ats = available_toolsets or set()
 
-    # fallback_for: hide when the primary tool/toolset IS available
+    # fallback_for: hide when the primary tool/toolset IS available (aliases normalized)
     for ts in conditions.get("fallback_for_toolsets", []):
-        if ts in ats:
+        if _normalize_toolset_name(ts) in ats:
             return False
     for t in conditions.get("fallback_for_tools", []):
-        if t in at:
+        if _normalize_tool_name(t) in at:
             return False
 
-    # requires: hide when a required tool/toolset is NOT available
+    # requires: hide when a required tool/toolset is NOT available (aliases normalized)
     for ts in conditions.get("requires_toolsets", []):
-        if ts not in ats:
+        if _normalize_toolset_name(ts) not in ats:
             return False
     for t in conditions.get("requires_tools", []):
-        if t not in at:
+        if _normalize_tool_name(t) not in at:
             return False
 
     return True
+
+
+def _warn_unknown_toolsets(conditions: dict, skill_file: Path) -> None:
+    """Log a warning if a skill declares toolset names that don't exist."""
+    try:
+        from toolsets import get_toolset_names
+    except Exception:
+        return  # toolsets import may fail in some build contexts
+
+    known = {ts.strip().lower() for ts in get_toolset_names()}
+    unknown = set()
+    for ts in conditions.get("requires_toolsets", []):
+        if _normalize_toolset_name(ts) not in known:
+            unknown.add(ts)
+    for ts in conditions.get("fallback_for_toolsets", []):
+        if _normalize_toolset_name(ts) not in known:
+            unknown.add(ts)
+
+    if unknown:
+        logger.warning(
+            "Skill %s declares unknown toolsets: %s. This may gate the skill out silently. "
+            "Check spelling and canonical names in `hermes tools list`.",
+            skill_file,
+            ", ".join(sorted(unknown))
+        )
 
 
 def _current_session_platform_hint() -> str:
@@ -1980,6 +2021,7 @@ def _build_skills_system_prompt_inner(
             skill_entries.append(entry)
             if not is_compatible:
                 continue
+            _warn_unknown_toolsets(extract_skill_conditions(frontmatter), skill_file)
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
                 continue

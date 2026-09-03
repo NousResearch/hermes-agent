@@ -445,6 +445,19 @@ class TestVoiceReceiver:
         assert len(receiver._buffers) == 0
         assert len(receiver._ssrc_to_user) == 0
 
+    def test_turn_timing_can_be_configured_per_receiver(self):
+        from plugins.platforms.discord.adapter import VoiceReceiver
+
+        mock_vc = MagicMock()
+        receiver = VoiceReceiver(
+            mock_vc,
+            silence_threshold=2.0,
+            min_speech_duration=0.75,
+        )
+
+        assert receiver.SILENCE_THRESHOLD == 2.0
+        assert receiver.MIN_SPEECH_DURATION == 0.75
+
     def test_start_sets_running(self):
         receiver = self._make_receiver()
         receiver.start()
@@ -849,6 +862,57 @@ class TestDiscordVoiceChannelMethods:
 
         assert adapter._voice_timeout_seconds == 0
         assert adapter._playback_timeout_seconds == 240
+
+    def test_discord_voice_turn_timing_config_loaded(self, tmp_path, monkeypatch):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import Platform, load_gateway_config
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  voice_silence_seconds: 2.25\n"
+            "  voice_min_speech_seconds: 0.75\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+        adapter = DiscordAdapter(config.platforms[Platform.DISCORD])
+
+        assert adapter._voice_silence_seconds == 2.25
+        assert adapter._voice_min_speech_seconds == 0.75
+
+    @pytest.mark.parametrize(
+        "raw",
+        [True, False, None, 0, -1, "", "invalid", "nan", "inf", "-inf"],
+    )
+    def test_discord_voice_turn_timing_invalid_values_use_defaults(self, raw):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = DiscordAdapter(PlatformConfig(
+            enabled=True,
+            token="x",
+            extra={
+                "voice_silence_seconds": raw,
+                "voice_min_speech_seconds": raw,
+            },
+        ))
+
+        assert adapter._voice_silence_seconds == 2.0
+        assert adapter._voice_min_speech_seconds == 0.5
+
+    def test_discord_voice_turn_timing_missing_values_use_safe_defaults(self, monkeypatch):
+        from plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setattr(VoiceReceiver, "SILENCE_THRESHOLD", 99.0)
+        monkeypatch.setattr(VoiceReceiver, "MIN_SPEECH_DURATION", 99.0)
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="x"))
+
+        assert adapter._voice_silence_seconds == 2.0
+        assert adapter._voice_min_speech_seconds == 0.5
 
     @pytest.mark.asyncio
     async def test_playback_timeout_scales_with_audio_duration(self):

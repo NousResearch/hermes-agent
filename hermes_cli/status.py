@@ -151,8 +151,20 @@ def show_status(args):
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
 
-    env_path = get_env_path()
-    print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+    # Report what the loader actually reads, not just get_env_path() (which
+    # only knows HERMES_HOME/.env and misses the project-root .env that
+    # setup-hermes.sh creates). Single source of truth via
+    # env_loader.get_effective_env_paths — fixes #102023.
+    from hermes_cli.env_loader import get_effective_env_paths
+
+    env_paths = get_effective_env_paths(project_env=PROJECT_ROOT / ".env")
+    if env_paths:
+        # Show the primary file; hint at the secondary when both exist
+        primary = env_paths[0]
+        extra = f" (+ {env_paths[1]})" if len(env_paths) > 1 else ""
+        print(f"  .env file:    {check_mark(True)} exists ({primary}{extra})")
+    else:
+        print(f"  .env file:    {check_mark(False)} not found")
 
     try:
         config = load_config()

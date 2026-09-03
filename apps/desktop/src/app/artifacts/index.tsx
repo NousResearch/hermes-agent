@@ -20,7 +20,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { Tip } from '@/components/ui/tooltip'
 import { getAllSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { resolveBrandIcon } from '@/lib/brand-icon'
+import { hasBrandIconHost, useBrandIcon } from '@/lib/brand-icon-loader'
 import {
   ExternalLink,
   ExternalLinkIcon,
@@ -582,8 +582,9 @@ function ArtifactCellAction({
 
 const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   const isLink = artifact.kind === 'link'
-  const brand = isLink ? resolveBrandIcon(shortHostLabel(artifact.href)) : null
-  const Icon = brand ?? (isLink ? Link2 : FileText)
+  const hostname = isLink ? shortHostLabel(artifact.href) : ''
+  const brand = useBrandIcon(hostname)
+  const Icon = brand ?? (isLink && hasBrandIconHost(hostname) ? null : isLink ? Link2 : FileText)
   const fetchedTitle = useLinkTitle(isLink ? artifact.href : null)
   const label = isLink ? fetchedTitle || urlSlugTitleLabel(artifact.href) : artifact.label
 
@@ -594,7 +595,7 @@ const PrimaryCell = memo(function PrimaryCell({ artifact, ctx }: { artifact: Art
       title={label}
     >
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center self-start rounded-md bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
-        <Icon className="size-3.5" />
+        {Icon && <Icon className="size-3.5" />}
       </span>
       <span className={cn('min-w-0 flex-1', isLink ? 'wrap-anywhere' : 'truncate')}>
         {label}

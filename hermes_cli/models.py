@@ -3760,6 +3760,24 @@ def _openrouter_variant_base(model_id: str) -> Optional[str]:
         return base
     return None
 
+
+def _model_sku_base(model_id: str) -> Optional[str]:
+    """Return the base id when ``model_id`` carries a ``:suffix`` (any
+    non-empty tail after the last colon), else ``None``.
+
+    Used to validate SKU-style ids like ``deepseek/deepseek-v4-flash-0731:free``
+    or ``...:cxbc`` against provider listings that expose only the base id.
+    Both sides of the ``base:suffix`` boundary must be non-empty, so bare
+    names and vendor-prefixed ids (``custom:foo``) are left untouched; the
+    suffix itself is not inspected, so a suffix that is itself a real catalog
+    entry (e.g. ``:cxbc`` on aggregators) is never stripped by accident.
+    """
+    base, sep, tail = (model_id or "").rpartition(":")
+    if not sep or not base or not tail:
+        return None
+    return base
+
+
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models
 # would be listed here (tried only as a last resort for bare short-alias
 # resolution, after every native-vendor catalog, so they never hijack an alias
@@ -7278,6 +7296,23 @@ def validate_requested_model(
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+
+            # SKU-style suffixes (":free", ":batch", ":thinking",
+            # ":extended", and aggregator-specific ones like ":cxbc",
+            # ":network", ":cxo", ":cxa"): distinct SKUs that MAY appear in
+            # /models when the provider lists them, but many custom
+            # aggregators expose only the base id.  If the base id is
+            # present, accept and PRESERVE the suffixed id — it routes the
+            # exact SKU on the upstream gateway and must not be stripped by
+            # fuzzy auto-correction (which would silently route the paid base).
+            sku_base = _model_sku_base(requested_for_lookup)
+            if sku_base and sku_base in set(api_models):
                 return {
                     "accepted": True,
                     "persist": True,

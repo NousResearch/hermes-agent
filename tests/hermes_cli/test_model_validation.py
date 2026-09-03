@@ -660,6 +660,85 @@ class TestValidateOpenRouterVariantSuffixes:
         )
         assert result.get("corrected_model") != "x-ai/grok-4.6:nitro"
 
+
+class TestValidateCustomProviderSkuSuffixes:
+    """Custom aggregators (e.g. PlusVibeAPI, RouterAI) expose suffixed SKUs as
+    first-class /v1/models entries, but many list only the base id (e.g.
+    `deepseek/deepseek-v4-flash-0731` without the `:cxbc` / `:free` twins).
+    When the base id is listed, ANY `base:suffix` request must be accepted
+    and the suffixed id PRESERVED — the suffix selects the specific SKU
+    upstream and must not be stripped by fuzzy auto-correction."""
+
+    _LISTING = [
+        "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4-flash-0731:cxbc",
+    ]
+
+    def _validate_custom(self, model, listing=None):
+        return _validate(
+            model,
+            "custom",
+            api_models=list(self._LISTING if listing is None else listing),
+            base_url="https://plusvibeapi.ru/v1",
+        )
+
+    def test_free_sku_base_listed_accepted_unmodified(self):
+        result = self._validate_custom("deepseek/deepseek-v4-flash-0731:free")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_free_sku_not_fuzzy_corrected_to_base(self):
+        """The old failure mode: get_close_matches would 'fix'
+        model:free to the bare base id and silently route the PAID SKU."""
+        result = self._validate_custom("deepseek/deepseek-v4-flash-0731:free")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    def test_other_real_suffix_unaffected(self):
+        """A suffix that IS a real catalog entry (:cxbc) keeps its existing
+        direct-membership behavior — the base-strip path must not hijack it."""
+        result = self._validate_custom("deepseek/deepseek-v4-flash-0731:cxbc")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["cxbc", "network", "cxo", "cxa", "free", "Free", "batch", "thinking", "extended"],
+    )
+    def test_any_suffix_on_listed_base_preserved(self, suffix):
+        """Aggregator-specific SKU suffixes (:cxbc, :network, :cxo, :cxa,
+        ...) whose base is listed are accepted with the suffixed id PRESERVED
+        — never fuzzy-corrected to the (paid) base."""
+        result = self._validate_custom(f"deepseek/deepseek-v4-flash-0731:{suffix}")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_unknown_model_still_auto_corrected(self):
+        """Auto-correction still works for genuine typos with no :free suffix."""
+        result = self._validate_custom("deepseek/deepseek-v4-flash-0732")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") == "deepseek/deepseek-v4-flash-0731"
+
+    def test_free_sku_on_unknown_base_still_rejected(self):
+        """A :free SKU whose base id is NOT in the listing falls through to
+        the custom-provider soft-accept path (accepted with a warning, no
+        auto-correction) — never silently corrected to a paid base."""
+        result = self._validate_custom("deepseek/deepseek-v4-flash-9999:free")
+        assert result["accepted"] is True
+        assert result["recognized"] is False
+        assert result.get("corrected_model") is None
+
+    def test_bare_free_suffix_no_crash(self):
+        """A bare name like `my-model:free` (no vendor) must not crash the
+        base-strip helper."""
+        result = self._validate_custom("my-model:free")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") is None
+
     def test_static_catalog_fallback_accepts_variant(self):
         """Gateway path: /models unreachable → static catalog validates the
         base id and preserves the suffix."""

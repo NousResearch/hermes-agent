@@ -11770,6 +11770,36 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             save_config_value("model.context_length", None)
 
+    def _print_cache_switch_notice(
+        self,
+        *,
+        old_model_display: str,
+        new_model_display: str,
+        pre_switch_tokens: int,
+        new_provider: str,
+        include_revert_hint: bool = True,
+    ) -> None:
+        """Print the mid-session cache-rebuild notice (shared by both /model
+        apply paths). Uses the PRE-switch token snapshot — switch_model()
+        already zeroed the live counters by the time this runs.
+        Informational only, never blocks."""
+        try:
+            from hermes_cli.cache_switch_notice import cache_switch_notice_for_agent
+
+            _cache_notice = cache_switch_notice_for_agent(
+                old_model_display=old_model_display,
+                new_model_display=new_model_display,
+                est_context_tokens=pre_switch_tokens,
+                old_provider=self.provider if self.provider == new_provider else "",
+                new_provider=new_provider,
+                include_revert_hint=include_revert_hint,
+            )
+            if _cache_notice:
+                for _line in _cache_notice.splitlines():
+                    _cprint(f"  {_line}")
+        except Exception as exc:
+            logger.debug("cache-switch notice failed: %s", exc)
+
     def _apply_model_switch_result(
         self, result, persist_global: bool, custom_providers=None
     ) -> None:
@@ -11829,7 +11859,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.api_mode:
             self.api_mode = result.api_mode
 
+        # Snapshot the context estimate BEFORE switch_model() — that call
+        # zeroes compressor.last_prompt_tokens and clears the cached system
+        # prompt, so estimating afterwards under-reports (P0, PR #94753).
+        _pre_switch_tokens = 0
         if self.agent is not None:
+            try:
+                from hermes_cli.cache_switch_notice import snapshot_pre_switch_state
+
+                _pre_switch_tokens = snapshot_pre_switch_state(self.agent)
+            except Exception:
+                _pre_switch_tokens = 0
             try:
                 self.agent.switch_model(
                     new_model=result.new_model,
@@ -11865,6 +11905,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
+
+        # Mid-session cache-rebuild notice (display.cache_switch_notice).
+        # Uses the PRE-switch token snapshot — switch_model() already zeroed
+        # the live counters above. Informational only, never blocks.
+        self._print_cache_switch_notice(
+            old_model_display=_display_old,
+            new_model_display=_display_new,
+            pre_switch_tokens=_pre_switch_tokens,
+            new_provider=result.target_provider,
+        )
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry
@@ -12221,7 +12271,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.api_mode = result.api_mode
 
         # Apply to running agent (in-place swap)
+        # Snapshot the context estimate BEFORE switch_model() — that call
+        # zeroes compressor.last_prompt_tokens and clears the cached system
+        # prompt, so estimating afterwards under-reports (P0, PR #94753).
+        _pre_switch_tokens = 0
         if self.agent is not None:
+            try:
+                from hermes_cli.cache_switch_notice import snapshot_pre_switch_state
+
+                _pre_switch_tokens = snapshot_pre_switch_state(self.agent)
+            except Exception:
+                _pre_switch_tokens = 0
             try:
                 self.agent.switch_model(
                     new_model=result.new_model,
@@ -12264,6 +12324,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {_display_new}")
         _cprint(f"    Provider: {provider_label}")
+
+        # Mid-session cache-rebuild notice (display.cache_switch_notice).
+        # Uses the PRE-switch token snapshot — see shared helper.
+        self._print_cache_switch_notice(
+            old_model_display=_display_old,
+            new_model_display=_display_new,
+            pre_switch_tokens=_pre_switch_tokens,
+            new_provider=result.target_provider,
+            include_revert_hint=not one_turn,
+        )
 
         # Context: always resolve via the provider-aware chain so Codex OAuth,
         # Copilot, and Nous-enforced caps win over the raw models.dev entry

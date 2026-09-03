@@ -1437,6 +1437,12 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "",
+        # When True (default), a mid-session /model switch appends an
+        # informational line to the confirmation showing the estimated
+        # uncached re-read cost of the new model's first reply, plus the
+        # session-scoped revert command. Sessions below the noise threshold
+        # (~30k context tokens) stay silent regardless of this toggle.
+        "cache_switch_notice": True,
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the
         # historical hardcoded values; expose them as config so power users can

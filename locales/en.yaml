@@ -51,6 +51,8 @@ gateway:
     cost_label:             "Cost: {cost}"
     capabilities_label:     "Capabilities: {capabilities}"
     prompt_caching_enabled: "Prompt caching: enabled"
+    cache_switch_notice:    "⚡ Switched mid-session to `{model}` — its next reply re-reads up to ~{tokens} of context uncached (one-time cost; actual amount depends on the provider's caching)"
+    cache_switch_revert_hint: "↩ Type `/model {model}` to go back — same conversation, no re-reading on the way back"
     warning_prefix:         "Warning: {warning}"
     saved_global:           "Saved to config.yaml (`--global`)"
     session_only_hint:      "_(session only — add `--global` to persist)_"

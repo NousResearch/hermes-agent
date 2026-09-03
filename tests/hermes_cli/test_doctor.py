@@ -408,6 +408,43 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "docker not found (optional)" not in out
 
 
+def test_run_doctor_npm_audit_network_failure_warns_instead_of_ok(monkeypatch, tmp_path):
+    """#101760: a registry/network failure must not be reported as clean."""
+    helper = TestDoctorMemoryProviderSection()
+
+    real_which = doctor_mod.shutil.which
+
+    def fake_which(cmd):
+        if cmd == "npm":
+            return "/usr/bin/npm"
+        return real_which(cmd)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+    project_root = tmp_path / "project"
+    (project_root / "node_modules").mkdir(parents=True, exist_ok=True)
+
+    network_failure_stdout = (
+        '{"message": "request to https://registry.npmjs.org/-/npm/v1/security/'
+        'audits/quick failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org", '
+        '"error": {"summary": "", "detail": ""}}'
+    )
+
+    real_run = doctor_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "audit" in cmd:
+            return SimpleNamespace(stdout=network_failure_stdout, stderr="", returncode=1)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "no known vulnerabilities" not in out
+    assert "npm audit unavailable: registry/network error" in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

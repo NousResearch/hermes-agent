@@ -218,6 +218,10 @@
           "description": "free"
         },
         {
+          "id": "inclusionai/ling-3.0-flash:free",
+          "description": "free"
+        },
+        {
           "id": "nvidia/nemotron-3.5-lightning:free",
           "description": "free"
         }

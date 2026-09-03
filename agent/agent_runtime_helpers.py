@@ -2789,7 +2789,11 @@ def _profile_for_base_url(base_url: str) -> Any | None:
 
 
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-    from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
+    from agent.auxiliary_client import (
+        _to_openai_base_url,
+        _validate_base_url,
+        _validate_proxy_env_urls,
+    )
     from agent.ssl_verify import resolve_httpx_verify
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
@@ -2800,6 +2804,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    if client_kwargs.get("base_url"):
+        client_kwargs["base_url"] = _to_openai_base_url(client_kwargs["base_url"])
     # The MoA virtual provider has no real OpenAI wire endpoint - the facade
     # *is* the client. Rebuilding a native OpenAI client while
     # agent.provider == "moa" (client replacement, stream-retry pool cleanup,

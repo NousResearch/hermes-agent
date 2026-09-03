@@ -4,6 +4,6 @@
     "types": ["node", "@playwright/test"],
     "composite": true
   },
-  "include": ["e2e", "playwright.config.ts"],
+  "include": ["e2e", "playwright.config.ts", "../../tests-js/scripts"],
   "exclude": ["src", "electron"]
 }

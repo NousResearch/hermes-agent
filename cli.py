@@ -5188,6 +5188,49 @@ def _should_seed_interactive(query, image, quiet: bool, oneshot: bool) -> bool:
         return False
 
 
+def _resolve_voice_keybinding() -> tuple[object, tuple[str, ...]]:
+    """Resolve the CLI's voice push-to-talk key: the raw config value (for
+    the status cache) and the prompt_toolkit key sequence for ``kb.add``.
+
+    Never raises. ``pt_key_to_sequence`` starts out as a local fallback
+    (behaviorally identical to ``hermes_cli.voice.pt_key_to_sequence`` for
+    the ctrl-only default this falls back to) and is only replaced once the
+    config-dependent imports below have actually succeeded. Previously the
+    real function was imported inside the same ``try`` as ``load_config()``,
+    so any exception raised before that import line — e.g. a broken
+    config.yaml — left it unbound and crashed ``@kb.add(*pt_key_to_sequence(...))``
+    below with ``UnboundLocalError`` instead of falling back to Ctrl+B (#101757).
+    """
+    def pt_key_to_sequence(pt_key: str) -> tuple[str, ...]:
+        return (pt_key,)
+
+    raw_key: object = "ctrl+b"
+    voice_key = "c-b"
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.voice import (
+            normalize_voice_record_key_for_prompt_toolkit,
+            pt_key_to_sequence,
+            voice_record_key_from_config,
+        )
+        raw_key = voice_record_key_from_config(load_config())
+        voice_key = normalize_voice_record_key_for_prompt_toolkit(raw_key)
+        if (
+            isinstance(raw_key, str)
+            and raw_key.strip().lower().split("+", 1)[0].strip() in {"super", "win", "windows"}
+            and voice_key == "c-b"
+        ):
+            logger.warning(
+                "voice.record_key %r uses a TUI-only modifier (super/win); "
+                "CLI fell back to Ctrl+B. Use ctrl+<key> or alt+<key> for "
+                "cross-runtime parity.",
+                raw_key,
+            )
+    except Exception:
+        voice_key = "c-b"
+    return raw_key, pt_key_to_sequence(voice_key)
+
+
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -19630,29 +19673,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # configs silently fall back to the default here since prompt_toolkit
         # has no super modifier — log a warning so users notice the
         # TUI/CLI split instead of a silent mismatch (round-11).
-        _raw_key: object = "ctrl+b"
-        try:
-            from hermes_cli.config import load_config
-            from hermes_cli.voice import (
-                normalize_voice_record_key_for_prompt_toolkit,
-                pt_key_to_sequence,
-                voice_record_key_from_config,
-            )
-            _raw_key = voice_record_key_from_config(load_config())
-            _voice_key = normalize_voice_record_key_for_prompt_toolkit(_raw_key)
-            if (
-                isinstance(_raw_key, str)
-                and _raw_key.strip().lower().split("+", 1)[0].strip() in {"super", "win", "windows"}
-                and _voice_key == "c-b"
-            ):
-                logger.warning(
-                    "voice.record_key %r uses a TUI-only modifier (super/win); "
-                    "CLI fell back to Ctrl+B. Use ctrl+<key> or alt+<key> for "
-                    "cross-runtime parity.",
-                    _raw_key,
-                )
-        except Exception:
-            _voice_key = "c-b"
+        _raw_key, _voice_key_sequence = _resolve_voice_keybinding()
 
         # Cache the UI label here — same ``_raw_key`` that drives the
         # prompt_toolkit binding below. Every status / placeholder /
@@ -19661,7 +19682,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # voice.record_key mid-session (Copilot round-13 on #19835).
         self.set_voice_record_key_cache(_raw_key)
 
-        @kb.add(*pt_key_to_sequence(_voice_key))
+        @kb.add(*_voice_key_sequence)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.
 

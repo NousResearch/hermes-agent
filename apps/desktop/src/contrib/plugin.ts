@@ -59,9 +59,12 @@ export interface PluginOs {
    *  when unavailable. The path is on the BACKEND's filesystem, so hand it
    *  to a `rest` call rather than trying to write it from the renderer. */
   pickSavePath: (options?: PluginFileDialogOptions) => Promise<null | string>
-  /** Native open dialog, single file. Resolves the chosen path, or null on
-   *  cancel / when unavailable. */
-  pickOpenPath: (options?: PluginFileDialogOptions) => Promise<null | string>
+  /** Native open dialog, single file or directory. Resolves the chosen path,
+   *  or null on cancel / when unavailable. */
+  pickOpenPath: (options?: PluginOpenDialogOptions) => Promise<null | string>
+  /** Native open dialog, multiple files or directories. Resolves every chosen
+   *  path, or an empty list on cancel / when unavailable. */
+  pickOpenPaths: (options?: PluginOpenDialogOptions) => Promise<string[]>
   /** Write text to the system clipboard. Resolves false when unavailable. */
   writeClipboard: (text: string) => Promise<boolean>
 }
@@ -70,6 +73,11 @@ export interface PluginFileDialogOptions {
   defaultPath?: string
   filters?: Array<{ extensions: string[]; name: string }>
   title?: string
+}
+
+export interface PluginOpenDialogOptions extends PluginFileDialogOptions {
+  /** Select directories instead of files. */
+  directories?: boolean
 }
 
 export interface PluginContext {
@@ -94,8 +102,8 @@ export interface PluginContext {
    *  accelerator over your polling, never a replacement. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-
-   *  manager, clipboard — attributed to this plugin, result-shaped (never
-   *  throws for a missing capability). */
+   *  manager, path pickers and clipboard — attributed to this plugin,
+   *  result-shaped (never throws for a missing capability). */
   os: PluginOs
   /** Plugin-scoped persistence. */
   storage: PluginStorage
@@ -174,6 +182,22 @@ function createPluginOs(pluginId: string): PluginOs {
     }
   }
 
+  const attemptPaths = async (run: (bridge: NonNullable<typeof window.hermesDesktop>) => Promise<unknown>) => {
+    const bridge = typeof window === 'undefined' ? undefined : window.hermesDesktop
+
+    if (!bridge) {
+      return []
+    }
+
+    try {
+      const paths = await run(bridge)
+
+      return Array.isArray(paths) ? paths.filter(path => typeof path === 'string' && path.length > 0) : []
+    } catch {
+      return []
+    }
+  }
+
   return {
     notify: input => dispatchPluginNativeNotification(pluginId, input),
     openExternal: url =>
@@ -188,6 +212,7 @@ function createPluginOs(pluginId: string): PluginOs {
 
         return picked?.[0] ?? null
       }),
+    pickOpenPaths: options => attemptPaths(async bridge => bridge.selectPaths?.({ ...options, multiple: true })),
     pickSavePath: options => attemptPath(async bridge => (await bridge.selectSavePath?.(options)) ?? null),
     revealPath: path => attempt(async bridge => (bridge.revealPath ? bridge.revealPath(path) : false)),
     writeClipboard: text => attempt(bridge => bridge.writeClipboard(text))

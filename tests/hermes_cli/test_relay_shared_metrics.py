@@ -168,6 +168,35 @@ def _record_client_active_in_process(
     store.record_client_active(_resource())
 
 
+def test_local_latency_summary_is_private_and_reports_nearest_rank_percentiles(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    assert store.latency_summary("task") == {"count": 0, "p50_ms": 0, "p90_ms": 0}
+    for value in [10, 20, 30, 40, 50]:
+        store.record_latency_sample("task", value)
+    assert store.latency_summary("task") == {"count": 5, "p50_ms": 30, "p90_ms": 50}
+    with pytest.raises(ValueError):
+        store.record_latency_sample("tool", 1)
+    with pytest.raises(ValueError):
+        store.record_latency_sample("task", -1)
+
+
+def test_local_latency_samples_prune_and_use_metric_duration_index(tmp_path):
+    database_path = tmp_path / "metrics.sqlite3"
+    store = SharedMetricsStore(database_path, tmp_path / "outbox")
+    store.record_latency_sample("task", 10)
+    store.record_latency_sample("task", 20)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "UPDATE local_latency_samples SET recorded_at = '2026-01-01T00:00:00Z' WHERE duration_ms = 10"
+        )
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT duration_ms FROM local_latency_samples WHERE metric_name = 'task' ORDER BY duration_ms"
+        ).fetchall()
+    assert any("local_latency_samples_metric_duration" in row[-1] for row in plan)
+    store._prune_expired_history(now=datetime(2026, 7, 23, tzinfo=timezone.utc))
+    assert store.latency_summary("task") == {"count": 1, "p50_ms": 20, "p90_ms": 20}
+
+
 def test_model_call_counter_survives_restart_and_exports_only_new_deltas(tmp_path):
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"

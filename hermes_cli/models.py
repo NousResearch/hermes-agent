@@ -6053,6 +6053,21 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
+
+def is_opencode_keyless(provider: Optional[str], api_key: Optional[str]) -> bool:
+    """True when the OpenAI client must send anonymous OpenCode free-tier headers.
+
+    The dedicated ``opencode-free`` provider is always keyless. After
+    ``ALIASES`` maps ``opencode-zen → opencode``, a healed ``*-free``
+    session still carries ``OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER`` even
+    though ``provider`` is no longer ``opencode-free``. Both rebuild
+    paths must use this one predicate so the gates cannot drift (#93890).
+    """
+    return (
+        (provider or "") == "opencode-free"
+        or (api_key or "") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
+    )
+
 # Free-tier models whose slug does NOT carry the ``-free`` suffix.
 # (big-pickle is OpenCode's rotating free stealth slot.)
 _OPENCODE_KEYLESS_EXTRA_SLUGS = frozenset({"big-pickle"})

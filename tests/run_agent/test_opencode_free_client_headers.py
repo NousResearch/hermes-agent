@@ -94,3 +94,29 @@ def test_other_providers_unaffected(mock_openai):
     assert "Authorization" not in headers, (
         "opencode-zen (keyed) must not have its Authorization header blanked"
     )
+
+
+@patch("run_agent.OpenAI")
+def test_aliased_zen_placeholder_blanks_authorization(mock_openai):
+    """ALIASES maps opencode-zen → opencode. A healed *-free session still
+    carries the keyless placeholder; Authorization must be blanked even
+    though agent.provider is no longer opencode-free (#93890)."""
+    mock_openai.return_value = MagicMock()
+    for provider in ("opencode", "opencode-zen"):
+        mock_openai.reset_mock()
+        agent = _FakeAgent(api_key="opencode-zen-free-keyless")
+        agent.provider = provider
+        create_openai_client(
+            agent,
+            {
+                "api_key": "opencode-zen-free-keyless",
+                "base_url": ZEN_V1,
+            },
+            reason="test",
+            shared=False,
+        )
+        headers = _zen_call_headers(mock_openai)
+        assert headers.get("Authorization") == "", (
+            f"{provider} with the keyless placeholder must blank "
+            f"Authorization; got {headers!r}"
+        )

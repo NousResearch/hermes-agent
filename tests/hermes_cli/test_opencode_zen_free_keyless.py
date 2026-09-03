@@ -26,6 +26,7 @@ import pytest
 
 from hermes_cli.models import (
     OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER,
+    is_opencode_keyless,
     is_opencode_zen_free_model,
     opencode_zen_free_headers,
     opencode_zen_free_runtime,
@@ -60,6 +61,26 @@ class TestFreeSlugDetection:
         # suffix match must be exact "-free", not substring "free"
         assert not is_opencode_zen_free_model("freeform-1")
         assert not is_opencode_zen_free_model("model-freedom")
+
+
+class TestIsOpencodeKeyless:
+    def test_dedicated_free_provider_is_keyless_regardless_of_key(self):
+        assert is_opencode_keyless("opencode-free", "sk-anything")
+        assert is_opencode_keyless("opencode-free", "")
+        assert is_opencode_keyless("opencode-free", None)
+
+    def test_placeholder_is_keyless_after_zen_alias(self):
+        assert is_opencode_keyless("opencode", OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER)
+        assert is_opencode_keyless("opencode-zen", OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER)
+
+    def test_keyed_family_provider_is_not_keyless(self):
+        assert not is_opencode_keyless("opencode-zen", "sk-real")
+        assert not is_opencode_keyless("opencode", "sk-real")
+        assert not is_opencode_keyless("openrouter", "sk-real")
+
+    def test_empty_inputs_are_not_keyless(self):
+        assert not is_opencode_keyless("", "")
+        assert not is_opencode_keyless(None, None)
 
 
 class TestFreeRuntime:

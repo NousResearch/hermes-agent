@@ -6922,19 +6922,41 @@ class AIAgent:
 
             self._client_kwargs["default_headers"] = hermes_xai_default_headers()
         else:
-            # No URL-specific headers — check profile.default_headers before clearing.
-            _ph_headers = None
+            # This else also runs for every host without a dedicated branch.
+            # Guard the OpenCode import so a models-import failure cannot
+            # raise out of other providers' profile-header / pop path.
+            _oc_headers = None
             try:
-                from providers import get_provider_profile as _gpf2
-                _ph2 = _gpf2(self.provider)
-                if _ph2 and _ph2.default_headers:
-                    _ph_headers = dict(_ph2.default_headers)
+                from hermes_cli.models import is_opencode_keyless, opencode_zen_free_headers
+
+                if is_opencode_keyless(
+                    getattr(self, "provider", ""),
+                    self._client_kwargs.get("api_key") or getattr(self, "api_key", ""),
+                ):
+                    # Replace, do not merge: this method assigns the route's
+                    # header set, same as the host-specific branches above.
+                    # The keyless dict already includes attribution; leftover
+                    # keys from a prior route must not survive the rebuild.
+                    _oc_headers = opencode_zen_free_headers()
             except Exception:
-                pass
-            if _ph_headers:
-                self._client_kwargs["default_headers"] = _ph_headers
+                _oc_headers = None
+
+            if _oc_headers is not None:
+                self._client_kwargs["default_headers"] = _oc_headers
             else:
-                self._client_kwargs.pop("default_headers", None)
+                # No URL-specific headers — check profile.default_headers before clearing.
+                _ph_headers = None
+                try:
+                    from providers import get_provider_profile as _gpf2
+                    _ph2 = _gpf2(self.provider)
+                    if _ph2 and _ph2.default_headers:
+                        _ph_headers = dict(_ph2.default_headers)
+                except Exception:
+                    pass
+                if _ph_headers:
+                    self._client_kwargs["default_headers"] = _ph_headers
+                else:
+                    self._client_kwargs.pop("default_headers", None)
 
         # User-configured overrides win over URL/profile defaults for the same
         # route. A credential swap to another endpoint must not inherit them.

@@ -2921,16 +2921,29 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     except Exception:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
     # OpenCode Free: the tier is served ANONYMOUSLY — any bearer the relay
-    # doesn't recognize (including placeholders) is a 401. Route every
-    # opencode-free client through the shared keyless header policy: an
-    # empty Authorization default_header overrides the SDK's
-    # "Bearer <api_key>" so no credential ever reaches the wire.
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
+    # doesn't recognize (including placeholders) is a 401. Blank
+    # Authorization whenever this is the dedicated keyless provider OR
+    # the resolver already pinned the keyless placeholder (Zen/Go
+    # sessions healed onto a *-free model). After ALIASES maps
+    # opencode-zen → opencode, agent.provider is no longer
+    # "opencode-free", so a provider-id-only gate misses those rebuilds
+    # and the SDK emits Bearer opencode-zen-free-keyless (#93890).
+    try:
+        from hermes_cli.models import is_opencode_keyless, opencode_zen_free_headers
 
-        _existing = dict(client_kwargs.get("default_headers") or {})
-        _existing.update(opencode_zen_free_headers())
-        client_kwargs["default_headers"] = _existing
+        if is_opencode_keyless(
+            getattr(agent, "provider", ""),
+            client_kwargs.get("api_key") or getattr(agent, "api_key", ""),
+        ):
+            # Merge: this chokepoint only overlays the keyless Auth/attribution
+            # keys. Unlike `_apply_client_headers_for_base_url` (which assigns
+            # the whole route set), a later client rebuild must not drop
+            # headers another path already placed on client_kwargs.
+            _existing = dict(client_kwargs.get("default_headers") or {})
+            _existing.update(opencode_zen_free_headers())
+            client_kwargs["default_headers"] = _existing
+    except Exception:
+        _ra().logger.debug("OpenCode keyless header guard skipped", exc_info=True)
 
     # All primary construction and recovery paths must identify Hermes to the
     # official Codex endpoint, including snapshots with custom header overrides.

@@ -354,7 +354,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -782,12 +782,40 @@ END;
 # LIKE for the same reason. Structured ``tool_calls`` JSON likewise stays
 # searchable through ``messages_fts``; excluding it here avoids indexing
 # repetitive JSON syntax as trigrams (FTS_STORAGE_VERSION 2).
-FTS_TRIGRAM_SQL = """
+#
+# Delegate-child (subagent) transcripts are excluded the same way (v30):
+# on a fan-out-heavy install they were ~70% of all message bytes and
+# ``session_search`` hides ``source='subagent'`` sessions anyway. A child
+# is recognised by its source OR by the ``_delegate_from`` creation marker
+# (children spawned under a gateway turn inherit the gateway's source).
+# Compression/branch continuations of interactive sessions also carry
+# ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
+FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
+
+# Predicate over a ``sessions`` row (unqualified column names) selecting
+# sessions whose rows belong in the trigram index. Shared by the view, the
+# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
+# never disagree about the index boundary.
+FTS_TRIGRAM_SESSION_SQL = (
+    "source NOT IN ("
+    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
+)
+
+
+def fts_trigram_session_sql(alias: str) -> str:
+    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
+    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
+        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+    )
+
+
+FTS_TRIGRAM_SQL = f"""
 CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
     SELECT m.id, m.role, m.content, m.tool_name
     FROM messages AS m
     JOIN sessions AS s ON s.id = m.session_id
-    WHERE m.role <> 'tool' AND s.source <> 'cron';
+    WHERE m.role <> 'tool' AND {fts_trigram_session_sql('s')};
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
@@ -800,7 +828,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages
 WHEN new.role <> 'tool'
    AND EXISTS (SELECT 1 FROM sessions
-               WHERE id = new.session_id AND source <> 'cron')
+               WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL})
    AND (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -813,7 +841,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages
 WHEN old.role <> 'tool'
    AND EXISTS (SELECT 1 FROM sessions
-               WHERE id = old.session_id AND source <> 'cron')
+               WHERE id = old.session_id AND {FTS_TRIGRAM_SESSION_SQL})
    AND (old.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
                            WHERE key = 'fts_rebuild_high_water'), -1)
      OR old.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
@@ -837,12 +865,12 @@ BEGIN
     SELECT 'delete', old.id, old.content, old.tool_name
     WHERE old.role <> 'tool'
       AND EXISTS (SELECT 1 FROM sessions
-                  WHERE id = old.session_id AND source <> 'cron');
+                  WHERE id = old.session_id AND {FTS_TRIGRAM_SESSION_SQL});
     INSERT INTO messages_fts_trigram(rowid, content, tool_name)
     SELECT new.id, new.content, new.tool_name
     WHERE new.role <> 'tool'
       AND EXISTS (SELECT 1 FROM sessions
-                  WHERE id = new.session_id AND source <> 'cron');
+                  WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL});
 END;
 """
 

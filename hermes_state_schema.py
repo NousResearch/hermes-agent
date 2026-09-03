@@ -415,7 +415,10 @@ class SessionSchemaMixin:
             )
 
     def _migrate_trigram_cron_exclusion(self, cursor: sqlite3.Cursor) -> bool:
-        """Install the cron-filtered trigram view and purge historical rows.
+        """Install the source-filtered trigram view and purge historical rows.
+
+        Covers the v29 cron exclusion and the v30 subagent exclusion — both
+        only change the view/trigger predicate and rebuild from it.
 
         Legacy inline indexes remain opt-in: their content is private to the
         virtual table and cannot adopt this external-content view. For an
@@ -1550,11 +1553,11 @@ class SessionSchemaMixin:
                 # rows, but clear migrated rows so future writes do not keep
                 # one large prompt copy per session.
                 self._dedupe_legacy_system_prompts(cursor)
-            if current_version < 29 and fts5_available:
-                # v29 (was v27 in the original PR; main had already reached
-                # v28 with column-reconciliation bumps, so a `< 27` gate would
-                # never fire on existing installs): cron sessions remain canonical and stay in the standard
+            if current_version < 30 and fts5_available:
+                # v29: cron sessions remain canonical and stay in the standard
                 # word index, but no longer inflate the trigram substring index.
+                # v30: delegate-child (subagent) transcripts get the same
+                # treatment (FTS_TRIGRAM_EXCLUDED_SOURCES + _delegate_from).
                 # Rebuild once so rows indexed by older trigger/view definitions
                 # do not survive indefinitely as stale matches and disk usage.
                 if not self._migrate_trigram_cron_exclusion(cursor):

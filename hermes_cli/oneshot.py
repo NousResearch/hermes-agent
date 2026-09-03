@@ -7,7 +7,7 @@ Toolsets = explicit --toolsets when provided, otherwise whatever the user has
 configured for "cli" in `hermes tools`.
 Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
 Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
-Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
+Working directory = explicit --in DIR, otherwise the user's launch CWD.
 
 Model / provider selection mirrors `hermes chat`:
     - Both optional. If omitted, use the user's configured default.
@@ -24,9 +24,10 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from contextlib import redirect_stderr, redirect_stdout
+import uuid
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
@@ -206,6 +207,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    in_dir: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -221,6 +223,7 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        in_dir: Validated explicit working directory from the CLI dispatcher.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -282,6 +285,7 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    in_dir=in_dir,
                     skills=skills,
                 )
             except BaseException as exc:  # noqa: BLE001
@@ -354,12 +358,70 @@ def _create_session_db_for_oneshot():
         return None
 
 
+@contextmanager
+def _oneshot_explicit_cwd(in_dir: Optional[str], task_id: str) -> Iterator[None]:
+    """Enter ``--in`` after backend resolution and pin local tool cwd.
+
+    Restore process cwd and environment state even if task-env cleanup raises.
+    Cleanup failures are logged rather than allowed to mask an error from the
+    one-shot run.
+    """
+    if not in_dir:
+        yield
+        return
+
+    from hermes_constants import (
+        HERMES_EXPLICIT_CWD_PIN,
+        HERMES_EXPLICIT_CWD_PIN_VALUE,
+    )
+    from tools.terminal_tool import _get_env_config, _safe_getcwd, record_session_cwd
+
+    previous_cwd = _safe_getcwd()
+    previous_terminal_cwd = os.environ.get("TERMINAL_CWD")
+    had_terminal_cwd = "TERMINAL_CWD" in os.environ
+    previous_pin = None
+    pinned = False
+    try:
+        # Resolve the backend against the launch cwd first. ``--in`` is a host
+        # path; SSH/Docker keep their configured remote/container cwd.
+        terminal_config = _get_env_config()
+        os.chdir(in_dir)
+        if terminal_config.get("env_type") == "local":
+            previous_pin = os.environ.get(HERMES_EXPLICIT_CWD_PIN)
+            os.environ["TERMINAL_CWD"] = in_dir
+            os.environ[HERMES_EXPLICIT_CWD_PIN] = HERMES_EXPLICIT_CWD_PIN_VALUE
+            pinned = True
+            record_session_cwd(task_id, in_dir)
+        yield
+    finally:
+        if pinned:
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+
+                clear_task_env_overrides(task_id)
+            except Exception:
+                logging.debug("oneshot task env cleanup failed", exc_info=True)
+            if previous_pin is None:
+                os.environ.pop(HERMES_EXPLICIT_CWD_PIN, None)
+            else:
+                os.environ[HERMES_EXPLICIT_CWD_PIN] = previous_pin
+        if had_terminal_cwd:
+            os.environ["TERMINAL_CWD"] = previous_terminal_cwd or ""
+        else:
+            os.environ.pop("TERMINAL_CWD", None)
+        try:
+            os.chdir(previous_cwd)
+        except OSError:
+            logging.debug("oneshot cwd cleanup failed", exc_info=True)
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    in_dir: Optional[str] = None,
     skills: object = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
@@ -475,6 +537,7 @@ def _run_agent(
         single_query=True,
     )
 
+    oneshot_task_id = f"oneshot:{uuid.uuid4()}"
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
@@ -484,76 +547,80 @@ def _run_agent(
     # os._exit and skips finalizers, so an un-closed connection here would leak.
     agent = None
     try:
-        # Read the effective fallback chain from profile config so oneshot
-        # workers honour the same merge semantics as interactive CLI and
-        # gateway sessions.
-        _fb = get_fallback_chain(cfg)
+        with _oneshot_explicit_cwd(in_dir, oneshot_task_id):
+            try:
+                # Read the effective fallback chain from profile config so oneshot
+                # workers honour the same merge semantics as interactive CLI and
+                # gateway sessions.
+                _fb = get_fallback_chain(cfg)
 
-        agent = AIAgent(
-            api_key=runtime.get("api_key"),
-            base_url=runtime.get("base_url"),
-            provider=runtime.get("provider"),
-            requested_provider=runtime.get("requested_provider"),
-            api_mode=runtime.get("api_mode"),
-            model=effective_model,
-            enabled_toolsets=toolsets_list,
-            quiet_mode=True,
-            platform="cli",
-            session_db=session_db,
-            credential_pool=runtime.get("credential_pool"),
-            fallback_model=_fb or None,
-            ephemeral_system_prompt=skills_prompt,
-            # Interactive callbacks are intentionally NOT wired beyond this
-            # one.  In oneshot mode there's no user sitting at a terminal:
-            #   - clarify  → returns a synthetic "pick a default" instruction
-            #                so the agent continues instead of stalling on
-            #                the tool's built-in "not available" error
-            #   - sudo password prompt → terminal_tool gates on
-            #                HERMES_INTERACTIVE which we never set
-            #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
-            #                (set above); also falls back to deny on non-tty
-            #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
-            #   - skill secret capture → returns gracefully when no callback set
-            clarify_callback=_oneshot_clarify_callback,
-        )
+                agent = AIAgent(
+                    api_key=runtime.get("api_key"),
+                    base_url=runtime.get("base_url"),
+                    provider=runtime.get("provider"),
+                    requested_provider=runtime.get("requested_provider"),
+                    api_mode=runtime.get("api_mode"),
+                    model=effective_model,
+                    enabled_toolsets=toolsets_list,
+                    quiet_mode=True,
+                    platform="cli",
+                    session_db=session_db,
+                    credential_pool=runtime.get("credential_pool"),
+                    fallback_model=_fb or None,
+                    ephemeral_system_prompt=skills_prompt,
+                    # Interactive callbacks are intentionally NOT wired beyond this
+                    # one.  In oneshot mode there's no user sitting at a terminal:
+                    #   - clarify  → returns a synthetic "pick a default" instruction
+                    #                so the agent continues instead of stalling on
+                    #                the tool's built-in "not available" error
+                    #   - sudo password prompt → terminal_tool gates on
+                    #                HERMES_INTERACTIVE which we never set
+                    #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
+                    #                (set above); also falls back to deny on non-tty
+                    #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
+                    #   - skill secret capture → returns gracefully when no callback set
+                    clarify_callback=_oneshot_clarify_callback,
+                )
 
-        # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
-        # display callbacks that would bypass our stdout capture.
-        agent.suppress_status_output = True
-        agent.stream_delta_callback = None
-        agent.tool_gen_callback = None
+                # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
+                # display callbacks that would bypass our stdout capture.
+                agent.suppress_status_output = True
+                agent.stream_delta_callback = None
+                agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
-        return (result.get("final_response") or "", result)
+                result = agent.run_conversation(prompt, task_id=oneshot_task_id)
+                return (result.get("final_response") or "", result)
+            finally:
+                # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,
+                # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
+                # close the agent explicitly because the hard-exit path skips finalizers.
+                # Stay inside the cwd pin until close() returns.
+                if agent is not None:
+                    # Linger (bounded) for background processes this turn spawned with
+                    # notify_on_complete=true BEFORE agent.close(): close() calls
+                    # process_registry.kill_all(task_id) and the dying parent owns
+                    # the children's stdout pipes, so exiting now destroys in-flight
+                    # deliveries — including Bot Mode handoff replies dispatched from
+                    # a short-lived recipient (#90879).
+                    try:
+                        from tools.process_registry import process_registry
+
+                        process_registry.wait_for_pending_completions(None)
+                    except Exception:
+                        logging.debug("oneshot background completion wait failed", exc_info=True)
+                    try:
+                        session_messages = getattr(agent, "_session_messages", None)
+                        if isinstance(session_messages, list):
+                            agent.shutdown_memory_provider(session_messages)
+                        else:
+                            agent.shutdown_memory_provider()
+                    except Exception:
+                        logging.debug("oneshot memory/context cleanup failed", exc_info=True)
+                    try:
+                        agent.close()
+                    except Exception:
+                        logging.debug("oneshot agent cleanup failed", exc_info=True)
     finally:
-        # Ordering deliberately mirrors gateway/run.py:_cleanup_agent_resources,
-        # NOT cli.py:_run_cleanup — oneshot has no _active_agent_ref and must
-        # close the agent explicitly because the hard-exit path skips finalizers.
-        if agent is not None:
-            # Linger (bounded) for background processes this turn spawned with
-            # notify_on_complete=true BEFORE agent.close(): close() calls
-            # process_registry.kill_all(task_id) and the dying parent owns the
-            # children's stdout pipes, so exiting now destroys in-flight
-            # deliveries — including Bot Mode handoff replies dispatched from
-            # a short-lived recipient (#90879).
-            try:
-                from tools.process_registry import process_registry
-
-                process_registry.wait_for_pending_completions(None)
-            except Exception:
-                logging.debug("oneshot background completion wait failed", exc_info=True)
-            try:
-                session_messages = getattr(agent, "_session_messages", None)
-                if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
-                else:
-                    agent.shutdown_memory_provider()
-            except Exception:
-                logging.debug("oneshot memory/context cleanup failed", exc_info=True)
-            try:
-                agent.close()
-            except Exception:
-                logging.debug("oneshot agent cleanup failed", exc_info=True)
         # agent.close() calls session_db.end_session() but leaves the connection
         # open; close it here to checkpoint the WAL before os._exit skips
         # finalizers.

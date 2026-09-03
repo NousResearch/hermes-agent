@@ -26,10 +26,13 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from tools.environments.local import hermes_subprocess_env
+from agent.secret_sources.onepassword import fetch_onepassword_secrets
 
 # Default minimum codex version we test against. The PR sets this from the
 # `codex --version` parsed at install time; bumping is a one-line change here.
 MIN_CODEX_VERSION = (0, 125, 0)
+CODEX_ACCESS_TOKEN_OP_REF_ENV = "CODEX_ACCESS_TOKEN_OP_REF"
+HERMES_CODEX_ACCESS_TOKEN_OP_REF_ENV = "HERMES_CODEX_ACCESS_TOKEN_OP_REF"
 
 
 @dataclass
@@ -49,6 +52,35 @@ class _Pending:
     queue: queue.Queue
     method: str
     sent_at: float = field(default_factory=time.time)
+
+
+def _resolve_codex_access_token_from_1password(env: dict[str, str]) -> Optional[str]:
+    """Resolve CODEX_ACCESS_TOKEN from a 1Password secret reference.
+
+    This is intentionally scoped to the app-server transport. Tokens with
+    ``aud=codex-app-server`` are valid for official Codex CLI automation but
+    not for Hermes' direct ``chatgpt.com/backend-api/codex`` client. Resolving
+    the secret here lets deployments avoid writing the token into ``.env`` and
+    avoids shadowing OAuth credentials used by the default Hermes runtime.
+    """
+    if (env.get("CODEX_ACCESS_TOKEN") or "").strip():
+        return None
+    ref = (
+        env.get(HERMES_CODEX_ACCESS_TOKEN_OP_REF_ENV)
+        or env.get(CODEX_ACCESS_TOKEN_OP_REF_ENV)
+        or ""
+    ).strip()
+    if not ref.startswith("op://"):
+        return None
+    try:
+        secrets, warnings = fetch_onepassword_secrets(
+            references={"CODEX_ACCESS_TOKEN": ref}, use_cache=False,
+        )
+    except RuntimeError:
+        return None
+    if warnings:
+        return None
+    return (secrets.get("CODEX_ACCESS_TOKEN") or "").strip() or None
 
 
 class CodexAppServerClient:
@@ -92,6 +124,9 @@ class CodexAppServerClient:
             spawn_env.update(env)
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
+        resolved_codex_token = _resolve_codex_access_token_from_1password(spawn_env)
+        if resolved_codex_token:
+            spawn_env["CODEX_ACCESS_TOKEN"] = resolved_codex_token
 
         app_server_args = list(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to

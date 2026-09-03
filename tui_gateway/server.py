@@ -13022,14 +13022,38 @@ _GOAL_COMPRESSION_RECOVERY_LIMIT = 1
 
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
-    """Return whether a turn produced a real response the goal judge can use."""
-    return bool(
+    """Return whether a turn produced a real response the goal judge can use.
+
+    A turn is "successful for goal purposes" if:
+    - status is "complete"
+    - raw is a non-empty string
+    - the result is not a failure (failed=True)
+    - the result is not a hard failure (completed=False without a resumable reason)
+
+    max_iterations_reached is a resumable execution boundary, not a failure.
+    The agent deliberately returns completed=False at the iteration cap but
+    provides a non-empty handoff summary with turn_exit_reason set. This
+    should reach the goal judge so it can decide whether to CONTINUE.
+    """
+    if not (
         status == "complete"
         and isinstance(raw, str)
         and raw.strip()
         and not (isinstance(result, dict) and result.get("failed"))
-        and not (isinstance(result, dict) and result.get("completed") is False)
-    )
+    ):
+        return False
+
+    # completed=False is a blanket proxy for "not a real response", but
+    # max_iterations_reached is a valid resumable handoff, not a failure.
+    # Allow it through to the goal judge.
+    if isinstance(result, dict):
+        completed = result.get("completed")
+        exit_reason = result.get("turn_exit_reason")
+        if completed is False and isinstance(exit_reason, str) and exit_reason.startswith("max_iterations_reached"):
+            return True
+
+    # For all other cases, completed=False means not a real response.
+    return not (isinstance(result, dict) and result.get("completed") is False)
 
 
 def _plan_goal_compression_recovery(

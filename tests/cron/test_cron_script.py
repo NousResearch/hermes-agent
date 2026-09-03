@@ -281,7 +281,7 @@ class TestRunJobScript:
         sys.platform == "win32",
         reason="Windows always takes the overlay/creationflags branch",
     )
-    def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
+    def test_non_windows_script_uses_utf8_text_decoding(self, cron_env, monkeypatch):
         # No platform patching: the Linux CI host already takes this branch.
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
@@ -318,8 +318,23 @@ class TestRunJobScript:
         assert captured["argv"] == [sys.executable, str(script.resolve())]
         assert captured["kwargs"]["text"] is True
         assert "creationflags" not in captured["kwargs"]
-        assert "encoding" not in captured["kwargs"]
-        assert "errors" not in captured["kwargs"]
+        # Iron Rod : l encodage est force en UTF-8 sur TOUS les OS, la
+        # sortie d un script cron etant un protocole texte relivre tel quel
+        # (persistee, puis delivree verbatim sur Telegram).
+        #
+        # C est CE controle qui couvre le cas de la locale non UTF-8 : des
+        # lors qu un ``encoding`` explicite est passe a Popen, le
+        # TextIOWrapper ne consulte plus du tout la locale du processus.
+        # Le cas fr_FR/ISO-8859-1 devient donc impossible par construction,
+        # et c est la presence de cette cle qui le prouve.  Un test d aller-
+        # retour sur du texte accentue a ete essaye puis RETIRE le
+        # 2026-08-23 : il passait au vert meme sans le correctif, la locale
+        # etant resolue au niveau C, hors de portee d un monkeypatch.
+        assert captured["kwargs"]["encoding"] == "utf-8"
+        assert captured["kwargs"]["errors"] == "replace"
+        # start_new_session doit survivre au correctif : il porte le groupe
+        # de processus dont depend la terminaison propre du script.
+        assert captured["kwargs"]["start_new_session"] is True
 
     def test_non_overlay_branch_keeps_plain_argv(self, cron_env, monkeypatch):
         """When the Windows uv-venv overlay is NOT active, the invocation must

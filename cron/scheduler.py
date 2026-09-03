@@ -4586,7 +4586,13 @@ def _run_job_script(
     try:
         from tools.environments.local import build_subprocess_env
 
-        popen_kwargs: dict[str, Any] = {"start_new_session": True}
+        # Iron Rod: la sortie d un script cron est un protocole TEXTE,
+        # decodee en UTF-8 sur tous les OS (pas la locale fr_FR/ISO-8859-1).
+        popen_kwargs: dict[str, Any] = {
+            "start_new_session": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
         if sys.platform == "win32":
             popen_kwargs = {
                 "creationflags": windows_hide_flags()

@@ -5210,6 +5210,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     # on this attribute and is enqueued after the fresh queue exists.
     _seeded_first_message: Optional["_SeededQueryMessage"] = None
 
+    # Last run_conversation result (dict with failed/failure_reason) from
+    # chat(). main()'s single-query path reads it to apply the kanban
+    # rate-limit exit code. See _kanban_rate_limit_exit_code.
+    _last_run_result: Optional[dict] = None
+
     def __init__(
         self,
         model: str = None,
@@ -17314,6 +17319,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
                     )
+                    # Expose the run result so the single-query wrapper
+                    # (main()) can read failure_reason and apply the kanban
+                    # rate-limit exit code (CR-20260902-01). Read after
+                    # chat() returns (the agent thread has joined by then).
+                    self._last_run_result = result
                     if getattr(self, "_pending_moa_disable_after_turn", False):
                         _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                         for _key, _value in _restore.items():
@@ -21767,6 +21777,36 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _kanban_rate_limit_exit_code(result) -> "int | None":
+    """Return the kanban rate-limit sentinel exit code (75) when a kanban
+    worker's run failed purely on a provider quota wall; ``None`` otherwise.
+
+    A kanban worker that exhausted the provider's usage/quota must exit with
+    ``KANBAN_RATE_LIMIT_EXIT_CODE`` (75) so the dispatcher's reap classifier
+    requeues the task as ``rate_limited`` without counting a failure. The
+    ``-Q`` quiet path (goal-mode workers) already does this; the plain
+    ``chat -q`` path — how *normal* (non-goal) kanban workers are spawned —
+    had no exit-code handling, so an all-429 worker exited rc=0, which the
+    dispatcher counts as a protocol violation and crash-loops (CR-20260902-01).
+    This lets the ``chat -q`` path apply the same exit code. Returns ``None``
+    when the run is not a kanban rate-limit failure, so callers keep their
+    existing exit behaviour.
+    """
+    if (
+        os.environ.get("HERMES_KANBAN_TASK")
+        and isinstance(result, dict)
+        and result.get("failed")
+        and result.get("failure_reason") in ("rate_limit", "billing")
+    ):
+        try:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+
+            return KANBAN_RATE_LIMIT_EXIT_CODE
+        except Exception:
+            return 1
+    return None
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -22412,6 +22452,17 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
+                # Kanban workers run through this plain `chat -q` path (NOT
+                # `-Q`), which previously never applied the rate-limit exit
+                # code — so an all-429 worker exited rc=0 and the dispatcher
+                # crash-looped the task as a protocol violation. Exit 75 here
+                # so the run is requeued `rate_limited` without a failure
+                # count instead (CR-20260902-01).
+                _kanban_rc = _kanban_rate_limit_exit_code(
+                    getattr(cli, "_last_run_result", None)
+                )
+                if _kanban_rc is not None:
+                    sys.exit(_kanban_rc)
         finally:
             _finalize_single_query(cli)
         return

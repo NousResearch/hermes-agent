@@ -15017,7 +15017,15 @@ ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-last-used', async (_event, id) => {
-  const registry = setLastUsedConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  const connId = String(id || '')
+  let registry = setLastUsedConnection(readDesktopConnectionsRegistry(), connId)
+  // Also promote to primary so the backend reconnects to the chosen connection.
+  // Without this, setLastUsed only updated lastUsed while primary kept pointing
+  // at the old connection, and subsequent backend requests silently routed to
+  // the previous gateway (#97742).
+  if (registry.connections.some(c => c.id === connId)) {
+    registry = { ...registry, primary: connId }
+  }
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }

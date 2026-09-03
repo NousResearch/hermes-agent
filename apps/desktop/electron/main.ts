@@ -807,6 +807,32 @@ function resolveHermesHome() {
 
 const HERMES_HOME = resolveHermesHome()
 
+function resolveOfflineDir() {
+  // 1. Environment variable takes precedence.
+  const fromEnv = process.env.HERMES_OFFLINE_DIR ? String(process.env.HERMES_OFFLINE_DIR).trim() : ''
+  if (fromEnv) {
+    return fromEnv
+  }
+
+  // 2. Config file: read `hermes.offlineDir` from HERMES_HOME/config.yaml.
+  try {
+    const configPath = path.join(HERMES_HOME, 'config.yaml')
+    const text = fs.readFileSync(configPath, 'utf8')
+    // Simple regex extraction for `hermes:` block with `offlineDir:`.
+    const match = text.match(/hermes:[^]*?offlineDir:\s*['"]?([^'"\n]+)['"]?/)
+    if (match?.[1]) {
+      const value = match[1].trim()
+      if (value) return value
+    }
+  } catch {
+    // Config file missing or unreadable — fall through.
+  }
+
+  return ''
+}
+
+const OFFLINE_DIR = resolveOfflineDir()
+
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
 
@@ -5141,7 +5167,8 @@ async function ensureRuntime(backend) {
           void 0
         }
       },
-      writeMarker: writeBootstrapMarker
+      writeMarker: writeBootstrapMarker,
+      offlineDir: OFFLINE_DIR
     })
 
     bootstrapAbortController = null

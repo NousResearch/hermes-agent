@@ -928,8 +928,8 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
     ``last_delivery_error`` via ``mark_job_run`` when the post-run delivery
     (telegram/discord/…) failed, and the summary must not claim success over
     that record — the calling agent relays this line to the user. Local jobs
-    never deliver; an empty/missing error keeps the legacy wording
-    byte-for-byte.
+    never deliver. An empty/missing error is not proof of delivery because
+    intentional silence suppresses the send without recording an error.
     """
     # Falsy deliver ("", stored JSON null) means no delivery target — the
     # fire-time path normalizes it to "local" (no delivery, output persisted
@@ -941,7 +941,10 @@ def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
         return " (output saved locally only)"
     err = str(refreshed.get("last_delivery_error") or "").strip()
     if not err:
-        return " (output was delivered there by the job itself)"
+        return (
+            " (delivery is handled separately by the job and may be "
+            "suppressed for silent output)"
+        )
     return f" (⚠ delivery FAILED: {err[:200]})"
 
 
@@ -1184,11 +1187,15 @@ def _run_claimed_job(
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:
-    """Best-effort excerpt of the job's most recent saved output file.
+    """Best-effort excerpt of the job's most recent final output.
 
     Included in the background-run completion block so the parent agent sees
     what the job actually produced without having to dig through
-    ``~/.hermes/cron/output/``. Never raises.
+    ``~/.hermes/cron/output/``. Legacy output documents include an arbitrary
+    assembled prompt before ``## Response`` / ``## Error`` and therefore have
+    no unambiguous output delimiter; omit them so a manual-run completion
+    cannot re-inject prompt text into its parent session. Canonical silent
+    responses produce no excerpt. Never raises.
     """
     try:
         from cron.jobs import get_cron_output_dir
@@ -1199,6 +1206,26 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
             return None
         text = files[-1].read_text(encoding="utf-8", errors="replace").strip()
         if not text:
+            return None
+        headings = ("\n## Response\n", "\n## Error\n")
+        matches = [
+            (text.find(heading), heading)
+            for heading in headings
+            if heading in text
+        ]
+        prompt_position = text.find("\n## Prompt\n")
+        legacy_document = prompt_position >= 0 and (
+            not matches or prompt_position < min(position for position, _ in matches)
+        )
+        if legacy_document:
+            return None
+        else:
+            if matches:
+                position, heading = min(matches, key=lambda match: match[0])
+                text = text[position + len(heading):].strip()
+        from gateway.response_filters import is_autonomous_silence_response
+
+        if is_autonomous_silence_response(text):
             return None
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n… (truncated; full output: {files[-1]})"

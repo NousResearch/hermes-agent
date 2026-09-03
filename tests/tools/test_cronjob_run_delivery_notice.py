@@ -137,8 +137,11 @@ class TestDeliveryNote:
             == expected
         )
 
-    def test_remote_without_error_keeps_legacy_wording(self):
-        expected = " (output was delivered there by the job itself)"
+    def test_remote_without_error_does_not_claim_delivery(self):
+        expected = (
+            " (delivery is handled separately by the job and may be "
+            "suppressed for silent output)"
+        )
         assert _manual_run_delivery_note("telegram", {}) == expected
         assert (
             _manual_run_delivery_note("telegram", {"last_delivery_error": None})
@@ -247,7 +250,7 @@ class TestRunnerSummaryWiring:
         assert "Delivery target: local (output saved locally only)" in summary
         assert "delivered there by the job itself" not in summary
 
-    def test_delivery_success_wording_unchanged_in_completion_summary(self):
+    def test_delivery_success_does_not_overclaim_in_completion_summary(self):
         from tools.cronjob_tools import _try_dispatch_background_run
 
         job = _job("job-dn-02", "telegram")
@@ -268,7 +271,7 @@ class TestRunnerSummaryWiring:
                 evt = _drain_completion_event(res["delegation_id"])
         assert evt is not None, "completion event never reached the queue"
         summary = evt.get("summary") or ""
-        assert (
-            "Delivery target: telegram (output was delivered there by the job itself)"
-        ) in summary
+        assert "Delivery target: telegram" in summary
+        assert "output was delivered" not in summary
+        assert "may be suppressed for silent output" in summary
         assert "delivery FAILED" not in summary

@@ -589,6 +589,46 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_persists_final_response_without_assembled_prompt(self, tmp_path):
+        job = {
+            "id": "silent-monitor",
+            "name": "silent monitor",
+            "prompt": "assembled prompt\n" + ("loaded skill content\n" * 100),
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "[SILENT]"
+            }
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "[SILENT]"
+        assert "## Response\n\n[SILENT]" in output
+        assert "assembled prompt" not in output
+        assert "loaded skill content" not in output
+
+    def test_run_job_persists_error_without_assembled_prompt(self, tmp_path):
+        job = {
+            "id": "failed-monitor",
+            "name": "failed monitor",
+            "prompt": "assembled prompt\n" + ("loaded skill content\n" * 100),
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.side_effect = RuntimeError(
+                "provider unavailable"
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error == "RuntimeError: provider unavailable"
+        assert "## Error\n\n```\nRuntimeError: provider unavailable" in output
+        assert "assembled prompt" not in output
+        assert "loaded skill content" not in output
+
 
     @contextlib.contextmanager
     def _run_job_patches(self, tmp_path, extra=()):

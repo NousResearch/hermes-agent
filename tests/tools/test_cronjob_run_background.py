@@ -17,6 +17,7 @@ import threading
 from unittest.mock import patch
 
 from tools.cronjob_tools import (
+    _latest_job_output_excerpt,
     _try_dispatch_background_run,
     cronjob,
 )
@@ -92,15 +93,16 @@ class TestBackgroundDispatch:
 
         from tools.process_registry import process_registry
 
+        job = {**_job("job-bg-02"), "deliver": "telegram"}
         # The runner executes on a daemon thread — the patches must stay
         # active until the completion event lands, so poll INSIDE the blocks.
         with _bound_session_key("agent:main:telegram:dm:777"):
-            with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: {**_job(jid), "fire_claim": {"by": "bg-owner"}}), \
+            with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**job, "fire_claim": {"by": "bg-owner"}}), \
                  patch("cron.scheduler.run_one_job", return_value=True), \
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None,
                                      "next_run_at": "2026-08-07T09:00:00"}):
-                res = _try_dispatch_background_run(_job('job-bg-02'))
+                res = _try_dispatch_background_run(job)
                 assert res["dispatched"] is True
 
                 found = None
@@ -121,6 +123,152 @@ class TestBackgroundDispatch:
         assert found["status"] == "completed"
         assert "bg run" in (found.get("summary") or "")
         assert "Next scheduled run" in found["summary"]
+        assert "output was delivered" not in found["summary"]
+
+
+class TestBackgroundCompletionOutput:
+    def test_ambiguous_legacy_prompt_heading_is_not_excerpted(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-00"
+        out_dir.mkdir(parents=True)
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            "# Cron Job: monitor\n\n"
+            "**Job ID:** job-final-00\n\n"
+            "## Prompt\n\n"
+            "Review this example output:\n\n"
+            "## Response\n\n"
+            "prompt content that must not reenter the parent session\n",
+            encoding="utf-8",
+        )
+
+        assert _latest_job_output_excerpt("job-final-00") is None
+
+    def test_legacy_document_with_output_heading_is_not_excerpted(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-01"
+        out_dir.mkdir(parents=True)
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            "# Cron Job: monitor\n\n"
+            "**Job ID:** job-final-01\n\n"
+            "## Prompt\n\n"
+            + "assembled prompt and loaded skill content\n" * 100
+            + "\n## Response\n\nexample response heading inside the prompt\n"
+            + "\n## Error\n\nexample error heading inside the prompt\n"
+            + "\n## Response\n\nMaterial change found.\n",
+            encoding="utf-8",
+        )
+
+        assert _latest_job_output_excerpt("job-final-01") is None
+
+    def test_silent_final_response_does_not_reenter_parent_session(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-02"
+        out_dir.mkdir(parents=True)
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            "# Cron Job: monitor\n\n"
+            "## Prompt\n\nassembled prompt and loaded skills\n\n"
+            "## Response\n\n[SILENT]\n",
+            encoding="utf-8",
+        )
+
+        assert _latest_job_output_excerpt("job-final-02") is None
+
+    def test_monitor_no_change_document_remains_visible(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-03"
+        out_dir.mkdir(parents=True)
+        no_change = (
+            "# Cron Job: monitor\n\n"
+            "**Job ID:** job-final-03\n"
+            "**Status:** no_change (monitor output unchanged)\n"
+        )
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            no_change, encoding="utf-8"
+        )
+
+        assert _latest_job_output_excerpt("job-final-03") == no_change.strip()
+
+    def test_prompt_free_error_keeps_nested_response_heading(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-04"
+        out_dir.mkdir(parents=True)
+        error_detail = (
+            "RuntimeError: provider returned malformed output\n\n"
+            "## Response\n\n"
+            "This heading is part of the error detail."
+        )
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            "# Cron Job: monitor (FAILED)\n\n"
+            "**Job ID:** job-final-04\n\n"
+            "## Error\n\n"
+            + error_detail,
+            encoding="utf-8",
+        )
+
+        assert _latest_job_output_excerpt("job-final-04") == error_detail
+
+    def test_prompt_free_response_keeps_nested_prompt_and_response_headings(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-05"
+        out_dir.mkdir(parents=True)
+        response = (
+            "Lead finding.\n\n"
+            "## Prompt\n\n"
+            "Quoted prompt text.\n\n"
+            "## Response\n\n"
+            "Quoted response text."
+        )
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            "# Cron Job: report\n\n"
+            "**Job ID:** job-final-05\n\n"
+            "## Response\n\n"
+            + response,
+            encoding="utf-8",
+        )
+
+        assert _latest_job_output_excerpt("job-final-05") == response
+
+    def test_malformed_legacy_document_without_final_heading_is_not_excerpted(
+        self, tmp_path, monkeypatch
+    ):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", tmp_path / "output")
+        out_dir = jobs.OUTPUT_DIR / "job-final-06"
+        out_dir.mkdir(parents=True)
+        (out_dir / "2026-09-01_22-08-23.md").write_text(
+            "# Cron Job: monitor\n\n"
+            "**Job ID:** job-final-06\n\n"
+            "## Prompt\n\n"
+            "assembled prompt and loaded skill content\n",
+            encoding="utf-8",
+        )
+
+        assert _latest_job_output_excerpt("job-final-06") is None
 
     def test_failed_run_reports_error_status_in_event(self):
         import time

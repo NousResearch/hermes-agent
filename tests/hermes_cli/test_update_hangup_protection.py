@@ -137,6 +137,31 @@ class TestInstallHangupProtection:
             assert sys.stdout is prev_out
             assert sys.stderr is prev_err
 
+    def test_gateway_mode_keeps_update_log_progress(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        prev_out, prev_err = sys.stdout, sys.stderr
+
+        state = _install_hangup_protection(gateway_mode=True)
+
+        try:
+            assert state["installed"] is True
+            assert isinstance(sys.stdout, _UpdateOutputStream)
+            assert isinstance(sys.stderr, _UpdateOutputStream)
+
+            sys.stdout.write("gateway progress\n")
+            _log_only_write("desktop build progress\n")
+            sys.stdout.flush()
+
+            contents = (tmp_path / "logs" / "update.log").read_text(
+                encoding="utf-8"
+            )
+            assert "gateway progress" in contents
+            assert "desktop build progress" in contents
+        finally:
+            _finalize_update_output(state)
+            assert sys.stdout is prev_out
+            assert sys.stderr is prev_err
+
 
     def test_non_fatal_if_log_setup_fails(self, monkeypatch):
         """If get_hermes_home() raises, stdio must be left untouched but SIGHUP still handled."""

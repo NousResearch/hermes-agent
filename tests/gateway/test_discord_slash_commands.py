@@ -449,6 +449,35 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_rename_thread_accepts_relay_parity_kwargs(adapter):
+    """run.py calls rename_thread with prefer_connector_created and
+    parent_chat_id unconditionally (shared semantic-rename lane). The native
+    adapter must accept them for signature parity with the relay sibling,
+    not raise TypeError. Regression for the v2026.8.3 crash where every
+    native auto-thread rename silently failed."""
+    thread = SimpleNamespace(
+        id=1001,
+        name="raw user prompt",
+        edit=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: thread
+
+    result = await adapter.rename_thread(
+        "1001",
+        "Semantic Session Title",
+        prefer_connector_created=False,
+        only_if_current_name="raw user prompt",
+        parent_chat_id="1001",
+    )
+
+    assert result is True
+    thread.edit.assert_awaited_once_with(
+        name="Semantic Session Title",
+        reason="Hermes semantic session title",
+    )
+
+
 # ------------------------------------------------------------------
 # Auto-thread integration in _handle_message
 # ------------------------------------------------------------------

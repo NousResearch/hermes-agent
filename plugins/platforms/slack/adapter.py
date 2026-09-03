@@ -4474,6 +4474,33 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
 
+    async def react_to_current_message(
+        self, *, channel: str, timestamp: str, emoji: str, team_id: str
+    ) -> bool:
+        """React to a caller-bound Slack message without target resolution.
+
+        The Slack tool passes IDs only from task-local inbound context; it never
+        accepts model-controlled channel/message/workspace identifiers.
+        """
+        return await self._add_reaction(channel, timestamp, emoji, team_id)
+
+    async def current_message_permalink(
+        self, *, channel: str, timestamp: str, team_id: str
+    ) -> Optional[str]:
+        """Return Slack's canonical permalink for a caller-bound message."""
+        if not self._app:
+            return None
+        try:
+            response = await self._get_client(
+                channel, team_id=team_id or None
+            ).chat_getPermalink(channel=channel, message_ts=timestamp)
+            payload = _slack_response_payload(response)
+            permalink = payload.get("permalink") if payload.get("ok", True) else None
+            return str(permalink) if isinstance(permalink, str) and permalink else None
+        except Exception as exc:
+            logger.debug("[Slack] chat.getPermalink failed: %s", exc)
+            return None
+
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
@@ -9887,6 +9914,9 @@ def _build_adapter(config):
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .tools import register_tools
+
+    register_tools(ctx)
     ctx.register_platform(
         name="slack",
         label="Slack",

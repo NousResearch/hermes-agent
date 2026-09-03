@@ -455,6 +455,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
 | `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
+| `on_turn_failed` | Observer | Once when retry and fallback options are exhausted; return ignored. | `session_id`, `completed`, `failed`, `failure_reason`, `error`, `provider`, `model`, `max_retries`, `api_calls`; optional `http_status` | Error and provider metadata may contain operational details. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown or expiry may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
@@ -798,6 +799,29 @@ def log_response_length(session_id, assistant_response, model, **kwargs):
 def register(ctx):
     ctx.register_hook("post_llm_call", log_response_length)
 ```
+
+---
+
+### `on_turn_failed`
+
+Fires once when a turn reaches a terminal retry boundary after configured
+fallbacks have also been exhausted. It accompanies the stable
+`HERMES-TURN-DEAD:` log marker and the returned `turn_dead` result field.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, failure_reason: str, error: str,
+                provider: str, model: str, max_retries: int,
+                api_calls: int, http_status: int | None = None, **kwargs):
+```
+
+The payload also includes `completed=False` and `failed=True`.
+`failure_reason` is a stable classifier value such as `rate_limit`, `timeout`,
+or `invalid_response`. `http_status` is omitted when no status is available.
+
+**Return value:** Ignored. Hook failures are logged and cannot replace the
+terminal result.
 
 ---
 

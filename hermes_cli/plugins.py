@@ -178,6 +178,9 @@ VALID_HOOKS: Set[str] = {
     "on_stream_delta",
     "on_stream_end",
     "on_interim_message",
+    # Terminal retry/fallback exhaustion. Observer payload is the same stable
+    # dict emitted in the HERMES-TURN-DEAD marker and returned as turn_dead.
+    "on_turn_failed",
     # Verification-loop gate. Fired once per turn when the agent has edited code
     # and is about to verify/finish (after the verify-on-stop guard). A callback
     # may keep the agent going — run a check, defer it, tidy the diff — instead

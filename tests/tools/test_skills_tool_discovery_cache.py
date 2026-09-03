@@ -1,12 +1,10 @@
-"""Regression tests for the _find_all_skills discovery cache (#58985 salvage).
+"""Regression tests for the _find_all_skills discovery cache.
 
-Covers the cache-signature fix layered on the cherry-picked contributor
-commit: the original keyed the cache on the max mtime of only the TOP-LEVEL
-scan dirs, so adding/removing a skill inside a category subdir (which bumps
-the category dir's mtime, not the root's) served a stale list indefinitely.
-The signature now covers roots + immediate children (mirroring
-hermes_cli/profiles.py::_count_skills) plus the disabled-set, with a short
-TTL bounding in-place SKILL.md edit staleness.
+The cache signature must cover the same recursive, exclusion-aware SKILL.md
+path set as discovery. These tests protect immediate and deep additions,
+directory-before-file materialization, followed category symlinks, caller-copy
+isolation, and separate disabled/full cache views. In-place content edits remain
+bounded by the short TTL.
 """
 
 import time
@@ -55,6 +53,81 @@ def test_cache_hit_serves_copies_not_cache_objects(tmp_path):
     assert [s["name"] for s in second] == ["skill-one"]
     assert "enabled" not in second[0], "cache poisoned by caller mutation"
     assert second is not first
+
+
+def test_nested_skill_add_invalidates_even_when_directory_mtimes_are_frozen(tmp_path):
+    """Child-name changes must invalidate independently of filesystem mtimes."""
+    import os
+
+    _write_skill(tmp_path, "cat-a", "skill-one")
+    assert [s["name"] for s in st._find_all_skills()] == ["skill-one"]
+
+    root = tmp_path / "skills"
+    category = root / "cat-a"
+    root_stat = root.stat()
+    category_stat = category.stat()
+    _write_skill(tmp_path, "cat-a", "skill-two")
+    os.utime(root, ns=(root_stat.st_atime_ns, root_stat.st_mtime_ns))
+    os.utime(category, ns=(category_stat.st_atime_ns, category_stat.st_mtime_ns))
+
+    names = sorted(s["name"] for s in st._find_all_skills())
+    assert names == ["skill-one", "skill-two"]
+
+
+def test_deep_nested_skill_add_invalidates_cached_discovery(tmp_path):
+    """Discovery and its signature must cover the same recursive layout."""
+    _write_skill(tmp_path, "mlops/training", "skill-one")
+    assert [s["name"] for s in st._find_all_skills()] == ["skill-one"]
+
+    _write_skill(tmp_path, "mlops/training", "skill-two")
+
+    names = sorted(s["name"] for s in st._find_all_skills())
+    assert names == ["skill-one", "skill-two"]
+
+
+def test_skill_md_materialization_invalidates_cached_missing_directory(tmp_path):
+    """A directory created before its SKILL.md must not poison the cache."""
+    _write_skill(tmp_path, "cat-a", "skill-one")
+    pending = tmp_path / "skills" / "cat-a" / "skill-two"
+    pending.mkdir(parents=True)
+    assert [s["name"] for s in st._find_all_skills()] == ["skill-one"]
+
+    (pending / "SKILL.md").write_text(
+        "---\nname: skill-two\ndescription: second skill\n---\n# skill-two\n",
+        encoding="utf-8",
+    )
+
+    names = sorted(s["name"] for s in st._find_all_skills())
+    assert names == ["skill-one", "skill-two"]
+
+
+def test_symlinked_category_add_invalidates_cached_discovery(tmp_path):
+    """The signature must follow category symlinks just like discovery does."""
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    target = tmp_path / "shared-category"
+    target.mkdir()
+    linked = skills_root / "linked"
+    try:
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    def write_linked_skill(name):
+        skill_dir = target / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: linked skill\n---\n# {name}\n",
+            encoding="utf-8",
+        )
+
+    write_linked_skill("skill-one")
+    assert [s["name"] for s in st._find_all_skills()] == ["skill-one"]
+
+    write_linked_skill("skill-two")
+
+    names = sorted(s["name"] for s in st._find_all_skills())
+    assert names == ["skill-one", "skill-two"]
 
 
 def test_disabled_and_full_views_cached_separately(tmp_path, monkeypatch):

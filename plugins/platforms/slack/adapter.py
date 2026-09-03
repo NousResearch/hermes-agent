@@ -1468,6 +1468,10 @@ class SlackAdapter(BasePlatformAdapter):
         awaits inside ``close()``. Cancelling from a snapshot taken partway
         through that would race a moving target. See
         slackapi/python-slack-sdk#1913.
+
+        After ``close_async()`` we re-read the client task attributes one more
+        time and cancel anything that was rebound during the close.  A bounded
+        pass count prevents indefinite spinning if the client keeps rebinding.
         """
         handler = self._handler
         task = self._socket_mode_task
@@ -1488,6 +1492,33 @@ class SlackAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
+
+        # Drain pass: re-read client task attributes after close_async() and
+        # cancel anything rebound during the close.  connect() can rebind
+        # current_session_monitor / message_processor / message_receiver on
+        # success, so a single pre-close snapshot is not enough.
+        if client is not None:
+            seen: set[int] = set()
+            if task is not None:
+                seen.add(id(task))
+            for _drain_pass in range(3):
+                fresh = [
+                    t
+                    for attr in _SOCKET_CLIENT_TASK_ATTRS
+                    for t in [getattr(client, attr, None)]
+                    if t is not None
+                    and callable(getattr(t, "cancel", None))
+                    and id(t) not in seen
+                ]
+                if not fresh:
+                    break
+                seen.update(id(t) for t in fresh)
+                logger.debug(
+                    "[Slack] drain pass %d: cancelling %d orphaned task(s)",
+                    _drain_pass + 1,
+                    len(fresh),
+                )
+                await _cancel_socket_tasks(fresh)
 
     async def _socket_transport_connected(self) -> Optional[bool]:
         """Best-effort check of current Socket Mode transport state."""

@@ -353,6 +353,54 @@ class TestCmdUpdateBranchFallback:
         assert "official repo not checked" in captured.out
         assert "Already up to date!" not in captured.out
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_completion_reports_fork_left_behind_by_skipped_sync(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """#100646: HEAD matches origin/main but the fork carries commits
+        upstream doesn't have, so sync skips without moving HEAD. The
+        completion line must report the true upstream delta instead of
+        claiming "Already up to date!"."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        base = _make_run_side_effect(branch="main", verify_ok=True, commit_count="0")
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            # _capture_head_sha runs a bare `rev-parse HEAD`; a stable SHA
+            # makes pre-sync and post-sync snapshots equal (sync skipped).
+            if (
+                "rev-parse" in joined
+                and "--abbrev-ref" not in joined
+                and "--verify" not in joined
+            ):
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="deadbeefcafe\n", stderr=""
+                )
+            return base(cmd, **kwargs)
+
+        mock_run.side_effect = side_effect
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed"
+        ) as sync_mock, patch.object(
+            update_cmd,
+            "_count_commits_between",
+            side_effect=lambda _cmd, _cwd, _base, _head: 34,
+        ):
+            cmd_update(mock_args)
+
+        sync_mock.assert_called_once()
+        captured = capsys.readouterr()
+        assert "34 commit(s) behind upstream" in captured.out
+        assert "Already up to date!" not in captured.out
+
     @pytest.mark.parametrize(
         ("health_after_repair", "runtime_status", "expected_runtime_checks"),
         [

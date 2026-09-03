@@ -3398,9 +3398,33 @@ def _sync_with_upstream_if_needed(
     if origin_ahead > 0:
         print()
         print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
+        if upstream_ahead > 0:
+            print(
+                f"  Your fork is also {upstream_ahead} commit(s) behind upstream;"
+            )
+            print(
+                "  the checkout stays behind upstream until the fork-only"
+                " commits are merged or discarded."
+            )
         print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
+        merge_base = subprocess.run(
+            git_cmd + ["merge-base", "origin/main", "upstream/main"],
+            cwd=cwd,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if merge_base.returncode != 0:
+            # No common ancestor (e.g. rewritten upstream history): a plain
+            # `git pull upstream main` cannot fast-forward or merge — it fails
+            # or unions two unrelated histories (#100646).
+            print("  Your fork and upstream share no merge-base, so a plain pull")
+            print("  cannot converge. To discard the fork-only commits and adopt")
+            print("  upstream exactly, run:")
+            print("    git fetch upstream main")
+            print("    git reset --hard upstream/main")
+        else:
+            print("  If you want to merge upstream changes, run:")
+            print("    git pull upstream main")
         return True
 
     # If upstream is not ahead, fork is up to date
@@ -8841,6 +8865,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Non-fork checkouts have no upstream question: origin IS the official
         # repo, so "Already up to date!" is fully verified there.
         upstream_checked = True
+        fork_behind_upstream = 0
         if commit_count == 0 and is_fork and branch == "main":
             pre_sync_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
             upstream_checked = _m()._sync_with_upstream_if_needed(
@@ -8860,6 +8885,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # HEAD moving is itself proof of an update. Keep the update
                 # path active even if the informational count cannot be read.
                 commit_count = max(1, synced_count)
+            elif upstream_checked and pre_sync_sha and post_sync_sha:
+                # The sync verified origin/main against upstream/main but
+                # left HEAD alone — either the fork is genuinely current, or
+                # the sync was skipped to preserve fork-only commits. Only
+                # the skip case is invisible downstream, where the completion
+                # line would otherwise claim "Already up to date!" while the
+                # checkout trails upstream (#100646).
+                fork_behind_upstream = max(
+                    0,
+                    _count_commits_between(
+                        git_cmd,
+                        _m().PROJECT_ROOT,
+                        "origin/main",
+                        "upstream/main",
+                    ),
+                )
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -9027,7 +9068,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     gateway_mode=gateway_mode,
                     pre_update_snapshot_id=pre_update_snapshot_id,
                     completion_message=(
-                        "✓ Already up to date!"
+                        (
+                            f"✓ Up to date with your fork, but {fork_behind_upstream} "
+                            "commit(s) behind upstream — fork sync was skipped to "
+                            "preserve your fork-only commit(s); see the note above."
+                        )
+                        if upstream_checked and fork_behind_upstream > 0
+                        else "✓ Already up to date!"
                         if upstream_checked
                         else "✓ Up to date with your fork (official repo not checked)."
                     ),

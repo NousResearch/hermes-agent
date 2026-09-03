@@ -69,6 +69,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.enums import EditingMode
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -5827,6 +5828,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._status_bar_visible = _status_bar_visible_from_display_config(
             CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
         )
+        # Vi/vim editing mode for the input composer (toggled via /vim).
+        # Persisted to display.vim_mode so it survives restarts. Off by
+        # default, which keeps prompt_toolkit's standard emacs bindings.
+        self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
         # Battery read-out in the status bar (toggled via /battery, off by
         # default). Persisted to display.battery so it survives restarts.
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
@@ -6458,6 +6463,68 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._console_print("  Battery indicator on")
         else:
             self._console_print("  Battery indicator off")
+
+    def _vim_mode_label(self) -> str:
+        """Return the current vi editing mode as a short status-bar label.
+
+        Empty when vim mode is off or the application is not yet running.
+        """
+        if not self._vim_mode:
+            return ""
+        try:
+            from prompt_toolkit.key_binding.vi_state import InputMode
+            app = getattr(self, "_app", None)
+            if app is None:
+                return ""
+            mode = app.vi_state.input_mode
+            if mode in (InputMode.INSERT, InputMode.INSERT_MULTIPLE):
+                return "INSERT"
+            if mode == InputMode.REPLACE:
+                return "REPLACE"
+            return "NORMAL"
+        except Exception:
+            return ""
+
+    def _handle_vim_command(self, cmd_original: str) -> None:
+        """Toggle vi/vim keybindings in the input composer.
+
+        ``/vim`` toggles, ``/vim on|off`` sets explicitly, and ``/vim status``
+        reports the current setting. The choice is persisted to
+        ``display.vim_mode`` so it survives restarts. Applies to the live
+        prompt_toolkit Application immediately — no restart needed (#4254).
+        """
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg in ("status", "show"):
+            state = "on" if self._vim_mode else "off"
+            self._console_print(f"  Vim mode {state}")
+            return
+
+        if arg in ("on", "true", "yes"):
+            target = True
+        elif arg in ("off", "false", "no"):
+            target = False
+        elif arg in ("", "toggle"):
+            target = not self._vim_mode
+        else:
+            self._console_print("  Usage: /vim [on|off|status]")
+            return
+
+        self._vim_mode = target
+        save_config_value("display.vim_mode", target)
+
+        # Apply to the running application so the toggle takes effect now.
+        app = getattr(self, "_app", None)
+        if app is not None:
+            app.editing_mode = EditingMode.VI if target else EditingMode.EMACS
+
+        if target:
+            self._console_print(
+                "  Vim mode on — Esc for NORMAL, i to insert"
+            )
+        else:
+            self._console_print("  Vim mode off — standard keybindings")
 
     @staticmethod
     def _compression_count_style(count: int) -> str:
@@ -7864,6 +7931,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ]
 
             frags = self._right_align_status_title_fragments(frags, session_title, width)
+
+            if self._vim_mode:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-strong", self._vim_mode_label()))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -12883,6 +12954,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_diff_command(cmd_original)
         elif canonical == "battery":
             self._handle_battery_command(cmd_original)
+        elif canonical == "vim":
+            self._handle_vim_command(cmd_original)
         elif canonical == "timestamps":
             self._handle_timestamps_command(cmd_original)
         elif canonical == "verbose":
@@ -20911,6 +20984,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             layout=layout,
             key_bindings=kb,
             style=style,
+            # Vi editing mode in the composer when display.vim_mode is on
+            # (toggled at runtime by /vim). Defaults to EMACS, which is
+            # prompt_toolkit's own default, so behaviour is unchanged for
+            # everyone who has not opted in (#4254).
+            editing_mode=EditingMode.VI if self._vim_mode else EditingMode.EMACS,
             full_screen=False,
             mouse_support=False,
             **({"output": _cpr_disabled_output} if _cpr_disabled_output is not None else {}),

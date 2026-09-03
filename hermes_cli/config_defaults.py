@@ -1579,6 +1579,9 @@ DEFAULT_CONFIG = {
         # Set 0 to disable the background refresh if it fights terminal
         # auto-scroll in non-fullscreen mode on some emulators (#48309).
         "cli_refresh_interval": 1.0,
+        # Vi/vim keybindings in the CLI input composer (toggled by /vim).
+        # Off by default, preserving prompt_toolkit's standard emacs bindings.
+        "vim_mode": False,
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

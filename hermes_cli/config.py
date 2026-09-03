@@ -23,10 +23,8 @@ import os
 import platform
 import re
 import shutil
-import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unicodedata
@@ -813,7 +811,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F811,E402
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_write_text, fast_safe_load
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -4558,8 +4556,6 @@ def sanitize_env_file() -> int:
         return 0
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     with open(env_path, **read_kw) as f:
         original_lines = f.readlines()
 
@@ -4574,19 +4570,7 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
-    try:
-        with os.fdopen(fd, "w", **write_kw) as f:
-            f.writelines(sanitized)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    atomic_write_text(env_path, "".join(sanitized), preserve_mode=True)
     _secure_file(env_path)
     invalidate_env_cache()
     return fixes
@@ -4742,8 +4726,6 @@ def save_env_value(key: str, value: str):
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     lines = []
     if env_path.exists():
         with open(env_path, **read_kw) as f:
@@ -4772,35 +4754,10 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={serialized_value}\n")
     
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-    # Preserve original permissions so Docker volume mounts aren't clobbered.
-    original_mode = None
-    if env_path.exists():
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-    try:
-        with os.fdopen(fd, 'w', **write_kw) as f:
-            f.writelines(lines)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
-        # instead of letting _secure_file unconditionally tighten to 0600.
-        if original_mode is not None:
-            try:
-                os.chmod(env_path, original_mode)
-            except OSError:
-                pass
-        else:
-            _secure_file(env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    env_existed = env_path.exists()
+    atomic_write_text(env_path, "".join(lines), preserve_mode=True)
+    if not env_existed:
+        _secure_file(env_path)
 
     _publish_env_value(key, value)
     invalidate_env_cache()
@@ -4853,8 +4810,6 @@ def remove_env_value(key: str) -> bool:
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     with open(env_path, **read_kw) as f:
         lines = f.readlines()
     lines = _sanitize_env_lines(lines)
@@ -4863,35 +4818,7 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
 
     if found:
-        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-        # Preserve original permissions so Docker volume mounts aren't clobbered.
-        original_mode = None
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-        try:
-            with os.fdopen(fd, 'w', **write_kw) as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
-            # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value().
-            if original_mode is not None:
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
-            else:
-                _secure_file(env_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        atomic_write_text(env_path, "".join(new_lines), preserve_mode=True)
 
     _publish_env_value(key, None)
     invalidate_env_cache()

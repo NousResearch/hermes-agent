@@ -437,6 +437,24 @@ class TestSaveEnvValueSecure:
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file ownership")
+    def test_save_env_value_preserves_existing_file_owner(self, tmp_path, monkeypatch):
+        """A root-run rewrite must keep a service-owned .env service-owned."""
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n", encoding="utf-8")
+
+        chown_calls = []
+        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+        monkeypatch.setattr(
+            "utils.os.chown",
+            lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "test-value")
+
+        assert chown_calls == [(env_path, 123, 456)]
+
     def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
         """Regression test for #30355."""
         from dotenv import dotenv_values
@@ -522,6 +540,23 @@ class TestRemoveEnvValue:
         assert "DROP" not in env_path.read_text()
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file ownership")
+    def test_remove_env_value_preserves_existing_file_owner(self, tmp_path, monkeypatch):
+        env_path = tmp_path / ".env"
+        env_path.write_text("KEEP=value\nDROP=gone\n", encoding="utf-8")
+
+        chown_calls = []
+        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+        monkeypatch.setattr(
+            "utils.os.chown",
+            lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "DROP": "gone"}):
+            assert remove_env_value("DROP") is True
+
+        assert chown_calls == [(env_path, 123, 456)]
 
 
 class TestSaveConfigAtomicity:
@@ -650,6 +685,23 @@ class TestSanitizeEnvLines:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             fixes = sanitize_env_file()
             assert fixes == 0
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file ownership")
+    def test_sanitize_env_file_preserves_existing_file_owner(self, tmp_path, monkeypatch):
+        env_path = tmp_path / ".env"
+        env_path.write_text("  KEY=value  \n", encoding="utf-8")
+
+        chown_calls = []
+        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+        monkeypatch.setattr(
+            "utils.os.chown",
+            lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            assert sanitize_env_file() == 1
+
+        assert chown_calls == [(env_path, 123, 456)]
 
 
 class TestOptionalEnvVarsRegistry:

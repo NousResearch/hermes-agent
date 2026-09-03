@@ -300,8 +300,9 @@ def atomic_write_text(
             ``atomic_yaml_write`` does unconditionally.  ``os.replace`` swaps
             in mkstemp's 0600 temp file owned by the writing user, so without
             this a root-run rewrite of a user-owned file flips its owner and
-            tightens its mode.  The mode is applied to the temp fd *before*
-            the replace, so the file never transits through 0600.  Off by
+            tightens its mode.  Metadata is applied to the temp fd *before*
+            the replace when supported, so the target does not transit through
+            the writer's owner or mkstemp's 0600.  Off by
             default: the historical callers (memory store, skill manager,
             cron) own their 0600-is-fine files.
         create_mode: Permission bits to apply when the target does not yet
@@ -320,20 +321,33 @@ def atomic_write_text(
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
     )
+    mode_applied_before_replace = False
     try:
         with os.fdopen(fd, "w", encoding=encoding) as handle:
+            # Keep mkstemp's owner-only mode while content is incomplete. Apply
+            # preserved metadata only after the full payload is buffered, but
+            # still before fsync + replace so the target lands atomically.
+            handle.write(content)
+            handle.flush()
+            if original_owner is not None and hasattr(os, "fchown"):
+                try:
+                    os.fchown(handle.fileno(), original_owner[0], original_owner[1])
+                except (OSError, NotImplementedError):
+                    pass
             if effective_mode is not None and hasattr(os, "fchmod"):
                 # fchmod the temp fd BEFORE the replace so the target never
                 # transits through mkstemp's 0600. fchmod is Unix-only; on
-                # Windows the post-replace chmod below applies the mode.
-                os.fchmod(handle.fileno(), effective_mode)
-            handle.write(content)
-            handle.flush()
+                # unsupported filesystems the post-replace fallback applies it.
+                try:
+                    os.fchmod(handle.fileno(), effective_mode)
+                    mode_applied_before_replace = True
+                except (OSError, NotImplementedError):
+                    pass
             os.fsync(handle.fileno())
         real_path = atomic_replace(tmp_path, path)
         if preserve_mode:
             _restore_file_owner(Path(real_path), original_owner)
-        if effective_mode is not None and not hasattr(os, "fchmod"):
+        if effective_mode is not None and not mode_applied_before_replace:
             _restore_file_mode(Path(real_path), effective_mode)
     except BaseException:
         try:

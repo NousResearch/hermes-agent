@@ -73,6 +73,78 @@ class TestPreserveMode:
 
         assert seen == [0o640]
 
+    def test_owner_is_applied_to_temp_fd_before_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Privileged rewrites must not expose a writer-owned replacement inode."""
+        target = tmp_path / "config.yaml"
+        target.write_text("old\n", encoding="utf-8")
+
+        import utils as utils_mod
+
+        events = []
+        real_replace = utils_mod.atomic_replace
+        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+        monkeypatch.setattr(
+            "utils.os.fchown",
+            lambda fd, uid, gid: events.append(("fchown", uid, gid)),
+        )
+        monkeypatch.setattr("utils.os.chown", lambda *_args: None)
+
+        def spying_replace(tmp, dst):
+            events.append(("replace",))
+            return real_replace(tmp, dst)
+
+        monkeypatch.setattr(utils_mod, "atomic_replace", spying_replace)
+        atomic_write_text(target, "new\n", preserve_mode=True)
+
+        assert events == [("fchown", 123, 456), ("replace",)]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file descriptors")
+    def test_metadata_is_applied_after_content_is_complete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Do not expose a partially-written temp file to its preserved owner."""
+        target = tmp_path / "credentials.env"
+        target.write_text("old\n", encoding="utf-8")
+
+        observed_content = []
+        monkeypatch.setattr("utils._preserve_file_owner", lambda _path: (123, 456))
+
+        def inspect_before_chown(fd, _uid, _gid):
+            observed_content.append(os.pread(fd, 1024, 0))
+
+        monkeypatch.setattr("utils.os.fchown", inspect_before_chown)
+        monkeypatch.setattr("utils.os.chown", lambda *_args: None)
+
+        atomic_write_text(target, "complete-secret\n", preserve_mode=True)
+
+        assert observed_content == [b"complete-secret\n"]
+
+    def test_fchmod_failure_falls_back_after_replace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A filesystem rejecting fchmod must not abort the credential write."""
+        target = tmp_path / "config.yaml"
+        target.write_text("old\n", encoding="utf-8")
+        os.chmod(target, 0o640)
+
+        chmod_calls = []
+
+        def reject_fchmod(_fd, _mode):
+            raise OSError("fchmod unsupported")
+
+        monkeypatch.setattr("utils.os.fchmod", reject_fchmod)
+        monkeypatch.setattr(
+            "utils.os.chmod",
+            lambda path, mode: chmod_calls.append((Path(path), mode)),
+        )
+
+        atomic_write_text(target, "new\n", preserve_mode=True)
+
+        assert target.read_text(encoding="utf-8") == "new\n"
+        assert chmod_calls == [(target, 0o640)]
+
     def test_owner_is_restored_on_the_real_symlink_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

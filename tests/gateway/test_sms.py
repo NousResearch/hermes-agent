@@ -321,3 +321,102 @@ class TestWebhookSignatureEnforcement:
         request = self._mock_request(oversized, content_length=None)
         resp = await adapter._handle_webhook(request)
         assert resp.status == 413
+
+
+# ── Standalone send: markdown stripping ────────────────────────────
+
+class TestStandaloneSendMarkdownStripping:
+    """_strip_markdown_for_sms and the standalone send path must work.
+
+    Regression: the helper was added in the plugin migration (560010547)
+    using ``re.sub`` without importing ``re``, so every out-of-process SMS
+    delivery (cron jobs, the standalone sender contract) crashed with
+    ``NameError: name 're' is not defined`` before reaching Twilio.
+    """
+
+    def test_strips_bold_italic_headings(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        result = _strip_markdown_for_sms(
+            "# Title\n**bold** and *italic*\n__under__ and _em_"
+        )
+        assert result == "Title\nbold and italic\nunder and em"
+
+    def test_strips_code_and_links_keeps_text(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        result = _strip_markdown_for_sms("run `cmd` then [docs](https://x.com/y)")
+        assert result == "run cmd then docs"
+
+    def test_collapses_excess_newlines(self):
+        from plugins.platforms.sms.adapter import _strip_markdown_for_sms
+
+        assert _strip_markdown_for_sms("a\n\n\n\nb") == "a\n\nb"
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_delivers_stripped_body(self):
+        """The out-of-process send path strips markdown from the SMS body.
+
+        Before the missing-import fix this failed with NameError before the
+        Twilio request was ever built.
+        """
+        from plugins.platforms.sms import adapter as sms_adapter_mod
+
+        captured = {}
+
+        class _FakeForm:
+            def add_field(self, name, value):
+                captured[name] = value
+
+        class _FakeResp:
+            status = 201
+
+            async def json(self):
+                return {"sid": "SM123"}
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        class _FakeSession:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def post(self, *a, **kw):
+                return _FakeResp()
+
+        pc = PlatformConfig(enabled=True, api_key="tok")
+        fake_secrets = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+        }
+        with patch.dict(
+            os.environ, {"TWILIO_PHONE_NUMBER": "+15550001111"}, clear=False
+        ), patch.object(
+            sms_adapter_mod, "_get_scoped_secret", lambda name, default=None: fake_secrets.get(name, default)
+        ), patch(
+            "aiohttp.ClientSession", _FakeSession
+        ), patch(
+            "aiohttp.FormData", _FakeForm
+        ):
+            result = await sms_adapter_mod._standalone_send(
+                pc, "+15559876543", "**urgent** cron `status` report"
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "sms",
+            "chat_id": "+15559876543",
+            "message_id": "SM123",
+        }
+        assert captured["From"] == "+15550001111"
+        assert captured["To"] == "+15559876543"
+        assert captured["Body"] == "urgent cron status report"

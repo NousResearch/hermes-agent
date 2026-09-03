@@ -18,6 +18,7 @@ LONG_HANDLERS = frozenset({
     "groups.capabilities",
     "groups.create",
     "groups.state",
+    "groups.tasks",
     "groups.send",
     "groups.rename",
     "groups.log",
@@ -559,6 +560,56 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4114, str(exc), {"reason": reason} if reason else None)
     except Exception as exc:
         return _err(rid, 5115, str(exc))
+
+
+@method("groups.tasks")
+def _(rid, params: dict) -> dict:
+    """Return one hosted room's per-member driver task rows (issue #102196).
+
+    Thin-wraps ``gateway.hosted_room_driver.list_tasks``, the same real
+    per-member status (``queued``/``running``/``settled``/``failed``/
+    ``cancelled``/``indeterminate``/``deferred``/``stopping``) each task
+    already carries, which ``groups.state``'s ``driver_status`` only ever
+    surfaced as aggregate counts. Optional ``status`` param filters to one
+    status. Validated against ``room_state`` first (same as ``groups.state``)
+    so a bad ``room_id`` returns the room-lookup error rather than a
+    silently empty task list.
+    """
+    from gateway.hosted_room_driver import DriverStateError, list_tasks
+    from gateway.hosted_rooms import HostedRoomError, default_db_path, room_state
+    import dataclasses
+
+    try:
+        room = room_state(
+            default_db_path(),
+            room_id=params.get("room_id"),
+            include_disbanded=params.get("include_disbanded") is True,
+        )
+    except HostedRoomError as exc:
+        reason = getattr(exc, "reason", None)
+        return _err(rid, 4114, str(exc), {"reason": reason} if reason else None)
+    except Exception as exc:
+        return _err(rid, 5115, str(exc))
+
+    try:
+        tasks = list_tasks(
+            default_db_path(),
+            room_id=room["room_id"],
+            status=params.get("status"),
+        )
+        return _ok(
+            rid,
+            {
+                "tasks": [
+                    {**task, "identity": dataclasses.asdict(task["identity"])}
+                    for task in tasks
+                ]
+            },
+        )
+    except DriverStateError as exc:
+        return _err(rid, 4124, str(exc))
+    except Exception as exc:
+        return _err(rid, 5125, str(exc))
 
 
 @method("groups.send")

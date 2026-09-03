@@ -261,10 +261,10 @@ def test_rollover_is_pending_until_a_safe_next_turn_then_preserves_lineage(
     new = db.get_session(new_session_id)
     assert old["end_reason"] == "turn_boundary_rollover"
     assert new["parent_session_id"] == "old"
-    assert json.loads(new["model_config"])["turn_boundary_handoff"] == {
-        "previous_session_id": "old",
-        "recovery": "Use session_search to recover earlier details if needed.",
-    }
+    handoff = json.loads(new["model_config"])["turn_boundary_handoff"]
+    assert handoff["previous_session_id"] == "old"
+    assert handoff["recovery"] == "Use session_search to recover earlier details if needed."
+    assert handoff["idempotency_key"].startswith("turn-boundary:")
     assert db.get_messages_as_conversation(new_session_id) == []
 
 
@@ -356,6 +356,108 @@ def test_child_preserves_parent_runtime_config_but_consumes_pending_marker(tmp_p
         assert child_config[key] == value
     assert "_turn_boundary_rollover_pending" not in child_config
     assert child_config["turn_boundary_handoff"]["previous_session_id"] == "old"
+
+
+def test_adopted_child_starts_admissible_without_inheriting_parent_drain(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "old",
+        source="cli",
+        model_config={
+            "provider": "openrouter",
+            "turn_boundary_lifecycle": {"state": "draining"},
+        },
+    )
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.mark_pending("old", threshold_tokens=10)
+
+    child = rollover.adopt_at_turn_boundary("old", active_work=False)
+
+    assert child
+    child_config = json.loads(db.get_session(child)["model_config"])
+    assert child_config["provider"] == "openrouter"
+    assert child_config["turn_boundary_lifecycle"]["state"] == "healthy"
+    child_agent = type("Agent", (), {"_session_db": db, "session_id": child})()
+    assert allows_new_work(child_agent) is True
+    assert allows_new_delegation(child_agent) is True
+
+
+def test_disabled_policy_does_not_publish_a_draining_lifecycle(monkeypatch, tmp_path: Path) -> None:
+    """Opt-in rollover cannot change admission or doctor state while disabled."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("live", source="cli")
+
+    class Agent:
+        session_id = "live"
+        _session_db = db
+        max_iterations = 1
+        context_compressor = type("Compressor", (), {
+            "context_length": 272_000,
+            "threshold_tokens": 250_000,
+            "last_prompt_tokens": 2_000,
+        })()
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"session_rollover": {"enabled": False}})
+    assert mark_completed_turn(Agent(), {"completed": True, "api_calls": 1}) is False
+
+    config = json.loads(db.get_session("live")["model_config"] or "{}")
+    assert "_turn_boundary_rollover_pending" not in config
+    assert "turn_boundary_lifecycle" not in config
+
+
+def test_rollover_reasons_resolve_to_the_child_tip_and_preserve_arm_identity(tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("core", source="cli")
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.mark_pending("core", threshold_tokens=10)
+
+    child = rollover.adopt_at_turn_boundary("core", active_work=False)
+
+    assert child
+    parent_config = json.loads(db.get_session("core")["model_config"])
+    child_config = json.loads(db.get_session(child)["model_config"])
+    assert parent_config["_turn_boundary_rollover_pending"]["idempotency_key"]
+    assert child_config["turn_boundary_handoff"]["idempotency_key"] == parent_config["_turn_boundary_rollover_pending"]["idempotency_key"]
+    assert db.get_compression_tip("core") == child
+    assert db.resolve_resume_session_id("core") == child
+
+
+def test_core_checkpoint_carries_available_result_evidence(monkeypatch, tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("old", source="cli", cwd=str(tmp_path))
+
+    class Agent:
+        session_id = "old"
+        _session_db = db
+        cwd = str(tmp_path)
+        current_goal = "close review blockers"
+        context_compressor = type("Compressor", (), {
+            "context_length": 1_000,
+            "threshold_tokens": 900,
+            "last_prompt_tokens": 800,
+        })()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
+    assert mark_completed_turn(Agent(), {
+        "completed": True,
+        "api_calls": 1,
+        "verification_evidence": ["pytest tests/hermes_state: passed"],
+        "result_pointers": ["artifact://review/42"],
+        "external_effects": ["local commit created"],
+        "external_readback": ["git status clean"],
+    })
+
+    config = json.loads(db.get_session("old")["model_config"])
+    checkpoint = config["turn_boundary_lifecycle"]["checkpoint"]
+    assert checkpoint["goal"] == "close review blockers"
+    assert checkpoint["worktree"] == str(tmp_path)
+    assert checkpoint["verification_evidence"] == ["pytest tests/hermes_state: passed"]
+    assert checkpoint["result_pointers"] == ["artifact://review/42"]
+    assert checkpoint["external_effects"] == ["local commit created"]
+    assert checkpoint["external_readback"] == ["git status clean"]
 
 
 def test_mark_pending_merges_without_clobbering_concurrent_model_mutation(tmp_path: Path) -> None:

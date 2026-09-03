@@ -64,6 +64,8 @@ import hermes_state_holders as _state_holders
 from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _BRANCH_CHILD_SQL,
     _COMPRESSION_CHILD_SQL,
+    _CONTINUATION_END_REASONS,
+    _CONTINUATION_END_REASONS_SQL,
     _FTS_CJK_TRIGGERS,
     _FTS_TRIGGERS,
     _LISTABLE_CHILD_SQL,
@@ -72,6 +74,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL,
     is_automatic_end_reason,
+    is_continuation_end_reason,
     _RESET_END_REASONS,
     _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
@@ -7270,7 +7273,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # inherit routing keys, or peer recovery could repoint gateway
                 # traffic into a subagent's session.
                 conn.execute(
-                    """UPDATE sessions
+                    f"""UPDATE sessions
                        SET user_id = COALESCE(sessions.user_id,
                                      (SELECT p.user_id FROM sessions p
                                        WHERE p.id = sessions.parent_session_id)),
@@ -7296,7 +7299,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        AND EXISTS (
                            SELECT 1 FROM sessions p
                            WHERE p.id = sessions.parent_session_id
-                             AND p.end_reason = 'compression'
+                             AND p.end_reason IN ({_CONTINUATION_END_REASONS_SQL})
                        )""",
                     (session_id,),
                 )
@@ -11724,13 +11727,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     FROM sessions parent
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
+                      AND parent.end_reason IN ({_CONTINUATION_END_REASONS_SQL})
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE
-                        WHEN child.end_reason = 'compression' THEN 0
+                        WHEN child.end_reason IN ({_CONTINUATION_END_REASONS_SQL}) THEN 0
                         WHEN child.ended_at IS NULL THEN 1
                         ELSE 2
                       END,
@@ -15266,7 +15269,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not parent_id or self._is_explicit_fork_child_row(child):
             return False
         parent = self.get_session(parent_id)
-        return bool(parent and parent.get("end_reason") == "compression")
+        return bool(parent and is_continuation_end_reason(parent.get("end_reason")))
 
     def get_compression_lineage(self, session_id: str) -> List[str]:
         """Return compression ancestors through tip in chronological order."""
@@ -15286,7 +15289,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         lineage = [root["id"]]
         seen = {root["id"]}
         current = root
-        while current.get("end_reason") == "compression":
+        while is_continuation_end_reason(current.get("end_reason")):
             with self._read_ctx() as conn:
                 rows = conn.execute(
                     """

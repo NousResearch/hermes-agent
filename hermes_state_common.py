@@ -184,10 +184,25 @@ _BRANCH_CHILD_SQL = (
 )
 
 
+_CONTINUATION_END_REASONS = (
+    "compression",
+    "turn_boundary_rollover",
+    "turn_boundary_rollover_recovered",
+)
+_CONTINUATION_END_REASONS_SQL = ", ".join(
+    f"'{reason}'" for reason in _CONTINUATION_END_REASONS
+)
+
+
+def is_continuation_end_reason(reason: object) -> bool:
+    """True for a parent whose child continues the same conversation."""
+    return isinstance(reason, str) and reason in _CONTINUATION_END_REASONS
+
+
 _COMPRESSION_CHILD_SQL = (
     "EXISTS (SELECT 1 FROM sessions p"
     "        WHERE p.id = {a}.parent_session_id"
-    "        AND p.end_reason = 'compression')"
+    f"        AND p.end_reason IN ({_CONTINUATION_END_REASONS_SQL}))"
 )
 
 

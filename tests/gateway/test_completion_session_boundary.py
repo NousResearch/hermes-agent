@@ -221,6 +221,27 @@ def test_completion_after_idle_end_still_delivers(
     adapter.handle_message.assert_awaited_once()
 
 
+@pytest.mark.parametrize("end_reason", [
+    "turn_boundary_rollover",
+    "turn_boundary_rollover_recovered",
+])
+def test_completion_follows_each_turn_boundary_continuation(end_reason):
+    """A finished child task must follow either rollover reason to its live tip."""
+    class _RolloverDB:
+        async def get_session(self, session_id):
+            if session_id == "parent":
+                return {"ended_at": 1.0, "end_reason": end_reason}
+            return {"ended_at": None}
+
+        async def get_compression_tip(self, session_id):
+            assert session_id == "parent"
+            return "child"
+
+    runner = _runner(SimpleNamespace(), session_db=_RolloverDB())
+
+    assert asyncio.run(runner._classify_completion_target("parent")) == "deliver"
+
+
 def test_completion_from_live_session_delivers(monkeypatch, isolated_registry):
     _finished_session(isolated_registry)
     adapter = SimpleNamespace(handle_message=AsyncMock())

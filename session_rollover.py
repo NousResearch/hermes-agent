@@ -131,8 +131,12 @@ class TurnBoundaryRollover:
         lifecycle_data["checkpoint"] = _checkpoint_with_repo_evidence(
             checkpoint if isinstance(checkpoint, Mapping) else {}, row
         )
+        arm_key = f"turn-boundary:{uuid.uuid4().hex}"
         patch_data: dict[str, Any] = {
-            _PENDING_KEY: {"threshold_tokens": int(threshold_tokens)},
+            _PENDING_KEY: {
+                "threshold_tokens": int(threshold_tokens),
+                "idempotency_key": arm_key,
+            },
         }
         patch_data[_LIFECYCLE_KEY] = lifecycle_data
         patch(session_id, patch_data)
@@ -162,6 +166,7 @@ class TurnBoundaryRollover:
         patch(session_id, {_PENDING_KEY: {
             "threshold_tokens": 0,
             "recovery_key": str(idempotency_key),
+            "idempotency_key": str(idempotency_key),
             "requested_at": time.time(),
         }})
         # Re-read: a concurrent doctor/core arm resolves to exactly one owner.
@@ -197,13 +202,17 @@ class TurnBoundaryRollover:
             pending = config.pop(_PENDING_KEY, None)
             if not pending:
                 return None
-            recovery_key = (
-                str(pending.get("recovery_key") or "")
+            recovery_key = str(pending.get("recovery_key") or "") if isinstance(pending, Mapping) else ""
+            arm_key = (
+                str(pending.get("idempotency_key") or recovery_key)
                 if isinstance(pending, Mapping) else ""
             )
             # A child is a fresh runtime, not a fresh identity. Preserve every
             # parent runtime/model setting except the consumed rollover marker.
             child_config = dict(config)
+            # The parent was deliberately draining. Its child is a fresh
+            # runtime and must not inherit that admission fence.
+            child_config[_LIFECYCLE_KEY] = {"state": "healthy"}
             child_config[_HANDOFF_KEY] = {
                 "previous_session_id": session_id,
                 "recovery": RECOVERY_GUIDANCE,
@@ -212,6 +221,8 @@ class TurnBoundaryRollover:
                 # Binds the continuation to the exact recovery request so a
                 # doctor read-back can prove which arm produced this child.
                 child_config[_HANDOFF_KEY]["recovery_key"] = recovery_key
+            if arm_key:
+                child_config[_HANDOFF_KEY]["idempotency_key"] = arm_key
             # Keep routing identity, source, cwd, profile, model and role
             # namespace intact.  The transcript is intentionally not copied.
             conn.execute(
@@ -396,6 +407,13 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
         from hermes_cli.config import load_config
         config = load_config() or {}
         policy = RolloverPolicy.from_config(config.get("session_rollover"))
+        if not policy.enabled:
+            # This is opt-in behavior. Do not publish a derived draining state
+            # from zero reserves or iteration bookkeeping while it is off.
+            patch = getattr(db, "patch_session_model_config", None)
+            if callable(patch):
+                patch(session_id, {_LIFECYCLE_KEY: None})
+            return False
         trigger = policy.resolve(
             getattr(compressor, "context_length", 0),
             getattr(compressor, "threshold_tokens", 0),
@@ -441,9 +459,17 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
             return False
         lifecycle["checkpoint"] = {
             "goal": str(getattr(agent, "current_goal", "") or ""),
-            "cwd": str(getattr(agent, "cwd", "") or ""),
+            "worktree": str(getattr(agent, "cwd", "") or ""),
             "api_calls": api_calls,
             "in_flight_workers": in_flight_workers,
+            **{
+                key: list(result.get(key) or ())
+                for key in (
+                    "verification_evidence", "result_pointers",
+                    "external_effects", "external_readback",
+                )
+                if result.get(key)
+            },
         }
         return TurnBoundaryRollover(db).mark_pending(
             session_id, threshold_tokens=trigger, lifecycle=lifecycle,

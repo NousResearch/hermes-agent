@@ -18379,7 +18379,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _end_reason,
                 )
                 return None
-            if _end_reason != "compression":
+            from hermes_state_common import is_continuation_end_reason
+            if not is_continuation_end_reason(_end_reason):
                 # Idle/timeout/lifecycle end (scale-to-zero norm): the chat
                 # route remains valid and ``session_entry`` IS the routing
                 # key's current session for this same chat, so deliver the
@@ -18447,7 +18448,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await session_db.get_compression_tip(session_entry.session_id)
                         if route_row is not None
                         and route_row.get("ended_at")
-                        and route_row.get("end_reason") == "compression"
+                        and is_continuation_end_reason(route_row.get("end_reason"))
                         else None
                     )
                 except Exception:
@@ -28465,7 +28466,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
-        if end_reason != "compression":
+        from hermes_state_common import is_continuation_end_reason
+        if not is_continuation_end_reason(end_reason):
             # An ended parent is only unreachable when the USER closed the
             # thread of work (explicit boundary: /new -> session_reset /
             # new_session, user_exit, session_switch). Idle/timeout ends are

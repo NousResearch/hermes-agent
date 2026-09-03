@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from hermes_state_common import is_continuation_end_reason
+
 # Bound defensive walks; compression chains this deep are pathological.
 _MAX_WALK = 100
 
@@ -69,7 +71,7 @@ def build_session_provenance(
         if not prow:
             break
         root_id = cursor_parent
-        if prow.get("end_reason") == "compression":
+        if is_continuation_end_reason(prow.get("end_reason")):
             compression_depth += 1
         cursor_parent = prow.get("parent_session_id")
 
@@ -81,7 +83,7 @@ def build_session_provenance(
             immediate_parent = db.get_session(parent_id)
         except Exception:
             immediate_parent = None
-        if immediate_parent and immediate_parent.get("end_reason") == "compression":
+        if immediate_parent and is_continuation_end_reason(immediate_parent.get("end_reason")):
             is_continuation = True
 
     rotated = bool(

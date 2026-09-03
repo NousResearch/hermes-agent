@@ -37,7 +37,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_state_common import _RESET_END_REASONS
+from hermes_state_common import _RESET_END_REASONS, is_continuation_end_reason as _is_continuation_end_reason
 
 # Sources that are excluded from session browsing/searching by default.
 # Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
@@ -152,7 +152,7 @@ def _resolve_to_parent(db, session_id: str) -> tuple[str, bool]:
             s = db.get_session(cur)
             if not s:
                 break
-            if s.get("end_reason") == "compression":
+            if _is_continuation_end_reason(s.get("end_reason")):
                 has_compression = True
             parent = s.get("parent_session_id")
             if not parent:
@@ -192,7 +192,7 @@ def _is_compression_ended(db, session_id: str) -> bool:
     ``end_reason`` is ``None`` — its content is still live to the parent agent,
     so it must stay excluded from discovery.
     """
-    return _session_end_reason(db, session_id) == "compression"
+    return _is_continuation_end_reason(_session_end_reason(db, session_id))
 
 
 def _session_left_live_context(db, session_id: str) -> bool:
@@ -212,7 +212,7 @@ def _session_left_live_context(db, session_id: str) -> bool:
     their content IS the current context.
     """
     end_reason = _session_end_reason(db, session_id)
-    return end_reason == "compression" or _is_fresh_reset_session(end_reason)
+    return _is_continuation_end_reason(end_reason) or _is_fresh_reset_session(end_reason)
 
 
 def _is_fresh_reset_session(end_reason: Optional[str]) -> bool:

@@ -13,6 +13,7 @@ from agent.models_dev import (
     _explicit_model_override,
     _override_context_window,
     _override_for,
+    _resolve_probe_override,
     _NotModified,
     _validate_registry,
     fetch_models_dev,
@@ -1305,3 +1306,181 @@ class TestModelOverrides:
         assert info is not None
         assert "image" in info.input_modalities
         assert info.attachment is True
+
+
+# Under-reported github-copilot catalog: Claude 4.x listed at 200K/64K,
+# the exact community-catalog under-report the probe correction fixes.
+COPILOT_UNDERREPORT_REGISTRY = {
+    "github-copilot": {
+        "id": "github-copilot",
+        "name": "GitHub Copilot",
+        "models": {
+            "claude-opus-4.6": {
+                "id": "claude-opus-4.6",
+                "tool_call": True,
+                "attachment": True,
+                "limit": {"context": 200000, "output": 64000},
+            },
+            "claude-sonnet-4.6": {
+                "id": "claude-sonnet-4.6",
+                "tool_call": True,
+                "attachment": True,
+                "limit": {"context": 200000, "output": 64000},
+            },
+            "gpt-5.5": {
+                "id": "gpt-5.5",
+                "tool_call": True,
+                "limit": {"context": 128000, "output": 64000},
+            },
+        },
+    },
+}
+
+
+class TestProbeVerifiedOverrides:
+    """Probe-verified corrections for under-reported catalog limits.
+
+    github-copilot Claude 4.x is listed in models.dev at 200K, while the
+    /v1/messages long-context path serves a 1,000,000-token context window.
+    The shared ``_resolve_probe_override`` helper must correct all three
+    metadata read paths without replacing catalog output limits.
+    """
+
+    def _setup_no_config_overrides(self):
+        """Neutralize user config overrides so only the probe table fires."""
+        import agent.models_dev as md
+        return patch.object(md, "_load_model_overrides", return_value={})
+
+    # --- the shared helper itself ---
+
+    def test_helper_resolves_opus_via_hermes_id(self):
+        """copilot (Hermes id) resolves the opus correction."""
+        result = _resolve_probe_override("copilot", "claude-opus-4.6")
+        assert result == {"context_window": 1_000_000}
+
+    def test_helper_resolves_opus_via_models_dev_id(self):
+        """github-copilot (models.dev id) resolves the same correction."""
+        result = _resolve_probe_override("github-copilot", "claude-opus-4.1")
+        assert result == {"context_window": 1_000_000}
+
+    def test_helper_resolves_sonnet_with_sonnet_output(self):
+        """Sonnet receives only the shared context correction."""
+        result = _resolve_probe_override("copilot", "claude-sonnet-4.6")
+        assert result == {"context_window": 1_000_000}
+
+    def test_helper_prefix_matches_all_point_releases(self):
+        """One row covers 4, 4.1, 4.5, ... via case-insensitive prefix."""
+        assert _resolve_probe_override("copilot", "claude-opus-4") is not None
+        assert _resolve_probe_override("copilot", "Claude-Opus-4.5") is not None
+
+    def test_helper_ignores_non_copilot_provider(self):
+        """The correction is scoped to github-copilot only."""
+        # Anthropic-direct claude-opus is already correct in the catalog.
+        assert _resolve_probe_override("anthropic", "claude-opus-4.6") is None
+
+    def test_helper_ignores_unlisted_copilot_model(self):
+        """Copilot gpt-* is not in the table (no Codex conflict)."""
+        assert _resolve_probe_override("copilot", "gpt-5.5") is None
+
+    def test_helper_returns_fresh_copy(self):
+        """Callers may mutate the returned dict safely."""
+        a = _resolve_probe_override("copilot", "claude-opus-4.6")
+        assert a is not None
+        a["context_window"] = 1
+        b = _resolve_probe_override("copilot", "claude-opus-4.6")
+        assert b is not None
+        assert b["context_window"] == 1_000_000
+
+    # --- path 1: lookup_models_dev_context (compression context) ---
+
+    def test_lookup_context_corrects_underreport(self):
+        """Catalog 200K is corrected to 1M for copilot claude-opus."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            ctx = lookup_models_dev_context("copilot", "claude-opus-4.6")
+        assert ctx == 1_000_000
+
+    def test_lookup_context_untouched_model_uses_catalog(self):
+        """Non-Claude copilot models keep their catalog value."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            ctx = lookup_models_dev_context("copilot", "gpt-5.5")
+        assert ctx == 128000
+
+    def test_lookup_context_user_override_still_wins(self):
+        """An explicit user config override beats the probe correction."""
+        overrides = {"copilot": {"claude-opus-4.6": {"context_window": 500000}}}
+        import agent.models_dev as md
+        with patch.object(md, "_load_model_overrides", return_value=overrides), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            ctx = lookup_models_dev_context("copilot", "claude-opus-4.6")
+        assert ctx == 500000
+
+    # --- path 2: get_model_capabilities (raw limit.context/output) ---
+
+    def test_capabilities_correct_context_preserve_catalog_output(self):
+        """Context is corrected without changing the catalog output limit."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            caps = get_model_capabilities("copilot", "claude-opus-4.6")
+        assert caps is not None
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens == 64_000
+
+    def test_capabilities_sonnet_keeps_sonnet_output(self):
+        """Sonnet gets the 1M window but keeps 64K output."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            caps = get_model_capabilities("copilot", "claude-sonnet-4.6")
+        assert caps is not None
+        assert caps.context_window == 1_000_000
+        assert caps.max_output_tokens == 64_000
+
+    def test_capabilities_preserves_other_catalog_fields(self):
+        """The correction leaves tool/vision flags from the catalog intact."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            caps = get_model_capabilities("copilot", "claude-opus-4.6")
+        assert caps is not None
+        assert caps.supports_tools is True
+        assert caps.supports_vision is True
+
+    # --- path 3: get_model_info (display metadata) ---
+
+    def test_info_corrects_context_preserves_catalog_output(self):
+        """get_model_info reports 1M context and the catalog output limit."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            info = get_model_info("copilot", "claude-opus-4.6")
+        assert info is not None
+        assert info.context_window == 1_000_000
+        assert info.max_output == 64_000
+
+    def test_info_user_override_wins_over_probe(self):
+        """Explicit user config still wins in the display path."""
+        overrides = {"copilot": {"claude-opus-4.6": {"max_output_tokens": 32000}}}
+        import agent.models_dev as md
+        with patch.object(md, "_load_model_overrides", return_value=overrides), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            info = get_model_info("copilot", "claude-opus-4.6")
+        assert info is not None
+        # Probe still lifts context (user didn't set it); user wins on output.
+        assert info.context_window == 1_000_000
+        assert info.max_output == 32000
+
+    def test_info_untouched_model_uses_catalog(self):
+        """Copilot gpt-* is unchanged (no Codex-conflicting override)."""
+        with self._setup_no_config_overrides(), \
+             patch("agent.models_dev.fetch_models_dev",
+                   return_value=COPILOT_UNDERREPORT_REGISTRY):
+            info = get_model_info("copilot", "gpt-5.5")
+        assert info is not None
+        assert info.context_window == 128000

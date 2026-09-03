@@ -54,6 +54,11 @@ class _DummyCLI:
         self.session_id = "session-123"
         self.system_prompt = "base prompt"
         self.preloaded_skills = []
+        self._preload_skills_thread: MagicMock | None = None
+        self._preload_skills_result = None
+        self._preload_skills_error = None
+        self._preload_skills_requested = []
+        self._preload_skills_finalized = False
 
     def show_banner(self):
         return None
@@ -132,6 +137,42 @@ def test_main_raises_for_unknown_preloaded_skill(monkeypatch):
     # finalized (agent init), preserving the fail-loud contract.
     with pytest.raises(ValueError, match=r"Unknown skill\(s\): missing-skill"):
         _real_finalize(created["cli"])
+
+
+def test_kanban_worker_fails_closed_when_skill_preload_times_out(monkeypatch):
+    cli_obj = _DummyCLI()
+    preload_thread = MagicMock()
+    preload_thread.is_alive.return_value = True
+    cli_obj._preload_skills_thread = preload_thread
+    cli_obj._preload_skills_result = None
+    cli_obj._preload_skills_error = None
+    cli_obj._preload_skills_finalized = False
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+
+    with pytest.raises(TimeoutError, match="Pinned skill preload timed out"):
+        _real_finalize(cli_obj)
+
+    preload_thread.join.assert_called_once_with(timeout=120)
+    assert cli_obj._preload_skills_finalized is False
+    assert cli_obj.preloaded_skills == []
+
+
+def test_interactive_cli_keeps_skill_preload_timeout_fallback(monkeypatch):
+    cli_obj = _DummyCLI()
+    preload_thread = MagicMock()
+    preload_thread.is_alive.return_value = True
+    cli_obj._preload_skills_thread = preload_thread
+    cli_obj._preload_skills_result = None
+    cli_obj._preload_skills_error = None
+    cli_obj._preload_skills_finalized = False
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    _real_finalize(cli_obj)
+
+    preload_thread.join.assert_called_once_with(timeout=120)
+    assert cli_obj._preload_skills_finalized is True
+    assert cli_obj.system_prompt == "base prompt"
+    assert cli_obj.preloaded_skills == []
 
 
 def test_show_banner_does_not_print_skills():

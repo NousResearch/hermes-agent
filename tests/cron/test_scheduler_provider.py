@@ -422,6 +422,28 @@ def test_claim_fire_persists_attempt_before_fire_claimed(monkeypatch):
     assert events == ["ledger", "claim", ("run", "exec-1")]
 
 
+def test_fire_due_keeps_existing_claim_override_compatible():
+    from cron.scheduler_provider import (
+        InProcessCronScheduler,
+        provider_supports_backoff_override,
+    )
+
+    seen = []
+
+    class ExistingSplitProvider(InProcessCronScheduler):
+        def claim_fire(self, job_id, *, force=False):  # type: ignore[override]
+            seen.append((job_id, force))
+            return {"id": job_id, "execution_id": "exec-1"}
+
+        def fire_claimed(self, claimed_job, **kwargs):
+            return True
+
+    provider = ExistingSplitProvider()
+    assert provider.fire_due("j1") is True
+    assert seen == [("j1", False)]
+    assert provider_supports_backoff_override(provider) is False
+
+
 def test_fire_due_forwards_manual_force_to_store_claim(monkeypatch):
     import cron.jobs as jobs
     import cron.scheduler as sched

@@ -13470,13 +13470,12 @@ def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     job = _call_cron_for_profile(selected, "resolve_job_ref", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    # Do not expose the job as due before claiming it: the built-in ticker and
-    # external/manual fire paths share the same durable claim, so only one can
-    # execute this selected run even if they race across processes. Active jobs
-    # keep the legacy provider call shape; paused jobs need the explicit force
-    # flag to resume and claim atomically.
+    # Provider-backoff bypass follows the explicit manual intent rather than
+    # this pre-claim snapshot. The provider's atomic claim still enforces the
+    # current pause/disable state and duplicate-fire ownership.
     force = not job.get("enabled", True) or job.get("state") == "paused"
-    ran = _fire_cron_job_for_profile(selected, job["id"], force=force)
+    fire_kwargs = {"force": force, "allow_provider_backoff": True}
+    ran = _fire_cron_job_for_profile(selected, job["id"], **fire_kwargs)
     refreshed = _call_cron_for_profile(selected, "get_job", job["id"])
     if refreshed and refreshed.get("last_run_at") != job.get("last_run_at"):
         return refreshed
@@ -13519,6 +13518,7 @@ def _fire_cron_job_for_profile(
     job_id: str,
     *,
     force: bool = False,
+    allow_provider_backoff: bool = False,
 ) -> bool:
     """DEPRECATED for NAS webhook fires (superseded by gateway forwarding);
     retained for the dashboard trigger path — do not add new uses.
@@ -13537,6 +13537,7 @@ def _fire_cron_job_for_profile(
     _profile_name, home = _cron_profile_home(profile)
     from cron import jobs as cron_jobs
     from cron.scheduler_provider import (
+        provider_supports_backoff_override,
         provider_supports_force_fire,
         resolve_cron_scheduler,
     )
@@ -13549,6 +13550,7 @@ def _fire_cron_job_for_profile(
     try:
         with cron_jobs.use_cron_store(home):
             provider = resolve_cron_scheduler()
+            fire_kwargs = {}
             if force:
                 if not provider_supports_force_fire(provider):
                     raise HTTPException(
@@ -13558,10 +13560,30 @@ def _fire_cron_job_for_profile(
                             "does not support atomic forced firing of paused jobs"
                         ),
                     )
-                return bool(
-                    provider.fire_due(job_id, adapters=None, loop=None, force=True)
-                )
-            return bool(provider.fire_due(job_id, adapters=None, loop=None))
+                fire_kwargs["force"] = True
+            if allow_provider_backoff:
+                if provider_supports_backoff_override(provider):
+                    fire_kwargs["allow_provider_backoff"] = True
+                else:
+                    # Legacy providers retain their historical call shape
+                    # when no override is currently needed. They cannot
+                    # safely bypass an active backoff, so fail explicitly.
+                    from cron.rate_limit_backoff import provider_backoff_active
+
+                    current = cron_jobs.get_job(job_id)
+                    if current and provider_backoff_active(
+                        current, now=datetime.now(timezone.utc)
+                    ):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(
+                                f"Cron provider '{getattr(provider, 'name', 'custom')}' "
+                                "does not support provider-backoff override"
+                            ),
+                        )
+            return bool(
+                provider.fire_due(job_id, adapters=None, loop=None, **fire_kwargs)
+            )
     finally:
         reset_hermes_home_override(token)
 

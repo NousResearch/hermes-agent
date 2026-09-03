@@ -3040,6 +3040,7 @@ def mark_job_run(
     status: Optional[str] = None,
     *,
     expected_fire_owner: Optional[str] = None,
+    provider_backoff: Optional[Dict[str, Any]] = None,
 ) -> bool:
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
@@ -3051,6 +3052,7 @@ def mark_job_run(
             delivery_error,
             status=status,
             expected_fire_owner=expected_fire_owner,
+            provider_backoff=provider_backoff,
         )
 
 
@@ -3145,6 +3147,7 @@ def _mark_job_run_locked(
     *,
     status: Optional[str] = None,
     expected_fire_owner: Optional[str] = None,
+    provider_backoff: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """
     Mark a job as having been run.
@@ -3202,6 +3205,14 @@ def _mark_job_run_locked(
                 else:
                     job["last_status"] = "ok"
                 job["last_error"] = error if not success else None
+                # Provider rate-limit deferrals are durable job state, separate
+                # from next_run_at: the scheduler can suppress unattended fires
+                # across restarts without hiding the failed execution or
+                # changing the user's cadence. A healthy run proves recovery.
+                if success:
+                    job.pop("provider_backoff", None)
+                elif provider_backoff is not None:
+                    job["provider_backoff"] = copy.deepcopy(provider_backoff)
                 # A healthy run means the configuration validates again — drop
                 # the preflight alert-dedup marker so a FUTURE config break
                 # re-alerts instead of being silently swallowed. Same contract
@@ -3607,6 +3618,7 @@ def claim_job_for_fire(
     *,
     claim_ttl_seconds: int = 300,
     force: bool = False,
+    allow_provider_backoff: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     with _fire_job_lock(job_id) as acquired:
@@ -3616,6 +3628,7 @@ def claim_job_for_fire(
             job_id,
             claim_ttl_seconds=claim_ttl_seconds,
             force=force,
+            allow_provider_backoff=allow_provider_backoff,
             return_job=return_job,
         )
 
@@ -3625,6 +3638,7 @@ def _claim_job_for_fire_locked(
     *,
     claim_ttl_seconds: int = 300,
     force: bool = False,
+    allow_provider_backoff: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for a single external 'fire' (multi-machine
@@ -3636,8 +3650,10 @@ def _claim_job_for_fire_locked(
 
     Under the file lock: reject if the job is missing/disabled/paused. An
     explicit manual fire may pass ``force=True`` to atomically enable and
-    resume the job as part of the claim; external scheduler callbacks must
-    leave it false so a stale callback cannot resurrect a paused job. If a
+    resume the job as part of the claim; ``allow_provider_backoff=True`` only
+    bypasses a temporary provider deferral and never bypasses pause/disable.
+    External scheduler callbacks must leave both false so a stale callback
+    cannot resurrect or prematurely execute a deferred job. If a
     fresh claim (younger than ``claim_ttl_seconds``) already exists, lose.
     Otherwise stamp a ``fire_claim`` and, for recurring jobs, advance
     ``next_run_at`` (mirrors ``advance_next_run``'s at-most-once bump so a stale
@@ -3664,6 +3680,14 @@ def _claim_job_for_fire_locked(
             if not force and not is_job_runnable(job):
                 return False
             now = _hermes_now()
+            from cron.rate_limit_backoff import provider_backoff_active
+
+            if (
+                not force
+                and not allow_provider_backoff
+                and provider_backoff_active(job, now=now)
+            ):
+                return False
             existing = job.get("fire_claim")
             if existing:
                 try:
@@ -3958,6 +3982,19 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             if is_terminal_job(job) and not _is_recoverable_error_job(job):
                 continue
             if not job.get("enabled", True):
+                continue
+
+            # A provider-declared reset window suppresses unattended inference
+            # without pausing or rescheduling the job. The marker lives in
+            # jobs.json, so a gateway restart cannot forget it. Manual run-now
+            # intent remains an explicit operator override.
+            from cron.rate_limit_backoff import provider_backoff_active
+
+            manual_override = bool(
+                job.get("manual_run_at")
+                and job.get("manual_run_at") == job.get("next_run_at")
+            )
+            if not manual_override and provider_backoff_active(job, now=now):
                 continue
 
             # Contradiction self-heal: enabled=true with pause markers means the

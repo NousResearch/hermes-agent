@@ -1322,6 +1322,18 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
+            # Apply unit conversion: generic paths return per-token values,
+            # but the pricing payload may ship per-1m or per-1k. Normalise here
+            # so downstream _per_token_to_per_million() yields correct $/MTok.
+            unit = normalized.get("unit", "per_token")
+            if unit == "per_1m_tokens":
+                for key in ("prompt", "completion", "cache_read", "cache_write", "request"):
+                    if key in pricing:
+                        pricing[key] = str(float(pricing[key]) / 1_000_000)
+            elif unit == "per_1k_tokens":
+                for key in ("prompt", "completion", "cache_read", "cache_write", "request"):
+                    if key in pricing:
+                        pricing[key] = str(float(pricing[key]) / 1_000)
             return pricing
     return {}
 

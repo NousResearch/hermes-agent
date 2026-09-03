@@ -88,17 +88,6 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
 
 def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
     """A refresh removes stale provider tools when memory becomes disabled."""
-    agent = _agent(
-        ["read_file", "memory_search"],
-        enabled=["all"],
-        disabled=["memory"],
-    )
-    agent._memory_manager = types.SimpleNamespace(
-        get_all_tool_schemas=lambda: [
-            {"name": "memory_search", "description": "", "parameters": {}}
-        ]
-    )
-
     import model_tools
     monkeypatch.setattr(
         model_tools,
@@ -106,10 +95,22 @@ def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
         lambda **kw: [_tool("read_file")],
     )
 
-    mcp_tool.refresh_agent_mcp_tools(agent)
+    for disabled_toolset in ("memory", "all", "*"):
+        agent = _agent(
+            ["read_file", "memory_search"],
+            enabled=["all"],
+            disabled=[disabled_toolset],
+        )
+        agent._memory_manager = types.SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {"name": "memory_search", "description": "", "parameters": {}}
+            ]
+        )
 
-    assert "memory_search" not in agent.valid_tool_names
-    assert all(t["function"]["name"] != "memory_search" for t in agent.tools)
+        mcp_tool.refresh_agent_mcp_tools(agent)
+
+        assert "memory_search" not in agent.valid_tool_names
+        assert all(t["function"]["name"] != "memory_search" for t in agent.tools)
 
 
 def test_refresh_respects_context_engine_toolset_gate(monkeypatch):

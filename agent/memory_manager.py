@@ -121,7 +121,7 @@ def memory_provider_tools_enabled(
     memory_tool_present: bool = False,
 ) -> bool:
     """Return whether external memory-provider tools should be exposed."""
-    if disabled_toolsets and "memory" in disabled_toolsets:
+    if disabled_toolsets and {"memory", "all", "*"}.intersection(disabled_toolsets):
         return False
     if memory_tool_present:
         return True

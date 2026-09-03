@@ -1159,6 +1159,18 @@ class TestMemoryToolToolsetGate:
         assert tools == []
         assert names == set()
 
+    @pytest.mark.parametrize("disabled_toolset", ["all", "*"])
+    def test_global_disabled_toolset_blocks_injection(self, disabled_toolset):
+        """Global deny aliases must not be bypassed by provider injection."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None,
+            mgr,
+            disabled_toolsets=[disabled_toolset],
+        )
+        assert tools == []
+        assert names == set()
+
     def test_empty_toolsets_blocks_injection(self):
         """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
         mgr = self._mgr_with_tools("fact_store")

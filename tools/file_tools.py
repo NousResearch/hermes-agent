@@ -920,7 +920,27 @@ def _request_protected_instruction_approval(
     except Exception:
         callback = None
 
-    if callback is not None:
+    # ...but a one-shot ``hermes chat -q`` session — which is exactly how the
+    # kanban dispatcher spawns every worker — registers that callback in
+    # ``HermesCLI.__init__`` and then never builds a prompt_toolkit
+    # Application. The modal is pushed into a layout nothing renders and
+    # blocks on a response queue only a key binding can fill, so the gate
+    # burned the whole approvals timeout and returned "timeout" — reported to
+    # the agent as "approval prompt timed out without a user response", which
+    # reads as a human ignoring a prompt that was never shown. Detect that
+    # context the same way ``_run_approval_gate`` does (#86878) and fail
+    # closed immediately with the honest reason. Policy is unchanged: still no
+    # allowlist, no persistent consent, no --yolo bypass, and single-query
+    # runs are NEVER auto-approved for this gate regardless of
+    # ``approvals.single_query_mode`` — a protected-instruction write always
+    # needs a live human.
+    single_query = False
+    try:
+        single_query = _approval._is_single_query_approval_context()
+    except Exception:
+        single_query = False
+
+    if callback is not None and not single_query:
         choice = _approval.prompt_dangerous_approval(
             display, description,
             allow_permanent=False,

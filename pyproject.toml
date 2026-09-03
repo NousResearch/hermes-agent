@@ -223,8 +223,9 @@ voice = [
 wake = [
   "openwakeword==0.6.0",
   "onnxruntime==1.27.0",
-  "sherpa-onnx==1.13.4",
+  "sherpa-onnx==1.13.5",
   "sentencepiece==0.2.2",
+  "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
@@ -524,6 +525,7 @@ pvporcupine = false
 pyasn1 = false
 pydantic = false
 pyjwt = false
+pypinyin = false
 pytest = false
 pytest-asyncio = false
 python-dotenv = false

@@ -289,3 +289,70 @@ def test_huggingface_hub_lazy_pin_inside_transformers_window():
         "range (>=1.5.0,<2). The lazy refresh would downgrade the shared "
         "package and break Hindsight local embeddings (#60783)."
     )
+
+
+# Oldest sherpa-onnx release whose keyword spotter actually fires. Held at
+# 1.13.4, the spotter loads the model and silently returns ZERO detections;
+# 1.13.5 detects on identical inputs. A/B on 2026-09-03 with the same Python
+# 3.11, model files, keywords file, WAV and chunk size:
+#   1.13.4 -> official test WAV 0/2, synthesized "Hey Jarvis" 0/3
+#   1.13.5 -> official test WAV 2/2, synthesized "Hey Jarvis" 3/3
+_SHERPA_ONNX_MIN_WORKING = "1.13.5"
+# sherpa_onnx.text2token imports pypinyin at function entry, unconditionally —
+# before it ever looks at the phrase. sherpa-onnx does not declare it (same
+# undeclared-runtime-import shape as sentencepiece above), so on an install
+# that takes only the declared deps the import raises straight away and
+# SherpaSpotter construction can fail for a plain English keyword too. This is
+# not a Chinese-only path and it is not deferred to the first pinyin phrase.
+# No version is asserted here: the pins are exact in production and must match
+# each other, but a synchronized upgrade must not have to edit this test.
+
+
+def test_wake_sherpa_extra_and_lazy_deps_pin_working_sherpa_and_pypinyin():
+    """The [wake] extra and LAZY_DEPS['wake.sherpa'] must BOTH ship a
+    sherpa-onnx new enough to detect, plus pypinyin.
+
+    Two independent install paths reach the sherpa keyword spotter: a desktop
+    install eager-installs the `wake` extra, a CLI-only install lazy-installs
+    LAZY_DEPS['wake.sherpa'] on first /wake. Neither may land a dead spotter,
+    and neither may be missing pypinyin — so this asserts the floor and the
+    presence on each surface positively, rather than only checking the two
+    agree (the intersection check in test_pyproject_pins_match_lazy_deps_pins
+    is blind to a package that is absent from both, and to a version that is
+    stale in both).
+    """
+    from packaging.version import Version
+
+    from tools.lazy_deps import LAZY_DEPS
+
+    wake_pins = _exact_pins(_load_optional_dependencies()["wake"])
+    lazy_pins = _exact_pins(LAZY_DEPS["wake.sherpa"])
+
+    for surface, pins in (("pyproject [wake]", wake_pins), ("LAZY_DEPS['wake.sherpa']", lazy_pins)):
+        sherpa = pins.get("sherpa-onnx")
+        assert sherpa, f"{surface} must exact-pin sherpa-onnx"
+        assert Version(sherpa) >= Version(_SHERPA_ONNX_MIN_WORKING), (
+            f"{surface} pins sherpa-onnx=={sherpa}, below the oldest release "
+            f"whose keyword spotter fires ({_SHERPA_ONNX_MIN_WORKING}). On "
+            "1.13.4 the wake word never triggers: 0/2 detections on the "
+            "official test WAV and 0/3 on synthesized 'Hey Jarvis', vs 2/2 "
+            "and 3/3 on 1.13.5 with identical inputs."
+        )
+        # Presence, not a specific version — the two surfaces must agree
+        # (checked below), but a synchronized bump must not fail this test.
+        assert pins.get("pypinyin"), (
+            f"{surface} must exact-pin pypinyin — sherpa_onnx.text2token "
+            "imports it unconditionally at function entry and sherpa-onnx "
+            "does not declare it, so without it SherpaSpotter construction "
+            f"can fail even for a plain English keyword. Found: "
+            f"{pins.get('pypinyin')!r}"
+        )
+
+    assert wake_pins["sherpa-onnx"] == lazy_pins["sherpa-onnx"], (
+        "the [wake] extra and LAZY_DEPS['wake.sherpa'] must pin the SAME "
+        f"sherpa-onnx: {wake_pins['sherpa-onnx']} vs {lazy_pins['sherpa-onnx']}"
+    )
+    assert wake_pins["pypinyin"] == lazy_pins["pypinyin"], (
+        "the [wake] extra and LAZY_DEPS['wake.sherpa'] must pin the SAME "
+        f"pypinyin: {wake_pins['pypinyin']} vs {lazy_pins['pypinyin']}"
+    )

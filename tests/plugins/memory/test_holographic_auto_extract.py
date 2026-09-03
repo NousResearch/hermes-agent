@@ -123,6 +123,67 @@ def test_real_user_messages_still_extracted_alongside_summary(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Defect 3 — raw conversational turns harvested as durable facts (#22907)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("message", "expected", "category"),
+    [
+        (
+            "I prefer dark mode over light mode.",
+            "User prefers dark mode over light mode.",
+            "user_pref",
+        ),
+        (
+            "My default shell is zsh.",
+            "User's default shell is zsh.",
+            "user_pref",
+        ),
+        (
+            "I always check git status before committing.",
+            "User habit: always check git status before committing.",
+            "user_pref",
+        ),
+        (
+            "We decided to use SQLite for the local cache.",
+            "Project decision: use SQLite for the local cache.",
+            "project",
+        ),
+        (
+            "The project requires Python 3.11.",
+            "Project requires Python 3.11.",
+            "project",
+        ),
+    ],
+)
+def test_auto_extract_stores_clean_declarative_fact(tmp_path, message, expected, category):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(message)])
+    facts = provider._store.list_facts(limit=100)
+    assert [(fact["content"], fact["category"]) for fact in facts] == [(expected, category)]
+    provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "I like that, sounds good.",
+        "I want you to add tests for the new endpoint.",
+        "I need you to deploy this to staging.",
+        "I prefer dark mode, can you set it up?",
+        "Could you remember that I prefer dark mode?",
+        "The docs say: I prefer dark mode.",
+    ],
+)
+def test_auto_extract_skips_conversational_or_quoted_matches(tmp_path, message):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(message)])
+    assert _fact_contents(provider) == []
+    provider.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # is_compaction_summary_message — public helper contract
 # ---------------------------------------------------------------------------
 

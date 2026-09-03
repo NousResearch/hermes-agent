@@ -122,6 +122,22 @@ def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
     return bool(memory_manager and memory_manager.has_tool(function_name))
 
 
+def tool_hook_route_metadata(agent: Any) -> Dict[str, str]:
+    """Return stable, non-message routing identity for plugin tool hooks."""
+    fields = {
+        "platform": getattr(agent, "platform", None),
+        "chat_id": getattr(agent, "_chat_id", None),
+        "thread_id": getattr(agent, "_thread_id", None),
+        "user_id": getattr(agent, "_user_id", None),
+        "session_key": getattr(agent, "_gateway_session_key", None),
+    }
+    return {
+        key: str(value)
+        for key, value in fields.items()
+        if value not in (None, "")
+    }
+
+
 def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
     """
     Convert internal message format to trajectory format for saving.
@@ -3552,6 +3568,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 middleware_trace=list(_tool_middleware_trace),
+                route_metadata=tool_hook_route_metadata(agent),
             )
             if modified_args is not None:
                 function_args = modified_args

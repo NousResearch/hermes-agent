@@ -42,6 +42,7 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
+from agent.agent_runtime_helpers import tool_hook_route_metadata
 from tools.terminal_tool import (
     get_active_env,
 )
@@ -656,6 +657,7 @@ def _run_agent_tool_execution_middleware(
                         api_request_id=getattr(agent, "_current_api_request_id", "")
                         or "",
                         middleware_trace=list(state["middleware_trace"]),
+                        route_metadata=tool_hook_route_metadata(agent),
                     )
                     if modified_args is not None:
                         final_args = modified_args

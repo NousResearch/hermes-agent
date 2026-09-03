@@ -2489,15 +2489,21 @@ function findPythonForRoot(root) {
     ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
     : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
 
+  const probeEnv = {
+    PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
+  }
+
   for (const relativePath of relativePaths) {
     const candidate = path.join(root, relativePath)
 
-    if (fileExists(candidate)) {
+    if (fileExists(candidate) && canImportHermesCli(candidate, { env: probeEnv })) {
       return candidate
     }
   }
 
-  return findSystemPython()
+  const systemPython = findSystemPython()
+
+  return systemPython && canImportHermesCli(systemPython, { env: probeEnv }) ? systemPython : null
 }
 
 function findSystemPython() {

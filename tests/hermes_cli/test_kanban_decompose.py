@@ -161,3 +161,46 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+@pytest.mark.parametrize(
+    ("idempotency_key", "body"),
+    [
+        (
+            "github-pr-feedback:repair:mrkillbob/luna-bot:132:abc123",
+            "Repair the pull request and push the exact-head fix.",
+        ),
+        (
+            None,
+            jsonlib.dumps(
+                {
+                    "repository": "mrkillbob/luna-bot",
+                    "pr_number": 132,
+                    "expected_head_sha": "a" * 40,
+                    "action": "repair_and_push",
+                }
+            ),
+        ),
+    ],
+)
+def test_decompose_refuses_atomic_pr_automation_before_llm(
+    kanban_home, idempotency_key, body
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Repair LunaBot PR #132",
+            body=body,
+            triage=True,
+            idempotency_key=idempotency_key,
+        )
+
+    with patch(
+        "agent.auxiliary_client.call_llm",
+        side_effect=AssertionError("atomic PR work must never reach the decomposer LLM"),
+    ):
+        outcome = decomp.decompose_task(tid, author="auto-decomposer")
+
+    assert outcome.ok is False
+    assert "atomic PR automation" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+

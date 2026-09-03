@@ -40,6 +40,8 @@ import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
+import { availableViewModes, type PreviewViewMode, resolveViewMode } from './preview-view-mode'
+
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
@@ -416,6 +418,7 @@ const MARKDOWN_COMPONENTS = {
   a: MarkdownLink
 }
 
+// Exported for the view-mode renderer test; not part of any other surface.
 export function MarkdownPreview({ text }: { text: string }) {
   const mathText = useMemo(() => normalizeFilePreviewMath(text), [text])
 
@@ -659,7 +662,10 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
   )
 }
 
-export type PreviewViewMode = 'diff' | 'rendered' | 'source'
+// The type lives in preview-view-mode.ts with the policy that owns it; kept
+// importable from here because the artifact preview and mode switcher have
+// always taken it from this module.
+export type { PreviewViewMode } from './preview-view-mode'
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
@@ -704,7 +710,13 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     setConflict(false)
     draftRef.current = ''
     baselineRef.current = ''
-  }, [filePath, reloadKey])
+    // Keyed on file IDENTITY only. The global reload tick (workspace events,
+    // unrelated saves elsewhere) must NOT reset an in-progress edit: the load
+    // effect below deliberately renders the editor before its own loading
+    // branch so background re-reads can't drop the draft — a reloadKey here
+    // would undo exactly that protection (found via E2E: saving one file
+    // killed a draft being typed in another preview tab).
+  }, [filePath])
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -1078,21 +1090,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   if (isText && state.text !== undefined) {
     const isMarkdown = (state.language || target.language) === 'markdown'
     const hasDiff = Boolean(state.diff && state.diff.trim())
-    // Order the toggle reads left→right; default lands on the most useful view.
-    const modes: PreviewViewMode[] = []
-
-    if (isMarkdown) {
-      modes.push('rendered')
-    }
-
-    modes.push('source')
-
-    if (hasDiff) {
-      modes.push('diff')
-    }
-
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
-    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+    const modes = availableViewModes({ hasDiff, isMarkdown })
+    const mode = resolveViewMode({ hasDiff, isMarkdown }, userMode)
 
     return (
       <div

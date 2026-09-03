@@ -15,6 +15,7 @@ import { $revealInTreeRequest } from '@/store/layout'
 import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
 
 import { getFileTreeDndManager } from './dnd-manager'
+import { resolveFileRowClick } from './tree-gestures'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
@@ -306,27 +307,42 @@ function ProjectTreeRow({
         // Read the rename atom LIVE (not the render closure): the fall-through
         // click from a context-menu close can fire before the editing re-render
         // commits, so a stale closure would still select/activate and yank focus.
-        if (isPlaceholder || $renamingPath.get() === node.data.id) {
-          return
-        }
+        const action = resolveFileRowClick({
+          isFolder,
+          isPlaceholder,
+          isRenaming: $renamingPath.get() === node.data.id,
+          shiftKey: event.shiftKey
+        })
 
-        if (event.shiftKey) {
-          ;(isFolder ? onAttachFolder : onAttachFile)(node.data.id)
+        // The single-click contract (user-confirmed): a click on a file opens
+        // it in the Preview pane, exactly like double-click/Enter (arborist's
+        // onActivate). Folders toggle; shift-click attaches.
+        switch (action) {
+          case 'open':
+            // Select so the row highlights (arborist's own click handler is
+            // suppressed by our stopPropagation above), then open the preview.
+            node.select()
+            onPreviewFile?.(node.data.id)
 
-          return
-        }
+            break
 
-        if (isFolder) {
-          node.toggle()
-        } else {
-          node.select()
-        }
-      }}
-      onDoubleClick={event => {
-        event.stopPropagation()
+          case 'toggle':
+            node.toggle()
 
-        if (!isFolder && !isPlaceholder && $renamingPath.get() !== node.data.id) {
-          onPreviewFile?.(node.data.id)
+            break
+
+          case 'attach-file':
+            onAttachFile?.(node.data.id)
+
+            break
+
+          case 'attach-folder':
+            onAttachFolder?.(node.data.id)
+
+            break
+
+          case 'ignore':
+            break
         }
       }}
       onDragStart={event => {

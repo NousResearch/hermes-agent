@@ -190,6 +190,53 @@ def _slack_file_marker(file_obj: Dict[str, Any]) -> str:
     return f"[file: {name} ({mimetype})]" if mimetype else f"[file: {name}]"
 
 
+# Cap on how many distinct reaction emoji are listed per message in thread
+# context. Heavily-reacted messages can carry dozens of distinct emoji; the
+# marker exists to convey "people responded by reacting", not to be a full
+# tally, so the tail is summarized as "+N more".
+_REACTION_MARKER_MAX = 8
+
+
+def _slack_reactions_marker(msg: Dict[str, Any]) -> str:
+    """Render a compact text marker for a message's emoji reactions.
+
+    Ported from paradigmxyz/centaur#1264: in channels where people answer by
+    reacting rather than replying, dropping reactions makes a message with 12
+    check-marks and no replies read as "nobody responded". The reactions
+    array rides along on ``conversations.replies``/``conversations.history``
+    payloads under the ``channels:history``-family scopes this adapter
+    already requires — no extra OAuth scope needed.
+
+    Emoji names are sanitized (Slack names are alnum/underscore/hyphen, but a
+    hostile payload could carry anything) so a crafted name can't fake
+    context structure. Note Slack caps the per-reaction ``users`` array, so
+    ``count`` is the authoritative number; we only render name × count.
+    """
+    reactions = msg.get("reactions")
+    if not isinstance(reactions, list):
+        return ""
+    parts: list[str] = []
+    for r in reactions:
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name") or "").strip()
+        name = re.sub(r"[^\w+'\-]+", "", name)
+        if not name:
+            continue
+        try:
+            count = int(r.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        parts.append(f":{name}:×{count}" if count > 1 else f":{name}:")
+    if not parts:
+        return ""
+    shown = parts[:_REACTION_MARKER_MAX]
+    extra = len(parts) - len(shown)
+    if extra > 0:
+        shown.append(f"+{extra} more")
+    return "[reactions: " + " ".join(shown) + "]"
+
+
 # ── GFM markdown table preprocessing ──────────────────────────────────────
 # Slack mrkdwn does not render GFM-style pipe tables — they appear as literal
 # pipes. Wrapping in ``` fences makes them render as monospace preformatted
@@ -8047,6 +8094,13 @@ class SlackAdapter(BasePlatformAdapter):
             ]
             if markers:
                 extras.append(" ".join(markers))
+        # Surface emoji reactions as a compact marker (centaur#1264 port).
+        # In channels where people answer by reacting rather than replying,
+        # a message with 12 :white_check_mark: and no replies otherwise
+        # reads as "nobody responded" — the opposite of the truth.
+        reactions_marker = _slack_reactions_marker(msg)
+        if reactions_marker:
+            extras.append(reactions_marker)
         if extras:
             addendum = "\n".join(extras)
             msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum

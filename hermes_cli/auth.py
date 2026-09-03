@@ -4555,6 +4555,130 @@ def _sync_codex_pool_entries(
         entry["last_error_reset_at"] = None
 
 
+_CODEX_OAUTH_ISSUER = "https://auth.openai.com"
+# CLASS-N persistence retry cardinality: exactly 3 total writes, 2 intervening
+# fixed backoffs. These are policy (asserted as constants by tests, stated in
+# CHANGELOG), so bumping them is a deliberate product decision, not a code edit.
+_CODEX_ROOT_PERSIST_ATTEMPTS = 3
+_CODEX_ROOT_PERSIST_BACKOFF_SECONDS = (0.5, 1.0)
+
+# Dead-token tuples (access_token, refresh_token) already rescue-attempted in
+# this process lifetime. One rescue attempt per dead tuple per process; the
+# exported reset hook below exists only so tests can simulate a fresh process.
+_codex_root_rescue_seen: set = set()
+
+
+def _reset_codex_root_rescue_seen() -> None:
+    """Clear the process-lifetime root-rescue seen-set (test hook)."""
+    _codex_root_rescue_seen.clear()
+
+
+def _codex_token_identity(access_token: Any) -> Optional[str]:
+    """Derive the account identity of a Codex access token (D-id).
+
+    Returns the JWT ``sub`` claim when ``access_token`` is a well-formed
+    three-segment base64url JWT issued by ``https://auth.openai.com`` carrying a
+    non-empty ``sub``; returns ``None`` otherwise. An undecodable, opaque, or
+    foreign-issuer token has no identity we may act on, so callers must
+    conservatively skip (or populate-empty-only).
+
+    Nothing is persisted; the identity is derived live from the in-hand token
+    and used only to gate cross-store writes.
+    """
+    claims = _decode_jwt_claims(access_token)
+    if not claims:
+        return None
+    if claims.get("iss") != _CODEX_OAUTH_ISSUER:
+        return None
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub.strip():
+        return None
+    return sub.strip()
+
+
+def _write_through_codex_to_global_root(
+    tokens: Dict[str, str],
+    last_refresh: Optional[str] = None,
+    label: Optional[str] = None,
+) -> Optional[bool]:
+    """Identity-gated best-effort write of a Codex chain to the global root.
+
+    Mirrors the full field set the just-completed save wrote to the active
+    store — ``tokens``, ``last_refresh``, ``auth_mode="chatgpt"``, ``label`` —
+    onto the root ``providers.openai-codex`` state, preserving root-only fields
+    and leaving ``active_provider`` untouched. Alias/independent pool entries
+    are re-classified against ROOT's pre-save snapshot and updated in place only
+    (labels/ids/priorities/suppressed_sources untouched).
+
+    Return tri-state so the caller can distinguish the three outcome classes:
+
+    * ``True``  — the root store now durably holds the chain (written now);
+    * ``False`` — a distinct root exists and the write was attempted but failed
+      (the caller decides the log level: CLASS-D warning or CLASS-N critical);
+    * ``None``  — not applicable: classic / same-path, the pytest seat belt, or
+      the D-id identity gate refused the write (a conservative silent skip).
+
+    Never raises.
+    """
+    root_path = _global_auth_file_path()
+    if root_path is None:
+        return None
+    if _same_path(root_path, _auth_file_path()):
+        return None
+    # pytest seat belt: refuse to write the real user's $HOME/.hermes/auth.json
+    # (mirrors _load_global_auth_store and the xAI write-through guard).
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if root_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return None
+            except Exception:
+                return None
+    try:
+        with _auth_store_lock(target_path=root_path):
+            root_store = _load_auth_store(root_path)
+            providers = root_store.setdefault("providers", {})
+            if not isinstance(providers, dict):
+                providers = {}
+                root_store["providers"] = providers
+            root_state = providers.get("openai-codex")
+            root_state = dict(root_state) if isinstance(root_state, dict) else {}
+            root_tokens = root_state.get("tokens")
+            root_tokens = dict(root_tokens) if isinstance(root_tokens, dict) else {}
+            root_has_credentials = bool(
+                str(root_tokens.get("access_token", "") or "").strip()
+                or str(root_tokens.get("refresh_token", "") or "").strip()
+            )
+            if root_has_credentials:
+                our_identity = _codex_token_identity(tokens.get("access_token"))
+                root_identity = _codex_token_identity(root_tokens.get("access_token"))
+                if our_identity is None or root_identity is None or our_identity != root_identity:
+                    # D-id gate: different (or undecodable) account — leave root
+                    # untouched rather than clobber a foreign login.
+                    return None
+            previous_singleton_tokens = dict(root_tokens) if root_tokens else None
+            mirrored = dict(root_state)  # preserve root-only fields
+            mirrored["tokens"] = dict(tokens)
+            mirrored["last_refresh"] = last_refresh or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            mirrored["auth_mode"] = "chatgpt"
+            if label and str(label).strip():
+                mirrored["label"] = str(label).strip()
+            providers["openai-codex"] = mirrored
+            _sync_codex_pool_entries(
+                root_store,
+                tokens,
+                mirrored["last_refresh"],
+                previous_singleton_tokens=previous_singleton_tokens,
+            )
+            _save_auth_store(root_store, target_path=root_path)
+        return True
+    except Exception as exc:
+        logger.debug("Codex OAuth: root write-through failed: %s", exc)
+        return False
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -4581,6 +4705,17 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
             previous_singleton_tokens=previous_singleton_tokens,
         )
         _save_auth_store(auth_store)
+    # C1 — root write-through (best-effort). The active store already durably
+    # holds the chain, so a root-sync failure here is CLASS-D (self-healing):
+    # log a WARNING and let the next save resync root.
+    root_path = _global_auth_file_path()
+    if root_path is not None and not _same_path(root_path, _auth_file_path()):
+        if _write_through_codex_to_global_root(tokens, last_refresh, label) is False:
+            logger.warning(
+                "Codex OAuth: rotated chain saved to the profile store but the "
+                "global-root write-through failed; the next save will retry the "
+                "root sync (self-healing)."
+            )
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
@@ -4764,9 +4899,55 @@ def _refresh_codex_auth_tokens(
     timeout_seconds: float,
 ) -> Dict[str, str]:
     """Refresh Codex access token using the refresh token.
-    
+
     Saves the new tokens to Hermes auth store automatically.
     """
+    # C2 — resolve the caller's token source ONCE at entry (a single read,
+    # before any HTTP work). A root-resolved reader must persist its rotation
+    # directly to root (never seeding a shadowing profile block); an owned-block
+    # caller keeps the ordinary ``_save_codex_tokens`` path (C1 write-throughs).
+    auth_store = _load_auth_store()
+    _state, source_path = _load_provider_state_with_source(auth_store, "openai-codex")
+    global_root = _global_auth_file_path()
+    is_from_root = bool(
+        source_path is not None
+        and global_root is not None
+        and _same_path(source_path, global_root)
+    )
+    # Top-level mode: the active store IS the global root (a single file). A
+    # root-resolved reader here must persist directly to that same store —
+    # never through the distinct-store write-through helper, which no-ops on a
+    # same-path root and would fall into CLASS-N retries (F1).
+    top_level_root = bool(
+        global_root is not None
+        and _same_path(global_root, _auth_file_path())
+    )
+
+    def _persist_class_n(persist_fn, what: str) -> None:
+        # CLASS-N durability (shared by the C2 direct-root and C3-owned
+        # persistence steps — see A1v10): no durable copy of the rotated chain
+        # exists yet, so retry ``persist_fn`` (truthy on a durable write;
+        # raising or falsy on failure) with bounded fixed backoff; on
+        # persistent failure log CRITICAL naming a manual re-auth (the
+        # refreshed tokens are still handed to the caller — loud, not silent).
+        for attempt in range(_CODEX_ROOT_PERSIST_ATTEMPTS):
+            try:
+                if persist_fn():
+                    return  # OUTCOME-SUCCESS (silent)
+            except Exception as exc:
+                logger.debug(
+                    "Codex OAuth %s persistence attempt %d failed: %s",
+                    what, attempt + 1, exc,
+                )
+            if attempt < _CODEX_ROOT_PERSIST_ATTEMPTS - 1:
+                time.sleep(_CODEX_ROOT_PERSIST_BACKOFF_SECONDS[attempt])
+        logger.critical(
+            "Codex OAuth: could not persist the rotated token chain %s after "
+            "%d attempts — no durable copy exists. Run `hermes model` to "
+            "re-authenticate manually.",
+            what, _CODEX_ROOT_PERSIST_ATTEMPTS,
+        )
+
     try:
         refreshed = refresh_codex_oauth_pure(
             str(tokens.get("access_token", "") or ""),
@@ -4780,14 +4961,86 @@ def _refresh_codex_auth_tokens(
         # the Codex CLI (or another Hermes process) rotates the shared token,
         # this frozen copy's refresh_token goes stale and the refresh fails with
         # a relogin-required error (invalid_grant / refresh_token_reused / 401).
-        # Before surfacing that as a hard 401 to the turn, adopt the canonical
-        # fresh token from ~/.codex/auth.json (the Codex CLI keeps it current) so
-        # idle profiles / desktop sessions recover automatically instead of
-        # 401'ing until a manual re-auth. Transient failures (e.g. 429 quota)
-        # keep relogin_required=False — the stored token is still valid there, so
-        # we never self-heal those and re-raise unchanged.
+        # Before surfacing that as a hard 401 to the turn, recover automatically
+        # instead of 401'ing until a manual re-auth. Transient failures (e.g.
+        # 429 quota) keep relogin_required=False — the stored token is still
+        # valid there, so we never self-heal those and re-raise unchanged.
         if not getattr(exc, "relogin_required", False):
             raise
+        # C3 — root reuse-rescue: before falling back to ~/.codex CLI recovery,
+        # adopt a fresher sibling chain held by the global root (another profile
+        # already rotated the shared token) so this caller self-heals silently.
+        dead_tuple = (
+            str(tokens.get("access_token", "") or ""),
+            str(tokens.get("refresh_token", "") or ""),
+        )
+        rescued: Optional[Dict[str, str]] = None
+        root_path = _global_auth_file_path()
+        if root_path is not None and not _same_path(root_path, _auth_file_path()):
+            # pytest seat belt: never read/write the real user's root store.
+            seat_belted = False
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                real_home_env = os.environ.get("HOME", "")
+                if real_home_env:
+                    real_root = Path(real_home_env) / ".hermes" / "auth.json"
+                    try:
+                        seat_belted = root_path.resolve(strict=False) == real_root.resolve(strict=False)
+                    except Exception:
+                        seat_belted = True
+            our_identity = _codex_token_identity(tokens.get("access_token"))
+            if not seat_belted and our_identity is not None:
+                try:
+                    with _auth_store_lock(target_path=root_path):
+                        # Atomic seen-set check-and-mark INSIDE the held lock.
+                        if dead_tuple not in _codex_root_rescue_seen:
+                            root_store = _load_auth_store(root_path)
+                            root_state = (root_store.get("providers") or {}).get("openai-codex")
+                            root_state = dict(root_state) if isinstance(root_state, dict) else {}
+                            root_tokens = root_state.get("tokens")
+                            root_tokens = dict(root_tokens) if isinstance(root_tokens, dict) else {}
+                            root_refresh = str(root_tokens.get("refresh_token", "") or "").strip()
+                            root_identity = _codex_token_identity(root_tokens.get("access_token"))
+                            eligible = bool(
+                                root_refresh
+                                and root_refresh != str(tokens.get("refresh_token", "") or "").strip()
+                                and root_identity == our_identity
+                            )
+                            if eligible:
+                                # Mark attempted BEFORE the adoption POST
+                                # (regardless of its outcome).
+                                _codex_root_rescue_seen.add(dead_tuple)
+                                try:
+                                    adopted_refresh = refresh_codex_oauth_pure(
+                                        str(root_tokens.get("access_token", "") or ""),
+                                        root_refresh,
+                                        timeout_seconds=timeout_seconds,
+                                    )
+                                except Exception:
+                                    adopted_refresh = None
+                                if adopted_refresh is not None:
+                                    adopted = dict(root_tokens)
+                                    adopted["access_token"] = adopted_refresh["access_token"]
+                                    adopted["refresh_token"] = adopted_refresh["refresh_token"]
+                                    if is_from_root:
+                                        _persist_class_n(
+                                            lambda: _write_through_codex_to_global_root(adopted, None, None) is True,
+                                            "to the global root",
+                                        )
+                                    else:
+                                        # CLASS-N (owned): the local save after a
+                                        # successful rescue POST is the only durable
+                                        # copy — retry it through the shared backoff
+                                        # loop before CRITICAL (A1v10: 3 attempts /
+                                        # 2 backoffs).
+                                        _persist_class_n(
+                                            lambda: (_save_codex_tokens(adopted) or True),
+                                            "to the profile store",
+                                        )
+                                    rescued = adopted
+                except Exception:
+                    rescued = None
+        if rescued is not None:
+            return rescued
         imported = _recover_codex_tokens_from_cli(
             f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
         )
@@ -4799,7 +5052,19 @@ def _refresh_codex_auth_tokens(
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
-    _save_codex_tokens(updated_tokens)
+    if is_from_root and not top_level_root:
+        # C2 — persist the rotation directly to the distinct root; do NOT seed
+        # a shadowing profile block (C1 write-through covers only owned-block
+        # callers).
+        _persist_class_n(
+            lambda: _write_through_codex_to_global_root(updated_tokens, None, None) is True,
+            "to the global root",
+        )
+    else:
+        # Owned-block caller, or top-level mode (the active store IS the root):
+        # ``_save_codex_tokens`` persists to the active store, and its C1
+        # write-through already skips a same-path root.
+        _save_codex_tokens(updated_tokens)
     return updated_tokens
 
 

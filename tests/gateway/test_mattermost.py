@@ -261,6 +261,87 @@ class TestMattermostSend:
         payload = self.adapter._api_post.call_args_list[0][0][1]
         assert payload["root_id"] == "bad_root"
 
+    @pytest.mark.asyncio
+    async def test_delete_message_calls_api_delete(self):
+        """delete_message() should delete the Mattermost post by ID."""
+        post_id = "a" * 26
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.delete_message("channel_1", post_id)
+
+        assert result is True
+        call_args = self.adapter._session.delete.call_args
+        assert call_args.args[0].endswith(f"/api/v4/posts/{post_id}")
+
+    @pytest.mark.asyncio
+    async def test_delete_message_failure_returns_false(self):
+        post_id = "a" * 26
+        mock_resp = AsyncMock()
+        mock_resp.status = 403
+        mock_resp.text = AsyncMock(return_value="Forbidden")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        assert await self.adapter.delete_message("channel_1", post_id) is False
+
+    @pytest.mark.parametrize(
+        "post_id",
+        [
+            "",
+            "a" * 25,
+            "../../users/me",
+            "%2e%2e/users/target",
+            "a%2Fusers%2Ftarget",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_delete_message_rejects_invalid_post_id(self, post_id):
+        self.adapter._session.delete = MagicMock()
+
+        assert await self.adapter.delete_message("channel_1", post_id) is False
+        self.adapter._session.delete.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "posts/../../users/me",
+            "posts/%2e%2e/users/me",
+            "posts/a%2Fusers%2Ftarget",
+            "posts/a\\..\\users\\target",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_api_delete_rejects_path_traversal(self, path):
+        self.adapter._session.delete = MagicMock()
+
+        assert await self.adapter._api_delete(path) is False
+        self.adapter._session.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_api_delete_network_failure_returns_false(self):
+        post_id = "a" * 26
+        client_error = pytest.importorskip("aiohttp").ClientError
+        self.adapter._session.delete = MagicMock(
+            side_effect=client_error("connection lost")
+        )
+
+        assert await self.adapter.delete_message("channel_1", post_id) is False
+
+    @pytest.mark.asyncio
+    async def test_api_delete_timeout_returns_false(self):
+        post_id = "a" * 26
+        self.adapter._session.delete = MagicMock(side_effect=TimeoutError())
+
+        assert await self.adapter.delete_message("channel_1", post_id) is False
+
 
 # ---------------------------------------------------------------------------
 # WebSocket event parsing

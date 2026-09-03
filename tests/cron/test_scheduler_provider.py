@@ -533,6 +533,23 @@ def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     assert ok is not None and 0.0 <= ok < 5.0
 
 
+def test_future_ticker_heartbeat_is_not_liveness_evidence(tmp_path, monkeypatch):
+    """A restored or skewed future marker must not keep a dead ticker alive."""
+    import time
+
+    import cron.jobs as jobs
+
+    cron_dir = tmp_path / "cron"
+    cron_dir.mkdir()
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", cron_dir / "ticker_heartbeat")
+    (cron_dir / "ticker_heartbeat").write_text(
+        str(time.time() + 3600), encoding="utf-8"
+    )
+
+    assert jobs.get_ticker_heartbeat_age() is None
+
+
 # ── F8: runtime backstop — never resolve a stored pair that exfiltrates a key ──
 
 

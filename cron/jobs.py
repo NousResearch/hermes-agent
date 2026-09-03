@@ -1639,7 +1639,14 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 def _epoch_file_age(path: Path) -> Optional[float]:
     try:
         raw = path.read_text(encoding="utf-8").strip()
-        return max(0.0, time.time() - float(raw))
+        age = time.time() - float(raw)
+        # A restored snapshot or materially skewed clock can leave a marker
+        # dated far in the future. It is not evidence that a ticker is alive;
+        # clamping it to zero would keep a dead scheduler looking fresh until
+        # wall clock caught up. Allow only a few seconds of write/read jitter.
+        if age < -5.0:
+            return None
+        return max(0.0, age)
     except Exception:
         return None
 

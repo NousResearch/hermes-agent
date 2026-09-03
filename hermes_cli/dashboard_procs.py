@@ -191,6 +191,219 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     return None
 
 
+def _is_hermes_backend_launchd_label(label: str) -> bool:
+    """True only for the launchd label families used by Hermes backends."""
+    if not label or label.startswith("application."):
+        return False
+    if not all(
+        char.isascii() and (char.isalnum() or char in "._-") for char in label
+    ):
+        return False
+    for base in ("ai.hermes.dashboard", "ai.hermes.serve"):
+        if label == base:
+            return True
+        prefix = f"{base}-"
+        if label.startswith(prefix) and len(label) > len(prefix):
+            return True
+    return False
+
+
+def _launchd_label_for_pid(pid: int) -> str | None:
+    """Return launchd's job label from *pid*'s own environment on macOS.
+
+    ``psutil`` is a pinned core dependency (see ``pyproject.toml``); failures
+    here mean the process disappeared or macOS denied the environment query,
+    not that callers should substitute an argv-only ownership guess.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import psutil
+
+        label = str(
+            psutil.Process(pid).environ().get("XPC_SERVICE_NAME") or ""
+        ).strip()
+    except Exception:
+        return None
+    return label if _is_hermes_backend_launchd_label(label) else None
+
+
+def _launchd_pid_is_verified_ancestor(
+    launchd_pid: int, candidate_pid: int
+) -> bool | None:
+    """Return launchd ancestry, or ``None`` when it cannot be queried safely.
+
+    ``psutil`` is pinned in Hermes' core dependencies.  The indeterminate
+    result therefore represents process churn or an access/query failure and
+    must be handled fail-closed rather than as proof that the PIDs are
+    unrelated.
+    """
+    if launchd_pid <= 0 or candidate_pid <= 0 or launchd_pid == candidate_pid:
+        return False
+    try:
+        import psutil
+
+        return any(
+            int(parent.pid) == launchd_pid
+            for parent in psutil.Process(candidate_pid).parents()
+        )
+    except Exception:
+        return None
+
+
+def _launchd_owner_for_pid(
+    pid: int,
+) -> tuple[str, str | None, int | None, bool] | None:
+    """Return launchd ownership data for a Hermes backend candidate.
+
+    Ownership is based on launchd's job identity, not the process command.
+    The PID's own ``XPC_SERVICE_NAME`` supplies the exact label, then
+    domain-qualified ``launchctl print`` probes must report either the same
+    PID (the fast path) or a verified ancestor wrapper of the candidate.
+    The final bool is true when the exact job is loaded but not running, or is
+    running under a different, non-ancestor PID: *pid* is then a stale same-job
+    process that must exit before launchd is restarted, and must never be
+    replayed from argv.
+
+    When every launchctl probe is indeterminate, only an accepted Hermes
+    backend label is enough to fail closed: cleanup leaves the process alone
+    and never falls into argv-only manual respawn.
+    """
+    if sys.platform != "darwin":
+        return None
+    label = _launchd_label_for_pid(pid)
+    if label is None or not _is_hermes_backend_launchd_label(label):
+        return None
+
+    try:
+        uid = os.getuid()
+    except AttributeError:  # pragma: no cover - guarded by the darwin check
+        return None
+
+    query_incomplete = False
+    conclusive_job_query = False
+    stale_same_job: tuple[str, str | None, int | None, bool] | None = None
+    for domain in (f"gui/{uid}", f"user/{uid}"):
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            query_incomplete = True
+            continue
+        if result.returncode != 0:
+            query_incomplete = True
+            continue
+        try:
+            from hermes_cli.gateway import _parse_launchd_pid_from_print_output
+
+            launchd_pid = _parse_launchd_pid_from_print_output(result.stdout or "")
+        except Exception:
+            query_incomplete = True
+            continue
+        conclusive_job_query = True
+        if launchd_pid == pid:
+            return label, domain, launchd_pid, False
+        if launchd_pid is not None:
+            ancestor = _launchd_pid_is_verified_ancestor(launchd_pid, pid)
+            if ancestor is True:
+                return label, domain, launchd_pid, False
+            if ancestor is None:
+                # The exact Hermes job is loaded, but we cannot prove whether
+                # its PID owns this candidate.  Protect the process and make
+                # reconciliation unrecovered; never reinterpret uncertainty as
+                # an unrelated manual process eligible for argv replay.
+                return label, None, launchd_pid, False
+        if stale_same_job is None or stale_same_job[2] is None:
+            # A successful print with no PID means the exact job is loaded but
+            # not running.  The labelled candidate is stale same-job state:
+            # stop it first so it releases its port, then let launchd start the
+            # registered job rather than replaying argv without plist state.
+            stale_same_job = label, domain, launchd_pid, True
+
+    if stale_same_job is not None:
+        return stale_same_job
+
+    # A successfully queried exact job (running or merely loaded) returned
+    # above. Fail closed only when every probe was indeterminate, so a possible
+    # owner can never enter argv-only respawn.
+    if query_incomplete and not conclusive_job_query:
+        return label, None, None, False
+    return None
+
+
+def _restart_launchd_owned_dashboard(
+    label: str,
+    old_pid: int,
+    domain: str | None,
+    *,
+    loaded_pid: int | None,
+) -> bool:
+    """Restart a launchd-owned backend and verify a fresh supervised PID."""
+    if domain is None:
+        uid = os.getuid()
+        print(
+            f"    ⚠ launchd-labelled PID {old_pid} ({label}) could not be "
+            "safely related to a loaded job in "
+            f"gui/{uid} or user/{uid}; left it running; launchd ownership "
+            "could not be confirmed"
+        )
+        print(f"      Inspect with: launchctl print gui/{uid}/{label}")
+        print(f"                    launchctl print user/{uid}/{label}")
+        return False
+    target = f"{domain}/{label}"
+    if loaded_pid is not None:
+        updater_pid = os.getpid()
+        updater_is_descendant = (
+            True
+            if loaded_pid == updater_pid
+            else _launchd_pid_is_verified_ancestor(loaded_pid, updater_pid)
+        )
+        if loaded_pid == updater_pid or updater_is_descendant is not False:
+            relationship = (
+                "is the loaded job PID or descends from it"
+                if loaded_pid == updater_pid or updater_is_descendant is True
+                else "could not be proven unrelated to it"
+            )
+            print(
+                f"    ⚠ refusing to kickstart launchd-labelled job {target}: "
+                f"updater PID {updater_pid} {relationship}; left unrecovered"
+            )
+            return False
+    try:
+        from hermes_cli.gateway import (
+            _launchd_kickstart,
+            _wait_for_launchd_service_pid,
+        )
+
+        _launchd_kickstart(label, domain)
+        if not _wait_for_launchd_service_pid(
+            label, old_pid, timeout=30.0, domain=domain
+        ):
+            print(
+                f"    ⚠ launchd job {target} (previous PID {old_pid}) did not "
+                "report a fresh PID after restart"
+            )
+            print(f"      Retry with: launchctl kickstart -k {target}")
+            return False
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+    ) as e:
+        print(f"    ⚠ failed to restart launchd job {target} (PID {old_pid}): {e}")
+        print(f"      Retry with: launchctl kickstart -k {target}")
+        return False
+    print(f"    ✓ restarted launchd job {target} (previous PID {old_pid})")
+    return True
+
+
 def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
     """True for Desktop-style ``serve|dashboard --port 0`` backends (#78821).
 
@@ -372,8 +585,11 @@ def _kill_stale_dashboard_processes(
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
     equivalent for background console apps.
 
-    Manually-started dashboards are not auto-restarted because we don't know
-    the original launch args (--host, --port, --insecure, --tui, --no-open).
+    With ``restart_managed=False`` (the explicit stop path), launchd ownership
+    classification and every restart remain disabled: matching processes keep
+    the pre-existing stop-only behavior. Manually-started dashboards are not
+    auto-restarted because we don't know the original launch args (--host,
+    --port, --insecure, --tui, --no-open).
     When ``restart_managed`` is true (the ``hermes update`` path), a detected
     ``hermes-dashboard.service`` is restarted through systemd; any OTHER
     killed PID that was supervised by a systemd unit (custom unit names —
@@ -434,6 +650,82 @@ def _kill_stale_dashboard_processes(
     if not pids:
         return {"matched": [], "killed": [], "failed": []}
 
+    # A fixed-port ``hermes serve`` can be a user LaunchAgent.  macOS has no
+    # systemd cgroup metadata, so treating every such PID as manual used to
+    # kill it and replay argv outside launchd, dropping the plist environment
+    # and racing KeepAlive on the same port.  Resolve exact launchd job/PID
+    # ownership before any argv capture or signal.  Only launchd may restart
+    # an owned process; an indeterminate XPC-identified owner is left alone.
+    matched_pids = list(pids)
+    launchd_owned_pids: set[int] = set()
+    launchd_protected_pids: set[int] = set()
+    launchd_stale_pids: set[int] = set()
+    launchd_unrecovered: list[int] = []
+    deferred_launchd_jobs: dict[
+        tuple[str, str], tuple[int | None, list[int], list[int]]
+    ] = {}
+    if restart_managed and sys.platform == "darwin":
+        launchd_owned: dict[int, tuple[str, str | None, int | None, bool]] = {}
+        for pid in pids:
+            owner = _launchd_owner_for_pid(pid)
+            if owner is not None:
+                launchd_owned[pid] = owner
+        if launchd_owned:
+            launchd_owned_pids = set(launchd_owned)
+            launchd_jobs: dict[
+                tuple[str, str | None], tuple[int | None, list[int], list[int]]
+            ] = {}
+            for pid, (label, domain, loaded_pid, stale_same_job) in launchd_owned.items():
+                current_loaded_pid, owned_pids, stale_pids = launchd_jobs.setdefault(
+                    (label, domain), (loaded_pid, [], [])
+                )
+                owned_pids.append(pid)
+                if stale_same_job:
+                    stale_pids.append(pid)
+                    launchd_stale_pids.add(pid)
+                else:
+                    launchd_protected_pids.add(pid)
+                launchd_jobs[(label, domain)] = (
+                    current_loaded_pid or loaded_pid,
+                    owned_pids,
+                    stale_pids,
+                )
+            print()
+            print(
+                f"⟲ Reconciling {len(launchd_owned)} launchd-labelled "
+                "dashboard process(es)"
+            )
+            for (label, domain), (
+                loaded_pid,
+                owned_pids,
+                stale_pids,
+            ) in launchd_jobs.items():
+                if domain is not None and stale_pids:
+                    # The stale same-job process may still own the fixed port.
+                    # Defer one kickstart until the normal POSIX path confirms
+                    # every stale candidate has exited; never snapshot argv.
+                    deferred_launchd_jobs[(label, domain)] = (
+                        loaded_pid,
+                        owned_pids,
+                        stale_pids,
+                    )
+                    continue
+                if not _restart_launchd_owned_dashboard(
+                    label,
+                    loaded_pid or owned_pids[0],
+                    domain,
+                    loaded_pid=loaded_pid,
+                ):
+                    launchd_unrecovered.extend(owned_pids)
+            pids = [pid for pid in pids if pid not in launchd_protected_pids]
+            if not pids:
+                return {
+                    "matched": matched_pids,
+                    "killed": [],
+                    "failed": [],
+                    "unrecovered": launchd_unrecovered,
+                }
+
     # Before killing, snapshot systemd cgroup info for each PID so we can
     # restart supervised services after the kill (the cgroup disappears
     # along with the process).  Only meaningful on Linux, and only when the
@@ -445,6 +737,8 @@ def _kill_stale_dashboard_processes(
     pid_home: dict[int, str | None] = {}
     if restart_managed and sys.platform != "win32":
         for pid in pids:
+            if pid in launchd_stale_pids:
+                continue
             cg_path = _m()._get_pid_cgroup_path(pid)
             pid_cgroup[pid] = cg_path
             pid_service[pid] = _m()._get_systemd_service_for_pid(pid)
@@ -469,12 +763,24 @@ def _kill_stale_dashboard_processes(
                 not in already_restarted_units
             ]
             if not pids:
+                if launchd_owned_pids:
+                    return {
+                        "matched": [
+                            pid
+                            for pid in matched_pids
+                            if pid in launchd_owned_pids
+                        ],
+                        "killed": [],
+                        "failed": [],
+                        "unrecovered": launchd_unrecovered,
+                    }
                 return {"matched": [], "killed": [], "failed": []}
 
     print()
     print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
 
     killed: list[int] = []
+    confirmed_exited: set[int] = set()
     failed: list[tuple[int, str]] = []
 
     if sys.platform == "win32":
@@ -528,6 +834,7 @@ def _kill_stale_dashboard_processes(
             except ProcessLookupError:
                 # Already gone — count as killed.
                 killed.append(pid)
+                confirmed_exited.add(pid)
             except (PermissionError, OSError) as e:
                 failed.append((pid, str(e)))
 
@@ -547,6 +854,7 @@ def _kill_stale_dashboard_processes(
                     still_pending.append(pid)
                 else:
                     killed.append(pid)
+                    confirmed_exited.add(pid)
             pending = still_pending
 
         # SIGKILL any survivors.
@@ -556,6 +864,7 @@ def _kill_stale_dashboard_processes(
                 killed.append(pid)
             except ProcessLookupError:
                 killed.append(pid)
+                confirmed_exited.add(pid)
             except (PermissionError, OSError) as e:
                 failed.append((pid, str(e)))
 
@@ -563,6 +872,56 @@ def _kill_stale_dashboard_processes(
         print(f"    ✓ stopped PID {pid}")
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
+
+    # A stale process carrying an exact loaded Hermes job label must release
+    # its fixed port before launchd is kicked. Grouping by domain/label keeps
+    # the restart at most once even when the scan found multiple candidates.
+    for (label, domain), (
+        loaded_pid,
+        owned_pids,
+        stale_pids,
+    ) in deferred_launchd_jobs.items():
+        # SIGKILL delivery is not the same as exit. Wait for any force-killed
+        # stale process to disappear before launchd can contend for its port.
+        unconfirmed = {
+            pid for pid in stale_pids if pid in killed and pid not in confirmed_exited
+        }
+        if unconfirmed:
+            import time as _time
+
+            from gateway.status import _pid_exists
+
+            deadline = _time.monotonic() + 3.0
+            while unconfirmed:
+                unconfirmed = {pid for pid in unconfirmed if _pid_exists(pid)}
+                if not unconfirmed or _time.monotonic() >= deadline:
+                    break
+                _time.sleep(0.1)
+            confirmed_exited.update(
+                pid
+                for pid in stale_pids
+                if pid in killed and pid not in unconfirmed
+            )
+
+        if any(pid not in confirmed_exited for pid in stale_pids):
+            launchd_unrecovered.extend(
+                pid for pid in owned_pids if pid not in launchd_unrecovered
+            )
+            print(
+                f"    ⚠ did not restart launchd job {domain}/{label}; "
+                "its stale same-job process is still running"
+            )
+            continue
+        old_pid = loaded_pid or stale_pids[0]
+        if not _restart_launchd_owned_dashboard(
+            label,
+            old_pid,
+            domain,
+            loaded_pid=loaded_pid,
+        ):
+            launchd_unrecovered.extend(
+                pid for pid in owned_pids if pid not in launchd_unrecovered
+            )
 
     # Restart what we just killed (update path only).  Two categories:
     #  - systemd-supervised PIDs: restart the owning unit.  Without this, a
@@ -573,12 +932,14 @@ def _kill_stale_dashboard_processes(
     #    Filtered so Desktop ``serve|dashboard --port 0`` backends are not
     #    resurrected and duplicates collapse to one per profile (#78821).
     restarted_services: list[str] = []
-    unrecovered: list[int] = []
+    unrecovered: list[int] = list(launchd_unrecovered)
     if killed and restart_managed:
         failed_restarts: list[tuple[str, str]] = []
         seen_services: set[str] = set()
         respawn_candidates: list[tuple[int, list[str], str | None]] = []
         for pid in killed:
+            if pid in launchd_stale_pids:
+                continue
             svc_name = pid_service.get(pid)
             if svc_name:
                 if svc_name in seen_services:
@@ -607,8 +968,16 @@ def _kill_stale_dashboard_processes(
             if failed_cmds:
                 unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
 
-        if failed_restarts or unrecovered:
-            print("  Restart anything not auto-restarted when you're ready:")
+        non_launchd_unrecovered = [
+            pid for pid in unrecovered if pid not in launchd_owned_pids
+        ]
+        if non_launchd_unrecovered:
+            rendered_pids = ", ".join(str(pid) for pid in non_launchd_unrecovered)
+            print(
+                "  Restart anything not auto-restarted for non-launchd dashboard "
+                "process(es)"
+                f" (PID {rendered_pids}) when you're ready:"
+            )
             print("    hermes dashboard --port <port>")
     elif killed:
         unrecovered = list(killed)
@@ -616,7 +985,9 @@ def _kill_stale_dashboard_processes(
         print("    hermes dashboard --port <port>")
 
     return {
-        "matched": list(pids),
+        "matched": [
+            pid for pid in matched_pids if pid in launchd_owned_pids or pid in pids
+        ],
         "killed": list(killed),
         "failed": list(failed),
         "unrecovered": list(unrecovered),
@@ -1120,4 +1491,3 @@ def _reap_orphaned_desktop_local_serves(
             pass
 
     return {"matched": matched, "killed": killed, "failed": failed}
-

@@ -384,6 +384,802 @@ class TestWindowsWmicEncoding:
             assert _find_stale_dashboard_pids() == []
 
 
+class TestLaunchdOwnedBackendRestart:
+    """A macOS LaunchAgent remains the sole owner of its fixed-port serve."""
+
+    def _live(self):
+        return sys.modules["hermes_cli.main"]
+
+    @pytest.mark.parametrize("xpc_environment", [{}, {"XPC_SERVICE_NAME": "0"}])
+    def test_missing_or_zero_xpc_label_is_not_launchd_owned(
+        self, monkeypatch, xpc_environment
+    ):
+        import psutil
+
+        from hermes_cli import dashboard_procs
+
+        process = MagicMock()
+        process.environ.return_value = xpc_environment
+        monkeypatch.setattr(psutil, "Process", lambda pid: process)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        run = MagicMock()
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", run)
+
+        assert dashboard_procs._launchd_label_for_pid(4321) is None
+        assert dashboard_procs._launchd_owner_for_pid(4321) is None
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "../ai.hermes.serve",
+            "ai/hermes",
+            "ai\\hermes",
+            "ai.hermes.gateway",
+            "com.example.hermes.serve",
+            "application.com.microsoft.VSCode.1.2",
+            "application.ai.hermes.serve",
+            "application.anything",
+            "ai.hermes.serve-",
+        ],
+    )
+    def test_non_backend_xpc_label_never_reaches_launchctl(self, monkeypatch, label):
+        import psutil
+
+        from hermes_cli import dashboard_procs
+
+        process = MagicMock()
+        process.environ.return_value = {"XPC_SERVICE_NAME": label}
+        monkeypatch.setattr(psutil, "Process", lambda pid: process)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        run = MagicMock()
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", run)
+
+        assert dashboard_procs._launchd_label_for_pid(4321) is None
+        assert dashboard_procs._launchd_owner_for_pid(4321) is None
+        run.assert_not_called()
+
+    def test_vscode_inherited_label_with_ancestor_never_triggers_kickstart(
+        self, monkeypatch
+    ):
+        import psutil
+        import signal
+
+        from hermes_cli import dashboard_procs, gateway
+
+        live = self._live()
+        candidate_pid = 4321
+        vscode_pid = 9999
+        process = MagicMock()
+        process.environ.return_value = {
+            "XPC_SERVICE_NAME": "application.com.microsoft.VSCode.1.2"
+        }
+        process.parents.return_value = [MagicMock(pid=vscode_pid)]
+        monkeypatch.setattr(psutil, "Process", lambda pid: process)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        launchctl = MagicMock(
+            return_value=MagicMock(
+                returncode=0, stdout=f"\tpid = {vscode_pid}\n", stderr=""
+            )
+        )
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", launchctl)
+        kickstart = MagicMock()
+        monkeypatch.setattr(gateway, "_launchd_kickstart", kickstart)
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[candidate_pid]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(live, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(
+                 live,
+                 "_dashboard_cmdline_for_pid",
+                 return_value=["hermes", "serve", "--port", "9119"],
+             ), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("gateway.status._pid_exists", return_value=False), \
+             patch.object(dashboard_procs.os, "kill") as kill, \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        launchctl.assert_not_called()
+        kickstart.assert_not_called()
+        kill.assert_called_once_with(candidate_pid, signal.SIGTERM)
+        respawn.assert_called_once_with([["hermes", "serve", "--port", "9119"]])
+        assert result["killed"] == [candidate_pid]
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "ai.hermes.dashboard",
+            "ai.hermes.dashboard-default",
+            "ai.hermes.serve",
+            "ai.hermes.serve-work",
+        ],
+    )
+    def test_only_hermes_backend_label_families_are_accepted(self, label):
+        from hermes_cli import dashboard_procs
+
+        assert dashboard_procs._is_hermes_backend_launchd_label(label)
+
+    def test_exact_launchd_job_pid_is_fast_path(self, monkeypatch):
+        from hermes_cli import dashboard_procs
+
+        label = "ai.hermes.serve"
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(list(argv))
+            return MagicMock(
+                returncode=0,
+                stdout="\tpid = 4321\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_label_for_pid", lambda pid: label
+        )
+        monkeypatch.setattr(dashboard_procs.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", fake_run)
+        ancestor = MagicMock()
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_pid_is_verified_ancestor", ancestor
+        )
+
+        assert dashboard_procs._launchd_owner_for_pid(4321) == (
+            label,
+            "gui/501",
+            4321,
+            False,
+        )
+        assert calls == [
+            ["launchctl", "print", f"gui/501/{label}"],
+        ]
+        ancestor.assert_not_called()
+
+    def test_loaded_job_ancestor_owns_dashboard_child(self, monkeypatch):
+        import psutil
+
+        from hermes_cli import dashboard_procs
+
+        label = "ai.hermes.serve"
+        process = MagicMock()
+        process.parents.return_value = [MagicMock(pid=9999)]
+        monkeypatch.setattr(psutil, "Process", lambda pid: process)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_label_for_pid", lambda pid: label
+        )
+        monkeypatch.setattr(dashboard_procs.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(
+            dashboard_procs.subprocess,
+            "run",
+            lambda *args, **kwargs: MagicMock(
+                returncode=0, stdout="\tpid = 9999\n", stderr=""
+            ),
+        )
+
+        assert dashboard_procs._launchd_owner_for_pid(4321) == (
+            label,
+            "gui/501",
+            9999,
+            False,
+        )
+
+    def test_different_nonancestor_pid_is_stale_same_job_on_domain_error(
+        self, monkeypatch
+    ):
+        import psutil
+
+        from hermes_cli import dashboard_procs
+
+        label = "ai.hermes.serve"
+        process = MagicMock()
+        process.parents.return_value = []
+        results = iter(
+            [
+                MagicMock(returncode=0, stdout="\tpid = 9999\n", stderr=""),
+                subprocess.TimeoutExpired("launchctl", 5),
+            ]
+        )
+
+        def fake_run(*args, **kwargs):
+            result = next(results)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(psutil, "Process", lambda pid: process)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_label_for_pid", lambda pid: label
+        )
+        monkeypatch.setattr(dashboard_procs.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(dashboard_procs.subprocess, "run", fake_run)
+
+        assert dashboard_procs._launchd_owner_for_pid(4321) == (
+            label,
+            "gui/501",
+            9999,
+            True,
+        )
+
+    def test_loaded_job_without_pid_is_stale_same_job(self, monkeypatch):
+        from hermes_cli import dashboard_procs
+
+        label = "ai.hermes.serve"
+        results = iter(
+            [
+                MagicMock(
+                    returncode=0,
+                    stdout="\tstate = exited\n\tlast exit code = 0\n",
+                    stderr="",
+                ),
+                MagicMock(returncode=113, stdout="", stderr="Could not find service"),
+            ]
+        )
+
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_label_for_pid", lambda pid: label
+        )
+        monkeypatch.setattr(dashboard_procs.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(
+            dashboard_procs.subprocess, "run", lambda *args, **kwargs: next(results)
+        )
+
+        assert dashboard_procs._launchd_owner_for_pid(4321) == (
+            label,
+            "gui/501",
+            None,
+            True,
+        )
+
+    def test_ancestor_query_exception_fails_closed(self, monkeypatch):
+        import psutil
+
+        from hermes_cli import dashboard_procs
+
+        label = "ai.hermes.serve"
+        process = MagicMock()
+        process.parents.side_effect = RuntimeError("ancestry unavailable")
+        monkeypatch.setattr(psutil, "Process", lambda pid: process)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_label_for_pid", lambda pid: label
+        )
+        monkeypatch.setattr(dashboard_procs.os, "getuid", lambda: 501, raising=False)
+        monkeypatch.setattr(
+            dashboard_procs.subprocess,
+            "run",
+            lambda *args, **kwargs: MagicMock(
+                returncode=0, stdout="\tpid = 9999\n", stderr=""
+            ),
+        )
+
+        assert dashboard_procs._launchd_owner_for_pid(4321) == (
+            label,
+            None,
+            9999,
+            False,
+        )
+
+    def test_restart_uses_real_gateway_helpers_and_waits_for_fresh_pid(
+        self, monkeypatch
+    ):
+        from hermes_cli import dashboard_procs
+
+        label = "ai.hermes.serve"
+        old_pid = 4321
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        print_results = iter(
+            [
+                subprocess.CompletedProcess(
+                    ["launchctl"], 0, stdout="\tpid = 4321\n", stderr=""
+                ),
+                subprocess.CompletedProcess(
+                    ["launchctl"], 0, stdout="\tpid = 9876\n", stderr=""
+                ),
+            ]
+        )
+
+        def fake_run(argv, **kwargs):
+            calls.append((list(argv), dict(kwargs)))
+            if argv[1:3] == ["kickstart", "-k"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return next(print_results)
+
+        # Both real gateway helpers call this one launchctl boundary.
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            dashboard_procs,
+            "_launchd_pid_is_verified_ancestor",
+            lambda ancestor_pid, candidate_pid: False,
+        )
+
+        assert dashboard_procs._restart_launchd_owned_dashboard(
+            label, old_pid, "gui/501", loaded_pid=old_pid
+        )
+        assert calls == [
+            (
+                ["launchctl", "kickstart", "-k", f"gui/501/{label}"],
+                {
+                    "check": True,
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": 90,
+                },
+            ),
+            (
+                ["launchctl", "print", f"gui/501/{label}"],
+                {
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": 5,
+                },
+            ),
+            (
+                ["launchctl", "print", f"gui/501/{label}"],
+                {
+                    "capture_output": True,
+                    "text": True,
+                    "encoding": "utf-8",
+                    "errors": "replace",
+                    "timeout": 5,
+                },
+            ),
+        ]
+
+    def test_launchd_pid_never_enters_manual_kill_or_respawn(self, monkeypatch):
+        from hermes_cli import dashboard_procs, gateway
+
+        live = self._live()
+        label = "ai.hermes.serve"
+        loaded_pid = 4000
+        kickstart = MagicMock()
+        wait_for_pid = MagicMock(return_value=True)
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(gateway, "_launchd_kickstart", kickstart)
+        monkeypatch.setattr(gateway, "_wait_for_launchd_service_pid", wait_for_pid)
+        monkeypatch.setattr(
+            dashboard_procs,
+            "_launchd_pid_is_verified_ancestor",
+            lambda ancestor_pid, candidate_pid: False,
+        )
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_dashboard_cmdline_for_pid") as cmdline, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 return_value=(label, "gui/501", loaded_pid, False),
+             ), \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        kickstart.assert_called_once_with(label, "gui/501")
+        wait_for_pid.assert_called_once_with(
+            label, loaded_pid, timeout=30.0, domain="gui/501"
+        )
+        cmdline.assert_not_called()
+        kill.assert_not_called()
+        respawn.assert_not_called()
+        assert result == {
+            "matched": [4321],
+            "killed": [],
+            "failed": [],
+            "unrecovered": [],
+        }
+
+    @pytest.mark.parametrize(
+        ("loaded_pid", "updater_pid", "ancestor_result"),
+        [
+            (5000, 5000, False),
+            (5000, 6000, True),
+        ],
+    )
+    def test_updater_owned_by_loaded_job_is_never_kickstarted(
+        self,
+        monkeypatch,
+        capsys,
+        loaded_pid,
+        updater_pid,
+        ancestor_result,
+    ):
+        from hermes_cli import dashboard_procs, gateway
+
+        live = self._live()
+        label = "ai.hermes.serve"
+        candidate_pid = 4321
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(dashboard_procs.os, "getpid", lambda: updater_pid)
+        monkeypatch.setattr(
+            dashboard_procs,
+            "_launchd_pid_is_verified_ancestor",
+            lambda ancestor_pid, candidate_pid: ancestor_result,
+        )
+        kickstart = MagicMock()
+        wait_for_pid = MagicMock()
+        monkeypatch.setattr(gateway, "_launchd_kickstart", kickstart)
+        monkeypatch.setattr(gateway, "_wait_for_launchd_service_pid", wait_for_pid)
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[candidate_pid]), \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 return_value=(label, "gui/501", loaded_pid, False),
+             ), \
+             patch.object(live, "_dashboard_cmdline_for_pid") as cmdline, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        kickstart.assert_not_called()
+        wait_for_pid.assert_not_called()
+        cmdline.assert_not_called()
+        respawn.assert_not_called()
+        kill.assert_not_called()
+        assert result["unrecovered"] == [candidate_pid]
+        out = capsys.readouterr().out
+        assert f"refusing to kickstart launchd-labelled job gui/501/{label}" in out
+        assert "left unrecovered" in out
+
+    def test_indeterminate_xpc_owner_without_plist_fails_closed(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import dashboard_procs
+
+        live = self._live()
+        label = "ai.hermes.serve"
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            dashboard_procs, "_launchd_label_for_pid", lambda pid: label
+        )
+        monkeypatch.setattr(dashboard_procs.os, "getuid", lambda: 501, raising=False)
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_dashboard_cmdline_for_pid") as cmdline, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch.object(
+                 dashboard_procs.subprocess,
+                 "run",
+                 side_effect=subprocess.TimeoutExpired("launchctl", 5),
+             ), \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        cmdline.assert_not_called()
+        kill.assert_not_called()
+        respawn.assert_not_called()
+        assert result["unrecovered"] == [4321]
+        out = capsys.readouterr().out
+        assert "PID 4321" in out
+        assert f"launchctl print gui/501/{label}" in out
+        assert f"launchctl print user/501/{label}" in out
+        assert "left it running; launchd ownership could not be confirmed" in out
+        assert "launchd recovery" not in out
+        assert "hermes dashboard --port" not in out
+
+    def test_failed_launchd_restart_is_unrecovered(self, monkeypatch, capsys):
+        from hermes_cli import dashboard_procs, gateway
+
+        live = self._live()
+        label = "ai.hermes.serve"
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(gateway, "_launchd_kickstart", MagicMock())
+        monkeypatch.setattr(
+            gateway, "_wait_for_launchd_service_pid", MagicMock(return_value=False)
+        )
+        monkeypatch.setattr(
+            dashboard_procs,
+            "_launchd_pid_is_verified_ancestor",
+            lambda ancestor_pid, candidate_pid: False,
+        )
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 return_value=(label, "gui/501", 4321, False),
+             ), \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        kill.assert_not_called()
+        assert result["unrecovered"] == [4321]
+        out = capsys.readouterr().out
+        assert "previous PID 4321" in out
+        assert f"launchctl kickstart -k gui/501/{label}" in out
+        assert "hermes dashboard --port" not in out
+
+    def test_non_darwin_never_enters_launchd_owner_or_restart_path(
+        self, monkeypatch
+    ):
+        from hermes_cli import dashboard_procs
+
+        live = self._live()
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(
+                 live,
+                 "_get_systemd_service_for_pid",
+                 return_value="hermes-dashboard.service",
+             ), \
+             patch.object(dashboard_procs, "_launchd_owner_for_pid") as owner, \
+             patch.object(
+                 dashboard_procs, "_restart_launchd_owned_dashboard"
+             ) as restart, \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True,
+                already_restarted_units={"hermes-dashboard"},
+            )
+
+        owner.assert_not_called()
+        restart.assert_not_called()
+        kill.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
+
+    def test_launchd_failure_survives_already_restarted_systemd_filter(
+        self, monkeypatch
+    ):
+        from hermes_cli import dashboard_procs
+
+        live = self._live()
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+
+        def owner(pid):
+            if pid == 4321:
+                return "ai.hermes.serve", "gui/501", 4321, False
+            return None
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321, 4322]), \
+             patch.object(live, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(
+                 live,
+                 "_get_systemd_service_for_pid",
+                 return_value="hermes-dashboard.service",
+             ), \
+             patch.object(dashboard_procs, "_launchd_owner_for_pid", side_effect=owner), \
+             patch.object(
+                 dashboard_procs, "_restart_launchd_owned_dashboard", return_value=False
+             ), \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True,
+                already_restarted_units={"hermes-dashboard"},
+            )
+
+        kill.assert_not_called()
+        assert result["matched"] == [4321]
+        assert result["unrecovered"] == [4321]
+
+    def test_same_launchd_job_is_not_restarted_twice(self, monkeypatch):
+        from hermes_cli import dashboard_procs
+
+        live = self._live()
+        label = "ai.hermes.serve"
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[4321, 4322]), \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 return_value=(label, "gui/501", 4000, False),
+             ), \
+             patch.object(
+                 dashboard_procs, "_restart_launchd_owned_dashboard", return_value=True
+             ) as restart, \
+             patch.object(dashboard_procs.os, "kill") as kill:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        restart.assert_called_once_with(
+            label, 4000, "gui/501", loaded_pid=4000
+        )
+        kill.assert_not_called()
+        assert result["unrecovered"] == []
+
+    def test_stale_same_job_exits_before_single_kickstart_and_never_respawns(
+        self, monkeypatch
+    ):
+        import signal
+
+        from hermes_cli import dashboard_procs
+
+        live = self._live()
+        label = "ai.hermes.serve-work"
+        stale_pid = 4321
+        loaded_pid = 9999
+        events: list[tuple[object, ...]] = []
+
+        def fake_kill(pid, sig):
+            events.append(("kill", pid, sig))
+            assert pid == stale_pid
+
+        def fake_exists(pid):
+            assert pid == stale_pid
+            events.append(("exit-confirmed", pid))
+            return False
+
+        def fake_restart(restart_label, old_pid, domain, **kwargs):
+            assert restart_label == label
+            assert kwargs == {"loaded_pid": loaded_pid}
+            assert old_pid == loaded_pid
+            assert domain == "gui/501"
+            events.append(("kickstart", old_pid))
+            return True
+
+        def owner(pid):
+            return label, "gui/501", loaded_pid, pid == stale_pid
+
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()), \
+             patch.object(
+                 live,
+                 "_find_stale_dashboard_pids",
+                 return_value=[loaded_pid, stale_pid],
+             ), \
+             patch.object(live, "_get_pid_cgroup_path") as cgroup, \
+             patch.object(live, "_get_systemd_service_for_pid") as service, \
+             patch.object(live, "_dashboard_cmdline_for_pid") as cmdline, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 side_effect=owner,
+             ), \
+             patch.object(
+                 dashboard_procs,
+                 "_restart_launchd_owned_dashboard",
+                 side_effect=fake_restart,
+             ) as restart, \
+             patch("gateway.status._pid_exists", side_effect=fake_exists), \
+             patch.object(dashboard_procs.os, "kill", side_effect=fake_kill), \
+             patch("time.monotonic", side_effect=[0.0, 4.0, 4.0]), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert events == [
+            ("kill", stale_pid, signal.SIGTERM),
+            ("kill", stale_pid, signal.SIGKILL),
+            ("exit-confirmed", stale_pid),
+            ("kickstart", loaded_pid),
+        ]
+        restart.assert_called_once_with(
+            label, loaded_pid, "gui/501", loaded_pid=loaded_pid
+        )
+        cgroup.assert_not_called()
+        service.assert_not_called()
+        cmdline.assert_not_called()
+        respawn.assert_not_called()
+        assert result == {
+            "matched": [loaded_pid, stale_pid],
+            "killed": [stale_pid],
+            "failed": [],
+            "unrecovered": [],
+        }
+
+    def test_loaded_but_not_running_job_kickstarts_only_after_stale_exit(
+        self, monkeypatch, capsys
+    ):
+        import signal
+
+        from hermes_cli import dashboard_procs, gateway
+
+        live = self._live()
+        label = "ai.hermes.serve-work"
+        stale_pid = 4321
+        events: list[tuple[object, ...]] = []
+
+        def fake_kill(pid, sig):
+            events.append(("kill", pid, sig))
+
+        def fake_exists(pid):
+            events.append(("exit-confirmed", pid))
+            return False
+
+        def fake_kickstart(restart_label, domain):
+            events.append(("kickstart", restart_label, domain))
+
+        def fake_wait(restart_label, old_pid, *, timeout, domain):
+            events.append(("fresh-pid-wait", old_pid))
+            return True
+
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+        monkeypatch.setattr(gateway, "_launchd_kickstart", fake_kickstart)
+        monkeypatch.setattr(gateway, "_wait_for_launchd_service_pid", fake_wait)
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[stale_pid]), \
+             patch.object(live, "_get_pid_cgroup_path") as cgroup, \
+             patch.object(live, "_get_systemd_service_for_pid") as service, \
+             patch.object(live, "_dashboard_cmdline_for_pid") as cmdline, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn, \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 return_value=(label, "gui/501", None, True),
+             ), \
+             patch("gateway.status._pid_exists", side_effect=fake_exists), \
+             patch.object(dashboard_procs.os, "kill", side_effect=fake_kill), \
+             patch("time.monotonic", side_effect=[0.0, 1.0]), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert events == [
+            ("kill", stale_pid, signal.SIGTERM),
+            ("exit-confirmed", stale_pid),
+            ("kickstart", label, "gui/501"),
+            ("fresh-pid-wait", stale_pid),
+        ]
+        cgroup.assert_not_called()
+        service.assert_not_called()
+        cmdline.assert_not_called()
+        respawn.assert_not_called()
+        assert result == {
+            "matched": [stale_pid],
+            "killed": [stale_pid],
+            "failed": [],
+            "unrecovered": [],
+        }
+        assert "launchd-labelled dashboard process(es)" in capsys.readouterr().out
+
+    def test_stale_same_job_that_cannot_exit_is_never_kickstarted(
+        self, monkeypatch, capsys
+    ):
+        from hermes_cli import dashboard_procs
+
+        live = self._live()
+        label = "ai.hermes.dashboard"
+        stale_pid = 4321
+        loaded_pid = 9999
+        monkeypatch.setattr(dashboard_procs.sys, "platform", "darwin")
+
+        with patch.object(live, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(dashboard_procs, "_lock_owned_serve_pids", return_value=set()), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[stale_pid]), \
+             patch.object(
+                 dashboard_procs,
+                 "_launchd_owner_for_pid",
+                 return_value=(label, "gui/501", loaded_pid, True),
+             ), \
+             patch.object(
+                 dashboard_procs, "_restart_launchd_owned_dashboard"
+             ) as restart, \
+             patch.object(
+                 dashboard_procs.os,
+                 "kill",
+                 side_effect=PermissionError("denied"),
+             ), \
+             patch.object(live, "_respawn_dashboard_processes") as respawn:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        restart.assert_not_called()
+        respawn.assert_not_called()
+        assert result["killed"] == []
+        assert result["failed"] == [(stale_pid, "denied")]
+        assert result["unrecovered"] == [stale_pid]
+        assert "stale same-job process is still running" in capsys.readouterr().out
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")
 class TestSupervisedBackendRestart:
     """After the kill, systemd-supervised PIDs get their owning unit

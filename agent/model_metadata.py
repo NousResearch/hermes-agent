@@ -1551,6 +1551,13 @@ def fetch_endpoint_model_metadata(
                 pricing = _extract_pricing(model)
                 if pricing:
                     entry["pricing"] = pricing
+                # supported_parameters: OpenRouter (and OpenRouter-compatible)
+                # endpoints advertise per-model capability lists here.
+                # Presence of "reasoning" signals that the model accepts
+                # extra_body.reasoning and returns thinking blocks.
+                supported_params = model.get("supported_parameters")
+                if isinstance(supported_params, list):
+                    entry["supported_parameters"] = supported_params
                 _add_model_aliases(cache, model_id, entry)
 
             # If this is a llama.cpp server, query /props for actual allocated context
@@ -1623,6 +1630,32 @@ def fetch_endpoint_model_metadata(
     _endpoint_model_metadata_cache[normalized] = {}
     _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}
+
+
+def endpoint_model_supports_reasoning(
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[bool]:
+    """Return True/False when the endpoint's live /v1/models catalog declares
+    whether *model* supports reasoning (via ``supported_parameters`` containing
+    ``"reasoning"``), or None when the catalog is unreachable or the model is
+    not listed.
+
+    Cached via ``fetch_endpoint_model_metadata`` (5-minute TTL per base URL).
+    Designed for OpenRouter-compatible endpoints (e.g. the claudecode-as-openai
+    shim) that advertise capability lists in their /v1/models response.
+    """
+    metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
+    if not metadata:
+        return None
+    entry = metadata.get(model)
+    if entry is None:
+        return None
+    params = entry.get("supported_parameters")
+    if not isinstance(params, list):
+        return None
+    return "reasoning" in params
 
 
 def _resolve_endpoint_context_length(

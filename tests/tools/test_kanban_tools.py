@@ -950,6 +950,87 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     assert _list_subs_for_task(d["task_id"]) == []
 
 
+def test_create_preflight_reuses_overlapping_project_task(worker_env):
+    """The default create preflight returns an active matching card instead
+    of creating a parallel task on the same project board."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        existing = kb.create_task(
+            conn, title="Add audit log retention",
+            body="Keep the audit log retention policy reviewable.", assignee="peer",
+        )
+        before = len(kb.list_tasks(conn))
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_create({
+        "title": "Add audit log retention",
+        "body": "Keep the audit log retention policy reviewable.",
+        "assignee": "another-peer",
+    }))
+
+    assert out == {"ok": True, "task_id": existing, "reused": True,
+                   "preflight": "overlap"}
+    conn = kb.connect()
+    try:
+        assert len(kb.list_tasks(conn)) == before
+    finally:
+        conn.close()
+
+
+def test_create_preflight_is_quiet_and_board_scoped(worker_env):
+    """A clean preflight creates normally and does not inspect another
+    board or a task with a different project."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect(board="other")
+    try:
+        kb.create_task(conn, title="Rotate billing credentials",
+                        body="Rotate the billing credentials safely.",
+                        assignee="peer", project_id="different-project")
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_create({
+        "title": "Rotate billing credentials",
+        "body": "Rotate the billing credentials safely.",
+        "assignee": "peer", "project": "this-project",
+    }))
+    assert out["ok"] is True
+    assert out.get("reused") is None
+    assert out.get("preflight") is None
+
+
+def test_create_preflight_ignores_legacy_block_but_matches_real_block(worker_env):
+    """Only typed needs_input/capability blocks count as reusable blockers;
+    legacy untyped blocks remain historical evidence."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        legacy = kb.create_task(conn, title="Repair notifier routing",
+                                body="Repair notifier routing.", assignee="peer")
+        kb.block_task(conn, legacy, reason="old evidence")
+        typed = kb.create_task(conn, title="Repair desktop notifier routing",
+                               body="Repair notifier routing.", assignee="peer")
+        kb.block_task(conn, typed, reason="needs owner", kind="capability")
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_create({
+        "title": "Repair desktop notifier routing",
+        "body": "Repair notifier routing.", "assignee": "another-peer",
+    }))
+    assert out["ok"] is True
+    assert out["task_id"] == typed
+    assert out["reused"] is True
+
+
 def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
     """If add_notify_sub itself raises (e.g. DB locked, schema drift),
     _maybe_auto_subscribe must NOT bubble that up and fail the parent

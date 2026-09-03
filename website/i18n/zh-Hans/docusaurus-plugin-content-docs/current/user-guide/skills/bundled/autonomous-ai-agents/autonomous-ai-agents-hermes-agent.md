@@ -647,7 +647,7 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 
 - **调度格式：** 持续时间（`"30m"`、`"2h"`）、"every" 短语（`"every monday 9am"`）、5 字段 cron（`"0 9 * * *"`）或 ISO 时间戳。
 - **每任务选项：** `skills`、`model`/`provider` 覆盖、`script`（预运行数据收集；`no_agent=True` 使脚本成为整个任务）、`context_from`（将任务 A 的输出链接到任务 B）、`workdir`（在特定目录中运行，加载其 `AGENTS.md` / `CLAUDE.md`）、多平台投递。
-- **不变量：** 每次运行 3 分钟硬中断，`.tick.lock` 文件防止跨进程重复 tick，cron 会话默认传递 `skip_memory=True`，cron 投递使用页眉/页脚框架而非镜像到目标 gateway 会话（保持角色交替完整）。
+- **不变量：** 每次运行 3 分钟硬中断，`.tick.lock` 文件防止跨进程重复 tick，cron 会话默认传递 `skip_memory=False`（记忆像其他任何一次代理运行一样加载），cron 投递使用页眉/页脚框架而非镜像到目标 gateway 会话（保持角色交替完整）。
 
 用户文档：https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
 

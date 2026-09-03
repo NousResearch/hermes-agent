@@ -109,6 +109,13 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
 
     args = type("Args", (), {})()
+    gateway_resume = {"resume_needed": True, "profiles": {"default": 4321}}
+    guarded_tokens = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_abort_dependency_sync_if_self_locked",
+        lambda token=None: guarded_tokens.append(token),
+    )
 
     def fake_urlretrieve(url, dest):
         with open(zip_path, "rb") as src, open(dest, "wb") as dst:
@@ -124,7 +131,7 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
          patch("subprocess.check_call"):
         fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         try:
-            hermes_main._update_via_zip(args)
+            hermes_main._update_via_zip(args, gateway_resume=gateway_resume)
         except SystemExit:
             pass
 
@@ -135,3 +142,4 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
     assert (fake_root / "README.md").read_text() == "ok\n"
+    assert guarded_tokens == [gateway_resume]

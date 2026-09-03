@@ -2183,7 +2183,12 @@ def _verify_and_restore_state_dbs_post_update() -> None:
         logger.debug("Sibling-profile state.db guard sweep failed: %s", exc)
 
 
-def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> bool:
+def _update_via_zip(
+    args,
+    *,
+    had_desktop_app_before_update: bool = False,
+    gateway_resume: dict | None = None,
+) -> bool:
     """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
@@ -2401,7 +2406,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     # Self-lock deferral (relocated preflight — #86735): the ZIP code swap
     # above is already committed; defer only the dependency sync when this
     # process holds a native extension the sync must rewrite.
-    _m()._abort_dependency_sync_if_self_locked()
+    _m()._abort_dependency_sync_if_self_locked(gateway_resume)
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -8645,6 +8650,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
+                gateway_resume=_windows_gateway_resume,
             )
         finally:
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
@@ -11097,6 +11103,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             desktop_build_ok = _update_via_zip(
                 args,
                 had_desktop_app_before_update=had_desktop_app_before_update,
+                gateway_resume=_windows_gateway_resume,
             )
             if gateway_mode:
                 _write_gateway_update_exit_code(desktop_build_ok)

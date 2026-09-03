@@ -9997,9 +9997,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
 
         quick_commands = self.config.get("quick_commands", {})
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
         if quick_commands and not query:
             _cprint(f"\n  ⚡ {_BOLD}Quick Commands{_RST} ({len(quick_commands)} configured):")
             for name, qcmd in sorted(quick_commands.items()):
+                if not isinstance(qcmd, dict):
+                    continue
                 desc = qcmd.get("description", qcmd.get("type", ""))
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
@@ -13125,9 +13129,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             skill_commands = _ensure_skill_commands()
             skill_bundles = get_skill_bundles()
             quick_commands = self.config.get("quick_commands", {})
+            if not isinstance(quick_commands, dict):
+                quick_commands = {}
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    logger.warning(
+                        "quick_commands entry for %s is not a dict (got %s); skipping and falling through to plugin/skill commands",
+                        base_cmd,
+                        type(qcmd).__name__,
+                    )
+                elif qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
@@ -13159,7 +13171,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             self._console_print(f"[bold red]Quick command error: {e}[/]")
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
-                elif qcmd.get("type") == "alias":
+                elif isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -13168,7 +13180,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         return self.process_command(aliased_command)
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
-                else:
+                elif isinstance(qcmd, dict):
                     self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():

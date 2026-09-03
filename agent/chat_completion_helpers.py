@@ -3225,7 +3225,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
 
     summary_request = MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": summary_request})
+    append_message(messages, {"role": "user", "content": summary_request, "_synthetic": True})
 
     try:
         # Build API messages, stripping internal-only fields

@@ -8809,6 +8809,7 @@ def run_conversation(
                     continue_msg = {
                         "role": "user",
                         "content": _CODEX_ACK_CONTINUATION_NUDGE,
+                        "_synthetic": True,
                     }
                     append_message(messages, continue_msg)
                     agent._session_messages = messages

@@ -498,7 +498,7 @@ class TestUpdateManagedUv:
         legacy.write_text("#!/bin/sh\necho uv 0.1.2\n")
         legacy.chmod(0o755)
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
-             patch("hermes_cli.managed_uv._uv_self_update_is_fresh", return_value=True), \
+             patch("hermes_cli.managed_uv._managed_uv_refresh_is_fresh", return_value=True), \
              patch(
                  "hermes_cli.managed_uv.repair_vulnerable_runtime",
                  return_value=RuntimeRepairResult("skipped"),
@@ -512,21 +512,23 @@ class TestUpdateManagedUv:
         mock_repair.assert_called_once_with(str(managed))
 
 
-    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch):
-        """A recent success stamp must skip `uv self update` entirely while the
-        vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
+    def test_fresh_stamp_skips_installer_refresh_but_not_repair(self, tmp_path, monkeypatch):
+        """A recent success stamp must skip the installer re-run entirely while
+        the vulnerable-runtime repair probe still runs (CVE repair is never
+        gated)."""
         from hermes_cli.managed_uv import RuntimeRepairResult, update_managed_uv
 
         uv = tmp_path / "uv" / _BIN_UV
         _make_executable(uv)
         # Fresh stamp under the isolated HERMES_HOME.
         import hermes_constants
-        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_refresh_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv._install_uv") as mock_install, \
              patch(
                  "hermes_cli.managed_uv.repair_vulnerable_runtime",
                  return_value=RuntimeRepairResult("skipped"),
@@ -534,11 +536,15 @@ class TestUpdateManagedUv:
             result = update_managed_uv()
 
         assert result == str(uv)
-        assert mock_run.call_count == 0, "fresh stamp must skip the network self-update"
+        mock_install.assert_not_called(), "fresh stamp must skip the installer refresh"
+        assert mock_run.call_count == 0, "fresh stamp must not run any subprocess"
         mock_repair.assert_called_once_with(str(uv))
 
 
-    def test_stale_stamp_runs_self_update_and_refreshes_stamp(self, tmp_path):
+    def test_stale_stamp_reinstalls_private_binary_and_refreshes_stamp(self, tmp_path):
+        """An unmanaged install refuses `uv self update`, so a stale stamp must
+        re-run the official installer over the private binary (never a user's
+        uv), and a successful refresh refreshes the throttle stamp."""
         import os as _os
         import time as _time
 
@@ -547,7 +553,7 @@ class TestUpdateManagedUv:
         uv = tmp_path / "uv" / _BIN_UV
         _make_executable(uv)
         import hermes_constants
-        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = hermes_constants.get_hermes_home() / "cache" / ".uv_refresh_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         old = _time.time() - UV_SELF_UPDATE_INTERVAL_SECONDS - 60
@@ -555,12 +561,23 @@ class TestUpdateManagedUv:
 
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
-             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run, \
+             patch("hermes_cli.managed_uv._install_uv") as mock_install, \
+             patch(
+                 "hermes_cli.managed_uv._uv_version_string",
+                 side_effect=["uv 0.1.2", "uv 0.1.2", "uv 0.2.0", "uv 0.2.0"],
+             ):
             update_managed_uv()
 
-        assert mock_run.call_args_list[0][0][0] == [str(uv), "self", "update"]
-        assert stamp.stat().st_mtime > old + 30, "successful self-update must refresh the stamp"
+        # The refresh is installer re-run over the private binary, NOT `uv self
+        # update` (which an unmanaged install refuses).
+        mock_install.assert_called_once_with(tmp_path / "uv" / _BIN_UV)
+        assert mock_run.call_count == 0, (
+            "stale stamp must not run `uv self update` or any other subprocess"
+        )
+        assert stamp.stat().st_mtime > old + 30, (
+            "successful installer refresh must refresh the throttle stamp"
+        )
 
 
 
@@ -1306,15 +1323,16 @@ class TestListAvailablePatches:
 
 
 # ---------------------------------------------------------------------------
-# _refresh_managed_uv_catalog + provisioning retry (issue #72093)
+# _refresh_managed_binary + provisioning retry (issue #72093)
 # ---------------------------------------------------------------------------
 
-class TestRefreshManagedUvCatalog:
+class TestRefreshManagedBinary:
     """The managed uv is UV_UNMANAGED_INSTALL'd, so `uv self update` is
-    disabled and its python-build-standalone catalog freezes at bootstrap
+    refused and its python-build-standalone catalog freezes at bootstrap
     age. python-build-standalone re-releases the same patch versions with
     fixed SQLite, so a stale catalog makes provisioning fail forever with
-    no newer patch number to retry (issue #72093)."""
+    no newer patch number to retry (issue #72093). Re-running the official
+    installer over the private binary is the only refresh path."""
 
 
     def test_version_change_reports_true(self, tmp_path):
@@ -1332,7 +1350,7 @@ class TestRefreshManagedUvCatalog:
             # (uv on POSIX, uv.exe on Windows) — no platform fake needed.
             uv_path = managed_uv.managed_uv_path()
             _make_executable(uv_path)
-            assert managed_uv._refresh_managed_uv_catalog(str(uv_path)) is True
+            assert managed_uv._refresh_managed_binary(str(uv_path)) is True
 
 
     def test_installer_failure_reports_false(self, tmp_path):
@@ -1345,7 +1363,7 @@ class TestRefreshManagedUvCatalog:
              ):
             uv_path = managed_uv.managed_uv_path()
             _make_executable(uv_path)
-            assert managed_uv._refresh_managed_uv_catalog(str(uv_path)) is False
+            assert managed_uv._refresh_managed_binary(str(uv_path)) is False
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -1375,7 +1393,7 @@ class TestRepairRetriesAfterUvRefresh:
                  side_effect=fake_install,
              ), \
              patch(
-                 "hermes_cli.managed_uv._refresh_managed_uv_catalog",
+                 "hermes_cli.managed_uv._refresh_managed_binary",
                  return_value=refresh_result,
              ) as mock_refresh, \
              patch(

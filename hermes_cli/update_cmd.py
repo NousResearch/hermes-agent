@@ -2390,9 +2390,10 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
-    # Keep the managed uv current (self-update is refused for unmanaged
-    # installs; the binary is refreshed by re-running the installer when
-    # provisioning needs it — see managed_uv._refresh_managed_uv_catalog).
+    # Keep the managed uv current: unmanaged installs refuse `uv self
+    # update`, so update_managed_uv re-runs the official installer into the
+    # private dir (throttled to ~weekly) — a Hermes-owned refresh that never
+    # writes user PATH/profile/state.
     # Runs the vulnerable-runtime repair probe regardless.
     update_managed_uv()
 
@@ -9392,9 +9393,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
-        # Keep the managed uv current (self-update is refused for unmanaged
-        # installs; the binary is refreshed by re-running the installer when
-        # provisioning needs it — see managed_uv._refresh_managed_uv_catalog).
+        # Keep the managed uv current: unmanaged installs refuse `uv self
+        # update`, so update_managed_uv re-runs the official installer into
+        # the private dir (throttled to ~weekly) — a Hermes-owned refresh that
+        # never writes user PATH/profile/state.
         update_managed_uv()
 
         uv_bin = ensure_uv()

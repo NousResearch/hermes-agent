@@ -495,29 +495,29 @@ def ensure_uv(
     return _UvResult(result)
 
 
-def _uv_self_update_is_fresh(now: float | None = None) -> bool:
-    """Return True when ``uv self update`` ran recently enough to skip.
+def _managed_uv_refresh_is_fresh(now: float | None = None) -> bool:
+    """Return True when the managed uv was refreshed recently enough to skip.
 
     uv releases roughly weekly while many users run ``hermes update`` daily;
-    re-running a blocking network self-update on every invocation is waste
-    and, offline, an unbounded hang risk. A stamp file under HERMES_HOME
-    caches the last successful self-update time.
+    re-running the standalone installer (a ~30 MB download) on every
+    invocation is waste and, offline, a hang risk. A stamp file under
+    HERMES_HOME caches the last successful refresh time.
     """
     try:
         from hermes_constants import get_hermes_home
 
-        stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = get_hermes_home() / "cache" / ".uv_refresh_stamp"
         age = (now if now is not None else time.time()) - stamp.stat().st_mtime
         return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
     except Exception:
         return False
 
 
-def _touch_uv_self_update_stamp() -> None:
+def _touch_managed_uv_refresh_stamp() -> None:
     try:
         from hermes_constants import get_hermes_home
 
-        stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = get_hermes_home() / "cache" / ".uv_refresh_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
     except OSError:
@@ -525,10 +525,9 @@ def _touch_uv_self_update_stamp() -> None:
 
 
 # uv ships releases ~weekly; refresh the managed binary at most this often.
+# (Name kept from the pre-isolation self-update era for API stability; the
+# mechanism is now installer re-run, not ``uv self update``.)
 UV_SELF_UPDATE_INTERVAL_SECONDS = 7 * 24 * 3600
-# `uv self update` is a network call; unbounded it can hang forever on a
-# blackholed connection (no default timeout in uv's downloader path).
-UV_SELF_UPDATE_TIMEOUT_SECONDS = 60
 
 
 def update_managed_uv(
@@ -536,26 +535,25 @@ def update_managed_uv(
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
     force: bool = False,
 ) -> Optional[str]:
-    """Run ``uv self update`` on the managed uv binary.
+    """Refresh Hermes' *private* uv by re-running the official installer.
 
     Call this during ``hermes update`` so the managed copy stays current.
     Resolution goes through ``resolve_uv()``, which is managed-only, so a
-    toolchain Hermes does not own is never used or self-updated. Returns the managed path
-    when uv is available and ``None`` otherwise.  A self-update failure is
-    non-fatal because the old version still works.  ``repair_observer``, when
-    provided, receives the runtime repair result.
+    toolchain Hermes does not own is never used or refreshed.  Returns the
+    managed path when uv is available and ``None`` otherwise.
 
-    The network self-update is skipped when it succeeded within the last
+    The managed binary is installed with ``UV_UNMANAGED_INSTALL``: no install
+    receipt is written, so uv itself refuses ``uv self update`` for it — and
+    that refusal is exactly what keeps Hermes from ever touching a user's uv
+    or user PATH/profile state.  Advancing Hermes' own copy therefore means
+    re-running the official standalone installer into the private dir
+    (:func:`_refresh_managed_binary`) under the same unmanaged contract — a
+    bounded, Hermes-owned refresh that never writes user state.
+
+    The refresh is skipped when one succeeded within the last
     ``UV_SELF_UPDATE_INTERVAL_SECONDS`` (7 days) unless ``force=True``; the
     vulnerable-runtime repair probe below ALWAYS runs — CVE-driven runtime
     repair must never be gated behind the freshness stamp.
-
-    Note on the self-update: the managed binary is installed with
-    ``UV_UNMANAGED_INSTALL``, so uv itself refuses ``uv self update`` for it
-    (no install receipt — it never touches a user's uv either).  The attempt
-    is therefore expected to fail fast and is non-fatal; the real refresh
-    path is :func:`_refresh_managed_uv_catalog`, which re-runs the official
-    installer when provisioning needs a newer catalog.
     """
     # A pre-isolation install kept the managed binary in $HERMES_HOME/bin;
     # migrate it before resolving so a legacy install gets its runtime
@@ -563,32 +561,17 @@ def update_managed_uv(
     _migrate_legacy_managed_uv()
     existing = resolve_uv()
 
-    if existing and (force or not _uv_self_update_is_fresh()):
-        try:
-            result = subprocess.run(
-                [existing, "self", "update"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-                timeout=UV_SELF_UPDATE_TIMEOUT_SECONDS,
+    if existing and (force or not _managed_uv_refresh_is_fresh()):
+        before = _uv_version_string(existing)
+        changed = _refresh_managed_binary(existing)
+        if changed:
+            print(
+                "  ✓ Managed uv refreshed "
+                f"({before} → {_uv_version_string(existing)})"
             )
-        except subprocess.TimeoutExpired:
-            logger.debug("uv self update timed out after %ss", UV_SELF_UPDATE_TIMEOUT_SECONDS)
-            result = None
-        if result is not None and result.returncode == 0:
-            _touch_uv_self_update_stamp()
-            version = subprocess.run(
-                [existing, "--version"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-            ).stdout.strip()
-            print(f"  ✓ Managed uv updated ({version})")
-        elif result is not None:
-            # Non-fatal — old uv still works fine.
-            logger.debug(
-                "uv self update failed (rc=%d): %s", result.returncode, result.stderr
-            )
+        # changed=False: the installer ran but upstream has no newer version
+        # (or refresh failed — old uv still works, stamp left stale so the
+        # next update retries).  Both are non-fatal by design.
 
     if not existing:
         # No uv at all yet — ensure_uv() will handle provisioning elsewhere.
@@ -1356,27 +1339,39 @@ def _uv_version_string(uv_bin: str) -> str:
     return (result.stdout or "").strip()
 
 
-def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
-    """Re-bootstrap the managed uv binary to refresh its Python catalog.
+def _refresh_managed_binary(uv_bin: str) -> bool:
+    """Re-run the official installer over the managed uv binary.
 
-    The managed uv is installed with ``UV_UNMANAGED_INSTALL``, which disables
-    ``uv self update`` by design — so its embedded python-build-standalone
-    download catalog stays frozen at bootstrap age.  python-build-standalone
-    re-releases existing CPython patch versions with newer SQLite (e.g. the
-    3.11.15 build was re-cut with SQLite 3.53.x), so a stale catalog can make
-    every provisioning attempt resolve to a vulnerable build even though a
-    fixed build of the SAME patch version exists (issue #72093).  The
-    patch-retry loop cannot recover from that: the fixed build carries no
-    newer version number to retry with.
+    The managed uv is installed with ``UV_UNMANAGED_INSTALL``: no install
+    receipt is written, so uv itself refuses ``uv self update`` for it — which
+    is exactly what keeps Hermes from ever bumping a user's uv or writing
+    user PATH/profile state.  Re-running the official standalone installer
+    into the private dir is therefore the ONLY way to advance Hermes' own
+    copy, and the only supported refresh path for unmanaged installs — this
+    is it (called from ``update_managed_uv`` on a throttle, and from runtime
+    repair when provisioning needs a newer catalog).
 
-    Re-running the official installer is the only supported refresh path for
-    unmanaged installs. Only the Hermes-managed binary is refreshed: a caller
-    that somehow passed a foreign uv path is left alone (no download), so
-    this never touches a toolchain Hermes does not own.
+    Re-running also refreshes the embedded python-build-standalone download
+    catalog, which otherwise stays frozen at bootstrap age:
+    python-build-standalone re-releases existing CPython patch versions with
+    newer SQLite (e.g. the 3.11.15 build was re-cut with SQLite 3.53.x), so a
+    stale catalog can make every provisioning attempt resolve to a vulnerable
+    build even though a fixed build of the SAME patch version exists (issue
+    #72093).
 
-    Returns ``True`` when the binary's version actually changed — i.e. a
+    Only the Hermes-managed binary is refreshed: a caller that somehow passed
+    a foreign uv path is left alone (no download), so this never touches a
+    toolchain Hermes does not own.
+
+    The throttle stamp is touched only when the installer actually ran and
+    produced a runnable binary: a flaky network leaves it stale so the next
+    update retries, while an unchanged upstream version (installer ran, same
+    version) does not re-download on every update.
+
+    Returns ``True`` when the binary's version actually changed — e.g. a
     provisioning retry can now see a different catalog.  ``False`` means a
-    retry would resolve identically and is not worth the download cycle.
+    retry would resolve identically and is not worth the download cycle (or
+    the refresh failed; the old binary still works).
     """
     managed = managed_uv_path()
     try:
@@ -1387,12 +1382,16 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     before = _uv_version_string(uv_bin)
     try:
         _install_uv(managed)
+        after = _uv_version_string(managed)
     except Exception as exc:
         logger.warning("managed uv refresh failed: %s", exc)
         return False
-    after = _uv_version_string(uv_bin)
     if not after:
+        logger.warning(
+            "managed uv refresh did not produce a runnable binary at %s", managed
+        )
         return False
+    _touch_managed_uv_refresh_stamp()
     return after != before
 
 
@@ -1576,7 +1575,7 @@ def repair_vulnerable_runtime(
             # frozen catalog keeps resolving the old vulnerable build and the
             # patch-retry loop has no newer number to try (issue #72093).
             # Refresh the managed binary and retry once.
-            if _refresh_managed_uv_catalog(uv_bin):
+            if _refresh_managed_binary(uv_bin):
                 print("  → Managed uv refreshed; retrying provisioning...")
                 provisioned = _install_safe_python_generation(
                     uv_bin,

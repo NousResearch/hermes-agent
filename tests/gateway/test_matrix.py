@@ -3342,3 +3342,75 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope: MATRIX_REACTIONS
+# ---------------------------------------------------------------------------
+#
+# MATRIX_REACTIONS has no config.yaml counterpart (env-only knob, like
+# MATRIX_ALLOW_ROOM_MENTIONS/MATRIX_DM_AUTO_THREAD) and __init__ previously
+# read it via raw os.getenv while its neighbors (MATRIX_ACCESS_TOKEN,
+# MATRIX_PASSWORD, MATRIX_HOMESERVER) were already routed through the
+# scope-aware ``_startup_env_secret`` helper. Under gateway.multiplex_profiles,
+# os.environ holds the DEFAULT profile's bridged value, so a secondary
+# profile would silently inherit the default profile's reactions toggle for
+# the adapter's entire runtime lifetime. Mirrors the established Matrix
+# startup-secret pattern (#59739 / test_matrix_recovery_key_scope.py).
+
+
+class TestMatrixReactionsMultiplexScope:
+    @pytest.fixture(autouse=True)
+    def _reset_multiplex(self):
+        from agent import secret_scope as ss
+
+        ss.set_multiplex_active(False)
+        yield
+        ss.set_multiplex_active(False)
+
+    def test_secondary_profile_scope_wins_over_default_profile_env(self, monkeypatch):
+        """The secondary profile's own scoped value is authoritative, not the
+        default profile's MATRIX_REACTIONS bridged into os.environ."""
+        from agent import secret_scope as ss
+
+        # Simulates the default profile's YAML-to-env bridge output sitting
+        # in the shared process env.
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"MATRIX_REACTIONS": "true"})
+        try:
+            adapter = _make_adapter()
+        finally:
+            ss.reset_secret_scope(token)
+        assert adapter._reactions_enabled is True
+
+    def test_secondary_profile_scope_miss_defaults_true_not_env(self, monkeypatch):
+        """A scope without MATRIX_REACTIONS must default to enabled (true),
+        not silently borrow the default profile's disabled toggle."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"UNRELATED": "x"})
+        try:
+            adapter = _make_adapter()
+        finally:
+            ss.reset_secret_scope(token)
+        assert adapter._reactions_enabled is True
+
+    def test_unscoped_multiplex_startup_falls_back_to_env(self, monkeypatch):
+        """Default-profile startup loop under multiplex (no scope installed
+        yet): falls back to os.environ, which is that profile's own value."""
+        from agent import secret_scope as ss
+
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")
+        ss.set_multiplex_active(True)
+        # No secret scope installed -> get_secret raises UnscopedSecretError.
+        adapter = _make_adapter()
+        assert adapter._reactions_enabled is False
+
+    def test_single_profile_legacy_env(self, monkeypatch):
+        """Non-multiplex deployment: reads os.environ transparently."""
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")
+        adapter = _make_adapter()
+        assert adapter._reactions_enabled is False

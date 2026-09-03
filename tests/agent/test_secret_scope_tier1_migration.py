@@ -152,6 +152,32 @@ class TestMatrixStartupSecret:
         ss.set_multiplex_active(True)
         assert helper("MATRIX_PASSWORD") == "own-env-pass"
 
+    # MATRIX_REACTIONS (#102097 sibling gap): this env-only toggle was still
+    # read via raw os.getenv in MatrixAdapter.__init__ while its neighbors
+    # (MATRIX_ACCESS_TOKEN, MATRIX_PASSWORD, MATRIX_HOMESERVER) were already
+    # routed through this same scoped helper -- a secondary multiplex profile
+    # silently inherited the default profile's MATRIX_REACTIONS toggle.
+
+    def test_scoped_value_wins_reactions(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")
+        ss.set_multiplex_active(True)
+        with _Scope({"MATRIX_REACTIONS": "true"}):
+            assert helper("MATRIX_REACTIONS") == "true"
+
+    def test_scoped_miss_no_borrow_reactions(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")  # another profile's bridge
+        ss.set_multiplex_active(True)
+        with _Scope({"UNRELATED": "x"}):
+            assert helper("MATRIX_REACTIONS") == ""
+
+    def test_unscoped_multiplex_falls_back_reactions(self, monkeypatch):
+        helper = self._helper()
+        monkeypatch.setenv("MATRIX_REACTIONS", "false")
+        ss.set_multiplex_active(True)
+        assert helper("MATRIX_REACTIONS") == "false"
+
 
 # ── Cluster C: managed tool gateway token override ─────────────────────────
 

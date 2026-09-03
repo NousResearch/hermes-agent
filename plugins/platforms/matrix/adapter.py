@@ -1327,9 +1327,13 @@ class MatrixAdapter(BasePlatformAdapter):
             "MATRIX_PROCESS_NOTICES", "false"
         ).lower() in ("true", "1", "yes")
 
-        # Reactions: configurable via MATRIX_REACTIONS (default: true).
-        self._reactions_enabled: bool = os.getenv(
-            "MATRIX_REACTIONS", "true"
+        # Reactions: configurable via MATRIX_REACTIONS (default: true). No
+        # config.yaml counterpart (env-only knob, like MATRIX_ALLOW_ROOM_MENTIONS/
+        # MATRIX_DM_AUTO_THREAD) -- scope the read itself so a secondary
+        # multiplex profile's own .env value wins over the shared process env
+        # instead of silently inheriting the default profile's toggle.
+        self._reactions_enabled: bool = _startup_env_secret(
+            "MATRIX_REACTIONS"
         ).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Delay before redacting reactions so Matrix homeservers have time to

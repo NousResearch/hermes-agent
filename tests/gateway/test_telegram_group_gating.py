@@ -22,53 +22,57 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    inject_observed_group_context=None,
     bot_username="hermes_bot",
+    extra=None,
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
 
-    extra = {}
+    extra_dict = dict(extra) if isinstance(extra, dict) else {}
     if require_mention is not None:
-        extra["require_mention"] = require_mention
+        extra_dict["require_mention"] = require_mention
     if free_response_chats is not None:
-        extra["free_response_chats"] = free_response_chats
+        extra_dict["free_response_chats"] = free_response_chats
     if free_response_topics is not None:
-        extra["free_response_topics"] = free_response_topics
+        extra_dict["free_response_topics"] = free_response_topics
     if mention_patterns is not None:
-        extra["mention_patterns"] = mention_patterns
+        extra_dict["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
-        extra["exclusive_bot_mentions"] = exclusive_bot_mentions
+        extra_dict["exclusive_bot_mentions"] = exclusive_bot_mentions
     if ignored_threads is not None:
-        extra["ignored_threads"] = ignored_threads
+        extra_dict["ignored_threads"] = ignored_threads
     if allowed_topics is not None:
-        extra["allowed_topics"] = allowed_topics
-    else:
+        extra_dict["allowed_topics"] = allowed_topics
+    elif "allowed_topics" not in extra_dict:
         # Keep unit tests isolated from TELEGRAM_ALLOWED_TOPICS in the parent
         # environment; production adapters without this explicit key still fall
         # back to the env var.
-        extra["allowed_topics"] = []
+        extra_dict["allowed_topics"] = []
     if allow_from is not None:
-        extra["allow_from"] = allow_from
+        extra_dict["allow_from"] = allow_from
     if group_allow_from is not None:
-        extra["group_allow_from"] = group_allow_from
+        extra_dict["group_allow_from"] = group_allow_from
     if allowed_chats is not None:
-        extra["allowed_chats"] = allowed_chats
-    else:
+        extra_dict["allowed_chats"] = allowed_chats
+    elif "allowed_chats" not in extra_dict:
         # Keep unit tests isolated from TELEGRAM_ALLOWED_CHATS in the parent
         # environment; production adapters without this explicit key still fall
         # back to the env var.
-        extra["allowed_chats"] = []
+        extra_dict["allowed_chats"] = []
     if group_allowed_chats is not None:
-        extra["group_allowed_chats"] = group_allowed_chats
-    else:
-        extra["group_allowed_chats"] = []
+        extra_dict["group_allowed_chats"] = group_allowed_chats
+    elif "group_allowed_chats" not in extra_dict:
+        extra_dict["group_allowed_chats"] = []
     if guest_mode is not None:
-        extra["guest_mode"] = guest_mode
+        extra_dict["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
-        extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+        extra_dict["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if inject_observed_group_context is not None:
+        extra_dict["inject_observed_group_context"] = inject_observed_group_context
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
-    adapter.config = PlatformConfig(enabled=True, token="***", extra=extra)
+    adapter.config = PlatformConfig(enabled=True, token="***", extra=extra_dict)
     adapter._bot = SimpleNamespace(id=999, username=bot_username)
     adapter._message_handler = AsyncMock()
     adapter._pending_text_batches = {}
@@ -531,6 +535,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  guest_mode: true\n"
         "  exclusive_bot_mentions: true\n"
         "  observe_unmentioned_group_messages: true\n"
+        "  inject_observed_group_context: false\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
@@ -556,6 +561,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
         "TELEGRAM_GUEST_MODE",
         "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
+        "TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT",
         "TELEGRAM_FREE_RESPONSE_CHATS",
         "TELEGRAM_ALLOWED_CHATS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
@@ -579,6 +585,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("guest_mode") is True
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
+    assert tg_cfg.extra.get("inject_observed_group_context") is False
     assert tg_cfg.extra.get("mention_patterns") == [r"^\s*chompy\b"]
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
@@ -882,3 +889,110 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     adapter._note_bot_username("new_helper_bot")
     assert adapter._bot_identity_is_fresh() is True
+
+
+def test_telegram_inject_observed_group_context_adapter_helper(monkeypatch):
+    """The adapter helper defaults to True and respects config extra and env var."""
+    monkeypatch.delenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", raising=False)
+    adapter_default = _make_adapter(require_mention=True)
+    assert adapter_default._telegram_inject_observed_group_context() is True
+
+    adapter_disabled = _make_adapter(
+        require_mention=True,
+        extra={"inject_observed_group_context": False},
+    )
+    assert adapter_disabled._telegram_inject_observed_group_context() is False
+
+    adapter_disabled_str = _make_adapter(
+        require_mention=True,
+        extra={"inject_observed_group_context": "false"},
+    )
+    assert adapter_disabled_str._telegram_inject_observed_group_context() is False
+
+    monkeypatch.setenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", "false")
+    adapter_env = _make_adapter(require_mention=True)
+    assert adapter_env._telegram_inject_observed_group_context() is False
+
+
+def test_telegram_inject_observed_group_context_enabled_resolution(monkeypatch):
+    """_telegram_inject_observed_group_context_enabled resolves configs and env vars."""
+    from gateway.run import _telegram_inject_observed_group_context_enabled
+
+    monkeypatch.delenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", raising=False)
+
+    # Defaults to True
+    assert _telegram_inject_observed_group_context_enabled(None) is True
+    assert _telegram_inject_observed_group_context_enabled({}) is True
+
+    # Top-level telegram section
+    assert _telegram_inject_observed_group_context_enabled(
+        {"telegram": {"inject_observed_group_context": False}}
+    ) is False
+    assert _telegram_inject_observed_group_context_enabled(
+        {"telegram": {"inject_observed_group_context": "false"}}
+    ) is False
+    assert _telegram_inject_observed_group_context_enabled(
+        {"telegram": {"inject_observed_group_context": True}}
+    ) is True
+
+    # Top-level direct key
+    assert _telegram_inject_observed_group_context_enabled(
+        {"inject_observed_group_context": False}
+    ) is False
+
+    # gateway.platforms.telegram section
+    assert _telegram_inject_observed_group_context_enabled(
+        {"gateway": {"platforms": {"telegram": {"inject_observed_group_context": False}}}}
+    ) is False
+    assert _telegram_inject_observed_group_context_enabled(
+        {"gateway": {"platforms": {"telegram": {"extra": {"inject_observed_group_context": False}}}}}
+    ) is False
+
+    # gateway.telegram section
+    assert _telegram_inject_observed_group_context_enabled(
+        {"gateway": {"telegram": {"inject_observed_group_context": False}}}
+    ) is False
+
+    # Env var fallback
+    monkeypatch.setenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", "false")
+    assert _telegram_inject_observed_group_context_enabled(None) is False
+    assert _telegram_inject_observed_group_context_enabled({}) is False
+
+
+def test_build_gateway_agent_history_observed_context_optout():
+    """When inject_observed_context is False, observed chatter is stripped from
+    replay history AND omitted from the prepended observed_context (returning None).
+    """
+    from gateway.run import _build_gateway_agent_history, _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER
+
+    channel_prompt = f"System prompt\n\n{_TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER} details"
+    history = [
+        {"role": "user", "content": "[Alice|111]\nside chatter 1", "observed": True},
+        {"role": "user", "content": "[Bob|222]\nside chatter 2", "observed": True},
+        {"role": "user", "content": "[Charlie|333]\n@hermes_bot what is 1+1?"},
+        {"role": "assistant", "content": "1+1 is 2."},
+    ]
+
+    # Default / inject_observed_context=True: extracts observed chatter as context block
+    history_default, observed_default = _build_gateway_agent_history(
+        history,
+        channel_prompt=channel_prompt,
+        inject_observed_context=True,
+    )
+    assert len(history_default) == 2
+    assert history_default[0]["content"] == "[Charlie|333]\n@hermes_bot what is 1+1?"
+    assert history_default[1]["content"] == "1+1 is 2."
+    assert observed_default == "[Alice|111]\nside chatter 1\n[Bob|222]\nside chatter 2"
+
+    # Opt-out / inject_observed_context=False: withholds observed chatter from history
+    # and returns None for observed_context (no prompt wrapping)
+    history_optout, observed_optout = _build_gateway_agent_history(
+        history,
+        channel_prompt=channel_prompt,
+        inject_observed_context=False,
+    )
+    assert len(history_optout) == 2
+    assert history_optout[0]["content"] == "[Charlie|333]\n@hermes_bot what is 1+1?"
+    assert history_optout[1]["content"] == "1+1 is 2."
+    assert observed_optout is None
+

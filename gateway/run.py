@@ -1823,11 +1823,66 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _telegram_inject_observed_group_context_enabled(user_config: Optional[dict]) -> bool:
+    """True when Telegram observed group context injection is enabled.
+
+    Default True preserves prior behavior (observed group chatter is prepended
+    to the current user turn when @mentioned). Setting
+    ``telegram.inject_observed_group_context: false`` (or the env var
+    ``TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT=false``) keeps unmentioned group
+    messages stored in the transcript / database for search and RAG without
+    injecting them into the LLM prompt.
+    """
+    if isinstance(user_config, dict):
+        tg = user_config.get("telegram")
+        if isinstance(tg, dict) and "inject_observed_group_context" in tg:
+            val = tg["inject_observed_group_context"]
+            if isinstance(val, str):
+                return val.lower() in {"true", "1", "yes", "on"}
+            return bool(val)
+        if "inject_observed_group_context" in user_config:
+            val = user_config["inject_observed_group_context"]
+            if isinstance(val, str):
+                return val.lower() in {"true", "1", "yes", "on"}
+            return bool(val)
+
+        gw = user_config.get("gateway")
+        if isinstance(gw, dict):
+            platforms = gw.get("platforms")
+            if isinstance(platforms, dict):
+                plat_tg = platforms.get("telegram")
+                if isinstance(plat_tg, dict):
+                    if "inject_observed_group_context" in plat_tg:
+                        val = plat_tg["inject_observed_group_context"]
+                        if isinstance(val, str):
+                            return val.lower() in {"true", "1", "yes", "on"}
+                        return bool(val)
+                    extra = plat_tg.get("extra")
+                    if isinstance(extra, dict) and "inject_observed_group_context" in extra:
+                        val = extra["inject_observed_group_context"]
+                        if isinstance(val, str):
+                            return val.lower() in {"true", "1", "yes", "on"}
+                        return bool(val)
+            gw_tg = gw.get("telegram")
+            if isinstance(gw_tg, dict) and "inject_observed_group_context" in gw_tg:
+                val = gw_tg["inject_observed_group_context"]
+                if isinstance(val, str):
+                    return val.lower() in {"true", "1", "yes", "on"}
+                return bool(val)
+
+    env_val = os.getenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT")
+    if env_val is not None:
+        return env_val.lower() in {"true", "1", "yes", "on"}
+
+    return True
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
     channel_prompt: Optional[str] = None,
     inject_timestamps: bool = False,
+    inject_observed_context: bool = True,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Convert stored gateway transcript rows into agent replay messages.
 
@@ -1870,7 +1925,8 @@ def _build_gateway_agent_history(
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+            if inject_observed_context:
+                observed_group_context.append(str(content).strip())
             continue
 
         # Rich agent messages (tool_calls, tool results) must be passed through
@@ -6754,6 +6810,7 @@ class TurnRunner:
             ctx.history,
             channel_prompt=ctx.channel_prompt,
             inject_timestamps=_message_timestamps_enabled(ctx.user_config),
+            inject_observed_context=_telegram_inject_observed_group_context_enabled(ctx.user_config),
         )
 
         # FTS write-corruption guard (#50502): when message persistence

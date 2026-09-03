@@ -8990,6 +8990,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_inject_observed_group_context(self) -> bool:
+        """Return whether observed group messages are injected into the agent prompt."""
+        configured = self.config.extra.get("inject_observed_group_context")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT", "true").lower() in {"true", "1", "yes", "on"}
+
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
         configured = self.config.extra.get("guest_mode")
@@ -11265,6 +11274,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
     if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
         os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
+    if "inject_observed_group_context" in telegram_cfg and not os.getenv("TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT"):
+        os.environ["TELEGRAM_INJECT_OBSERVED_GROUP_CONTEXT"] = str(telegram_cfg["inject_observed_group_context"]).lower()
     frc = telegram_cfg.get("free_response_chats")
     if frc is not None:
         extras.setdefault("free_response_chats", frc)
@@ -11332,7 +11343,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         # extras seed intentionally omitted (shared-key loop bridges group_allowed_chats).
         if not _skip_env_bridge and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
             os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "inject_observed_group_context", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

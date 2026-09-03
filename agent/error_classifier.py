@@ -421,6 +421,23 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no endpoints found that support tool use",
 ]
 
+# LM Studio unloads/ejects a model at runtime (JIT disabled, manual eject, or
+# an idle-TTL sweep). The completion cannot succeed, and re-firing it just makes
+# LM Studio JIT-reload the model and burn tokens in a reload loop, so this is
+# non-retryable. Unlike a generic missing model, we also decline fallback:
+# silently swapping to another model hides the real endpoint state (the operator
+# thinks the model is serving when it is not). This is the same
+# non-retryable/no-fallback form as the 409 model-pool-lock case in #34076. Kept
+# separate from _MODEL_NOT_FOUND_PATTERNS so should_fallback=False is not
+# overwritten by the generic model_not_found path (should_fallback=True).
+_MODEL_UNLOADED_PATTERNS = [
+    "model unloaded",
+    "model not loaded",
+    "no model loaded",
+    "no models loaded",
+    "no chat-capable models",
+]
+
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
     """True when a bare model id is only known to the provider as ``vendor/id``.
@@ -1319,6 +1336,15 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=False,
             )
+        # LM Studio "model unloaded" — non-retryable AND no fallback (see
+        # _MODEL_UNLOADED_PATTERNS). Checked before the generic model-not-found
+        # patterns so should_fallback stays False.
+        if any(p in error_msg for p in _MODEL_UNLOADED_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=False,
+            )
         if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
             return result_fn(
                 FailoverReason.model_not_found,
@@ -1766,6 +1792,12 @@ def _classify_400(
             retryable=False,
             should_fallback=False,
         )
+    if any(p in error_msg for p in _MODEL_UNLOADED_PATTERNS):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=False,
+        )
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
@@ -2030,6 +2062,15 @@ def _classify_by_message(
     if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
         return result_fn(
             FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_fallback=False,
+        )
+
+    # LM Studio "model unloaded" — non-retryable AND no fallback. Checked
+    # before the generic model-not-found patterns so should_fallback stays False.
+    if any(p in error_msg for p in _MODEL_UNLOADED_PATTERNS):
+        return result_fn(
+            FailoverReason.model_not_found,
             retryable=False,
             should_fallback=False,
         )

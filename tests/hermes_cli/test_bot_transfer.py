@@ -81,6 +81,33 @@ def test_bot_export_is_definition_only_and_identity_is_stable(profile_root, tmp_
     assert "cloneable: false" in profile_meta
 
 
+def test_bot_export_excludes_nested_credentials_and_cron_runtime(profile_root, tmp_path):
+    source = _source_profile(profile_root)
+    (source / "skills" / "demo" / ".env").write_text(
+        "TOKEN=private\n", encoding="utf-8"
+    )
+    (source / "plugins" / "demo").mkdir(parents=True)
+    (source / "plugins" / "demo" / "credentials.bin").write_bytes(b"\x00private")
+    (source / "cron" / "output").mkdir(parents=True)
+    (source / "cron" / "jobs.json").write_text("{}\n", encoding="utf-8")
+    (source / "cron" / "output" / "last.txt").write_text(
+        "private\n", encoding="utf-8"
+    )
+    (source / "cron" / "ticker-heartbeat").write_text("runtime\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsupported binary file"):
+        export_bot_profile("helper", str(tmp_path / "binary.tar.gz"))
+
+    (source / "plugins" / "demo" / "credentials.bin").unlink()
+    archive, _ = export_bot_profile("helper", str(tmp_path / "safe.tar.gz"))
+    with tarfile.open(archive, "r:gz") as tar:
+        names = set(tar.getnames())
+    assert "helper/cron/jobs.json" in names
+    assert not any(name.endswith("/.env") for name in names)
+    assert not any("cron/output" in name for name in names)
+    assert "helper/cron/ticker-heartbeat" not in names
+
+
 def test_pull_policy_is_per_profile_and_fails_closed_for_malformed_yaml(profile_root):
     source = _source_profile(profile_root)
 
@@ -167,6 +194,27 @@ def test_bot_import_rejects_user_state_even_from_safe_tar(profile_root, tmp_path
 
     with pytest.raises(ValueError, match="disallowed profile data: sessions"):
         import_bot_profile(str(archive))
+
+
+def test_bot_import_resets_sender_sharing_policies(profile_root, tmp_path):
+    staged = tmp_path / "staged" / "shared"
+    staged.mkdir(parents=True)
+    (staged / BOT_ID_FILENAME).write_text(
+        "a8c214f7-37ee-4f50-95a4-939a51631283\n", encoding="utf-8"
+    )
+    (staged / "profile.yaml").write_text("cloneable: true\n", encoding="utf-8")
+    (staged / "config.yaml").write_text(
+        "model: test\ngateway:\n  bot_sharing:\n    allow_push: true\n",
+        encoding="utf-8",
+    )
+    archive = tmp_path / "shared.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staged, arcname="shared")
+
+    imported, _ = import_bot_profile(str(archive))
+
+    assert profile_is_cloneable("shared") is False
+    assert "bot_sharing" not in (imported / "config.yaml").read_text(encoding="utf-8")
 
 
 def test_bot_import_bounds_expanded_archive_and_leaves_no_profile(

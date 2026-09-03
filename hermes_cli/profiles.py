@@ -31,7 +31,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import (
@@ -2432,6 +2432,7 @@ def import_profile(
     *,
     max_extract_bytes: Optional[int] = None,
     max_archive_members: Optional[int] = None,
+    prepare_staged: Optional[Callable[[Path], None]] = None,
 ) -> Path:
     """Import a profile from a tar.gz archive.
 
@@ -2493,6 +2494,9 @@ def import_profile(
             raise ValueError(
                 f"Profile archive root is missing or invalid: {archive_root}"
             )
+
+        if prepare_staged is not None:
+            prepare_staged(extracted)
 
         final_source = extracted
         if archive_root != canon:

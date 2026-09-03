@@ -47,6 +47,24 @@ BOT_CLONE_ROOTS = frozenset(
         "system_prompt.md",
     }
 )
+BOT_CLONE_DENIED_NAMES = frozenset(
+    {".env", ".netrc", "auth.json", "credentials.json", "secrets.json"}
+)
+BOT_CLONE_DENIED_SUFFIXES = frozenset({".key", ".p12", ".pem", ".pfx"})
+BOT_CLONE_SAFE_BINARY_SUFFIXES = frozenset(
+    {
+        ".gif",
+        ".ico",
+        ".jpeg",
+        ".jpg",
+        ".otf",
+        ".png",
+        ".ttf",
+        ".webp",
+        ".woff",
+        ".woff2",
+    }
+)
 
 
 class BotTransferError(RuntimeError):
@@ -148,6 +166,19 @@ def _check_clone_source_budget(profile_dir: Path) -> None:
         if source.is_dir():
             candidates.extend(source.rglob("*"))
         for path in candidates:
+            relative = path.relative_to(profile_dir)
+            if (
+                path.name.lower() in BOT_CLONE_DENIED_NAMES
+                or path.suffix.lower() in BOT_CLONE_DENIED_SUFFIXES
+                or "__pycache__" in relative.parts
+                or path.name.endswith((".sock", ".tmp"))
+                or (
+                    relative.parts[0] == "cron"
+                    and len(relative.parts) > 1
+                    and relative.parts[1] != "jobs.json"
+                )
+            ):
+                continue
             if path.is_symlink():
                 raise ValueError(
                     f"Bot clone cannot include symbolic link: {path.relative_to(profile_dir)}"
@@ -167,6 +198,53 @@ def _check_clone_source_budget(profile_dir: Path) -> None:
                     raise ValueError(
                         "Bot clone exceeds the 10 MB expanded-size limit."
                     )
+
+
+def _copy_clone_tree(source: Path, target: Path, *, cron_root: bool = False) -> None:
+    """Copy a definition tree while excluding credentials and runtime state."""
+
+    def _ignore(directory: str, contents: list[str]) -> set[str]:
+        ignored = {
+            name
+            for name in contents
+            if name.lower() in BOT_CLONE_DENIED_NAMES
+            or Path(name).suffix.lower() in BOT_CLONE_DENIED_SUFFIXES
+            or name == "__pycache__"
+            or name.endswith((".sock", ".tmp"))
+        }
+        if cron_root and Path(directory) == source:
+            ignored.update(name for name in contents if name != "jobs.json")
+        return ignored
+
+    shutil.copytree(source, target, ignore=_ignore)
+
+
+def _scrub_clone_files(staged: Path) -> None:
+    """Redact every text file and reject unclassified binary profile data."""
+    from agent.redact import redact_sensitive_text
+
+    for path in staged.rglob("*"):
+        if not path.is_file():
+            continue
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        if name in BOT_CLONE_DENIED_NAMES or suffix in BOT_CLONE_DENIED_SUFFIXES:
+            raise ValueError(f"Bot clone contains credential file: {path.relative_to(staged)}")
+        if suffix in BOT_CLONE_SAFE_BINARY_SUFFIXES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"Bot clone contains unsupported binary file: {path.relative_to(staged)}"
+            ) from exc
+        if "\x00" in text:
+            raise ValueError(
+                f"Bot clone contains unsupported binary file: {path.relative_to(staged)}"
+            )
+        redacted = redact_sensitive_text(text, force=True)
+        if redacted != text:
+            path.write_text(redacted, encoding="utf-8")
 
 
 def _reset_owner_policies(staged: Path) -> None:
@@ -192,10 +270,24 @@ def _reset_owner_policies(staged: Path) -> None:
         raise ValueError("Could not remove owner-only sharing policy from bot clone.") from exc
 
 
+def _prepare_imported_clone(staged: Path) -> None:
+    """Enforce receiver-owned policy and data boundaries before publication."""
+    cron_dir = staged / "cron"
+    if cron_dir.is_dir():
+        for entry in cron_dir.iterdir():
+            if entry.name == "jobs.json":
+                continue
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+    _scrub_clone_files(staged)
+    _reset_owner_policies(staged)
+
+
 def export_bot_profile(name: str, output_path: str) -> tuple[Path, str]:
     """Create a bounded, credential-free bot clone archive."""
     from hermes_cli.profiles import (
-        _scrub_export_secrets,
         get_profile_dir,
         normalize_profile_name,
         validate_profile_name,
@@ -224,11 +316,11 @@ def export_bot_profile(name: str, output_path: str) -> tuple[Path, str]:
             target = staged / entry
             if source.is_dir():
                 _reject_symlinks(source)
-                shutil.copytree(source, target)
+                _copy_clone_tree(source, target, cron_root=entry == "cron")
             elif source.is_file():
                 shutil.copy2(source, target)
         _reset_owner_policies(staged)
-        _scrub_export_secrets(staged)
+        _scrub_clone_files(staged)
         result = Path(make_targz(base, tmpdir, canon))
 
     try:
@@ -369,6 +461,7 @@ def import_bot_profile(archive_path: str, name: Optional[str] = None) -> tuple[P
             name=name or archive_root,
             max_extract_bytes=MAX_BOT_CLONE_BYTES,
             max_archive_members=MAX_BOT_CLONE_MEMBERS,
+            prepare_staged=_prepare_imported_clone,
         )
     return profile_dir, bot_id
 

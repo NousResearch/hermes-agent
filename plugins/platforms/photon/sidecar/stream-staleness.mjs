@@ -9,6 +9,12 @@
 //
 //   - probe resolves, or rejects with a not-found-shaped error for our
 //     synthetic id            -> ALIVE (the wire round-tripped)
+//   - probe rejects with a server-answered error — gRPC INVALID_ARGUMENT,
+//     or a message stamped with a spectrum component source like
+//     "[spectrum-imessage] ..." -> ALIVE (a server-side answer also proves
+//     the wire round-tripped; the synthetic probe id is not a valid Apple
+//     message GUID, so the proxy rejects it with a validation error on
+//     every probe — #101618)
 //   - probe rejects any other way (UNAVAILABLE, DEADLINE_EXCEEDED, network
 //     down, ...)              -> INCONCLUSIVE — never treated as alive, and
 //                                never treated as zombie-proof either
@@ -27,6 +33,16 @@
 // message text. Anything not clearly not-found is inconclusive.
 const NOT_FOUND_RE = /not[\s_-]?found/i;
 
+// A server-answered rejection also proves a round-trip: gRPC
+// INVALID_ARGUMENT (3) is generated server-side, as are errors stamped
+// with a spectrum component source — the "[spectrum-*]" prefixes do not
+// exist anywhere in the installed client tree (#101618), so a message
+// carrying one provably came back over the wire. FAILED_PRECONDITION (9)
+// is deliberately excluded: the proxy can also answer it from a
+// half-ready state that never completed the probe.
+const SERVER_ANSWERED_CODES = new Set([3, "invalidArgument"]);
+const SERVER_ANSWERED_RE = /\[spectrum-[a-z0-9-]+\]/i;
+
 /**
  * Classify the rejection of the synthetic-id probe read.
  *
@@ -43,6 +59,17 @@ export function classifyProbeRejection(err) {
     // Expected: the synthetic id doesn't exist. The unary call completed a
     // round-trip, so the channel is provably alive.
     return { alive: true, inconclusive: false, reason: "not-found round-trip" };
+  }
+  if (SERVER_ANSWERED_CODES.has(code) || SERVER_ANSWERED_RE.test(message)) {
+    // The server received the request and answered with an application-level
+    // rejection (the synthetic id is not a valid Apple message GUID, so the
+    // proxy rejects it as a validation error instead of not-found). A
+    // server-side answer proves the wire round-tripped just the same.
+    return {
+      alive: true,
+      inconclusive: false,
+      reason: "server-answered round-trip: " + message,
+    };
   }
   // Anything else (UNAVAILABLE, DEADLINE_EXCEEDED, TLS, auth, ...) does NOT
   // prove liveness — and doesn't prove a zombie either.

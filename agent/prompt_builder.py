@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import socket
 import sys
 import threading
 import contextvars
@@ -1406,8 +1407,8 @@ def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
     Always emits a factual block describing the execution environment:
-    - For **local** terminal backends: the host OS, user home, current
-      working directory (plus a Windows-only note about hostname != user
+    - For **local** terminal backends: the host OS, live machine hostname,
+      user home, current working directory (plus a Windows-only note about hostname != user
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
@@ -1439,6 +1440,12 @@ def build_environment_hints() -> str:
         else:
             host_lines.append(f"Host: {platform.system()} ({platform.release()})")
 
+        try:
+            hostname = socket.gethostname().strip()
+        except OSError:
+            hostname = ""
+        if hostname:
+            host_lines.append(f"Machine hostname: {hostname}")
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import time
+from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -52,11 +53,7 @@ def _make_pkce() -> tuple[str, str]:
 
 
 class _PasswordOnlyProvider(StubAuthProvider):
-    """Mirrors the bundled ``basic`` provider's flags: a session provider
-    (``supports_session`` defaults True) that authenticates by username +
-    password and can never be the target of the native OAuth broker flow.
-    ``start_login`` raises to prove the route must reject it before ever
-    attempting a redirect."""
+    """Password sign-in must use the form, never an upstream IDP redirect."""
 
     name = "pwonly"
     display_name = "Password Only (test)"
@@ -64,8 +61,7 @@ class _PasswordOnlyProvider(StubAuthProvider):
 
     def start_login(self, *, redirect_uri):
         raise AssertionError(
-            "native authorize must reject a password provider before "
-            "calling start_login"
+            "native authorize must not call start_login for a password provider"
         )
 
 
@@ -75,6 +71,26 @@ class _SecondStubProvider(StubAuthProvider):
 
     name = "stub2"
     display_name = "Stub IdP Two (test only)"
+
+
+class _ProviderLinkParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.links = {}
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "a" and "provider-btn" in attrs.get("class", "").split():
+            href = attrs["href"]
+            provider = parse_qs(urlparse(href).query)["provider"][0]
+            self.links[provider] = href
+
+
+def _provider_links(response):
+    assert response.status_code == 200, response.text
+    parser = _ProviderLinkParser()
+    parser.feed(response.text)
+    return parser.links
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +225,7 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
 
 # ---------------------------------------------------------------------------
 # Empty-provider auto-select (the desktop omits ``provider``; the gateway
-# picks when there is exactly one brokerable candidate) — regression #78906
+# picks only when there is exactly one interactive candidate).
 # ---------------------------------------------------------------------------
 
 
@@ -224,23 +240,23 @@ def _native_authorize_params(challenge, **overrides):
     return params
 
 
-def test_native_authorize_empty_provider_auto_selects_oauth_with_password_also_registered(
+def test_native_authorize_chooser_includes_password_and_oauth(
     gated_client,
 ):
-    """Regression for #78906: a password provider is a session provider but
-    can never be the target of the native OAuth broker flow, so it must not
-    count toward the empty-provider auto-select. With one OAuth provider +
-    one password provider (the normal SSO-with-password-fallback setup) the
-    desktop's empty-provider request must auto-select the OAuth provider
-    (302), not fail with ``Unknown provider: ''`` (404)."""
+    """A configured password must remain reachable when SSO is also enabled."""
     register_provider(_PasswordOnlyProvider())
     _verifier, challenge = _make_pkce()
     r = gated_client.get(
         "/auth/native/authorize",
         params=_native_authorize_params(challenge),
     )
-    assert r.status_code == 302, r.text
-    assert "code=stub_code" in r.headers["location"]
+    links = _provider_links(r)
+    assert set(links) == {"stub", "pwonly"}
+    assert "no-store" in r.headers["cache-control"]
+    assert "set-cookie" not in r.headers
+    selected = gated_client.get(links["stub"])
+    assert selected.status_code == 302, selected.text
+    assert "code=stub_code" in selected.headers["location"]
 
 
 def test_native_authorize_empty_provider_auto_selects_single_oauth(gated_client):
@@ -256,15 +272,96 @@ def test_native_authorize_empty_provider_auto_selects_single_oauth(gated_client)
     assert "code=stub_code" in r.headers["location"]
 
 
-def test_native_authorize_empty_provider_ambiguous_multiple_oauth_404(gated_client):
-    """Two brokerable providers: the empty-provider convenience cannot pick
-    unambiguously, so the request still fails — the desktop must pass
-    ``?provider=`` explicitly."""
+def test_native_authorize_chooser_multiple_oauth(gated_client):
+    """Multiple interactive providers are a choice, not an unknown provider."""
     register_provider(_SecondStubProvider())
     _verifier, challenge = _make_pkce()
     r = gated_client.get(
         "/auth/native/authorize",
         params=_native_authorize_params(challenge),
+    )
+    assert set(_provider_links(r)) == {"stub", "stub2"}
+
+
+def test_native_authorize_chooser_preserves_pkce_and_prefix(gated_client):
+    class EscapedProvider(StubAuthProvider):
+        name = 'odd&provider="<test>'
+        display_name = '<img src=x onerror="alert(1)">'
+
+    register_provider(EscapedProvider())
+    _verifier, challenge = _make_pkce()
+    params = _native_authorize_params(
+        challenge, state='state+with&quotes="<>',
+        redirect_uri="http://[::1]:53999/cb?existing=a%26b",
+    )
+    r = gated_client.get(
+        "/auth/native/authorize", params=params,
+        headers={"X-Forwarded-Prefix": "/hermes"},
+    )
+    links = _provider_links(r)
+    assert set(links) == {"stub", EscapedProvider.name}
+    assert EscapedProvider.display_name not in r.text
+    assert "&lt;img" in r.text
+    for provider, href in links.items():
+        parsed = urlparse(href)
+        assert parsed.path == "/hermes/auth/native/authorize"
+        assert parse_qs(parsed.query) == {
+            **{key: [value] for key, value in params.items()},
+            "provider": [provider],
+        }
+
+
+@pytest.mark.parametrize("overrides", [
+    {"code_challenge": ""},
+    {"code_challenge_method": "plain"},
+    {"redirect_uri": "https://example.test/cb"},
+])
+def test_native_authorize_chooser_validates_before_rendering(gated_client, overrides):
+    register_provider(_PasswordOnlyProvider())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge, **overrides),
+    )
+    assert r.status_code == 400
+    assert "set-cookie" not in r.headers
+
+
+def test_native_authorize_chooser_excludes_token_only_providers(gated_client):
+    class TokenOnlyProvider(StubAuthProvider):
+        name = "token-only"
+        supports_session = False
+
+    register_provider(TokenOnlyProvider())
+    _verifier, challenge = _make_pkce()
+    params = _native_authorize_params(challenge)
+    # A token-only provider must not force a chooser for a single sign-in.
+    assert gated_client.get("/auth/native/authorize", params=params).status_code == 302
+    register_provider(_PasswordOnlyProvider())
+    assert set(_provider_links(gated_client.get(
+        "/auth/native/authorize", params=params,
+    ))) == {"stub", "pwonly"}
+    params["provider"] = "token-only"
+    assert gated_client.get("/auth/native/authorize", params=params).status_code == 400
+
+
+@pytest.mark.parametrize("provider", ["", "missing"])
+def test_native_authorize_no_provider_fails_closed(gated_client, provider):
+    clear_providers()
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge, provider=provider),
+    )
+    assert r.status_code == 404
+
+
+def test_native_authorize_explicit_provider_does_not_fall_back(gated_client):
+    register_provider(_PasswordOnlyProvider())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge, provider="missing"),
     )
     assert r.status_code == 404
 
@@ -434,10 +531,25 @@ def _start_native_password_login(client, *, challenge, state="desk-state"):
     return r.cookies
 
 
-def test_native_password_login_full_roundtrip(pw_gated_client):
+@pytest.mark.parametrize("use_chooser", [False, True])
+def test_native_password_login_full_roundtrip(pw_gated_client, use_chooser):
     """authorize → /login → password-login → loopback code → bearer tokens."""
     verifier, challenge = _make_pkce()
-    cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
+    if use_chooser:
+        register_provider(StubAuthProvider())
+        r = pw_gated_client.get(
+            "/auth/native/authorize",
+            params=_native_authorize_params(challenge, state="desk-state"),
+        )
+        links = _provider_links(r)
+        r = pw_gated_client.get(links["testpw"])
+        assert r.status_code == 302, r.text
+        assert r.headers["location"] == "/login"
+        cookies = r.cookies
+        page = pw_gated_client.get(r.headers["location"])
+        assert 'data-provider="testpw"' in page.text
+    else:
+        cookies = _start_native_password_login(pw_gated_client, challenge=challenge)
 
     # The browser form POSTs the credentials; the PKCE cookie rides along.
     r = pw_gated_client.post(

@@ -47,7 +47,10 @@ from hermes_cli.dashboard_auth.cookies import (
     set_pkce_cookie,
     set_session_cookies,
 )
-from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.login_page import (
+    render_login_html,
+    render_native_provider_choice_html,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -343,31 +346,28 @@ async def auth_native_authorize(
         raise HTTPException(status_code=400, detail="code_challenge required")
     _validate_loopback_redirect_uri(redirect_uri)
 
-    # Resolve the provider. With exactly one brokerable session provider
-    # registered (the common hosted case) an empty ``provider`` selects it,
-    # mirroring the auto-SSO convenience so the desktop needn't hardcode the
-    # name. Password providers are session providers too, but they can never
-    # be the target of the native OAuth broker flow (rejected below), so they
-    # must not count toward "exactly one candidate": otherwise a normal
-    # SSO-with-password-fallback deployment (one OIDC provider + the bundled
-    # ``basic`` provider) would see two session providers, skip the
-    # auto-select, and fail desktop login with a misleading "Unknown provider".
+    # Both OAuth and password providers support native sign-in. Auto-select
+    # only a single interactive provider; otherwise keep every configured
+    # method reachable without requiring the desktop to know provider names.
     p = get_provider(provider) if provider else None
     if p is None and not provider:
-        native_eligible = [
-            pp
-            for pp in list_session_providers()
-            if not getattr(pp, "supports_password", False)
-        ]
-        if len(native_eligible) == 1:
-            p = native_eligible[0]
-        elif not native_eligible:
-            # No brokerable provider at all. Preserve the old behaviour of
-            # selecting a lone password provider so the explicit 400 below
-            # (rather than a 404) explains why native OAuth is unavailable.
-            sess_providers = list_session_providers()
-            if len(sess_providers) == 1:
-                p = sess_providers[0]
+        candidates = list_session_providers()
+        if len(candidates) == 1:
+            p = candidates[0]
+        elif len(candidates) > 1:
+            # Do not allocate a pending authorization or replace its cookie
+            # until the user chooses. Every link re-enters this validated path.
+            return HTMLResponse(
+                render_native_provider_choice_html(
+                    providers=candidates,
+                    authorize_path=f"{_prefix(request)}/auth/native/authorize",
+                    code_challenge=code_challenge,
+                    code_challenge_method=code_challenge_method,
+                    redirect_uri=redirect_uri,
+                    state=state,
+                ),
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
     if p is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"

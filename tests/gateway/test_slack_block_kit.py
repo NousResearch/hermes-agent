@@ -25,6 +25,12 @@ class TestRenderBlocksBasics:
         assert blocks[0]["text"]["type"] == "plain_text"
         assert blocks[0]["text"]["text"] == "Title"
 
+    def test_section_block_includes_expand_true(self):
+        blocks = render_blocks("This is a standalone paragraph.")
+        sections = [b for b in blocks if b["type"] == "section"]
+        assert sections, "expected at least one section block"
+        assert sections[0].get("expand") is True
+
 
 class TestNestedLists:
     def test_nested_bullets_produce_increasing_indent(self):

@@ -1,44 +1,116 @@
 # Dependabot configuration for hermes-agent.
 #
-# Deliberately scoped to github-actions only.
+# Source dependencies remain exactly pinned in their manifests and lockfiles,
+# but Dependabot now proposes reviewed updates for the direct dependencies we
+# intentionally own. Nothing here auto-merges: every proposal still passes the
+# repository's applicable lockfile, supply-chain, vulnerability, and test
+# checks plus maintainer review before a pin moves.
 #
-# We do NOT enable Dependabot for pip / npm / any source-dependency ecosystem
-# because we pin source dependencies exactly (uv.lock, package-lock.json) as
-# part of our supply-chain posture. Automatic version-bump PRs against those
-# pins would undermine the strategy — pins are moved deliberately, after
-# review, not on a schedule.
-#
-# github-actions is the exception: action pins (we use full commit SHAs per
-# supply-chain policy) must be updated when upstream actions publish
-# patches — usually themselves security fixes. Dependabot opens a PR with
-# the new SHA and release notes; we review and merge like any other PR.
+# Routine minor/patch bumps are grouped per ecosystem to keep the review queue
+# useful. Major bumps stay isolated so compatibility changes get a focused
+# review. GitHub Actions remain full-SHA pinned and follow the same process.
 #
 # Security-update PRs for source dependencies (opened ONLY when a CVE is
 # published affecting a currently-pinned version) are enabled separately
 # via the repo's Dependabot security updates setting
 # (Settings → Code security → Dependabot → Dependabot security updates).
-# Those are CVE-only, not schedule-driven, and do not conflict with our
-# pinning strategy — they fire when a pinned version becomes known-bad,
-# which is exactly when we want to move the pin.
+# Those are CVE-only and complement the daily version checks below.
 
 version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+      interval: "daily"
+      time: "06:00"
+      timezone: "America/New_York"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10
     labels:
       - "dependencies"
-      - "github-actions"
     commit-message:
       prefix: "chore(actions)"
       include: "scope"
     groups:
-      # Batch routine action bumps into one PR per week to reduce noise.
-      # Security updates still open individually and bypass grouping.
       actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "06:10"
+      timezone: "America/New_York"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10
+    allow:
+      - dependency-type: "direct"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/"
+      - "/website"
+      - "/scripts/whatsapp-bridge"
+      - "/plugins/platforms/photon/sidecar"
+    schedule:
+      interval: "daily"
+      time: "06:20"
+      timezone: "America/New_York"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10
+    allow:
+      - dependency-type: "direct"
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      npm-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "cargo"
+    directory: "/apps/bootstrap-installer/src-tauri"
+    schedule:
+      interval: "daily"
+      time: "06:30"
+      timezone: "America/New_York"
+    cooldown:
+      default-days: 3
+    open-pull-requests-limit: 10
+    allow:
+      - dependency-type: "direct"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      cargo-minor-patch:
+        patterns:
+          - "*"
         update-types:
           - "minor"
           - "patch"

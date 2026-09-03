@@ -3928,6 +3928,7 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
+    enabled_toolsets: Optional[List[str]] = None,
     action: Optional[str] = None,
     subagent_id: Optional[str] = None,
     message: Optional[str] = None,
@@ -4068,6 +4069,8 @@ def delegate_task(
         single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
         if output_schema is not None:
             single_task["output_schema"] = output_schema
+        if enabled_toolsets is not None:
+            single_task["enabled_toolsets"] = enabled_toolsets
         task_list = [single_task]
     else:
         return tool_error(
@@ -4193,9 +4196,11 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=_child_context,
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # Per-task toolset scoping: when the task specifies
+                # enabled_toolsets, restrict the child to exactly those
+                # tool names (intersected with parent's set for safety).
+                # When omitted, child inherits the parent's full set.
+                toolsets=t.get("enabled_toolsets"),
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -4609,9 +4614,10 @@ def delegate_task(
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
-            # Metadata for the completion block only; subagents inherit the
-            # parent's toolsets (no model-facing toolsets arg).
-            toolsets=None,
+            # Async batch dispatch: uses the top-level enabled_toolsets
+            # for batch-consistent narrowing (per-task scoping in async
+            # mode is a future enhancement).
+            toolsets=enabled_toolsets,
             role=top_role,
             model=creds["model"],
             session_key=_session_key,
@@ -5271,6 +5277,18 @@ DELEGATE_TASK_SCHEMA = {
                                 "fields you will read."
                             ),
                         },
+                        "enabled_toolsets": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional. Restrict this child's tools to "
+                                "these toolset or tool names only. "
+                                "Intersected with the parent's enabled "
+                                "toolsets for safety; blocked tools are "
+                                "always stripped. Omit to inherit the "
+                                "parent's full set (default)."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -5286,6 +5304,43 @@ DELEGATE_TASK_SCHEMA = {
             # ignored: top-level delegations always run in the background.
             # Deliberately unadvertised (old transcripts/callers only); do not
             # re-add to the schema.
+            "role": {
+                "type": "string",
+                "enum": ["leaf", "orchestrator"],
+                "description": "(rebuilt at get_definitions() time)",
+            },
+            "output_schema": {
+                "type": "object",
+                "description": (
+                    "Optional JSON Schema for the single-goal form — the "
+                    "subagent's final answer must validate against it "
+                    "(same semantics as tasks[].output_schema)."
+                ),
+            },
+            "enabled_toolsets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional. Restrict the top-level single-goal child's "
+                    "tools to these toolset or tool names only. "
+                    "Intersected with the parent's enabled toolsets for "
+                    "safety; blocked tools are always stripped. Omit to "
+                    "inherit the parent's full set. For batch mode, use "
+                    "per-task enabled_toolsets in tasks[].items."
+                ),
+            },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "DEPRECATED / IGNORED. Top-level single and batch "
+                    "delegations run in the background automatically — you do "
+                    "not need to (and cannot) opt in or out. A single result or "
+                    "consolidated batch result re-enters the conversation when "
+                    "the work finishes; just continue working in the meantime. "
+                    "Setting this has no effect; the parameter remains only for "
+                    "backward compatibility."
+                ),
+            },
             "action": {
                 "type": "string",
                 "enum": ["spawn", "list", "steer", "stop"],

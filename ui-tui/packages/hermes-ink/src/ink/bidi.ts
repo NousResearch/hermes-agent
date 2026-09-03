@@ -71,18 +71,30 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   // Map bidi levels back to ClusteredChar indices.
   // Each ClusteredChar may be multiple code units in the joined string.
   const charLevels: number[] = []
+  const reordered: ClusteredChar[] = []
   let offset = 0
 
-  for (let i = 0; i < characters.length; i++) {
+  for (const character of characters) {
     charLevels.push(levels[offset]!)
-    offset += characters[i]!.value.length
+
+    // UAX #9 L4: mirror glyphs at odd resolved levels. Keep the logical
+    // clusters immutable, including their style, hyperlink and width.
+    let value = ''
+
+    for (const codePoint of character.value) {
+      const mirrored = levels[offset]! & 1 ? bidi.getMirroredCharacter(codePoint) : null
+
+      value += mirrored ?? codePoint
+      offset += codePoint.length
+    }
+
+    reordered.push(value === character.value ? character : { ...character, value })
   }
 
   // Get reorder segments from bidi-js, but we need to work at the
   // ClusteredChar level, not the string level. We'll implement the
   // standard bidi reordering: find the max level, then for each level
   // from max down to 1, reverse all contiguous runs >= that level.
-  const reordered = [...characters]
   const maxLevel = Math.max(...charLevels)
 
   for (let level = maxLevel; level >= 1; level--) {

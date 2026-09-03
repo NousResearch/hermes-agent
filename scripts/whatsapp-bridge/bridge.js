@@ -10,6 +10,7 @@
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
+ *   POST /send-album     - Send a native media album { chatId, items[] }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
@@ -30,6 +31,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
+import { registerAlbumRoute } from './album_route.js';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
@@ -142,7 +144,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
+function sendSocketWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
   let timer;
   const timeoutPromise = new Promise((_, reject) => {
     timer = setTimeout(
@@ -150,10 +152,12 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
       timeoutMs,
     );
   });
-  return enqueueSend(() =>
-    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
-  );
+  return Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+    .finally(() => clearTimeout(timer));
+}
+
+function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
+  return enqueueSend(() => sendSocketWithTimeout(chatId, payload, options, timeoutMs));
 }
 
 function formatOutgoingMessage(message) {
@@ -989,6 +993,19 @@ app.post('/send-media', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+registerAlbumRoute(app, {
+  getSocket: () => sock,
+  getConnectionState: () => connectionState,
+  enqueueSend,
+  trackSentMessageId,
+  messageStore,
+  sendTimeoutMs: SEND_TIMEOUT_MS,
+  onFatalTimeout: error => {
+    console.error(`[bridge] fatal album send timeout: ${error.message}; restarting bridge`);
+    process.exit(1);
+  },
 });
 
 // Send poll primitive. Approval UX is intentionally not wired here; gateway

@@ -286,3 +286,135 @@ class TestGeneralizedSupervisorMarkers:
 
         plist = generate_launchd_plist()
         assert "<key>HERMES_SUPERVISED_CHILD</key>" in plist
+
+
+class TestScratchHomeIsolation:
+    """Regression guard for the HERMES_HOME isolation break (Sep 2 junk-card
+    sprays).
+
+    A custom root HERMES_HOME whose parent dir is NOT ``profiles`` (e.g. a
+    throwaway ``/tmp`` scratch home, or systemd hardcoding ``HERMES_HOME`` to
+    the hermes root) is an explicit launch choice. It must be authoritative:
+
+      * If it carries its OWN ``active_profile``, that file wins (the unit or
+        the user deliberately pinned the profile here) — but the lookup is
+        scoped to *this* root, never the production sticky file.
+      * If it has no ``active_profile`` of its own, HERMES_HOME must be kept
+        exactly as given. It must NOT fall through to step 2 and read the
+        *production* ``active_profile``, which would redirect a bare /tmp
+        scratch home into the live profile tree — the isolation break behind
+        the Sep 2 payment-webhook junk-card sprays.
+    """
+
+    def test_scratch_home_without_active_profile_stays_isolated(
+        self, tmp_path, monkeypatch
+    ):
+        """A /tmp-style scratch HERMES_HOME with no active_profile must not
+        be redirected into the production profile tree.
+
+        Simulate: production root (~/.hermes) has active_profile=coder and a
+        live coder profile. The scratch home (its own tree under tmp) has no
+        active_profile of its own. Before the fix, step 2 read the production
+        sticky file and redirected HERMES_HOME into the live profile.
+        """
+        prod = tmp_path / "prod" / ".hermes"
+        prod.mkdir(parents=True)
+        (prod / "active_profile").write_text("coder")
+        (prod / "profiles" / "coder").mkdir(parents=True)
+
+        scratch = tmp_path / "scratch" / ".hermes"
+        scratch.mkdir(parents=True)
+        (scratch / "profiles" / "coder").mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "prod")
+        monkeypatch.setenv("HERMES_HOME", str(scratch))
+        monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+
+        for var in (
+            "HERMES_SUPERVISED_CHILD",
+            "HERMES_S6_SUPERVISED_CHILD",
+            "INVOCATION_ID",
+            "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        result = os.environ.get("HERMES_HOME")
+        assert result is not None
+        # Must remain the scratch home — NOT the production profile dir.
+        assert result == str(scratch), (
+            f"scratch home redirected to {result!r} — isolation break!"
+        )
+        assert "prod" not in result, (
+            f"scratch home leaked into production tree: {result!r}"
+        )
+
+    def test_scratch_home_with_own_active_profile_is_honored(
+        self, tmp_path, monkeypatch
+    ):
+        """A custom root that carries its own active_profile honors that file,
+        but only its own — never a sibling/production one."""
+        prod = tmp_path / "prod" / ".hermes"
+        prod.mkdir(parents=True)
+        (prod / "active_profile").write_text("coder")
+        (prod / "profiles" / "coder").mkdir(parents=True)
+
+        scratch = tmp_path / "scratch" / ".hermes"
+        scratch.mkdir(parents=True)
+        (scratch / "active_profile").write_text("briefer")
+        (scratch / "profiles" / "briefer").mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "prod")
+        monkeypatch.setenv("HERMES_HOME", str(scratch))
+        monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+
+        for var in (
+            "HERMES_SUPERVISED_CHILD",
+            "HERMES_S6_SUPERVISED_CHILD",
+            "INVOCATION_ID",
+            "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        result = os.environ.get("HERMES_HOME")
+        assert result is not None
+        assert result.endswith("briefer"), (
+            f"expected scratch's own profile, got {result!r}"
+        )
+
+    def test_profile_dir_home_is_trusted_as_before(self, tmp_path, monkeypatch):
+        """Regression: HERMES_HOME already pointing at a profile dir is still
+        trusted verbatim (issue #22502 inheritance contract)."""
+        prod = tmp_path / "prod" / ".hermes"
+        prod.mkdir(parents=True)
+        (prod / "active_profile").write_text("coder")
+        (prod / "profiles" / "coder").mkdir(parents=True)
+
+        profile_dir = tmp_path / "scratch" / ".hermes" / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "prod")
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+
+        for var in (
+            "HERMES_SUPERVISED_CHILD",
+            "HERMES_S6_SUPERVISED_CHILD",
+            "INVOCATION_ID",
+            "HERMES_GATEWAY_EXTERNAL_SUPERVISOR",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        result = os.environ.get("HERMES_HOME")
+        assert result == str(profile_dir)

@@ -646,20 +646,37 @@ def _apply_profile_override() -> None:
             consume = 0
             profile_index = None
 
-    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
-    # only when it already points to a specific profile directory.  The
-    # distinguishing heuristic: a profile path has "profiles" as its immediate
-    # parent directory name (e.g. ~/.hermes/profiles/coder or
-    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
-    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
-    # still read active_profile — the user may have switched profiles via
-    # `hermes profile use` and the gateway should honour that choice.
-    # See issue #22502.
+    # 1.5 If HERMES_HOME is already set, treat it as authoritative.
+    #
+    # A set HERMES_HOME is an explicit launch choice, so we must not silently
+    # override it by reading an unrelated sticky active_profile. Two spellings
+    # are possible:
+    #
+    #   * Parent dir named "profiles" (e.g. ~/.hermes/profiles/coder or
+    #     /opt/data/profiles/coder): HERMES_HOME already points at a profile.
+    #     Return immediately — re-reading active_profile would fight the
+    #     child-process inheritance contract (issue #22502).
+    #
+    #   * Anything else (a custom root like systemd's /root/.hermes, or a
+    #     throwaway /tmp scratch home): HERMES_HOME names the launch root.
+    #     If that root carries its OWN active_profile, honor it (the user or
+    #     the unit deliberately pinned the profile here). If it does NOT, keep
+    #     HERMES_HOME exactly as given and DO NOT fall through to step 2, which
+    #     would otherwise read the *production* active_profile and redirect into
+    #     the live profile tree. A bare /tmp scratch home with no sticky file
+    #     must stay isolated at its scratch home, not hit PRODUCTION — this is
+    #     the isolation break behind the Sep 2 junk-card sprays.
     hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
-        if Path(hermes_home_env).parent.name == "profiles":
+        hermes_home_path = Path(hermes_home_env)
+        if hermes_home_path.parent.name == "profiles":
+            return  # already a profile dir; trust it (issue #22502)
+        # Custom root: only its own active_profile may redirect; otherwise
+        # keep HERMES_HOME as-is and never touch the production sticky file.
+        active_path = hermes_home_path / "active_profile"
+        if not active_path.exists():
             return
-
+        # else fall through to step 2, which reads this root's active_profile
     # 2. If no flag, check active_profile in the hermes root.
     #
     # EXCEPTION: a supervisor-launched gateway child must NOT follow the

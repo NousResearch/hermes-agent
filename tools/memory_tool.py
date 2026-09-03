@@ -1139,6 +1139,17 @@ def memory_tool(
     # --- Single-op path ---------------------------------------------------
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
+    # An action-less single-op call means the model omitted the required
+    # 'action' field (some providers emit calls with it missing or null).
+    # Explain that the field is required and list the valid values instead of
+    # reporting "Unknown action 'None'". (issue #100927)
+    if not action:
+        return tool_error(
+            "Missing required field 'action'. Use: add, replace, remove "
+            "(single-op shape) or pass an 'operations' list to apply several "
+            "changes at once.",
+            success=False,
+        )
     if action == "add" and not content:
         return tool_error("Content is required for 'add' action.", success=False)
     if action == "replace" and (not old_text or not content):

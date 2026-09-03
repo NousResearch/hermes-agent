@@ -297,6 +297,30 @@ class TestMemoryToolDispatcher:
         assert "not available" in result["error"]
 
 
+    def test_missing_action_returns_clear_error(self, store):
+        # Some providers emit the call without the 'action' field; the error
+        # must explain the field is required instead of "Unknown action ''".
+        result = json.loads(memory_tool(content="fact", store=store))
+        assert result["success"] is False
+        assert "action" in result["error"]
+        assert "add" in result["error"] and "replace" in result["error"] and "remove" in result["error"]
+        assert "Unknown action" not in result["error"]
+
+    def test_null_action_returns_same_clear_error(self, store):
+        # action=None (explicit null) is the same omission as a missing field.
+        result = json.loads(memory_tool(action=None, content="fact", store=store))
+        assert result["success"] is False
+        assert "Missing required field 'action'" in result["error"]
+        assert "Unknown action" not in result["error"]
+
+    def test_unknown_action_keeps_existing_error(self, store):
+        # A real but unsupported action keeps the original message.
+        result = json.loads(memory_tool(action="get", store=store))
+        assert result["success"] is False
+        assert "Unknown action 'get'" in result["error"]
+        assert "Use: add, replace, remove" in result["error"]
+
+
     def test_replace_missing_content_still_distinct_error(self, store):
         # When old_text IS present but content is missing, keep the original
         # content-specific error (don't route through the old_text recovery path).

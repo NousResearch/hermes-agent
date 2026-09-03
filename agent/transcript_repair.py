@@ -81,11 +81,13 @@ def resolve_and_repair_transcript_batch(
                 decoded = decode_content_fn(raw_content)
                 if is_content_blank(decoded):
                     encoded = encode_content_fn(msg.get("content"))
-                    conn.execute(
-                        "UPDATE messages SET content = ? "
-                        "WHERE id = ? AND session_id = ? AND active = 1",
-                        (encoded, target_id, session_id),
-                    )
+                    if encoded != raw_content:
+                        conn.execute(
+                            "UPDATE messages SET content = ?, "
+                            "content_revision = COALESCE(content_revision, 0) + 1 "
+                            "WHERE id = ? AND session_id = ? AND active = 1",
+                            (encoded, target_id, session_id),
+                        )
                     if isinstance(msg, dict):
                         msg["_row_id"] = target_id
                 else:

@@ -2633,8 +2633,9 @@ class AIAgent:
             # NO markers were stamped, so the next flush re-scans and
             # re-writes the whole tail (same recovery contract as before,
             # minus the partial-prefix case that could double-pay counters).
+            self._last_flush_inserted_message_ids = ()
             if _batch_rows:
-                self._session_db.append_messages_batch(
+                _appended = self._session_db.append_messages_batch(
                     session_id=self.session_id,
                     messages=_batch_rows,
                     compression_lock_holder=getattr(
@@ -2647,7 +2648,26 @@ class AIAgent:
                         self, "_active_session_turn_lease_ttl_seconds", 300.0
                     )
                     or 300.0,
+                    with_revision=True,
                 )
+                # Adopt the fence the append actually committed, read inside the
+                # same transaction — never recompute it here, where a concurrent
+                # writer's row would be missed. SessionDB-like adapters that
+                # ignore ``with_revision`` still return a bare id (or nothing);
+                # they own no CAS either, so the agent simply keeps its fence.
+                if isinstance(_appended, tuple) and len(_appended) == 2:
+                    from hermes_state import DurableTranscriptRevision
+
+                    inserted_count, durable_revision = _appended
+                    if isinstance(durable_revision, DurableTranscriptRevision):
+                        self._durable_transcript_revision = durable_revision
+                        if inserted_count > 0:
+                            last_id = durable_revision.max_active_message_id
+                            first_id = last_id - int(inserted_count) + 1
+                            self._last_flush_inserted_message_ids = tuple(
+                                range(first_id, last_id + 1)
+                            )
+
                 from agent.transcript_repair import sync_flushed_message_markers
 
                 sync_flushed_message_markers(_batch_msgs, _batch_rows)
@@ -2664,6 +2684,7 @@ class AIAgent:
             # Force a full re-scan on the next flush: an exception mid-loop
             # leaves messages with mixed dispositions.
             self._db_flush_scan_prefix = None
+            self._last_flush_inserted_message_ids = ()
             # This is the one place the underlying SQLite error is visible
             # before it is swallowed into a bare ``False`` — classify it here
             # so the turn-end explanation can distinguish lock contention
@@ -9268,6 +9289,7 @@ class AIAgent:
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         persist_user_platform_id: Optional[str] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        conversation_history_revision: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -9827,6 +9849,7 @@ class AIAgent:
                         persist_user_display_metadata=persist_user_display_metadata,
                         persist_user_platform_id=persist_user_platform_id,
                         moa_config=moa_config,
+                        conversation_history_revision=conversation_history_revision,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

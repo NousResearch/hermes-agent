@@ -131,8 +131,14 @@ class TestAutoMigration:
                 row[1]
                 for row in db._conn.execute('PRAGMA table_info("messages")').fetchall()
             }
-            assert "api_content" in cols
-            # Old rows read back NULL (no key); new writes round-trip.
+            assert {"api_content", "content_revision"} <= cols
+            # Old rows read back NULL for both sparse revision sidecars; new
+            # writes round-trip without requiring a version-gated migration.
+            legacy = db._conn.execute(
+                "SELECT api_content, content_revision FROM messages WHERE id = 1"
+            ).fetchone()
+            assert legacy["api_content"] is None
+            assert legacy["content_revision"] is None
             db.append_message("s1", "user", content="new", api_content="new+ctx")
             msgs = db.get_messages_as_conversation("s1")
             assert "api_content" not in msgs[0]
@@ -637,8 +643,10 @@ class TestPrologueMoaAndInPlaceBackfill:
         msg = ctx.messages[ctx.current_turn_user_idx]
         assert msg["content"] == "hello"
         assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+        # with_revision: the sidecar is model-facing, so the backfill moves the
+        # durable fence and its own writer must adopt the committed revision.
         agent._session_db.set_latest_user_api_content.assert_called_once_with(
-            "sess-1", "hello", "hello\n\nPLUGIN-CTX"
+            "sess-1", "hello", "hello\n\nPLUGIN-CTX", with_revision=True
         )
 
 

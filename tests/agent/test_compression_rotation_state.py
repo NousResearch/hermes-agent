@@ -157,15 +157,15 @@ class TestOrphanRollbackOnCreateFailure:
             raise RuntimeError("simulated atomic publication failure")
 
         with patch.object(db, "publish_compression_child", side_effect=_boom):
-            returned, _system_prompt = agent._compress_context(
+            compressed, _ = agent._compress_context(
                 original, "sys", approx_tokens=120_000
             )
 
         assert agent.session_id == parent
-        assert [(m["role"], m["content"]) for m in returned] == [
+        assert compressed is original
+        assert [(m["role"], m["content"]) for m in original] == [
             (m["role"], m["content"]) for m in _msgs()
         ]
-        assert returned is original
         parent_row = db.get_session(parent)
         assert parent_row is not None
         assert parent_row["ended_at"] is None

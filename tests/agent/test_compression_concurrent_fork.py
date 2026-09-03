@@ -771,46 +771,51 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
 
-def test_durable_message_committed_before_lease_is_adopted(
+def test_durable_message_committed_before_lease_is_preserved_as_tail(
     tmp_path: Path,
 ) -> None:
     """A durable row absent from the caller snapshot must still be compressed.
 
     Previously this path aborted and returned the stale snapshot unchanged,
-    which permanently wedged busy sessions: every compress attempt saw the
-    DB ahead of the in-memory list, logged "changed before lease
-    acquisition", and never called the compressor. Adopting the durable
-    transcript keeps the late-committed turn and lets compression proceed.
+    which permanently wedged busy sessions. The prefix fence now proves that
+    the drift is append-only and carries the late row through the watermark
+    tail while compression proceeds on the authenticated snapshot.
     """
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "PRE_LEASE_DURABLE_RACE"
     db.create_session(parent_sid, source="webui")
     db.append_message(parent_sid, "user", "old durable")
+    expected_revision = db.get_active_message_revision(parent_sid)
 
     # Frontend takes its snapshot, then another producer commits before this
     # compressor acquires the lease.
     stale_snapshot = [{"role": "user", "content": "old durable"}]
     db.append_message(parent_sid, "assistant", "late committed before lease")
     agent = _build_agent_with_db(db, parent_sid)
+    agent._durable_transcript_revision = expected_revision
 
-    returned, _system_prompt = agent._compress_context(
+    agent.context_compressor.compress.side_effect = None
+    agent.context_compressor.compress.return_value = [
+        {"role": "user", "content": "x"}
+    ]
+
+    compressed, _ = agent._compress_context(
         stale_snapshot, "sys", approx_tokens=120_000
     )
 
-    agent.context_compressor.compress.assert_called_once()
-    compressed_arg = agent.context_compressor.compress.call_args.args[0]
-    assert [m["content"] for m in compressed_arg] == [
-        "old durable",
+    child_session_id = agent.session_id
+    assert child_session_id != parent_sid
+    assert [message["content"] for message in compressed] == [
+        "x",
         "late committed before lease",
     ]
-    # Must not echo the stale snapshot — compression proceeded on the
-    # adopted durable transcript (rotation publishes a child session).
-    assert returned is not stale_snapshot
-    assert returned[0]["content"] == "[CONTEXT COMPACTION] summary"
-    assert agent.session_id != parent_sid
-    child_id = _live_child_id(db, parent_sid)
-    assert child_id is not None
-    assert child_id == agent.session_id
+    assert [
+        message["content"]
+        for message in db.get_messages_as_conversation(child_session_id)
+    ] == ["x", "late committed before lease"]
+    agent.context_compressor.compress.assert_called_once()
+    assert db.get_compression_lock_holder(parent_sid) is None
+
 
 
 

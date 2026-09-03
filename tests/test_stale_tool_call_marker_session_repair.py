@@ -184,6 +184,7 @@ class TestPurgeStaleToolCallMarkers:
             db = SessionDB(db_path=Path(tmp) / "t.db")
             try:
                 self._seed_polluted_db(db)
+                before = db.get_active_message_revision("s1")
 
                 report = db.purge_stale_tool_call_markers(dry_run=False)
                 assert report["dry_run"] is False
@@ -199,6 +200,10 @@ class TestPurgeStaleToolCallMarkers:
                 assert row["content"] == ""
                 # tool_calls column itself must survive the rewrite untouched.
                 assert row["tool_calls"]
+                after = db.get_active_message_revision("s1")
+                assert after.active_message_count == before.active_message_count
+                assert after.max_active_message_id == before.max_active_message_id
+                assert after != before
 
                 # Running again finds nothing left to clean — idempotent.
                 second = db.purge_stale_tool_call_markers(dry_run=False)

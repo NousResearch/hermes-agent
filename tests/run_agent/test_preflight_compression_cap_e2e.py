@@ -135,7 +135,11 @@ def test_preflight_runs_fourth_compaction_pass_at_cap_six(monkeypatch, tmp_path)
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
-        result = agent.run_conversation("hello", conversation_history=history)
+        result = agent.run_conversation(
+            "hello",
+            conversation_history=history,
+            conversation_history_revision=agent._durable_transcript_revision,
+        )
 
     assert result["completed"] is True
     # The old hardcoded range(3) made a 4th pass impossible; cap=6 must

@@ -9,7 +9,7 @@
 
 import { host, LruCache } from '@hermes/plugin-sdk'
 
-import { botHandle, clearBotAttention, noteBotAttention } from './data'
+import { botHandle, clearBotAttention, mentionNameForms, noteBotAttention } from './data'
 import type { ProfileRoute, RosterRow } from './types'
 
 // ── cross-connection bot relay ────────────────────────────────────────────
@@ -222,7 +222,12 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
     return profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
-        handle: botHandle(profile?.name, profile),
+        // The mention tag, not the raw handle: a renamed profile's roster row
+        // carries the same slug autocomplete inserts and attribution stamps
+        // (display_name "CTO" -> cto), while mentionNameForms' reserved list
+        // keeps a profile renamed "Hermes" from claiming @hermes. Falls back
+        // to botHandle's canonical form when no friendly name is set.
+        handle: mentionNameForms(profile?.display_name)[0] || botHandle(profile?.name, profile),
         connection_id: connection.id,
         connection_label: label,
         title: String(profile?.ui_meta?.['hermes-bots']?.title || profile?.display_name || ''),

@@ -1815,6 +1815,7 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
 #      run of them; negligible quality cost for voice-note-length audio.
 #   3. Segment confidence gate (see _is_hallucinated_segment): drops segments
 #      the model itself flags as probably-not-speech AND low-confidence.
+_BEAM_SIZE_DEFAULT = 5
 _VAD_MIN_SILENCE_MS_DEFAULT = 500
 _NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
 _LOGPROB_THRESHOLD_DEFAULT = -1.0
@@ -1829,8 +1830,21 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
     stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
     local_cfg = stt_config.get("local") or {}
 
+    # Beam search width. 5 is faster-whisper's accuracy-oriented default and was
+    # hardcoded here, which put ~2-3x of avoidable decode latency on every
+    # interactive voice turn — beam search is the dominant cost on short
+    # utterances, where a wider beam buys very little over greedy. 1 (greedy) is
+    # the conventional realtime setting; the knob exists so batch//transcribe
+    # callers can still ask for the accurate decode.
+    try:
+        beam_size = int(local_cfg.get("beam_size", _BEAM_SIZE_DEFAULT))
+    except (TypeError, ValueError):
+        beam_size = _BEAM_SIZE_DEFAULT
+    if beam_size < 1:
+        beam_size = 1
+
     kwargs: Dict[str, Any] = {
-        "beam_size": 5,
+        "beam_size": beam_size,
         # Don't feed the previous window's text back as a prompt: a single
         # hallucinated token otherwise seeds a self-reinforcing run of them.
         "condition_on_previous_text": False,

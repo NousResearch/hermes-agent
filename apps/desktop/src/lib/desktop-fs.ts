@@ -11,6 +11,13 @@ export interface DesktopFsRemotePicker {
   selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
 }
 
+/** Explicit backend authority for content owned by a transcript/tile. */
+export interface DesktopFsScope {
+  connectionId?: string
+  mode?: 'local' | 'remote'
+  profile?: string
+}
+
 let remotePicker: DesktopFsRemotePicker | null = null
 
 export function setDesktopFsRemotePicker(next: DesktopFsRemotePicker | null) {
@@ -65,10 +72,15 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return hermesApi<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
-  )
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, scope?: DesktopFsScope): Promise<T> {
+  const profile = scope?.profile || desktopFsProfile()
+  const connectionId = scope?.connectionId
+
+  const request = body
+    ? { body, method: 'POST', path, ...(profile ? { profile } : {}), ...(connectionId ? { connectionId } : {}) }
+    : { path, ...(profile ? { profile } : {}), ...(connectionId ? { connectionId } : {}) }
+
+  return hermesApi<T>(request)
 }
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
@@ -107,12 +119,16 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopFileDataUrl(path: string, scope?: DesktopFsScope): Promise<string> {
+  if (
+    scope?.mode === 'local' ||
+    scope?.connectionId === 'local' ||
+    (!scope?.connectionId && $connection.get()?.mode !== 'remote')
+  ) {
     return bridge().readFileDataUrl(path)
   }
 
-  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
+  const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path), undefined, scope)
 
   return typeof result === 'string' ? result : result.dataUrl || ''
 }

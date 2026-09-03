@@ -1,8 +1,10 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
+import { type DesktopFsScope, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { capitalize } from '@/lib/text'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
+
+export type MediaOwner = DesktopFsScope
 
 interface MediaInfo {
   kind: MediaKind
@@ -77,13 +79,13 @@ export function isFileMediaPath(path: string): boolean {
   return /^(?:file:|\/|~\/|[a-z]:[\\/]|\\\\)/i.test(path)
 }
 
-export async function resolveMediaDisplaySrc(path: string): Promise<string> {
+export async function resolveMediaDisplaySrc(path: string, owner?: MediaOwner): Promise<string> {
   if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
     return path
   }
 
-  if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+  if (window.hermesDesktop && (owner?.connectionId || (!owner && isRemoteGateway()))) {
+    return gatewayMediaDataUrl(path, owner)
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -97,16 +99,16 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
 // remote URLs untouched and route filesystem paths through the Electron media
 // protocol. Its main-process handler reads local files directly or proxies a
 // remote gateway with the connection's bearer/cookie/token authentication.
-export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
+export async function resolveMediaPlaybackSrc(path: string, owner?: MediaOwner): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
 
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
-    return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
+    return isRemoteGatewayFor(owner) ? mediaGatewayStreamUrl(path, owner) : mediaStreamUrl(path)
   }
 
-  return resolveMediaDisplaySrc(path)
+  return resolveMediaDisplaySrc(path, owner)
 }
 
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
@@ -134,10 +136,10 @@ export function mediaExternalUrl(path: string): string {
 // connections intentionally expose no static token to the renderer, so a bare
 // HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
 // out of renderer URLs while forwarding Range requests to /api/files/stream.
-export function mediaGatewayStreamUrl(path: string): string {
-  const conn = $connection.get()
+export function mediaGatewayStreamUrl(path: string, owner?: MediaOwner): string {
+  const conn = owner || $connection.get()
 
-  if (isRemoteGateway()) {
+  if (isRemoteGatewayFor(owner)) {
     const file = encodeURIComponent(filePathFromMediaPath(path))
 
     const scope = [
@@ -190,12 +192,28 @@ export function isRemoteGateway(): boolean {
   return $connection.get()?.mode === 'remote'
 }
 
+function isRemoteGatewayFor(owner?: MediaOwner): boolean {
+  if (!owner) {
+    return isRemoteGateway()
+  }
+
+  if (owner.mode) {
+    return owner.mode === 'remote'
+  }
+
+  if (owner.connectionId) {
+    return owner.connectionId !== 'local'
+  }
+
+  return isRemoteGateway()
+}
+
 // Fetch gateway-local media as a data URL via the authenticated desktop FS
 // bridge. Remote Desktop artifacts can live anywhere the gateway can read
 // (workspace, skills, ~/.hermes/cache, etc.); /api/media is intentionally
 // narrower and rejects non-images plus images outside its media roots.
-export async function gatewayMediaDataUrl(path: string): Promise<string> {
-  return readDesktopFileDataUrl(filePathFromMediaPath(path))
+export async function gatewayMediaDataUrl(path: string, owner?: MediaOwner): Promise<string> {
+  return readDesktopFileDataUrl(filePathFromMediaPath(path), owner)
 }
 
 // Remote-mode replacement for opening gateway-local file paths with file://.

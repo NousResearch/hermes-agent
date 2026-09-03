@@ -64,3 +64,20 @@ def test_lazy_reexports_accept_monkeypatch(monkeypatch):
     sentinel = object()
     monkeypatch.setattr("hermes_cli.main._cmd_update_impl", sentinel)
     assert hermes_cli.main._cmd_update_impl is sentinel
+
+
+def test_update_facade_patch_reaches_extracted_consumers(monkeypatch):
+    """Historical update_cmd patches must still alter moved call graphs."""
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd, "_read_project_version", lambda: "9.9.9")
+    assert update_cmd._update_complete_message("9.9.8") == (
+        "✓ Update complete! (v9.9.8 → v9.9.9)"
+    )
+
+
+def test_update_facade_global_patch_reaches_extracted_consumers(monkeypatch, tmp_path):
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: tmp_path)
+    assert update_cmd._fleet_restart_pending_marker_path().parent == tmp_path

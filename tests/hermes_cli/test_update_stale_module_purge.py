@@ -75,9 +75,34 @@ def test_purge_evicts_hermes_prefixed_modules():
 
 
 def test_purge_protects_executing_modules():
-    # The updater's own modules must survive — they're running this code.
+    # The updater's complete frozen execution graph must survive.  Purging one
+    # extracted module after the checkout swap would let a later import mix
+    # new source with old updater frames.
+    # Keep this literal set synchronized whenever a new executing owner joins
+    # the production protection graph so an eager-import omission stays visible.
+    executing_names = {
+        "hermes_cli._update_compat",
+        "hermes_cli.update_cmd",
+        "hermes_cli.update_backup",
+        "hermes_cli.update_dependencies",
+        "hermes_cli.update_desktop",
+        "hermes_cli.update_fleet_restart",
+        "hermes_cli.update_gateway_posix",
+        "hermes_cli.update_gateway_windows",
+        "hermes_cli.update_notices",
+        "hermes_cli.update_orchestrator",
+        "hermes_cli.update_process_guard",
+        "hermes_cli.update_reconciliation",
+        "hermes_cli.update_runtime_refresh",
+        "hermes_cli.update_source",
+        "hermes_cli.update_zip",
+    }
+    executing = {name: sys.modules.get(name) for name in executing_names}
+    assert all(executing.values()), "the update facade must eagerly freeze its execution graph"
+
     cli_main._purge_stale_hermes_modules()
-    assert sys.modules.get("hermes_cli.update_cmd") is update_cmd
+    for name, module in executing.items():
+        assert sys.modules.get(name) is module, f"executing updater module purged: {name}"
     assert sys.modules.get("hermes_cli.main") is cli_main
     assert "hermes_cli" in sys.modules
 

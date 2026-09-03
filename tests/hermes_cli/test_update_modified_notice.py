@@ -19,42 +19,80 @@ from pathlib import Path
 
 import hermes_cli.main as main_mod
 import hermes_cli.update_cmd as update_mod
+import hermes_cli.update_orchestrator as update_orchestrator_mod
+import hermes_cli.update_zip as update_zip_mod
 
 
 _COUNT_RE = re.compile(r"user-modified \(kept\)")
 _HINT_RE = re.compile(r"hermes skills list-modified")
 
 
-def _source_lines() -> list[str]:
-    # The update pipeline was extracted to hermes_cli/update_cmd.py
-    # (main.py decomposition); scan both homes of the notice.
+def _source_files() -> list[tuple[Path, list[str]]]:
+    # The compatibility facade and its implementation modules jointly own the
+    # update surface. Scan every current home of this invariant.
     return [
-        line
-        for mod in (main_mod, update_mod)
-        for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
+        (
+            Path(mod.__file__),
+            Path(mod.__file__).read_text(encoding="utf-8").splitlines(),
+        )
+        for mod in (
+            main_mod,
+            update_mod,
+            update_orchestrator_mod,
+            update_zip_mod,
+        )
     ]
 
 
+def _missing_hint_sites(
+    source_files: list[tuple[Path, list[str]]],
+) -> tuple[int, list[tuple[Path, int, str]]]:
+    count = 0
+    missing: list[tuple[Path, int, str]] = []
+    for path, lines in source_files:
+        for idx, line in enumerate(lines):
+            if not _COUNT_RE.search(line):
+                continue
+            count += 1
+            # Keep the window inside the owning file. Crossing into the next
+            # source could let an unrelated hint hide a missing sibling hint.
+            window = "\n".join(lines[idx : idx + 5])
+            if not _HINT_RE.search(window):
+                missing.append((path, idx + 1, window))
+    return count, missing
+
+
 def test_every_user_modified_notice_points_at_list_modified():
-    lines = _source_lines()
-    count_sites = [i for i, ln in enumerate(lines) if _COUNT_RE.search(ln)]
+    count, missing = _missing_hint_sites(_source_files())
 
     # The notice must exist somewhere (guard against it being deleted outright),
     # but we deliberately do NOT assert a fixed *count* of sites: consolidating
     # the duplicated print paths into a shared helper is a welcome refactor and
     # must not fail this test. The invariant is per-site, not how many sites.
-    assert count_sites, (
+    assert count, (
         "no 'user-modified (kept)' notice found in main.py — the update "
         "summary that surfaces kept user edits appears to have been removed"
     )
+    assert not missing, "\n\n".join(
+        "a 'user-modified (kept)' notice at "
+        f"{path}:{line_number} does not point users at "
+        "`hermes skills list-modified` within the following lines:\n"
+        f"{window}"
+        for path, line_number, window in missing
+    )
 
-    for idx in count_sites:
-        # The count print and its discovery hint sit on adjacent lines; allow a
-        # small window so wording/formatting tweaks don't break the check.
-        window = "\n".join(lines[idx : idx + 5])
-        assert _HINT_RE.search(window), (
-            "a 'user-modified (kept)' notice near line "
-            f"{idx + 1} of main.py does not point users at "
-            "`hermes skills list-modified` within the following lines — the "
-            "update paths have drifted apart again:\n" + window
-        )
+
+def test_notice_hint_cannot_be_borrowed_from_the_next_file(tmp_path):
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    count, missing = _missing_hint_sites(
+        [
+            (first, ["user-modified (kept)"]),
+            (second, ["hermes skills list-modified"]),
+        ]
+    )
+
+    assert count == 1
+    assert [(path, line_number) for path, line_number, _ in missing] == [
+        (first, 1)
+    ]

@@ -1750,6 +1750,45 @@ class TestRunPreUpdateBackup:
         assert "Creating pre-update backup" in out
         assert len(self._zips(hermes_home)) == 1
 
+    def test_unknown_config_mode_falls_back_without_aborting(
+        self, hermes_home, caplog
+    ):
+        """An invalid value keeps the historical safe default and logger."""
+        self._set_mode(hermes_home, "unexpected-mode")
+        from hermes_cli.main import _resolve_pre_update_backup_mode
+
+        caplog.set_level("WARNING")
+        mode = _resolve_pre_update_backup_mode(
+            Namespace(no_backup=False, backup=False)
+        )
+
+        assert mode == "quick"
+        warning = next(
+            record
+            for record in caplog.records
+            if "Unknown updates.pre_update_backup" in record.getMessage()
+        )
+        assert warning.name == "hermes_cli.update_cmd"
+
+    def test_quick_snapshot_failure_never_blocks_update(
+        self, hermes_home, monkeypatch
+    ):
+        """The wrapper's documented best-effort boundary must not re-raise."""
+        from hermes_cli import backup as backup_mod
+        from hermes_cli.main import _run_pre_update_backup
+
+        self._set_mode(hermes_home, "quick")
+
+        def fail_snapshot(**_kwargs):
+            raise OSError("synthetic snapshot failure")
+
+        monkeypatch.setattr(backup_mod, "create_quick_snapshot", fail_snapshot)
+
+        assert (
+            _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+            is None
+        )
+
 
 
 
@@ -2098,7 +2137,6 @@ class TestMemoryProviderExternalPaths:
 # ---------------------------------------------------------------------------
 # run_import: HERMES_HOME override handling (issue #99839)
 # ---------------------------------------------------------------------------
-
 
 class TestImportHonorsHermesHomeOverride:
     """`hermes import` must restore into the home the command runs under.

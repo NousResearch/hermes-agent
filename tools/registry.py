@@ -325,7 +325,15 @@ def check_fn_cache_scope() -> Optional[str]:
             get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", ""),
         )
         if all(str(value or "").strip() for value in browser_identity):
-            return CHECK_FN_CACHE_BYPASS
+            try:
+                from gateway.browser_control_broker import browser_control_enabled
+            except Exception:
+                return CHECK_FN_CACHE_BYPASS
+            # ponytail: api_server binds a server-derived principal + family on
+            # every request, so identity-present != controller-attached; bypass
+            # only when extension control can actually move availability (#79047).
+            if browser_control_enabled():
+                return CHECK_FN_CACHE_BYPASS
     except Exception:
         pass
 

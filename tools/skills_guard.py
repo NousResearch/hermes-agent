@@ -665,6 +665,44 @@ THREAT_PATTERNS = [
      "instructs agent to send data to a URL"),
 ]
 
+# Prose-injection classes tools/threat_patterns.py translates into
+# fr/es/de/ru/zh (#81056). This gate kept its own hand-written, English-only
+# regex for each of these ids, so a translated payload the shared
+# context/memory scanner already blocked still passed skill install (#81134
+# review). Pull the canonical patterns for each id — English included,
+# redundant with the entry above but harmless, since findings dedupe by
+# (pattern_id, line) below — instead of hand-duplicating the translations,
+# so the two catalogs can't drift apart again.
+_INSTALL_GATE_CANONICAL_IDS = {
+    "prompt_injection_ignore": "prompt_injection",
+    "role_hijack": "role_hijack",
+    "deception_hide": "deception_hide",
+    "sys_prompt_override": "sys_prompt_override",
+    "role_pretend": "role_pretend",
+    "disregard_rules": "disregard_rules",
+    "leak_system_prompt": "leak_system_prompt",
+    "remove_filters": "remove_filters",
+}
+
+
+def _non_english_prose_patterns():
+    from tools.threat_patterns import patterns_for_ids as _canonical_patterns_for_ids
+
+    meta_by_id = {
+        pid: (severity, category, description)
+        for _pattern, pid, severity, category, description in THREAT_PATTERNS
+        if pid in _INSTALL_GATE_CANONICAL_IDS
+    }
+    extra = []
+    for local_id, canonical_id in _INSTALL_GATE_CANONICAL_IDS.items():
+        severity, category, description = meta_by_id[local_id]
+        for pattern, _canonical_id in _canonical_patterns_for_ids([canonical_id]):
+            extra.append((pattern, local_id, severity, category, description))
+    return extra
+
+
+THREAT_PATTERNS = THREAT_PATTERNS + _non_english_prose_patterns()
+
 _COMPILED_THREAT_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
     for pattern, pid, severity, category, description in THREAT_PATTERNS

@@ -94,12 +94,20 @@ def _notify_provider_jobs_changed_safe() -> None:
 # Both scanners share the invisible-unicode check and the GitHub Authorization
 # header exemption.
 
+from tools.threat_patterns import patterns_for_ids as _threat_patterns_for_ids
+
+# Classic prompt-injection prose classes, pulled from the canonical catalog
+# in tools/threat_patterns.py rather than hand-duplicated: that module
+# translates these into fr/es/de/ru/zh (#81056), and a hand-copied
+# English-only list here left non-English directives — already blocked by
+# the shared scanner — free to reach an unattended cron run (#81134 review).
+_CRON_PROSE_PATTERN_IDS = (
+    "prompt_injection", "deception_hide", "sys_prompt_override", "disregard_rules",
+)
+_CRON_PROSE_PATTERNS = _threat_patterns_for_ids(_CRON_PROSE_PATTERN_IDS)
+
 # Strict patterns — applied to the user prompt only.
-_CRON_THREAT_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
+_CRON_THREAT_PATTERNS = _CRON_PROSE_PATTERNS + [
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|id_rsa|id_ed25519|id_ecdsa)', "read_secrets"),
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
@@ -113,12 +121,7 @@ _CRON_THREAT_PATTERNS = [
 # by `skills_guard.py`, so the runtime cron scan is purely a tripwire for
 # obvious injection directives surviving a malicious skill that slipped
 # through install.
-_CRON_SKILL_ASSEMBLED_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-]
+_CRON_SKILL_ASSEMBLED_PATTERNS = _CRON_PROSE_PATTERNS
 
 _CRON_SECRET_VAR_RE = r'\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)\w*\}?'
 _CRON_EXFIL_COMMAND_PATTERNS = [

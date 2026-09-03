@@ -109,7 +109,10 @@ def _job(thread_id=None):
 
 def _gateway_config(relay=False):
     config = MagicMock()
-    platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True)}
+    platforms = {
+        Platform.TELEGRAM: PlatformConfig(enabled=True),
+        Platform.EMAIL: PlatformConfig(enabled=True),
+    }
     if relay:
         platforms[Platform.RELAY] = PlatformConfig(enabled=True)
     config.platforms = platforms
@@ -132,7 +135,16 @@ def _record_verification(job, unverified_targets):
     RECORDED_VERIFICATION.append((job["id"], list(unverified_targets)))
 
 
-def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None):
+def _run(
+    job,
+    content,
+    send_result,
+    relay=False,
+    standalone_result=None,
+    cron_cfg=None,
+    live=True,
+    dm_topic=False,
+):
     """Drive ``_deliver_result`` over the live lane with a stubbed router.
 
     Returns ``(error, router_calls, standalone_calls)``. ``cron_cfg`` extends
@@ -169,11 +181,147 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
          patch("cron.scheduler.load_config",
                return_value={"cron": {"wrap_response": False, **(cron_cfg or {})}}), \
          patch("cron.scheduler._record_delivery_verification", side_effect=_record_verification), \
+         patch("cron.scheduler._is_channel_dm_topic", return_value=dm_topic), \
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
-        error = _deliver_result(job, content, adapters=_adapters(relay), loop=loop)
+        error = _deliver_result(
+            job,
+            content,
+            adapters=_adapters(relay) if live else None,
+            loop=loop if live else None,
+        )
     return error, router_calls, standalone_calls
+
+
+class TestStrictTopicFailure:
+    def test_strict_live_media_failure_is_not_logged_as_delivered(self, caplog):
+        with patch(
+            "gateway.platforms.base.BasePlatformAdapter.filter_media_delivery_paths",
+            side_effect=lambda paths: paths,
+        ), patch(
+            "cron.scheduler._send_media_via_adapter",
+            return_value=["media send failed for /tmp/report.pdf: topic unavailable"],
+        ), caplog.at_level(logging.INFO, logger="cron.scheduler"):
+            error, router_calls, standalone_calls = _run(
+                _job(thread_id="99"),
+                "Private report.\nMEDIA:/tmp/report.pdf",
+                _SendResult(message_id=1234),
+            )
+
+        assert len(router_calls) == 1
+        assert standalone_calls == []
+        assert error is not None
+        assert "media send failed" in error
+        assert "via live adapter" not in caplog.text
+
+    def test_direct_messages_topic_generic_failure_never_uses_standalone(self):
+        job = {
+            "id": "92e639af907f",
+            "name": "Private DM topic",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "thread_id": "99",
+            },
+        }
+        send_result = _SendResult(success=False, error="Telegram transport failed")
+
+        error, router_calls, standalone_calls = _run(
+            job,
+            "Private report.",
+            send_result,
+            dm_topic=True,
+        )
+
+        assert router_calls[0]["metadata"]["direct_messages_topic_id"] == "99"
+        assert router_calls[0]["metadata"]["topic_boundary"] == "strict"
+        assert standalone_calls == []
+        assert error is not None
+        assert "cannot be represented by the standalone sender" in error
+
+    def test_strict_topic_failure_does_not_abort_other_targets(self):
+        job = {
+            "id": "92e639af907f",
+            "name": "Private fan-out",
+            "deliver": f"telegram:{CHAT_ID}:99,email:ops@example.com",
+        }
+        send_result = _SendResult(
+            success=False,
+            raw_response={
+                "requested_thread_id": 99,
+                "strict_thread_failure": True,
+            },
+            error="Message thread not found",
+        )
+
+        error, router_calls, standalone_calls = _run(
+            job,
+            "Private report.",
+            send_result,
+        )
+
+        assert len(router_calls) == 1
+        assert [call["chat_id"] for call in standalone_calls] == ["ops@example.com"]
+        assert error is not None
+        assert "strict Telegram topic 99" in error
+
+    def test_ambiguous_private_topic_without_live_adapter_fails_closed(self):
+        job = {
+            "id": "92e639af907f",
+            "name": "Ambiguous private topic",
+            "deliver": "origin",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "123",
+                "thread_id": "99",
+            },
+        }
+
+        error, router_calls, standalone_calls = _run(
+            job,
+            "Private report.",
+            None,
+            live=False,
+        )
+
+        assert router_calls == []
+        assert standalone_calls == []
+        assert error is not None
+        assert "cannot be safely disambiguated without a live adapter" in error
+
+    def test_standalone_topic_delivery_carries_strict_boundary(self):
+        error, router_calls, standalone_calls = _run(
+            _job(thread_id="99"),
+            "Private report.",
+            None,
+            live=False,
+        )
+
+        assert error is None
+        assert router_calls == []
+        assert standalone_calls[0]["kwargs"]["topic_boundary"] == "strict"
+
+    def test_strict_topic_failure_does_not_retry_via_standalone(self):
+        send_result = _SendResult(
+            success=False,
+            raw_response={
+                "requested_thread_id": 99,
+                "strict_thread_failure": True,
+            },
+            error="Message thread not found",
+        )
+
+        error, router_calls, standalone_calls = _run(
+            _job(thread_id="99"), "Private report.", send_result,
+        )
+
+        assert router_calls[0]["metadata"]["topic_boundary"] == "strict"
+        assert standalone_calls == []
+        assert error is not None
+        assert "strict Telegram topic 99" in error
+        assert "Message thread not found" in error
 
 
 class TestFilteredResultIsNotDelivered:
@@ -287,6 +435,7 @@ class TestLiveDeliveryIsAFinalNotification:
         )
         metadata = router_calls[0]["metadata"]
         assert metadata["thread_id"] == "99"
+        assert metadata["topic_boundary"] == "strict"
         assert metadata["notify"] is True
 
     def test_media_route_metadata_carries_notify(self, tmp_path):

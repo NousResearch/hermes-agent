@@ -84,6 +84,180 @@ def test_image_caption_rides_bubble_no_separate_text(monkeypatch: pytest.MonkeyP
         os.unlink(img)
 
 
+def test_strict_text_topic_retries_same_thread_once_and_never_general(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    bot.send_message.side_effect = [
+        RuntimeError("Message thread not found"),
+        RuntimeError("transport failed after strict retry"),
+    ]
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    result = asyncio.run(
+        _send_telegram(
+            "tok",
+            "-100123",
+            "private report",
+            thread_id="99999",
+            topic_boundary="strict",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["raw_response"] == {
+        "requested_thread_id": 99999,
+        "strict_thread_failure": True,
+    }
+    assert "transport failed" in result["error"].lower()
+    assert bot.send_message.await_count == 2
+    assert [
+        call.kwargs.get("message_thread_id")
+        for call in bot.send_message.await_args_list
+    ] == [99999, 99999]
+
+
+def test_send_to_platform_propagates_strict_topic_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway.config import Platform
+    import tools.send_message_tool as smt
+
+    sender = AsyncMock(return_value={"success": True, "message_id": "1"})
+    monkeypatch.setattr(smt, "_send_telegram", sender)
+
+    result = asyncio.run(
+        smt._send_to_platform(
+            Platform.TELEGRAM,
+            SimpleNamespace(enabled=True, token="tok", extra={}),
+            "-100123",
+            "private report",
+            thread_id="99",
+            topic_boundary="strict",
+        )
+    )
+
+    assert result["success"] is True
+    call = sender.await_args
+    assert call is not None
+    assert call.kwargs["topic_boundary"] == "strict"
+
+
+def test_strict_media_topic_never_retries_in_general(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    bot.send_photo.side_effect = [
+        RuntimeError("Message thread not found"),
+        RuntimeError("transport failed after strict retry"),
+    ]
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    img = _tmpfile(".png")
+    try:
+        result = asyncio.run(
+            _send_telegram(
+                "tok",
+                "-100123",
+                "",
+                media_files=[(img, False)],
+                thread_id="99999",
+                topic_boundary="strict",
+            )
+        )
+
+        assert result["success"] is False
+        assert result["raw_response"] == {
+            "requested_thread_id": 99999,
+            "strict_thread_failure": True,
+        }
+        assert "transport failed" in result["error"].lower()
+        assert bot.send_photo.await_count == 2
+        assert [
+            call.kwargs["message_thread_id"]
+            for call in bot.send_photo.await_args_list
+        ] == [99999, 99999]
+    finally:
+        os.unlink(img)
+
+
+def test_strict_text_success_media_failure_is_not_reported_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    bot.send_photo.side_effect = [
+        RuntimeError("Message thread not found"),
+        RuntimeError("transport failed after strict retry"),
+    ]
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    img = _tmpfile(".png")
+    try:
+        result = asyncio.run(
+            _send_telegram(
+                "tok",
+                "-100123",
+                "x" * 1100,
+                media_files=[(img, False)],
+                thread_id="99999",
+                topic_boundary="strict",
+            )
+        )
+
+        assert bot.send_message.await_count == 1
+        assert bot.send_photo.await_count == 2
+        assert result["success"] is False
+        assert result["raw_response"] == {
+            "requested_thread_id": 99999,
+            "strict_thread_failure": True,
+        }
+    finally:
+        os.unlink(img)
+
+
+def test_strict_missing_media_caption_fallback_retries_same_topic_then_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    bot.send_message.side_effect = [
+        RuntimeError("Message thread not found"),
+        RuntimeError("transport failed after strict retry"),
+    ]
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+
+    result = asyncio.run(
+        _send_telegram(
+            "tok",
+            "-100123",
+            "caption text",
+            media_files=[("/tmp/hermes-strict-missing-photo.png", False)],
+            thread_id="99999",
+            topic_boundary="strict",
+        )
+    )
+
+    assert bot.send_message.await_count == 2
+    assert [
+        call.kwargs["message_thread_id"]
+        for call in bot.send_message.await_args_list
+    ] == [99999, 99999]
+    assert result["success"] is False
+    assert result["raw_response"] == {
+        "requested_thread_id": 99999,
+        "strict_thread_failure": True,
+    }
+
+
 def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None:
     from tools.send_message_tool import _send_telegram
 

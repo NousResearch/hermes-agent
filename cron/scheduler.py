@@ -3577,6 +3577,8 @@ def _deliver_result(
                 thread_id = new_thread_id
                 opened_thread_id = new_thread_id
 
+        strict_thread_failed = False
+        route_via_dm_topic = False
         if live_adapter_ready:
             # Telegram topic routing (#22773, regression fixed #52060): a
             # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is
@@ -3604,6 +3606,7 @@ def _deliver_result(
             route_via_dm_topic = is_ambiguous_telegram_topic and _is_channel_dm_topic(
                 runtime_adapter, chat_id, loop, job["id"],
             )
+            media_metadata: dict[str, Any]
             if route_via_dm_topic:
                 # Genuine Bot API channel Direct-Messages topic (#22773 mode 2):
                 # routed via direct_messages_topic_id, no bare thread_id.
@@ -3635,6 +3638,13 @@ def _deliver_result(
                 media_metadata = {"notify": notify_delivery}
                 if thread_id:
                     media_metadata["thread_id"] = thread_id
+
+            # An exact Telegram cron topic is a delivery boundary, not a hint.
+            # Preserve the adapter's soft fallback for ordinary conversational
+            # sends, but make every topic-scoped cron delivery fail closed (#9168).
+            if platform == Platform.TELEGRAM and thread_id is not None:
+                route_metadata["topic_boundary"] = "strict"
+                media_metadata["topic_boundary"] = "strict"
 
             # Relay egress needs a tenant discriminator on the frame: the
             # connector's fail-closed guard resolves the workspace/guild from
@@ -3803,19 +3813,37 @@ def _deliver_result(
                                 else:
                                     err = "no response from adapter"
                                     shape = "None"
-                                msg = (
-                                    f"live adapter send to {platform_name}:{chat_id} "
-                                    f"returned unconfirmed result ({shape}, error={err})"
-                                )
-                                if transport is not None and transport.is_relay:
-                                    logger.warning("Job '%s': %s", job["id"], msg)
-                                else:
-                                    logger.warning(
-                                        "Job '%s': %s, falling back to standalone",
-                                        job["id"], msg,
+                                if (
+                                    send_raw_response
+                                    and send_raw_response.get("strict_thread_failure")
+                                ):
+                                    requested_thread_id = (
+                                        send_raw_response.get("requested_thread_id")
+                                        or thread_id
                                     )
-                                target_errors.append(msg)
-                                adapter_ok = False  # fall through to standalone path
+                                    msg = (
+                                        f"strict Telegram topic {requested_thread_id} for "
+                                        f"{platform_name}:{chat_id} was not found; "
+                                        f"delivery failed closed: {err}"
+                                    )
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                    target_errors.append(msg)
+                                    adapter_ok = False
+                                    strict_thread_failed = True
+                                else:
+                                    msg = (
+                                        f"live adapter send to {platform_name}:{chat_id} "
+                                        f"returned unconfirmed result ({shape}, error={err})"
+                                    )
+                                    if transport is not None and transport.is_relay:
+                                        logger.warning("Job '%s': %s", job["id"], msg)
+                                    else:
+                                        logger.warning(
+                                            "Job '%s': %s, falling back to standalone",
+                                            job["id"], msg,
+                                        )
+                                    target_errors.append(msg)
+                                    adapter_ok = False  # fall through to standalone path
                             elif (
                                 send_raw_response
                                 and thread_id
@@ -3860,9 +3888,24 @@ def _deliver_result(
                     # Surface per-file failures into the run status (parity
                     # with the standalone lane): text delivered but an
                     # attachment didn't is a visible partial failure, not ok.
+                    strict_media_failed = bool(
+                        _media_errors
+                        and platform == Platform.TELEGRAM
+                        and thread_id is not None
+                    )
                     for _me in _media_errors:
                         _msg = f"{_me} (target {platform_name}:{chat_id})"
-                        delivery_errors.append(_msg)
+                        if strict_media_failed:
+                            target_errors.append(_msg)
+                        else:
+                            delivery_errors.append(_msg)
+                    if strict_media_failed:
+                        # Text may already have landed in the exact topic. Do not
+                        # report the target as delivered or retry the whole payload
+                        # through standalone: either would hide the attachment
+                        # failure or duplicate the text outside the requested lane.
+                        adapter_ok = False
+                        strict_thread_failed = True
                 elif timed_out and media_files:
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
@@ -3964,7 +4007,10 @@ def _deliver_result(
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
                     target_errors.append(err_msg)
-                if transport is not None and transport.is_relay:
+                if (
+                    (transport is not None and transport.is_relay)
+                    or route_via_dm_topic
+                ):
                     logger.warning("Job '%s': %s", job["id"], err_msg)
                 else:
                     logger.warning(
@@ -3973,6 +4019,24 @@ def _deliver_result(
                     )
 
         if not delivered:
+            if route_via_dm_topic and not strict_thread_failed:
+                # Standalone Telegram only knows ``message_thread_id``. A
+                # channel Direct-Messages topic uses ``direct_messages_topic_id``;
+                # changing fields on retry changes the destination semantics.
+                msg = (
+                    f"strict Telegram direct-messages topic {thread_id} for "
+                    f"{platform_name}:{chat_id} cannot be represented by the "
+                    "standalone sender; delivery failed closed"
+                )
+                logger.warning("Job '%s': %s", job["id"], msg)
+                target_errors.append(msg)
+                strict_thread_failed = True
+            if strict_thread_failed:
+                # The live adapter positively identified a strict routing
+                # boundary failure.  A standalone retry would repeat the same
+                # topic error or, under a soft sender, leak into the parent chat.
+                delivery_errors.extend(target_errors)
+                continue
             if transport is not None and transport.is_relay:
                 # Relay owns the logical destination and its connector owns the
                 # platform credential. A native retry could duplicate delivery
@@ -3983,6 +4047,33 @@ def _deliver_result(
                     )
                 delivery_errors.extend(target_errors)
                 continue
+            if (
+                not live_adapter_ready
+                and platform == Platform.TELEGRAM
+                and thread_id is not None
+            ):
+                from gateway.delivery import (
+                    _looks_like_int,
+                    looks_like_telegram_private_chat_id,
+                )
+
+                if (
+                    looks_like_telegram_private_chat_id(str(chat_id))
+                    and _looks_like_int(str(thread_id))
+                ):
+                    # Positive Telegram chat IDs can mean either an ordinary
+                    # private-chat forum lane (message_thread_id) or a channel
+                    # Direct-Messages topic (direct_messages_topic_id). Only
+                    # the live adapter can disambiguate those modes safely.
+                    msg = (
+                        f"Telegram topic {thread_id} for {platform_name}:{chat_id} "
+                        "cannot be safely disambiguated without a live adapter; "
+                        "delivery failed closed"
+                    )
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    target_errors.append(msg)
+                    delivery_errors.extend(target_errors)
+                    continue
             # If the interpreter is finalizing (gateway SIGTERM / restart /
             # OOM), scheduling any new delivery is futile — asyncio.run and a
             # fresh ThreadPoolExecutor both raise "cannot schedule new futures
@@ -4012,7 +4103,20 @@ def _deliver_result(
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            topic_boundary = (
+                "strict"
+                if platform == Platform.TELEGRAM and thread_id is not None
+                else None
+            )
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+                topic_boundary=topic_boundary,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -4052,7 +4156,15 @@ def _deliver_result(
                         future = pool.submit(
                             _fallback_context.run,
                             asyncio.run,
-                            _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files),
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                cleaned_delivery_content,
+                                thread_id=thread_id,
+                                media_files=media_files,
+                                topic_boundary=topic_boundary,
+                            ),
                         )
                         result = future.result(timeout=30)
                     finally:

@@ -384,8 +384,170 @@ async def test_created_private_topic_thread_not_found_fails_without_root_fallbac
 
     assert result.success is False
     assert "thread not found" in str(result.error).lower()
+    assert result.raw_response == {
+        "requested_thread_id": 32343,
+        "strict_thread_failure": True,
+    }
     assert len(call_log) == 1
     assert call_log[0]["message_thread_id"] == 32343
+
+
+@pytest.mark.asyncio
+async def test_strict_created_private_topic_retries_same_thread_once():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="created topic message",
+        metadata={
+            "thread_id": "32343",
+            "telegram_dm_topic_created_for_send": True,
+            "topic_boundary": "strict",
+        },
+    )
+
+    assert result.success is False
+    assert result.raw_response == {
+        "requested_thread_id": 32343,
+        "strict_thread_failure": True,
+    }
+    assert [call["message_thread_id"] for call in call_log] == [32343, 32343]
+
+
+@pytest.mark.asyncio
+async def test_strict_direct_messages_topic_failure_is_marked_for_scheduler():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="weekly report",
+        metadata={
+            "direct_messages_topic_id": "99999",
+            "topic_boundary": "strict",
+            "notify": True,
+        },
+    )
+
+    assert result.success is False
+    assert result.raw_response == {
+        "requested_thread_id": 99999,
+        "strict_thread_failure": True,
+    }
+    assert len(call_log) == 2
+    assert all(call["direct_messages_topic_id"] == 99999 for call in call_log)
+
+
+@pytest.mark.asyncio
+async def test_strict_forum_topic_retries_same_thread_once_then_fails_closed():
+    """Strict forum sends must never escape to the parent chat."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="-100123",
+        content="topic-only message",
+        metadata={"thread_id": "99999", "topic_boundary": "strict"},
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.raw_response == {
+        "requested_thread_id": 99999,
+        "strict_thread_failure": True,
+    }
+    assert [call["message_thread_id"] for call in call_log] == [99999, 99999]
+
+
+@pytest.mark.asyncio
+async def test_strict_text_retry_different_error_still_fails_as_strict_boundary():
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message thread not found")
+        raise RuntimeError("transport failed after exact-route retry")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="-100123",
+        content="topic-only message",
+        metadata={"thread_id": "99999", "topic_boundary": "strict"},
+    )
+
+    assert result.success is False
+    assert result.raw_response == {
+        "requested_thread_id": 99999,
+        "strict_thread_failure": True,
+    }
+    assert [call["message_thread_id"] for call in call_log] == [99999, 99999]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_id", "routing_key"),
+    [
+        ("-100123", "message_thread_id"),
+        ("123", "direct_messages_topic_id"),
+    ],
+)
+async def test_strict_rich_topic_retries_same_api_once_then_fails_closed(
+    chat_id,
+    routing_key,
+):
+    adapter = _make_adapter()
+    adapter._rich_messages_enabled = True
+    call_log = []
+
+    async def mock_do_api_request(method, *, api_kwargs):
+        call_log.append((method, dict(api_kwargs)))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(do_api_request=mock_do_api_request)
+
+    metadata = {"topic_boundary": "strict"}
+    if routing_key == "message_thread_id":
+        metadata["thread_id"] = "99999"
+    else:
+        metadata["direct_messages_topic_id"] = "99999"
+
+    result = await adapter._try_send_rich(
+        chat_id=chat_id,
+        content="| a | b |\n|---|---|\n| 1 | 2 |",
+        reply_to=None,
+        metadata=metadata,
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.raw_response == {
+        "requested_thread_id": 99999,
+        "strict_thread_failure": True,
+    }
+    assert [method for method, _ in call_log] == ["sendRichMessage", "sendRichMessage"]
+    assert all(payload[routing_key] == 99999 for _, payload in call_log)
 
 
 @pytest.mark.asyncio
@@ -436,6 +598,122 @@ async def test_native_media_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[1]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[1]
     assert "direct_messages_topic_id" not in call_log[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_id", "routing_key"),
+    [
+        ("-100123", "message_thread_id"),
+        ("123", "direct_messages_topic_id"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("method_name", "bot_method_name", "path_kw", "filename", "payload"),
+    [
+        ("send_image_file", "send_photo", "image_path", "photo.png", b"png-data"),
+        ("send_document", "send_document", "file_path", "report.txt", b"report-data"),
+        ("send_video", "send_video", "video_path", "clip.mp4", b"video-data"),
+        ("send_voice", "send_voice", "audio_path", "clip.ogg", b"ogg-data"),
+        ("send_voice", "send_audio", "audio_path", "clip.mp3", b"mp3-data"),
+    ],
+)
+async def test_strict_topic_media_retries_same_api_once_then_fails_closed(
+    tmp_path,
+    chat_id,
+    routing_key,
+    method_name,
+    bot_method_name,
+    path_kw,
+    filename,
+    payload,
+):
+    adapter = _make_adapter()
+    media_path = tmp_path / filename
+    media_path.write_bytes(payload)
+    call_log = []
+
+    def failing_send(label):
+        async def _send(**kwargs):
+            call_log.append((label, dict(kwargs)))
+            raise FakeBadRequest("Message thread not found")
+
+        return _send
+
+    adapter._bot = SimpleNamespace(
+        send_photo=failing_send("photo"),
+        send_document=failing_send("document"),
+        send_video=failing_send("video"),
+        send_voice=failing_send("voice"),
+        send_audio=failing_send("audio"),
+        send_message=failing_send("message"),
+    )
+
+    metadata = {"topic_boundary": "strict"}
+    if routing_key == "message_thread_id":
+        metadata["thread_id"] = "20197"
+    else:
+        metadata["direct_messages_topic_id"] = "20197"
+
+    result = await getattr(adapter, method_name)(
+        chat_id=chat_id,
+        **{path_kw: str(media_path)},
+        metadata=metadata,
+    )
+
+    assert result.success is False
+    assert result.raw_response == {
+        "requested_thread_id": 20197,
+        "strict_thread_failure": True,
+    }
+    assert [label for label, _ in call_log] == [
+        bot_method_name.removeprefix("send_"),
+        bot_method_name.removeprefix("send_"),
+    ]
+    assert all(kwargs.get(routing_key) == 20197 for _, kwargs in call_log)
+    other_routing_key = (
+        "direct_messages_topic_id"
+        if routing_key == "message_thread_id"
+        else "message_thread_id"
+    )
+    assert all(kwargs.get(other_routing_key) is None for _, kwargs in call_log)
+
+
+@pytest.mark.asyncio
+async def test_strict_media_retry_different_error_still_blocks_fallback(tmp_path):
+    adapter = _make_adapter()
+    media_path = tmp_path / "photo.png"
+    media_path.write_bytes(b"png-data")
+    call_log = []
+
+    async def mock_send_photo(**kwargs):
+        call_log.append(("photo", dict(kwargs)))
+        if len(call_log) == 1:
+            raise FakeBadRequest("Message thread not found")
+        raise RuntimeError("transport failed after exact-route retry")
+
+    async def unexpected_fallback(**kwargs):
+        call_log.append(("fallback", dict(kwargs)))
+        raise AssertionError("strict media must not change delivery API")
+
+    adapter._bot = SimpleNamespace(
+        send_photo=mock_send_photo,
+        send_document=unexpected_fallback,
+        send_message=unexpected_fallback,
+    )
+
+    result = await adapter.send_image_file(
+        chat_id="-100123",
+        image_path=str(media_path),
+        metadata={"thread_id": "20197", "topic_boundary": "strict"},
+    )
+
+    assert result.success is False
+    assert result.raw_response == {
+        "requested_thread_id": 20197,
+        "strict_thread_failure": True,
+    }
+    assert [label for label, _ in call_log] == ["photo", "photo"]
 
 
 @pytest.mark.asyncio

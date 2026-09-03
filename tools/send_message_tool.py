@@ -1109,7 +1109,17 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    args=None,
+    topic_boundary=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1203,6 +1213,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            topic_boundary=topic_boundary,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1556,7 +1567,28 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+def _strict_telegram_topic_failure(error: Exception, requested_thread_id: int) -> dict:
+    """Return an observable, redacted failure for an exact topic boundary."""
+    return {
+        "success": False,
+        "error": _sanitize_error_text(error),
+        "raw_response": {
+            "requested_thread_id": requested_thread_id,
+            "strict_thread_failure": True,
+        },
+    }
+
+
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    force_document=False,
+    topic_boundary=None,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1688,20 +1720,38 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         parse_mode=send_parse_mode, **text_kwargs
                     )
                 except Exception as md_error:
-                    # Thread not found — retry without message_thread_id so the
-                    # message still delivers (matching the gateway adapter's
-                    # fallback behaviour, issue #27012).
+                    # Strict topic boundaries retry once on the same topic for
+                    # Telegram's observed transient false negative, then fail
+                    # closed. Soft sends keep the availability-oriented parent
+                    # fallback (issue #27012, strict policy from #9168).
                     if _is_telegram_thread_not_found(md_error) and text_kwargs.get("message_thread_id") is not None:
-                        logger.warning(
-                            "Thread %s not found in _send_telegram, retrying without message_thread_id",
-                            text_kwargs.get("message_thread_id"),
-                        )
-                        text_kwargs.pop("message_thread_id", None)
-                        last_msg = await _send_telegram_message_with_retry(
-                            bot,
-                            chat_id=int_chat_id, text=chunk,
-                            parse_mode=send_parse_mode, **text_kwargs
-                        )
+                        if topic_boundary == "strict":
+                            logger.warning(
+                                "Strict thread %s not found in _send_telegram, retrying once with same message_thread_id",
+                                text_kwargs.get("message_thread_id"),
+                            )
+                            try:
+                                last_msg = await _send_telegram_message_with_retry(
+                                    bot,
+                                    chat_id=int_chat_id, text=chunk,
+                                    parse_mode=send_parse_mode, **text_kwargs
+                                )
+                            except Exception as retry_error:
+                                return _strict_telegram_topic_failure(
+                                    retry_error,
+                                    int(text_kwargs["message_thread_id"]),
+                                )
+                        else:
+                            logger.warning(
+                                "Thread %s not found in _send_telegram, retrying without message_thread_id",
+                                text_kwargs.get("message_thread_id"),
+                            )
+                            text_kwargs.pop("message_thread_id", None)
+                            last_msg = await _send_telegram_message_with_retry(
+                                bot,
+                                chat_id=int_chat_id, text=chunk,
+                                parse_mode=send_parse_mode, **text_kwargs
+                            )
                     elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                         logger.warning(
                             "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
@@ -1740,6 +1790,30 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         )
                         _tg_caption = None  # delivered — don't re-caption a later file
                     except Exception as _cap_err:
+                        if (
+                            topic_boundary == "strict"
+                            and text_kwargs.get("message_thread_id") is not None
+                        ):
+                            if _is_telegram_thread_not_found(_cap_err):
+                                try:
+                                    last_msg = await _send_telegram_message_with_retry(
+                                        bot,
+                                        chat_id=int_chat_id,
+                                        text=_tg_caption,
+                                        parse_mode=send_parse_mode,
+                                        **text_kwargs,
+                                    )
+                                    _tg_caption = None
+                                    continue
+                                except Exception as retry_error:
+                                    return _strict_telegram_topic_failure(
+                                        retry_error,
+                                        int(text_kwargs["message_thread_id"]),
+                                    )
+                            return _strict_telegram_topic_failure(
+                                _cap_err,
+                                int(text_kwargs["message_thread_id"]),
+                            )
                         logger.warning(
                             "Telegram caption-fallback send failed for missing media: %s",
                             _sanitize_error_text(_cap_err),
@@ -1788,15 +1862,21 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             )
                     except Exception as media_err:
                         if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
-                            # Thread not found for media — retry without
-                            # message_thread_id (issue #27012).
-                            logger.warning(
-                                "Thread %s not found for media send, retrying without message_thread_id",
-                                media_kwargs["message_thread_id"],
-                            )
+                            if topic_boundary == "strict":
+                                logger.warning(
+                                    "Strict thread %s not found for media send, retrying once with same message_thread_id",
+                                    media_kwargs["message_thread_id"],
+                                )
+                            else:
+                                # Soft media keeps the availability-oriented
+                                # fallback (issue #27012).
+                                logger.warning(
+                                    "Thread %s not found for media send, retrying without message_thread_id",
+                                    media_kwargs["message_thread_id"],
+                                )
+                                media_kwargs.pop("message_thread_id", None)
                             # Re-seek the file since the first attempt consumed it
                             f.seek(0)
-                            media_kwargs.pop("message_thread_id", None)
                             if ext in _IMAGE_EXTS and not force_document:
                                 last_msg = await bot.send_photo(
                                     chat_id=int_chat_id, photo=f, **media_kwargs
@@ -1851,6 +1931,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         else:
                             raise
             except Exception as e:
+                if (
+                    topic_boundary == "strict"
+                    and thread_kwargs.get("message_thread_id") is not None
+                ):
+                    return _strict_telegram_topic_failure(
+                        e,
+                        int(thread_kwargs["message_thread_id"]),
+                    )
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
                 warnings.append(warning)

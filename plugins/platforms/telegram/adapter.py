@@ -601,6 +601,15 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+class _StrictTopicSendError(RuntimeError):
+    """Internal signal that an exact Telegram topic route failed twice."""
+
+    def __init__(self, error: Exception, requested_thread_id: int):
+        super().__init__(_redact_telegram_error_text(error))
+        self.original_error = error
+        self.requested_thread_id = requested_thread_id
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -1818,6 +1827,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not (metadata and metadata.get("telegram_dm_topic_reply_fallback")):
             return False
+        if metadata.get("topic_boundary") == "strict":
+            # A strict caller treats the topic as a privacy boundary. Retrying
+            # without its reply/topic routing would escape into the parent DM.
+            return False
         if not cls._is_bad_request_error(error):
             return False
         err_lower = str(error).lower()
@@ -1848,10 +1861,33 @@ class TelegramAdapter(BasePlatformAdapter):
         media_label: str,
         reset_media: Optional[Any] = None,
     ) -> Any:
-        """Retry stale private-topic media replies once without the topic anchor."""
+        """Apply strict same-topic retry or the legacy soft DM-anchor fallback."""
         try:
             return await send_fn(**send_kwargs)
         except Exception as send_err:
+            requested_thread_id = send_kwargs.get("message_thread_id")
+            if requested_thread_id is None:
+                requested_thread_id = send_kwargs.get("direct_messages_topic_id")
+            if (
+                (metadata or {}).get("topic_boundary") == "strict"
+                and requested_thread_id is not None
+                and self._is_thread_not_found_error(send_err)
+            ):
+                logger.warning(
+                    "[%s] Strict Telegram %s topic %s not found, retrying once with the same route",
+                    self.name,
+                    media_label,
+                    requested_thread_id,
+                )
+                if reset_media is not None:
+                    reset_media()
+                try:
+                    return await send_fn(**send_kwargs)
+                except Exception as retry_err:
+                    raise _StrictTopicSendError(
+                        retry_err,
+                        int(requested_thread_id),
+                    ) from retry_err
             if not self._should_retry_without_dm_topic_reply_anchor(
                 send_err,
                 metadata,
@@ -1872,6 +1908,19 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_kwargs.pop("message_thread_id", None)
             retry_kwargs.pop("direct_messages_topic_id", None)
             return await send_fn(**retry_kwargs)
+
+    @staticmethod
+    def _strict_topic_failure_result(error: _StrictTopicSendError) -> SendResult:
+        return SendResult(
+            success=False,
+            error=str(error),
+            raw_response={
+                "requested_thread_id": error.requested_thread_id,
+                "strict_thread_failure": True,
+            },
+            retryable=False,
+            error_kind=classify_send_error(error.original_error),
+        )
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -2326,16 +2375,40 @@ class TelegramAdapter(BasePlatformAdapter):
             # quietly drop the reply anchor instead of erroring.
             payload["reply_parameters"] = {"message_id": reply_to_id}
 
+        bot = self._bot
+        if bot is None:
+            return None
         try:
             # Take the raw Bot API result (dict under real PTB). Passing
             # return_type=Message would make PTB deserialize a Bot API 10.1
             # response shape it does not fully model yet; a post-delivery parse
             # error must not be mistaken for a sendable failure.
-            msg = await self._bot.do_api_request(
+            msg = await bot.do_api_request(
                 "sendRichMessage", api_kwargs=payload
             )
         except Exception as exc:
-            if self._is_rich_fallback_error(exc):
+            requested_thread_id = payload.get("message_thread_id")
+            if requested_thread_id is None:
+                requested_thread_id = payload.get("direct_messages_topic_id")
+            if (
+                (metadata or {}).get("topic_boundary") == "strict"
+                and requested_thread_id is not None
+                and self._is_thread_not_found_error(exc)
+            ):
+                logger.warning(
+                    "[%s] Strict sendRichMessage topic %s not found, retrying once with the same route",
+                    self.name,
+                    requested_thread_id,
+                )
+                try:
+                    msg = await bot.do_api_request(
+                        "sendRichMessage", api_kwargs=payload
+                    )
+                except Exception as retry_exc:
+                    return self._strict_topic_failure_result(
+                        _StrictTopicSendError(retry_exc, int(requested_thread_id))
+                    )
+            elif self._is_rich_fallback_error(exc):
                 if self._is_rich_capability_error(exc):
                     # Endpoint missing (old PTB/server) — latch rich off so
                     # every later send doesn't pay a doomed extra roundtrip.
@@ -2345,36 +2418,37 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name, _redact_telegram_error_text(exc),
                 )
                 return None
-            # Transient / network / unknown: the request may have reached
-            # Telegram. Do NOT legacy-resend (duplicate risk); surface a
-            # failure with retry semantics mirroring the legacy send() except.
-            err_str = str(exc).lower()
-            try:
-                from telegram.error import TimedOut as _TimedOut
-            except (ImportError, AttributeError):
-                _TimedOut = None
-            is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
-            is_connect_timeout = self._looks_like_connect_timeout(exc)
-            # Extract server-requested retry_after for flood control so the
-            # base retry layer honors Telegram's backoff instead of its own
-            # short exponential schedule.
-            _retry_after = getattr(exc, "retry_after", None)
-            if _retry_after is None:
-                import re as _re
-                _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
-                if _m:
-                    _retry_after = float(_m.group(1))
-            safe_error = _redact_telegram_error_text(exc)
-            logger.warning(
-                "[%s] sendRichMessage transient failure (no legacy resend): %s",
-                self.name, safe_error,
-            )
-            return SendResult(
-                success=False,
-                error=safe_error,
-                retryable=(is_connect_timeout or not is_timeout),
-                retry_after=_retry_after,
-            )
+            else:
+                # Transient / network / unknown: the request may have reached
+                # Telegram. Do NOT legacy-resend (duplicate risk); surface a
+                # failure with retry semantics mirroring the legacy send() except.
+                err_str = str(exc).lower()
+                try:
+                    from telegram.error import TimedOut as _TimedOut
+                except (ImportError, AttributeError):
+                    _TimedOut = None
+                is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
+                is_connect_timeout = self._looks_like_connect_timeout(exc)
+                # Extract server-requested retry_after for flood control so the
+                # base retry layer honors Telegram's backoff instead of its own
+                # short exponential schedule.
+                _retry_after = getattr(exc, "retry_after", None)
+                if _retry_after is None:
+                    import re as _re
+                    _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
+                    if _m:
+                        _retry_after = float(_m.group(1))
+                safe_error = _redact_telegram_error_text(exc)
+                logger.warning(
+                    "[%s] sendRichMessage transient failure (no legacy resend): %s",
+                    self.name, safe_error,
+                )
+                return SendResult(
+                    success=False,
+                    error=safe_error,
+                    retryable=(is_connect_timeout or not is_timeout),
+                    retry_after=_retry_after,
+                )
 
         message_id = None
         if isinstance(msg, dict):
@@ -5532,6 +5606,9 @@ class TelegramAdapter(BasePlatformAdapter):
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
+            direct_messages_topic_id = self._metadata_direct_messages_topic_id(metadata)
+            if requested_thread_id is None and direct_messages_topic_id is not None:
+                requested_thread_id = int(direct_messages_topic_id)
             used_thread_fallback = False
             
             try:
@@ -5624,17 +5701,57 @@ class TelegramAdapter(BasePlatformAdapter):
                                 raise
                         break  # success
                     except _NetErr as send_err:
+                        if (
+                            retried_thread_not_found
+                            and (metadata or {}).get("topic_boundary") == "strict"
+                            and requested_thread_id is not None
+                        ):
+                            return self._strict_topic_failure_result(
+                                _StrictTopicSendError(send_err, int(requested_thread_id))
+                            )
                         # BadRequest is a subclass of NetworkError in
                         # python-telegram-bot but represents permanent errors
                         # (not transient network issues). Detect and handle
                         # specific cases instead of blindly retrying.
                         if _BadReq and isinstance(send_err, _BadReq):
+                            if self._is_thread_not_found_error(send_err):
+                                strict_boundary = (metadata or {}).get("topic_boundary") == "strict"
+                                strict_route_id = (
+                                    effective_thread_id
+                                    if effective_thread_id is not None
+                                    else direct_messages_topic_id
+                                )
+                                if strict_boundary and strict_route_id is not None:
+                                    if not retried_thread_not_found:
+                                        retried_thread_not_found = True
+                                        logger.warning(
+                                            "[%s] Strict Telegram topic %s not found, retrying once with the same route",
+                                            self.name,
+                                            strict_route_id,
+                                        )
+                                        continue
+                                    safe_send_error = _redact_telegram_error_text(send_err)
+                                    return SendResult(
+                                        success=False,
+                                        error=safe_send_error,
+                                        raw_response={
+                                            "requested_thread_id": requested_thread_id,
+                                            "strict_thread_failure": True,
+                                        },
+                                        retryable=False,
+                                        error_kind=classify_send_error(send_err),
+                                    )
                             if self._is_thread_not_found_error(send_err) and effective_thread_id is not None:
                                 if private_dm_topic_send or (metadata and metadata.get("telegram_dm_topic_created_for_send")):
                                     return SendResult(
                                         success=False,
-                                        error=str(send_err),
+                                        error=_redact_telegram_error_text(send_err),
+                                        raw_response={
+                                            "requested_thread_id": requested_thread_id,
+                                            "strict_thread_failure": True,
+                                        },
                                         retryable=False,
+                                        error_kind=classify_send_error(send_err),
                                     )
                                 # Telegram has been observed to return a
                                 # one-off "thread not found" that recovers on
@@ -5649,12 +5766,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                         self.name, effective_thread_id,
                                     )
                                     continue
-                                # Second failure: the thread is genuinely gone.
-                                # Retry without ``message_thread_id`` so the
-                                # message still reaches the chat, and prune
-                                # the stale binding so future inbound
-                                # messages aren't redirected back to it
-                                # (#31501).
+                                # Soft routing keeps the availability-oriented
+                                # fallback and stale-binding cleanup (#31501).
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
@@ -5728,6 +5841,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             raise
                     except Exception as send_err:
+                        if (
+                            retried_thread_not_found
+                            and (metadata or {}).get("topic_boundary") == "strict"
+                            and requested_thread_id is not None
+                        ):
+                            return self._strict_topic_failure_result(
+                                _StrictTopicSendError(send_err, int(requested_thread_id))
+                            )
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
                             wait = float(retry_after) if retry_after is not None else 1.0
@@ -8171,6 +8292,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
+        except _StrictTopicSendError as e:
+            return self._strict_topic_failure_result(e)
         except Exception as e:
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s",
@@ -8305,6 +8428,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     "media group",
                     reset_media=_reset_opened_files,
                 )
+            except _StrictTopicSendError:
+                raise
             except Exception as e:
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s",
@@ -8366,6 +8491,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     reset_media=lambda: image_file.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
+        except _StrictTopicSendError as e:
+            return self._strict_topic_failure_result(e)
         except Exception as e:
             error_str = str(e)
             # Dimension-related errors are the expected case for valid image
@@ -8464,6 +8591,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
+        except _StrictTopicSendError as e:
+            return self._strict_topic_failure_result(e)
         except Exception as e:
             logger.warning(
                 "[%s] Failed to send document: %s",
@@ -8515,6 +8644,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     reset_media=lambda: f.seek(0),
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
+        except _StrictTopicSendError as e:
+            return self._strict_topic_failure_result(e)
         except Exception as e:
             logger.warning(
                 "[%s] Failed to send video: %s",
@@ -8570,6 +8701,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 "URL photo",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
+        except _StrictTopicSendError as e:
+            return self._strict_topic_failure_result(e)
         except Exception as e:
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s",
@@ -8613,6 +8746,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     "uploaded photo",
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
+            except _StrictTopicSendError as e2:
+                return self._strict_topic_failure_result(e2)
             except Exception as e2:
                 logger.error(
                     "[%s] File upload send_photo also failed: %s",
@@ -8661,6 +8796,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 "animation",
             )
             return SendResult(success=True, message_id=str(msg.message_id))
+        except _StrictTopicSendError as e:
+            return self._strict_topic_failure_result(e)
         except Exception as e:
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s",

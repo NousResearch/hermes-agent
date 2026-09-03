@@ -438,6 +438,15 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
+A Telegram topic target (`telegram:<chat_id>:<thread_id>`) is an exact delivery
+boundary. For forum topics Hermes retries the same topic once when Telegram
+reports it unavailable, then records the delivery as failed; it does **not**
+redirect the output to the parent/General chat. Private-chat topic sends likewise
+keep their exact routing and fail rather than falling back to the parent DM. Since
+a positive chat/topic pair is ambiguous between those modes, Hermes also fails
+closed when no live adapter is available to disambiguate it. Use
+`telegram:<chat_id>` when delivery to the parent chat is intentional.
+
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
 ### Delivery failures are a distinct status

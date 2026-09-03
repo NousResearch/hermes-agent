@@ -384,6 +384,38 @@ def test_start_server_loopback_public_url_enables_gate(monkeypatch):
         clear_providers()
 
 
+def test_desktop_headless_loopback_ignores_dashboard_public_url(monkeypatch):
+    """Desktop's private child keeps token auth despite the machine public URL."""
+    from hermes_cli.dashboard_auth import clear_providers
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv(
+        "HERMES_DASHBOARD_PUBLIC_URL",
+        "https://dashboard.example.test:9443",
+    )
+    clear_providers()
+    captured = _stub_uvicorn_run(monkeypatch)
+    _restore_app_state_after_test(
+        monkeypatch,
+        "auth_required",
+        "bound_host",
+        "bound_port",
+        "trusted_public_hosts",
+    )
+
+    web_server.start_server(
+        host="127.0.0.1",
+        port=9119,
+        open_browser=False,
+        allow_public=False,
+        headless=True,
+    )
+
+    assert web_server.app.state.auth_required is False
+    assert web_server.app.state.trusted_public_hosts == frozenset()
+    assert captured["kwargs"].get("proxy_headers") is False
+
+
 def test_start_server_loopback_public_url_without_provider_fails_closed(monkeypatch):
     """Trusting an external Host must never expose the loopback token mode."""
     from hermes_cli.dashboard_auth import clear_providers

@@ -19829,7 +19829,18 @@ def start_server(
     # request middleware never reloads config. Any non-loopback public hostname
     # engages the auth gate even when the backend itself remains on loopback;
     # otherwise the SPA's local session token would become remotely reachable.
-    app.state.trusted_public_hosts = _dashboard_public_hosts()
+    # A Desktop-owned headless child is a private loopback transport, not the
+    # machine dashboard behind dashboard.public_url. Applying that public URL
+    # here switches /api/ws to cookie/ticket auth and rejects the one-time
+    # session token Electron minted for this child.
+    desktop_loopback = (
+        headless
+        and os.environ.get("HERMES_DESKTOP") == "1"
+        and host in _LOOPBACK_HOST_VALUES
+    )
+    app.state.trusted_public_hosts = (
+        frozenset() if desktop_loopback else _dashboard_public_hosts()
+    )
     # Stash the auth-gate flag on app.state so middleware / SPA-token injection /
     # WS-auth paths can branch on it consistently. It also decides whether to
     # refuse startup, log the gate-on banner, and enable uvicorn proxy_headers.

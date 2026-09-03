@@ -32,10 +32,12 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { createDragGhost, type DragGhost } from '@/lib/drag-ghost'
 import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { reorderCommitHaptic, reorderStepHaptic } from '@/lib/reorder'
 
 import type { DropPosition } from '../model'
-import { $dropHint, $treeDragging, type DropHint, mergeTreeZones, moveTreePane, reorderTreePane } from '../store'
+import { $dropHint, $treeDragging, type DropHint, mergeTreeZones, moveTreePanes, reorderTreePanes } from '../store'
+import { clearTabSelection } from '../tab-selection'
 import { type EngineZone, HighlightedZones, primaryZone, type ZoneRect } from '../zones-engine'
 
 const DRAG_THRESHOLD_PX = 4
@@ -96,10 +98,18 @@ const stripSlots = (strip: HTMLElement): StripSlot[] =>
   })
 
 /** Insertion slot from the pointer x against the OTHER tabs' midpoints:
- *  stack BEFORE the returned pane id (`null` = append). */
-export function slotBefore(slots: StripSlot[], x: number, excludePaneId = ''): { before: null | string } {
+ *  stack BEFORE the returned pane id (`null` = append). `exclude` is the
+ *  dragged tab — or the whole selection on a multi-tab drag, so the block
+ *  can't target a slot inside itself. */
+export function slotBefore(
+  slots: StripSlot[],
+  x: number,
+  exclude: readonly string[] | string = ''
+): { before: null | string } {
+  const excluded = typeof exclude === 'string' ? [exclude] : exclude
+
   for (const slot of slots) {
-    if (slot.id === excludePaneId) {
+    if (excluded.includes(slot.id)) {
       continue
     }
 
@@ -145,17 +155,10 @@ const sameHint = (a: DropHint | null, b: DropHint | null) =>
   (a?.groupIds?.length ?? 0) === (b?.groupIds?.length ?? 0) &&
   (a?.groupIds ?? []).every((id, i) => b?.groupIds?.[i] === id)
 
-/** Double-tap detection for drag handles. Pane handles preventDefault
- *  pointerdown, which suppresses native `dblclick` — so rapid same-handle
- *  taps are detected here instead. */
-const DOUBLE_TAP_MS = 400
-let lastTap: { key: string; time: number } | null = null
-
-export interface DoubleTapContext {
-  /** Two sub-threshold releases with the same key within DOUBLE_TAP_MS. */
-  key: string
-  onDoubleTap: () => void
-}
+// Drag handles carry NO double-tap. Handles preventDefault pointerdown, so a
+// synthesized one is the only way to get it here — and a gesture this machinery
+// hands to every handle at once is the wrong home for anything destructive.
+// Trackpad double-tap is a separate concern: `@/lib/trackpad-gestures`.
 
 // ---------------------------------------------------------------------------
 // The generic drag session (machinery) — resolvers plug in below / elsewhere.
@@ -176,7 +179,6 @@ export interface DragSessionSpec {
   onEnd?(): void
   /** Sub-threshold release = a click on the handle. */
   onTap?(): void
-  double?: DoubleTapContext
   /** Floating chip following the pointer — for drags whose source doesn't
    *  stay visibly "held" (a sidebar row, unlike a dimmed tab). See
    *  `@/lib/drag-ghost`. */
@@ -208,10 +210,10 @@ function suppressDragClick(committed: boolean) {
 
 /**
  * Begin a drag session from a handle's pointerdown. A sub-threshold release
- * is a click (`onTap` / `double.onDoubleTap`); past the threshold the spec's
- * resolver owns targeting and the machinery owns everything else. Esc aborts
- * instantly: the session registers as the TOP escape layer, tears down
- * synchronously, and nothing commits.
+ * is a click (`onTap`); past the threshold the spec's resolver owns targeting
+ * and the machinery owns everything else. Esc aborts instantly: the session
+ * registers as the TOP escape layer, tears down synchronously, and nothing
+ * commits.
  */
 export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSessionSpec) {
   if (e.button !== 0) {
@@ -226,6 +228,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   const restoreSelect = document.body.style.userSelect
   let engaged = false
   let releaseEscapeLayer: (() => void) | null = null
+  let releaseGuests: (() => void) | null = null
   let ghost: DragGhost | null = null
   let cursor: string | null = null
   // rAF-coalesced move processing: the raw handler only records the latest
@@ -266,6 +269,9 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
 
     setCursor('grabbing')
     document.body.style.userSelect = 'none'
+    // Webview/iframe guests hit-test in their own process — dragging a tab
+    // across the in-app browser would go silent without this.
+    releaseGuests = guardGuestPointers()
     // While dragging, Esc belongs to the drag ALONE — lower layers (edit
     // mode, overlays) must not also fire on the same press.
     releaseEscapeLayer = pushEscapeLayer(ESCAPE_PRIORITY.drag)
@@ -330,6 +336,8 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     ghost = null
     releaseEscapeLayer?.()
     releaseEscapeLayer = null
+    releaseGuests?.()
+    releaseGuests = null
 
     try {
       handle.releasePointerCapture?.(pointerId)
@@ -349,15 +357,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
         spec.onCommit($dropHint.get())
       }
     } else if (commit) {
-      const now = Date.now()
-
-      if (spec.double && lastTap?.key === spec.double.key && now - lastTap.time < DOUBLE_TAP_MS) {
-        lastTap = null
-        spec.double.onDoubleTap()
-      } else {
-        lastTap = spec.double ? { key: spec.double.key, time: now } : null
-        spec.onTap?.()
-      }
+      spec.onTap?.()
     }
 
     spec.onEnd?.()
@@ -402,14 +402,13 @@ const TEAR_OFF_SLACK_PX = 18
 
 /**
  * Begin a pane drag from any handle. A sub-threshold release is a click
- * (`onTap`, used to activate tabs; rapid repeat fires `double.onDoubleTap`
- * instead). With a `reorder` context (tab drags), movement inside the strip
- * targets an insertion slot — the strip renders a divider at it, NOTHING
- * moves until release (placement-on-release, like every other drop); tearing
- * away from the strip converts the drag into a zone move. Zone mode: zones
- * light up, the target's tab strip stacks at its divider slot, Shift extends
- * the highlight range, release drops into the ClosestCenter primary zone.
- * Esc aborts either mode.
+ * (`onTap`, used to activate tabs). With a `reorder` context (tab drags),
+ * movement inside the strip targets an insertion slot — the strip renders a
+ * divider at it, NOTHING moves until release (placement-on-release, like every
+ * other drop); tearing away from the strip converts the drag into a zone move.
+ * Zone mode: zones light up, the target's tab strip stacks at its divider slot,
+ * Shift extends the highlight range, release drops into the ClosestCenter
+ * primary zone. Esc aborts either mode.
  *
  * `ghostLabel` opts into the pointer-following chip (`@/lib/drag-ghost`) — the
  * same "what am I holding" affordance sessions use. The in-strip dim only
@@ -421,8 +420,11 @@ export function startPaneDrag(
   e: ReactPointerEvent<HTMLElement>,
   onTap?: () => void,
   reorder?: ReorderContext,
-  double?: DoubleTapContext,
-  ghostLabel?: string
+  ghostLabel?: string,
+  /** Multi-tab selection riding this drag (strip order, includes `paneId`).
+   *  The whole block moves/reorders together; `paneId` stays the pressed tab
+   *  (it fronts at the destination). */
+  selection?: readonly string[]
 ) {
   if (e.button !== 0) {
     return
@@ -431,17 +433,28 @@ export function startPaneDrag(
   e.preventDefault()
   e.stopPropagation()
 
+  // The moving block: the selection when the pressed tab rides one, else just
+  // the pressed tab. Order is strip order (selectionFor guarantees it).
+  const moving: readonly string[] = selection && selection.length > 1 ? selection : [paneId]
+
   const highlighted = new HighlightedZones()
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
   let mode: 'reorder' | 'zone' | null = null
-  let dimmed: HTMLElement | null = null
+  let dimmed: HTMLElement[] = []
 
   const markSource = () => {
-    // The dragged tab dims for the drag's life — the divider says where it
-    // GOES, the dim says what MOVES. No live shuffle (placement-on-release).
-    dimmed ??= reorder?.strip.querySelector<HTMLElement>(`[data-tree-tab="${CSS.escape(paneId)}"]`) ?? null
-    dimmed?.style.setProperty('opacity', '0.45')
+    // Every dragged tab dims for the drag's life — the divider says where they
+    // GO, the dim says what MOVES. No live shuffle (placement-on-release).
+    if (dimmed.length === 0 && reorder) {
+      dimmed = moving
+        .map(id => reorder.strip.querySelector<HTMLElement>(`[data-tree-tab="${CSS.escape(id)}"]`))
+        .filter((el): el is HTMLElement => el !== null)
+    }
+
+    for (const el of dimmed) {
+      el.style.setProperty('opacity', '0.45')
+    }
   }
 
   const enterZoneMode = () => {
@@ -473,7 +486,6 @@ export function startPaneDrag(
     Boolean(reorder) && rectContains(reorderStrip().rect, x, y, TEAR_OFF_SLACK_PX)
 
   startDragSession(e, {
-    double,
     ghost: ghostLabel ? { label: ghostLabel } : undefined,
     onTap,
 
@@ -494,7 +506,7 @@ export function startPaneDrag(
             groupId: reorder!.groupId,
             groupIds: [reorder!.groupId],
             pos: 'center',
-            stack: slotBefore(reorderStrip().slots, x, paneId)
+            stack: slotBefore(reorderStrip().slots, x, moving)
           }
         }
 
@@ -525,7 +537,7 @@ export function startPaneDrag(
       const strip =
         groupIds.length === 1 && groupId ? strips.find(s => s.groupId === groupId && rectContains(s.rect, x, y)) : null
 
-      const stack = strip ? slotBefore(strip.slots, x, paneId) : undefined
+      const stack = strip ? slotBefore(strip.slots, x, moving) : undefined
 
       const pos: DropPosition = stack
         ? 'center'
@@ -537,17 +549,26 @@ export function startPaneDrag(
     },
 
     onCommit(hint) {
+      // A multi-tab selection is spent by a LANDED drop (reorder or zone) —
+      // a deny-area release keeps it, so a missed drop can just be retried.
+      const spendSelection = () => {
+        if (moving.length > 1) {
+          clearTabSelection()
+        }
+      }
+
       if (mode === 'reorder' && reorder && hint?.stack !== undefined) {
-        // Slot -> index among the OTHER tabs (reorderPaneInGroup inserts there).
+        // Slot -> index among the OTHER tabs (the block re-inserts there).
         const others = [...reorder.strip.querySelectorAll<HTMLElement>('[data-tree-tab]')]
           .map(el => el.dataset.treeTab)
-          .filter((id): id is string => Boolean(id) && id !== paneId)
+          .filter((id): id is string => Boolean(id) && !moving.includes(id!))
 
         const toIndex = hint.stack.before ? others.indexOf(hint.stack.before) : others.length
 
         if (toIndex >= 0) {
-          reorderTreePane(reorder.groupId, paneId, toIndex)
+          reorderTreePanes(reorder.groupId, moving, toIndex)
           reorderCommitHaptic()
+          spendSelection()
         }
       }
 
@@ -559,18 +580,28 @@ export function startPaneDrag(
         const targets = hint?.groupIds ?? []
 
         if (targets.length > 1) {
-          // Shift-span: merge the highlighted zones, dropping the pane across them.
-          mergeTreeZones([...targets], paneId, hint?.groupId ?? null)
+          // Shift-span: merge the highlighted zones, dropping the block across them.
+          mergeTreeZones([...targets], moving, hint?.groupId ?? null)
+          spendSelection()
         } else if (hint?.groupId) {
           // strip = stack at the divider slot; center = join the stack;
-          // an edge = split the zone and land there.
-          moveTreePane(paneId, { groupId: hint.groupId, pos: hint.pos ?? 'center', before: hint.stack?.before })
+          // an edge = split the zone and land there. The whole selection
+          // rides — the pressed tab fronts at the destination.
+          moveTreePanes(
+            moving,
+            { groupId: hint.groupId, pos: hint.pos ?? 'center', before: hint.stack?.before },
+            paneId
+          )
+          spendSelection()
         }
       }
     },
 
     onEnd() {
-      dimmed?.style.removeProperty('opacity')
+      for (const el of dimmed) {
+        el.style.removeProperty('opacity')
+      }
+
       highlighted.reset()
     }
   })

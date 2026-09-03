@@ -74,7 +74,10 @@ def test_compression_threshold_default_none_for_other_models() -> None:
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-5", "gpt-5.55", "gpt-5.50", "gpt-5.45", "gpt-5.40", "", None],
+    [
+        "gpt-5", "gpt-5.55", "gpt-5.50", "gpt-5.45", "gpt-5.40",
+        "gpt-daybreak-blue-latest-mini", "", None,
+    ],
 )
 def test_is_codex_gpt54_or_gpt55_rejects_non_54_55_models(model) -> None:
     # Close numeric neighbours must NOT match — the prefix guards require a
@@ -89,6 +92,33 @@ def test_compression_threshold_for_codex_gpt55() -> None:
     assert _compression_threshold_for_model("gpt-5.5", "openai-codex") == 0.85
     assert _compression_threshold_for_model("gpt-5.5-pro", "openai-codex") == 0.85
     assert _compression_threshold_for_model("openai/gpt-5.5", "openai-codex") == 0.85
+    assert _is_codex_gpt54_or_gpt55("gpt-daybreak-blue-latest", "openai-codex") is True
+    assert _compression_threshold_for_model("gpt-daybreak-blue-latest", "openai-codex") == 0.85
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.6-sol-900k",
+        "gpt-5.6-terra-900k",
+        "gpt-5.6-luna-900k",
+        "gpt-5.4-900k",
+        "gpt-daybreak-blue-latest-900k",
+        "openai/gpt-5.6-sol-900k",
+    ],
+)
+def test_900k_variants_keep_global_threshold(model) -> None:
+    """The 85% autoraise compensates for the small 272K window; ``-900k``
+    opt-in variants run at ~900K, so they keep the user's global
+    ``compression.threshold`` (default 50%) — no override returned."""
+    assert _is_codex_gpt54_or_gpt55(model, "openai-codex") is False
+    assert _compression_threshold_for_model(model, "openai-codex") is None
+
+
+def test_base_slugs_still_autoraised_alongside_900k_variants() -> None:
+    """Sanity pair: the base slug autoraises while its variant does not."""
+    assert _compression_threshold_for_model("gpt-5.6-sol", "openai-codex") == 0.85
+    assert _compression_threshold_for_model("gpt-5.6-sol-900k", "openai-codex") is None
 
 
 

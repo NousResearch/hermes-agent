@@ -19,15 +19,21 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
-import { ErrorBoundary } from './components/error-boundary'
+import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
 import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
+import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
+import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
+// Chromium serializes selection copies (Cmd+C, right-click Copy) with the
+// theme's computed colors inlined; without this guard a dark-theme selection
+// pastes as near-white text into light-background targets.
+installSelectionCopyColorGuard()
 
 // The perf probe ships in dev, and in a production build ONLY when explicitly
 // opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,
@@ -39,6 +45,10 @@ if (import.meta.env.MODE !== 'production' || import.meta.env.VITE_PERF_PROBE ===
 
 const winParam = new URLSearchParams(window.location.search).get('win')
 
+if (winParam === 'hud') {
+  document.title = 'Hermes HUD'
+}
+
 if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else if (winParam === 'quick') {
@@ -46,9 +56,14 @@ if (winParam === 'overlay') {
 } else if (winParam === 'wake') {
   void import('./app/wake-indicator/wake-indicator-root').then(({ mountWakeIndicator }) => mountWakeIndicator())
 } else {
+  // CSS animations do not inherit Chromium's JS-loop pause policy. Mirror the
+  // main window's focus/visibility state to :root so decorative infinite
+  // animations stop producing frames when nobody can see them.
+  installRendererAnimationPauseState()
+
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <ErrorBoundary label="root">
+      <RootErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <ThemeProvider>
@@ -76,7 +91,7 @@ if (winParam === 'overlay') {
             </ThemeProvider>
           </I18nProvider>
         </QueryClientProvider>
-      </ErrorBoundary>
+      </RootErrorBoundary>
     </StrictMode>
   )
 }

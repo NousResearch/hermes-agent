@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -151,10 +152,36 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
   let n = 0
 
   for (const node of roots) {
+    // Exact grouping when the backend tags workers with their batch id —
+    // concurrent or nested fan-outs of the same shape must not merge.
+    if (node.delegationId) {
+      const byId = groups.find(g => g.id === `delegation:${node.delegationId}`)
+
+      if (byId) {
+        byId.nodes.push(node)
+
+        continue
+      }
+
+      n += 1
+      groups.push({
+        id: `delegation:${node.delegationId}`,
+        delegationIndex: n,
+        nodes: [node],
+        taskCount: node.taskCount
+      })
+
+      continue
+    }
+
+    // Older backends (no delegation_id): heuristic grouping by shape + time.
     const prev = groups.at(-1)
     const prevTail = prev?.nodes.at(-1)
     const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false
-    const sameShape = prev && node.taskCount > 1 && prev.taskCount === node.taskCount
+
+    const sameShape =
+      prev && !prev.id.startsWith('delegation:') && node.taskCount > 1 && prev.taskCount === node.taskCount
+
     const uniqueStep = prev ? !prev.nodes.some(item => item.taskIndex === node.taskIndex) : false
 
     if (prev && sameShape && closeInTime && uniqueStep) {
@@ -189,15 +216,17 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const tokens = flat.reduce((sum, n) => sum + (n.inputTokens ?? 0) + (n.outputTokens ?? 0), 0)
   const cost = flat.reduce((sum, n) => sum + (n.costUsd ?? 0), 0)
 
+  const visible = usePaneVisible()
+
   useEffect(() => {
-    if (active <= 0 || typeof window === 'undefined') {
+    if (active <= 0 || !visible || typeof window === 'undefined') {
       return
     }
 
     const id = window.setInterval(() => setNowMs(Date.now()), 500)
 
     return () => window.clearInterval(id)
-  }, [active])
+  }, [active, visible])
 
   if (tree.length === 0) {
     return (

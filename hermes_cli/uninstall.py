@@ -87,7 +87,20 @@ def remove_path_from_shell_configs():
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
             if new_content != original_content:
-                config_path.write_text(new_content, encoding="utf-8")
+                from utils import atomic_write_text
+
+                # This is the user's own shell rc, not a Hermes-owned file, and
+                # nothing in this function backs it up. A bare write_text()
+                # truncates it before the new content lands, so a crash or
+                # SIGINT mid-write leaves the user with an empty or truncated
+                # ~/.zshrc -- and the enclosing `except Exception` downgrades
+                # that to a warning, so the next login just starts a bare
+                # shell. atomic_replace also resolves a symlinked rc file, so a
+                # dotfiles-repo setup keeps the symlink instead of having it
+                # replaced by a regular file. preserve_mode keeps the rc's
+                # permission bits (normally 0644) and owner (sudo-run
+                # uninstalls) instead of mkstemp's 0600/root.
+                atomic_write_text(config_path, new_content, preserve_mode=True)
                 removed_from.append(config_path)
                 
         except Exception as e:
@@ -323,12 +336,20 @@ def uninstall_gateway_service():
 # or open a new terminal anyway).
 
 
-def _hermes_path_markers(hermes_home: Path) -> list[str]:
-    """Path-entry substrings that identify Hermes-owned User-PATH entries."""
+def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
+    """Path-entry substrings that identify Hermes-owned User-PATH entries.
+
+    ``include_managed_bin`` adds the managed binary dir (``<root>\\bin``,
+    holding the hermes launchers and the managed uv) — only wanted when
+    that dir is about to be deleted (full uninstall from the default root),
+    so a keep-data uninstall leaves the still-working managed uv resolvable.
+    """
     root = str(hermes_home).rstrip("\\/")
     # Match on prefix so sub-entries (git\cmd, git\bin, git\usr\bin, node, etc.)
     # all get swept.  Also match the bare hermes-agent install dir.
     markers = [root + "\\hermes-agent", root + "\\git", root + "\\node", root + "\\venv"]
+    if include_managed_bin:
+        markers.append(root + "\\bin")
     # Also match if HERMES_HOME was customised to somewhere else — find-and-nuke
     # any entry whose path component contains "hermes".  We don't want to catch
     # unrelated entries like "chermes-foo" or "ephermeral", so we look for
@@ -336,11 +357,17 @@ def _hermes_path_markers(hermes_home: Path) -> list[str]:
     return markers
 
 
-def remove_path_from_windows_registry(hermes_home: Path) -> list[str]:
+def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
     """Strip Hermes-owned entries from User-scope PATH in the registry.
 
     Returns the list of removed path entries.  Operates on HKCU\\Environment,
     same key the installer wrote to via ``[Environment]::SetEnvironmentVariable``.
+
+    ``include_managed_bin`` adds ``<hermes_home>\\bin`` (the managed binary
+    dir holding the hermes launchers and the managed uv) to the sweep. Only
+    pass it when that dir is actually being deleted — full uninstall from
+    the default root — so a keep-data uninstall leaves the still-working
+    managed uv resolvable.
     """
     try:
         import winreg
@@ -358,7 +385,7 @@ def remove_path_from_windows_registry(hermes_home: Path) -> list[str]:
                 return []
             # Preserve REG_EXPAND_SZ vs REG_SZ so unexpanded %VARS% survive.
             entries = [e for e in path_value.split(";") if e]
-            markers = _hermes_path_markers(hermes_home)
+            markers = _hermes_path_markers(hermes_home, include_managed_bin=include_managed_bin)
             kept: list[str] = []
             for entry in entries:
                 entry_norm = entry.rstrip("\\/")
@@ -414,6 +441,58 @@ def remove_portable_tooling_windows(hermes_home: Path) -> list[Path]:
                 removed.append(target)
             except Exception as e:
                 log_warn(f"Could not remove {target}: {e}")
+    return removed
+
+
+def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
+    """Delete the ``hermes`` launchers install.ps1 staged in the managed
+    binary dir (the default Hermes root's ``bin``, next to the managed uv).
+
+    Every uninstall mode deletes the code checkout, so the launchers —
+    which invoke ``<checkout>\\venv\\Scripts`` — would otherwise dangle:
+    ``hermes`` in a new terminal resolves to a launcher whose target is
+    gone and errors, which reads worse than command-not-found. The managed
+    uv (uv*.exe) in the same dir is left for keep-data reinstalls.
+
+    A launcher that IS this process's own trampoline is mandatory-locked
+    against deletion but not rename (same fact
+    ``_install_repair._quarantine_running_hermes_exe`` relies on), so
+    deletion falls back to renaming it aside with a non-executable suffix.
+
+    *windows* is an injectable platform verdict for tests (same pattern as
+    ``_install_repair.ensure_windows_bin_launchers``).
+    """
+    if windows is None:
+        windows = _is_windows()
+    if not windows:
+        return []
+    try:
+        # Lockstep launcher-name list — the same names install.ps1 and the
+        # startup heal stage into this dir.
+        from hermes_cli._install_repair import _WINDOWS_BIN_LAUNCHERS
+        from hermes_constants import get_default_hermes_root
+
+        bin_dir = get_default_hermes_root() / "bin"
+    except Exception as e:
+        log_warn(f"Could not locate the managed binary dir: {e}")
+        return []
+
+    removed: list[Path] = []
+    for name in _WINDOWS_BIN_LAUNCHERS:
+        for suffix in (".exe", ".cmd"):
+            launcher = bin_dir / f"{name}{suffix}"
+            if not launcher.exists():
+                continue
+            try:
+                launcher.unlink()
+                removed.append(launcher)
+            except OSError:
+                aside = launcher.with_name(f"{launcher.name}.uninstalled.{os.getpid()}")
+                try:
+                    os.rename(launcher, aside)
+                    removed.append(launcher)
+                except OSError as e:
+                    log_warn(f"Could not remove {launcher}: {e}")
     return removed
 
 
@@ -781,7 +860,14 @@ def _perform_uninstall(
         # Expand %LOCALAPPDATA% etc. in hermes_home so the marker matching is
         # against fully resolved paths — installer writes literal strings
         # like C:\Users\<u>\AppData\Local\hermes\git\cmd, not %LOCALAPPDATA%.
-        removed_path_entries = remove_path_from_windows_registry(Path(os.path.expandvars(str(hermes_home))))
+        # The managed binary dir (hermes\bin: launchers + managed uv) leaves
+        # the PATH only when the full wipe below is about to delete it;
+        # keep-data mode keeps the dir and the still-working uv resolvable.
+        sweep_managed_bin = full_uninstall and _is_default_hermes_home(hermes_home)
+        removed_path_entries = remove_path_from_windows_registry(
+            Path(os.path.expandvars(str(hermes_home))),
+            include_managed_bin=sweep_managed_bin,
+        )
         if removed_path_entries:
             for entry in removed_path_entries:
                 log_success(f"Removed from User PATH: {entry}")
@@ -804,6 +890,19 @@ def _perform_uninstall(
             log_success(f"Removed {wrapper}")
     else:
         log_info("No wrapper script found")
+
+    # 3a. Remove the Windows launchers from the managed binary dir. Both
+    #     modes delete the code checkout below, so a surviving launcher
+    #     would dangle — `hermes` in a new terminal would resolve and then
+    #     error on its missing venv target, worse than command-not-found.
+    if _is_windows():
+        log_info("Removing Windows hermes launchers...")
+        removed_launchers = remove_windows_bin_launchers()
+        if removed_launchers:
+            for launcher in removed_launchers:
+                log_success(f"Removed {launcher}")
+        else:
+            log_info("No Windows hermes launchers found")
 
     # 3b. Remove node/npm/npx symlinks the installer left in ~/.local/bin
     #     (only when they still point into this Hermes home's node dir, so we

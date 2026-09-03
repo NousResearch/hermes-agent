@@ -768,6 +768,49 @@ class TestDiscordVoiceChannelMethods:
 
 
     @pytest.mark.asyncio
+    async def test_disconnect_leaves_voice_before_cancelling_bot_task(self):
+        """Voice must be torn down while the gateway websocket is still alive.
+
+        VoiceClient.disconnect() sends a voice state update over the main gateway
+        connection and waits for the voice socket to close.  The bot task is the
+        loop running that connection, so cancelling it first strands the
+        handshake and the disconnect blocks until the caller's shutdown timeout.
+        """
+        adapter = self._make_adapter()
+        events = []
+
+        async def cancel_liveness_task():
+            events.append("cancel_liveness_task")
+
+        async def cancel_bot_task():
+            events.append("cancel_bot_task")
+
+        async def leave_voice_channel(guild_id):
+            events.append(f"leave_voice_channel:{guild_id}")
+
+        async def close():
+            events.append("close_client")
+
+        adapter._cancel_liveness_task = cancel_liveness_task
+        adapter._cancel_bot_task = cancel_bot_task
+        adapter.leave_voice_channel = leave_voice_channel
+        adapter._client.close = close
+        adapter._voice_clients[111] = MagicMock()
+        adapter._ready_event = MagicMock()
+        adapter._post_connect_task = None
+        adapter._missed_message_backfill_task = None
+
+        await adapter.disconnect()
+
+        assert events == [
+            "cancel_liveness_task",
+            "leave_voice_channel:111",
+            "cancel_bot_task",
+            "close_client",
+        ]
+
+
+    @pytest.mark.asyncio
     async def test_get_user_voice_channel_success(self):
         adapter = self._make_adapter()
         mock_vc = MagicMock()

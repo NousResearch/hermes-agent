@@ -19,10 +19,14 @@ hermes --tui
 # Resume the latest TUI session (falls back to the latest classic session)
 hermes --tui -c
 hermes --tui --continue
+hermes --tui --resume latest
 
 # Resume a specific session by ID or title
 hermes --tui -r 20260409_000000_aa11bb
 hermes --tui --resume "my t0p session"
+
+# Resume the latest session for a specific project directory
+hermes --tui --resume latest --in ./my-project
 
 # Run source directly — skips the prebuild step (for TUI contributors)
 hermes --tui --dev
@@ -195,6 +199,8 @@ Unset the variable or pass `--resume <id>` explicitly to override on a per-launc
 
 The TUI's status line tracks agent state in real time:
 
+After a session is named, its title appears as an accent-colored badge at the far-right edge of the status line. The title takes the workspace label's place and truncates on narrow terminals.
+
 | Status | Meaning |
 |--------|---------|
 | `starting agent…` | Session ID is live; tools and skills still coming online. You can type — messages queue and send when ready. |
@@ -210,7 +216,7 @@ The status line also shows:
 - **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.
 - **Per-prompt elapsed time** — `⏱ 12s/3m 45s` while the turn is running (live), frozen to `⏲ 32s / 3m 45s` after the turn completes. First number is time since last user message; second is total session duration. Resets on every new prompt.
 - **`🗜️ N`** — number of times the running session has been auto-compressed. Appears once the first compression fires.
-- **`▶ N`** — number of `/background` tasks currently running in this session. Appears whenever at least one task is in flight.
+- **`▶ N`** — number of `/bg` tasks currently running in this session. Appears whenever at least one task is in flight.
 - **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
 ## Configuration

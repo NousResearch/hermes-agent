@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+
 import type { ComposerAttachment } from './composer'
 
 export interface QueuedPromptEntry {
@@ -11,6 +13,15 @@ export interface QueuedPromptEntry {
   displayText?: string
   attachments: ComposerAttachment[]
   queuedAt: number
+}
+
+/** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
+ *  not a slash command — the same gate `steerDraft` applies to the live draft
+ *  (attachments can't ride a redirect; slash commands execute, not steer). */
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+  const text = entry.text.trim()
+
+  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>

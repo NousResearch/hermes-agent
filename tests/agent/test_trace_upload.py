@@ -13,6 +13,7 @@ import pytest
 from agent import trace_upload
 from agent.trace_upload import (
     build_trace_jsonl,
+    load_session_messages,
     upload_session_trace,
     _resolve_hf_token,
     _do_upload,
@@ -95,6 +96,17 @@ def test_converter_keeps_secrets_when_redact_disabled():
     msgs = [{"role": "user", "content": f"key OPENAI_API_KEY={secret} end"}]
     jsonl = build_trace_jsonl(msgs, session_id="s1", redact=False)
     assert secret in jsonl
+
+
+def test_load_session_messages_closes_database_on_failure(monkeypatch):
+    db = MagicMock()
+    db.resolve_session_id.side_effect = RuntimeError("read failed")
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: db)
+
+    with pytest.raises(RuntimeError, match="read failed"):
+        load_session_messages("s1")
+
+    db.close.assert_called_once()
 
 
 

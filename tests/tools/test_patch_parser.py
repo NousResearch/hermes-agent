@@ -215,7 +215,7 @@ class TestApplyUpdate:
                     error=None,
                 )
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -261,7 +261,7 @@ class TestAdditionOnlyHunks:
                     content="def main():\n    pass\n",
                     error=None,
                 )
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -289,7 +289,7 @@ class TestAdditionOnlyHunks:
                     content="existing = True\n",
                     error=None,
                 )
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -326,7 +326,7 @@ class TestReadFileRaw:
             written = None
             def read_file_raw(self, path):
                 return SimpleNamespace(content=file_content, error=None)
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -360,7 +360,7 @@ class TestReadFileRaw:
             written = None
             def read_file_raw(self, path):
                 return SimpleNamespace(content=file_content, error=None)
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 self.written = content
                 return SimpleNamespace(error=None)
 
@@ -403,7 +403,7 @@ class TestValidationPhase:
                     return SimpleNamespace(content=None, error=f"File not found: {path}")
                 return SimpleNamespace(content=content, error=None)
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 written[path] = content
                 return SimpleNamespace(error=None)
 
@@ -569,7 +569,7 @@ class TestV4ALspDiagnosticsPropagation:
         )
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
             def _check_lint(self, path):
@@ -603,7 +603,7 @@ class TestV4ALspDiagnosticsPropagation:
             def read_file_raw(self, path):
                 return SimpleNamespace(content="ctx\nold\nctx\n", error=None)
 
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=diag_block)
 
             def _check_lint(self, path):
@@ -621,7 +621,7 @@ class TestV4ALspDiagnosticsPropagation:
         ops = self._build_ops_writing("foo.py", "x = 1\n")
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 # lsp_diagnostics omitted entirely (older WriteResult shape).
                 return SimpleNamespace(error=None)
 
@@ -654,7 +654,7 @@ class TestV4ALspDiagnosticsPropagation:
         }
 
         class FakeFileOps:
-            def write_file(self, path, content):
+            def write_file(self, path, content, pre_content=None):
                 return SimpleNamespace(error=None, lsp_diagnostics=per_file[path])
 
             def _check_lint(self, path):
@@ -679,7 +679,7 @@ class _DictFileOps:
             return SimpleNamespace(content=self.files[path], error=None)
         return SimpleNamespace(content="", error="file not found")
 
-    def write_file(self, path, content):
+    def write_file(self, path, content, pre_content=None):
         self.files[path] = content
         return SimpleNamespace(error=None)
 
@@ -690,6 +690,62 @@ class _DictFileOps:
     def delete_file(self, path):
         self.files.pop(path, None)
         return SimpleNamespace(error=None)
+
+
+class TestDuckTypedWriteFileCompat:
+    """V4A UPDATE must work with basic write_file(path, content) impls.
+
+    apply_v4a_operations is duck-typed (file_ops: Any); external callers may
+    only implement the two-argument contract. The signature-based feature
+    detection must route them to the 2-arg call — and must NOT swallow a
+    TypeError raised INSIDE a pre_content-capable write_file (which would
+    trigger a duplicate write).
+    """
+
+    PATCH = (
+        "*** Begin Patch\n"
+        "*** Update File: f.py\n"
+        "@@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+        "*** End Patch"
+    )
+
+    def test_two_arg_write_file_still_supported(self):
+        calls = []
+
+        class BasicOps(_DictFileOps):
+            def write_file(self, path, content):  # no pre_content
+                calls.append(path)
+                self.files[path] = content
+                return SimpleNamespace(error=None)
+
+        ops, err = parse_v4a_patch(self.PATCH)
+        assert err is None
+        fo = BasicOps({"f.py": "x = 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is True, getattr(result, "error", None)
+        assert fo.files["f.py"] == "x = 2\n"
+        assert calls == ["f.py"]  # exactly one write, no double invocation
+
+    def test_internal_typeerror_not_silently_retried(self):
+        # A TypeError raised INSIDE a pre_content-capable write_file must not
+        # trigger a second 2-arg write. (The op-loop's blanket except turns it
+        # into a failed result — the key contract is: ONE call, error surfaced.)
+        calls = []
+
+        class ExplodingOps(_DictFileOps):
+            def write_file(self, path, content, pre_content=None):
+                calls.append(path)
+                raise TypeError("bug inside a pre_content-capable impl")
+
+        ops, err = parse_v4a_patch(self.PATCH)
+        assert err is None
+        fo = ExplodingOps({"f.py": "x = 1\n"})
+        result = apply_v4a_operations(ops, fo)
+        assert result.success is False
+        assert "bug inside" in result.error
+        assert calls == ["f.py"]  # not silently retried with 2 args
 
 
 class TestMoveThenUpdateSameFile:
@@ -751,3 +807,109 @@ class TestCrlfPatchBody:
         assert result.success is True, getattr(result, "error", None)
         assert "\r" not in fo.files["f.py"]
         assert fo.files["f.py"] == "def f():\n    x = 2\n    return x\n"
+
+
+class TestV4ABomRoundTrip:
+    """V4A patches must not silently strip a UTF-8 BOM on UPDATE.
+
+    ``read_file_raw`` deliberately strips the BOM (the agent should
+    never see U+FEFF), but the underlying ``write_file`` must restore
+    it on rewrite — otherwise a V4A patch turns an existing BOM-bearing
+    file into a plain UTF-8 file.  Regression for teknium1 review on
+    PR #55661.
+    """
+
+    BOM = "\ufeff"
+
+    def _file_ops_for_update(self, file_path: str, original_bytes: bytes):
+        """Build a FakeFileOps whose ``write_file`` writes real bytes to
+        ``file_path``, simulating BOM-preserving behaviour like the real
+        ``FileOperations.write_file`` (which probes disk for the marker)."""
+        from pathlib import Path
+        from tools.file_operations import _has_bom, _UTF8_BOM
+
+        target = Path(file_path)
+        _bom = self.BOM  # capture for inner class
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                # Simulate BOM-stripped read — same as the real
+                # read_file_raw which strips the marker before returning.
+                decoded = original_bytes.decode("utf-8")
+                if decoded.startswith(_bom):
+                    decoded = decoded[1:]
+                return SimpleNamespace(content=decoded, error=None)
+
+            def write_file(self, path, content, pre_content=None):
+                # Simulate real write_file: probe the target for a BOM
+                # (the real impl calls _file_has_bom → head -c 3) and
+                # prepend if the original had one.
+                had_bom = target.exists() and target.read_bytes().startswith(
+                    _bom.encode("utf-8")
+                )
+                if had_bom and not _has_bom(content):
+                    content = _UTF8_BOM + content
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                return SimpleNamespace(error=None)
+
+        return FakeFileOps()
+
+    def test_update_preserves_bom(self, tmp_path):
+        """A V4A UPDATE on a BOM-bearing file keeps the BOM."""
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        target = tmp_path / "bom_config.py"
+        original = self.BOM + "setting = 'old'\n"
+        target.write_text(original, encoding="utf-8")
+
+        patch = """\
+*** Begin Patch
+*** Update File: bom_config.py
+@@ setting @@
+-setting = 'old'
++setting = 'new'
+*** End Patch"""
+
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        file_ops = self._file_ops_for_update(str(target), original.encode("utf-8"))
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True
+        raw = target.read_bytes()
+        assert raw.startswith(
+            self.BOM.encode("utf-8")
+        ), "BOM was stripped by V4A round-trip"
+        assert b"setting = 'new'" in raw
+        assert b"setting = 'old'" not in raw
+
+    def test_update_no_bom_when_original_had_none(self, tmp_path):
+        """A V4A UPDATE on a plain file must NOT inject a BOM."""
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        target = tmp_path / "plain.py"
+        original = "print('hello')\n"
+        target.write_text(original, encoding="utf-8")
+
+        patch = """\
+*** Begin Patch
+*** Update File: plain.py
+@@ print @@
+-print('hello')
++print('world')
+*** End Patch"""
+
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        file_ops = self._file_ops_for_update(str(target), original.encode("utf-8"))
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True
+        raw = target.read_bytes()
+        assert not raw.startswith(
+            self.BOM.encode("utf-8")
+        ), "BOM was injected on a plain file"
+        assert b"print('world')" in raw

@@ -19,6 +19,18 @@ Two delivery strategies, selected by the target adapter's
   session, with full history, and its result is visible the next time the
   client polls/reopens the conversation.
 
+Async-delegation completions are the exception on the stateless path
+(#85957): after the parent turn ends (``finish_reason=stop``, SSE
+``event.complete``) the CLIENT owns the next turn, so a completion must never
+be self-POSTed as a new ``role=user`` prompt — that starts an unauthorized
+agent turn that can blow through a pending human-confirmation gate. Instead
+``persist_delegation_delivery`` writes the completion into the session
+transcript as a durable DELIVERY row (``role=user`` +
+``display_kind="async_delegation_complete"`` — the same bookkeeping shape the
+TUI/desktop pollers use), so clients polling
+``GET /api/sessions/{id}/messages`` see the result immediately and the next
+REAL client turn carries it as context, without any model turn running.
+
 Failures RAISE (after bounded retries on transient errors) so callers can
 rewind cursors / retry instead of silently losing the event.
 """
@@ -92,6 +104,82 @@ async def deliver_wake(
             "requires the raw session id to self-post the wake turn"
         )
     await _self_post_chat_completion(adapter, text=text, session_id=session_id)
+
+
+def _delegation_display_metadata(evt: dict) -> dict:
+    """Display-only metadata for a persisted delegation delivery row.
+
+    Mirrors ``tui_gateway.server._async_delegation_display_metadata`` (the
+    same ``display_kind`` consumer contract) without importing the TUI stack
+    into the gateway.
+    """
+    raw_results = evt.get("results")
+    results = [r for r in raw_results if isinstance(r, dict)] if isinstance(
+        raw_results, list
+    ) else []
+    task_count = len(results) or 1
+    completed_count = sum(
+        1 for r in results if r.get("status") in {"completed", "success"}
+    )
+    failed_count = sum(
+        1 for r in results if r.get("status") in {"failed", "error"}
+    )
+    metadata = {
+        "delegation_id": str(evt.get("delegation_id") or ""),
+        "task_count": task_count,
+        "completed_count": completed_count or task_count - failed_count,
+        "failed_count": failed_count,
+    }
+    duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
+    if isinstance(duration, (int, float)):
+        metadata["duration_seconds"] = duration
+    return metadata
+
+
+async def persist_delegation_delivery(
+    adapter: Any, *, text: str, session_id: str, evt: Optional[dict] = None
+) -> None:
+    """Persist an async-delegation completion as a durable DELIVERY row.
+
+    #85957: on stateless api_server sessions the client owns the turn after
+    ``event.complete`` — a completion must never become a new ``role=user``
+    prompt via the self-post (that starts an unauthorized agent turn and can
+    cross a pending human-confirmation gate). Instead, append the completion
+    to the session transcript as a timeline bookkeeping row
+    (``display_kind="async_delegation_complete"`` + display metadata — the
+    exact shape the TUI/desktop delivery path persists), WITHOUT running any
+    agent turn. Clients polling ``GET /api/sessions/{id}/messages`` see it
+    immediately; the pre-request repair belt folds it into the next real
+    client turn as context.
+
+    Raises on failure so the caller can release the durable claim and retry
+    instead of losing the completion.
+    """
+    if not session_id:
+        raise ValueError(
+            "persist_delegation_delivery: raw session id required to persist "
+            "the completion on the api_server session transcript"
+        )
+    ensure = getattr(adapter, "_ensure_session_db", None)
+    db: Any = await asyncio.to_thread(ensure) if callable(ensure) else None
+    if db is None:
+        raise RuntimeError(
+            "persist_delegation_delivery: api_server SessionDB unavailable — "
+            f"cannot persist completion for session {session_id}"
+        )
+    await asyncio.to_thread(
+        db.append_message,
+        session_id,
+        "user",
+        content=text,
+        display_kind="async_delegation_complete",
+        display_metadata=_delegation_display_metadata(evt or {}),
+    )
+    logger.info(
+        "async delegation completion persisted as delivery row for "
+        "api_server session %s (no wake turn)",
+        session_id,
+    )
 
 
 async def _self_post_chat_completion(

@@ -42,9 +42,7 @@ if (typeof window !== 'undefined' && !window.__RIGHT_PANE_PERF__) {
     },
     snapshot: (): RightPanePerfSnapshot => ({
       counts: { ...counts },
-      details: Object.fromEntries(
-        Object.entries(details).map(([event, eventDetails]) => [event, { ...eventDetails }])
-      ),
+      details: Object.fromEntries(Object.entries(details).map(([event, eventDetails]) => [event, { ...eventDetails }])),
       rows: { ...rows }
     }),
     start: () => {

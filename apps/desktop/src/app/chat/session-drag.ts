@@ -30,7 +30,6 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
-  type DoubleTapContext,
   rectContains,
   slotBefore,
   snapshotStrips,
@@ -43,6 +42,7 @@ import {
   $layoutTree,
   $treeDragging,
   type DropHint,
+  isMainStripPane,
   isSessionStripPane,
   revealTreePane,
   SESSION_TILE_DRAG
@@ -79,33 +79,36 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
   }))
 }
 
-/** A session may land in a zone only if it hosts a chat surface — never the
- *  sidebar/terminal zones. Returns the pane a stack anchors to. */
-function chatZonePane(groupId: string): null | string {
+/** A session may land in any zone hosting a MAIN tile — another chat stack, a
+ *  Browser tile, a page — never the sidebar/terminal zones. Returns the pane a
+ *  stack anchors to, plus whether the zone hosts a CHAT surface (only those
+ *  offer the link-to-composer center; a preview zone's center stacks). */
+function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
   const tree = $layoutTree.get()
   const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
+  const pane = panes.find(isSessionStripPane) ?? panes.find(isMainStripPane)
 
-  return panes.find(isSessionStripPane) ?? null
+  return pane ? { chat: panes.some(isSessionStripPane), pane } : null
 }
 
 /**
  * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
  * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
- * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
- * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
- * row and MOVES the existing one when its tab is the drag source.
+ * stay ordinary clicks, so `opts.onTap` (activate the tile) rides the tab's
+ * gesture; Esc aborts instantly. A stack/split commits through
+ * `openSessionTile`, which OPENS a new tile from a sidebar row and MOVES the
+ * existing one when its tab is the drag source.
  */
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { double?: DoubleTapContext; onTap?: () => void }
+  opts?: { onTap?: () => void }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
   let composers: ZoneRect[] = []
-  let zoneHost = new Map<string, null | string>()
+  let zoneHost = new Map<string, ReturnType<typeof tileZoneHost>>()
 
   // Commit intent, updated per resolved move (the machinery flushes the final
   // move before commit, so these always match the released-at position).
@@ -120,7 +123,6 @@ export function startSessionDrag(
   const restoreOpacity = source?.style.opacity ?? ''
 
   startDragSession(e, {
-    double: opts?.double,
     ghost: { label: sessionLabel(payload) },
     onTap: opts?.onTap,
 
@@ -129,7 +131,7 @@ export function startSessionDrag(
       strips = snapshotStrips()
       surfaces = snapshotSurfaces()
       composers = queryAllVisible('[data-slot="composer-root"]').map(snapRect)
-      zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
+      zoneHost = new Map(zones.map(zone => [zone.id, tileZoneHost(zone.id)]))
       source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
@@ -160,7 +162,7 @@ export function startSessionDrag(
         // Exclude the tile's OWN tab from the slots so re-dropping it in its
         // home strip reorders cleanly (a no-op for a sidebar-row drag).
         const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
-        split = { anchor: host, before: stack.before, pos: 'center' }
+        split = { anchor: host.pane, before: stack.before, pos: 'center' }
         link = null
 
         return { kind: 'group', groupId: zone.id, groupIds: [zone.id], pos: 'center', stack }
@@ -171,11 +173,16 @@ export function startSessionDrag(
       const pos = composers.some(rect => rectContains(rect, x, y)) ? 'center' : subZonePosition(zones, zone.id, x, y)
       const surface = surfaces.find(s => rectContains(s.rect, x, y))
 
-      if (pos === 'center') {
+      if (pos === 'center' && host.chat) {
         split = null
         link = surface?.composerTarget ?? 'main'
+      } else if (pos === 'center') {
+        // A preview/page zone has no composer to link to — its center stacks
+        // the session as a tab, same as dropping on the strip's tail.
+        split = { anchor: host.pane, pos: 'center' }
+        link = null
       } else {
-        split = { anchor: surface?.anchor ?? 'workspace', pos }
+        split = { anchor: surface?.anchor ?? host.pane, pos }
         link = null
       }
 

@@ -282,6 +282,25 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
+def _ensure_container_env(task_id: Optional[str]) -> None:
+    """Lazily bring up the sandbox (SSH/Docker/…) before an in-sandbox read.
+
+    Unlike the terminal tool, vision never triggered environment creation, so a
+    session whose first action is ``vision_analyze`` on a container-only path
+    under a non-local backend found no active env and failed — until a terminal
+    command happened to create one (issue #62825). Best-effort: any failure just
+    leaves the env absent and the caller hits the existing fail-closed error.
+    """
+    if not task_id:
+        return
+    try:
+        from tools.terminal_tool import ensure_task_env
+
+        ensure_task_env(task_id)
+    except Exception:
+        pass
+
+
 async def _resolve_container_fallback(
     p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)
 ) -> ResolvedImage:
@@ -296,9 +315,25 @@ async def _resolve_container_fallback(
 
     Fail-closed: if there is no active sandbox env we refuse rather than falling
     back to a host read, so a non-cache host path under a sandbox never leaks.
+
+    Cold-start retry: under Docker the very first exec against a freshly
+    started container can fail (empty pipe / partial setup) while an identical
+    second call succeeds. We retry once with a short delay before giving up,
+    so callers don't see "could not read inside the sandbox" on a file that is
+    verifiably readable on the immediate retry. See #76566.
+
+    Diagnostic: when every attempt fails, the container's own output (stderr
+    + stdout) is folded into the raised error so the user can distinguish
+    "no such file" from "permission denied" from "container never came up"
+    instead of staring at one opaque message.
     """
     import asyncio
     import shlex
+
+    # Bring the sandbox up on demand: without this, the first vision_analyze of
+    # a session (before any terminal command) has no active env to read from
+    # under a non-local backend (issue #62825).
+    _ensure_container_env(ctx.task_id)
 
     env = _get_active_env(ctx.task_id)
     if env is None:
@@ -316,13 +351,29 @@ async def _resolve_container_fallback(
     # env.execute is a blocking backend exec; keep it off the event loop so a
     # multi-MB base64 read doesn't stall every other coroutine.
     qp = shlex.quote(str(p))
-    res = await asyncio.to_thread(
-        env.execute,
-        f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'")
-    if res.get("returncode", 1) != 0:
-        raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
+    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
+
+    last_res: dict = {"returncode": 1, "output": ""}
+    for attempt in range(2):
+        last_res = await asyncio.to_thread(env.execute, cmd)
+        if last_res.get("returncode", 1) == 0:
+            break
+        if attempt == 0:
+            # Cold-start: give the container a moment to settle its pipes
+            # before retrying. 150ms covers Docker exec warm-up in practice
+            # without making a real failure feel sluggish.
+            await asyncio.sleep(0.15)
+    if last_res.get("returncode", 1) != 0:
+        diag = (last_res.get("output") or "").strip().splitlines()
+        # Keep the diagnostic small and noise-free: first non-empty line,
+        # trimmed to a sane length so it slots into the agent's error UI.
+        first = next((ln.strip() for ln in diag if ln.strip()), "")
+        suffix = f" ({first[:200]})" if first else ""
+        raise SourceNotFound(
+            f"could not read '{p}' inside the sandbox{suffix}",
+            src=src, origin="container")
     try:
-        data = base64.b64decode(res.get("output", ""), validate=True)
+        data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
@@ -389,3 +440,37 @@ def _detect_video_mime(data: bytes, src: str) -> Optional[str]:
     if len(data) > 12 and data[4:8] == b"ftyp":
         return "video/mp4"
     return None
+
+
+async def resolve_local_source_to_data_url(
+    src: str, task_id: Optional[str], *, permitted: tuple = ("image",)
+) -> str:
+    """Convert a path-like media source into a ``data:`` URL via the resolver.
+
+    Generation tools (image_generate / video_generate) forward model-supplied
+    source images to provider plugins, which historically read local paths off
+    the HOST filesystem regardless of terminal backend. Under a non-local
+    backend that is both broken (the file usually lives in the sandbox, so the
+    host read misses) and inconsistent with the confinement model vision/video
+    analysis enforce (GHSA-gpxw-6wxv-w3qq): the sandbox boundary should govern
+    every model-supplied path.
+
+    This helper is the dispatch-layer chokepoint: URL-shaped sources
+    (http/https/data) pass through untouched; anything path-like resolves
+    through :func:`resolve_image_source` — media-cache host reads, bounded
+    in-sandbox exec-read, lazy env bring-up, credential guard, ingest cap —
+    and comes back as a ``data:`` URL every provider already accepts.
+
+    Callers apply this only under a non-local terminal backend: on the local
+    backend providers keep their existing host-side reads (chosen posture,
+    zero behavior change).
+    """
+    s = (src or "").strip()
+    if not s or s.lower().startswith(("http://", "https://", "data:")):
+        return src
+    resolved = await resolve_image_source(
+        s, ResolveContext(task_id=task_id), permitted=permitted
+    )
+    encoded = base64.b64encode(resolved.data).decode("ascii")
+    mime = resolved.mime or "application/octet-stream"
+    return f"data:{mime};base64,{encoded}"

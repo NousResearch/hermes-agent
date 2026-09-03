@@ -1,20 +1,22 @@
 """Regression tests: ``_apply_env_overrides`` must not lazy-install platform
 SDKs for platforms the user has not configured.
 
-For adapter plugins, ``PlatformEntry.check_fn`` doubles as the lazy-installer
-(it pip-installs the platform SDK as a side effect — see e.g.
-``plugins/platforms/discord/adapter.py::check_discord_requirements``).  The
-enablement sweep in ``_apply_env_overrides`` used to call ``check_fn`` for
-*every* registered plugin platform unconditionally, so a single
-``load_gateway_config()`` — which the desktop/dashboard readiness probe
-(``GET /api/status``) awaits synchronously — pip-installed Discord, Telegram,
-Slack, Feishu and Dingtalk even with ``platforms: none``.  That blocked
-startup until every install finished and made the desktop app time out and
-boot-loop (stuck at 94%).
+Historically ``PlatformEntry.check_fn`` doubled as the lazy-installer
+(it pip-installed the platform SDK as a side effect).  The enablement sweep
+in ``_apply_env_overrides`` used to call ``check_fn`` for *every* registered
+plugin platform unconditionally, so a single ``load_gateway_config()`` —
+which the desktop/dashboard readiness probe (``GET /api/status``) awaits
+synchronously — pip-installed Discord, Telegram, Slack, Feishu and Dingtalk
+even with ``platforms: none``.  That blocked startup until every install
+finished and made the desktop app time out and boot-loop (stuck at 94%).
 
-The fix consults the cheap ``is_connected`` credential check FIRST and only
-runs the install-triggering ``check_fn`` for platforms that are already
-enabled or actually configured.  These tests pin that contract.
+Two layers of protection now exist:
+1. The sweep consults the cheap ``is_connected`` credential check FIRST and
+   only reaches the dependency check for platforms that are already enabled
+   or actually configured (this file pins that contract).
+2. ``check_fn`` is now defined as a PASSIVE probe; the ACTIVE installer
+   lives on ``ensure_deps_fn`` and only runs from
+   ``platform_registry.create_adapter()`` (#79812).
 """
 
 from unittest.mock import MagicMock, patch

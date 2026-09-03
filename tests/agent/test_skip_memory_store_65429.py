@@ -24,7 +24,9 @@ class _FakeOpenAI:
         pass
 
 
-def _make_agent(monkeypatch, enabled_toolsets=None, skip_memory=True):
+def _make_agent(
+    monkeypatch, enabled_toolsets=None, disabled_toolsets=None, skip_memory=True
+):
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: [])
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
@@ -38,6 +40,7 @@ def _make_agent(monkeypatch, enabled_toolsets=None, skip_memory=True):
         skip_context_files=True,
         skip_memory=skip_memory,
         enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
     )
 
 
@@ -96,3 +99,36 @@ def test_skip_memory_memory_tool_handler_works_and_provider_skipped(
     memory_md = tmp_path / "hm" / "memories" / "MEMORY.md"
     assert memory_md.exists()
     assert "User prefers concise answers." in memory_md.read_text()
+
+
+def test_skip_memory_disabled_toolset_does_not_load_store(monkeypatch, tmp_path):
+    """Cron shape: skip_memory=True, memory named in enabled AND disabled.
+
+    #65429 must not load MEMORY.md just because the default cron toolset
+    still lists memory while the denylist hides the tool.
+    """
+    home = tmp_path / "hm"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    mem_dir = home / "memories"
+    mem_dir.mkdir(parents=True)
+    secret = "cron-should-never-see-this-memory"
+    (mem_dir / "MEMORY.md").write_text(secret + "\n")
+    (mem_dir / "USER.md").write_text("cron-should-never-see-this-profile\n")
+
+    agent = _make_agent(
+        monkeypatch,
+        enabled_toolsets=["memory", "file"],
+        disabled_toolsets=["memory"],
+        skip_memory=True,
+    )
+    assert agent._memory_store is None
+    assert agent._memory_manager is None
+    assert agent._memory_enabled is False
+    assert agent._user_profile_enabled is False
+
+    from agent.system_prompt import build_system_prompt_parts
+
+    parts = build_system_prompt_parts(agent)
+    blob = " ".join(str(v) for v in parts.values())
+    assert secret not in blob
+    assert "cron-should-never-see-this-profile" not in blob

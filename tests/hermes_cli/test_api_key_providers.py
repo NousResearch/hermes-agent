@@ -341,6 +341,9 @@ class TestResolveApiKeyProviderCredentials:
 
 
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+
+        _invalidate_gh_cli_token_cache()
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
         monkeypatch.setattr(
             "hermes_cli.copilot_auth.os.path.isfile",
@@ -562,7 +565,103 @@ class TestHasAnyProviderConfigured:
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
 
+    @staticmethod
+    def _clear_provider_env(monkeypatch):
+        """Clear every provider env var so early checks can't short-circuit."""
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
+        for pconfig in PROVIDER_REGISTRY.values():
+            if pconfig.auth_type == "api_key":
+                _all_vars.update(pconfig.api_key_env_vars)
+        for var in _all_vars:
+            monkeypatch.delenv(var, raising=False)
 
+    def _setup_home(self, monkeypatch, tmp_path):
+        from hermes_cli import config as config_module
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
+        monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._clear_provider_env(monkeypatch)
+        return hermes_home
+
+    def test_config_provider_skips_registry_sweep(self, monkeypatch, tmp_path):
+        """model.provider in config.yaml must short-circuit BEFORE the slow
+        provider-registry sweep (gh subprocess etc.) is ever invoked.
+
+        Regression test for the auth-first ordering: get_auth_status is
+        booby-trapped to fail loudly if the sweep runs. The sweep wraps its
+        loop in ``except Exception``, so we also record every call — any
+        recorded call proves the sweep ran even if the raise was swallowed.
+        """
+        import yaml
+        hermes_home = self._setup_home(monkeypatch, tmp_path)
+        (hermes_home / "config.yaml").write_text(yaml.dump({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
+        }))
+        sweep_calls = []
+
+        def _trap(provider_id):
+            sweep_calls.append(provider_id)
+            raise AssertionError("sweep must be skipped")
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _trap)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+        assert sweep_calls == [], (
+            f"provider registry sweep ran before config short-circuit: {sweep_calls}"
+        )
+
+    def test_config_base_url_api_key_skips_registry_sweep(self, monkeypatch, tmp_path):
+        """Custom endpoint (base_url/api_key in config, no provider) must also
+        short-circuit before the registry sweep."""
+        import yaml
+        hermes_home = self._setup_home(monkeypatch, tmp_path)
+        (hermes_home / "config.yaml").write_text(yaml.dump({
+            "model": {
+                "default": "local/custom-model",
+                "base_url": "http://localhost:8000/v1",
+                "api_key": "sk-local-test",
+            },
+        }))
+        sweep_calls = []
+
+        def _trap(provider_id):
+            sweep_calls.append(provider_id)
+            raise AssertionError("sweep must be skipped")
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _trap)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+        assert sweep_calls == [], (
+            f"provider registry sweep ran before config short-circuit: {sweep_calls}"
+        )
+
+    def test_auth_json_skips_registry_sweep(self, monkeypatch, tmp_path):
+        """auth.json with a logged-in active provider must short-circuit before
+        the registry sweep. get_auth_status may be called ONLY for the active
+        provider from auth.json — any other provider id means the sweep ran.
+        """
+        import json
+        hermes_home = self._setup_home(monkeypatch, tmp_path)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "active_provider": "nous",
+        }))
+        calls = []
+
+        def _guarded_status(provider_id):
+            calls.append(provider_id)
+            assert provider_id == "nous", "sweep must be skipped"
+            return {"logged_in": True}
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _guarded_status)
+        from hermes_cli.main import _has_any_provider_configured
+        assert _has_any_provider_configured() is True
+        assert calls == ["nous"], (
+            f"provider registry sweep ran before auth.json short-circuit: {calls}"
+        )
 
 
 # =============================================================================
@@ -1118,3 +1217,46 @@ class TestDeepInfraProviderProfile:
         # of truth. Pin the shape only, not contents.
         assert isinstance(profile.fallback_models, tuple)
 
+
+
+class TestRuntimeAlibabaRegionalAndTokenPlan:
+    """#73265: the catalog-advertised Alibaba China/Token Plan variants must
+    resolve on the shared execution path (resolve_runtime_provider), not just
+    in the profile registry — provider, key, api mode, and base URL."""
+
+    def test_runtime_alibaba_cn(self, monkeypatch):
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "ds-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-cn")
+        assert result["provider"] == "alibaba-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "ds-key"
+        assert result["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    def test_runtime_alibaba_coding_plan_cn(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "acp-key")
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-coding-plan-cn")
+        assert result["provider"] == "alibaba-coding-plan-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "acp-key"
+        assert result["base_url"] == "https://coding.dashscope.aliyuncs.com/v1"
+
+    def test_runtime_alibaba_token_plan(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-token-plan")
+        assert result["provider"] == "alibaba-token-plan"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "atp-key"
+        assert result["base_url"] == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+
+    def test_runtime_alibaba_token_plan_cn(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-token-plan-cn")
+        assert result["provider"] == "alibaba-token-plan-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "atp-key"
+        assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"

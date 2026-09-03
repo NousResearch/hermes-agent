@@ -23,6 +23,67 @@ from unittest.mock import MagicMock, patch
 class TestResolveAutoMainFirst:
     """_resolve_auto() must prefer main provider + main model for every user."""
 
+    def test_title_generation_auto_honors_main_model(self):
+        """The default auto title route must not replace the selected main model."""
+        main_model = "deepseek-v4-flash-free"
+        mock_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._get_aux_model_for_provider",
+            return_value="gemini-3-flash",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, main_model),
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "opencode-zen",
+                    "model": main_model,
+                },
+                task="title_generation",
+            )
+
+        assert client is mock_client
+        assert model == main_model
+        assert mock_resolve.call_args.args[:2] == ("opencode-zen", main_model)
+
+    def test_title_generation_can_opt_into_provider_fast_model(self):
+        """The latency optimization remains available as an explicit opt-in."""
+        fast_model = "gemini-3-flash"
+        mock_client = MagicMock()
+
+        def resolve(_provider, model, **_kwargs):
+            return mock_client, model
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"prefer_fast_model": True},
+        ), patch(
+            "agent.auxiliary_client._get_aux_model_for_provider",
+            return_value=fast_model,
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=resolve,
+        ), patch(
+            "agent.auxiliary_client._is_provider_unhealthy", return_value=False
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "opencode-zen",
+                    "model": "deepseek-v4-flash-free",
+                },
+                task="title_generation",
+            )
+
+        assert client is mock_client
+        assert model == fast_model
+
 
     def test_moa_main_resolves_aux_to_aggregator(self, monkeypatch, tmp_path):
         """MoA main user → aux runs on the aggregator slot, NOT the preset name.
@@ -126,8 +187,8 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client._read_main_model",
             return_value="claude-opus-4-8",
         ) as mock_read_main_model, patch(
-            "agent.auxiliary_client._resolve_auto",
-            return_value=(runtime_client, "gpt-5.5"),
+            "agent.auxiliary_client._resolve_auto_route",
+            return_value=(runtime_client, "gpt-5.5", "openai-codex"),
         ) as mock_resolve_auto:
             from agent.auxiliary_client import resolve_provider_client
 

@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Befehle genehmigt (Muster dauerhaft genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
 
   background:
-    usage:                 "Verwendung: /background <prompt>\nBeispiel: /background Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
+    usage:                 "Verwendung: /bg <prompt>\nBeispiel: /bg Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
     started:               "🔄 Hintergrund-Aufgabe gestartet: \"{preview}\"\nAufgaben-ID: {task_id}\nSie können weiter chatten — die Ergebnisse erscheinen hier, wenn sie fertig sind."
+
+  btw:
+    usage:                 "Verwendung: /btw <Frage>\nBeispiel: /btw in welcher Datei war dieser Fehler?\n\nBeantwortet eine kurze Nebenfrage zu dieser Konversation, ohne sie zu unterbrechen. Für eine unabhängige Hintergrundaufgabe /bg <prompt> verwenden."
+    no_history:            "Noch keine Konversation — senden Sie Ihre Frage stattdessen als normale Nachricht."
+    no_provider:           "❌ Nebenfrage kann nicht beantwortet werden: keine Anbieter-Zugangsdaten konfiguriert."
+    started:               "💬 Nebenfrage: \"{preview}\"\nAntwort aus einem Schnappschuss dieser Konversation — die aktuelle Arbeit läuft weiter."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ /btw fehlgeschlagen: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Sitzungsdatenbank nicht verfügbar."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Zusammenfassungsgenerierung fehlgeschlagen ({error}). {count} historische Nachricht(en) wurden entfernt und durch einen Platzhalter ersetzt; früherer Kontext ist nicht mehr wiederherstellbar. Überprüfen Sie die Konfiguration des auxiliary.compression-Modells."
     aborted:               "⚠️ Komprimierung abgebrochen ({error}). Keine Nachrichten wurden entfernt — die Konversation ist unverändert. Führe /compress aus, um es erneut zu versuchen, /reset für eine neue Sitzung, oder prüfe deine auxiliary.compression-Modellkonfiguration."
     aux_failed:            "ℹ️ Das konfigurierte Komprimierungsmodell `{model}` ist fehlgeschlagen ({error}). Wiederherstellung mit Ihrem Hauptmodell — Kontext ist intakt — Sie sollten jedoch `auxiliary.compression.model` in config.yaml überprüfen."
+    turnhold_deferred:     "ℹ️ Kontextkomprimierung aufgeschoben — die Zusammenfassung streamt noch. Dieser Zug wird ohne Komprimierung fortgesetzt."
     failed:                "Komprimierung fehlgeschlagen: {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nAktueller Modus: `{mode}`\\n\\nOption wählen:"
     choice_fast:           "fast — Priority Processing an"
     choice_normal:         "normal — Standardverarbeitung"
+    choice_auto:           "auto — schnell in den ersten Sekunden jedes Zugs"
+    choice_cold:           "cold — schnell nur im ersten Zug einer Sitzung"
 
   footer:
     status:                "📎 Laufzeit-Fußzeile: **{state}**\nFelder: `{fields}`\nPlattform: `{platform}`"
@@ -142,7 +153,7 @@ gateway:
     no_goal_set:           "Kein Ziel gesetzt."
     paused:                "⏸ Ziel pausiert: {goal}"
     no_resume:             "Kein Ziel zum Fortsetzen."
-    resumed:               "▶ Ziel fortgesetzt: {goal}\nSenden Sie eine Nachricht zum Fortfahren oder warten Sie — ich übernehme den nächsten Schritt im nächsten Zug."
+    resumed:               "▶ Ziel fortgesetzt: {goal}\nEs geht sofort weiter — ich übernehme jetzt den nächsten Schritt."
     invalid:               "Ungültiges Ziel: {error}"
     set:                   "⊙ Ziel gesetzt ({budget}-Zug-Budget): {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder das Budget aufgebraucht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -166,9 +177,15 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
+      handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "Keine Persönlichkeiten in `{path}/config.yaml` konfiguriert"
@@ -254,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Keine benannten Sitzungen gefunden.\nVerwenden Sie `/title Meine Sitzung`, um die aktuelle Sitzung zu benennen, dann `/resume Meine Sitzung`, um später dorthin zurückzukehren."
+    all_requires_admin: "_Hinweis: `--all` (chatübergreifende Liste) erfordert einen konfigurierten Administrator; es werden nur die Sitzungen dieses Chats angezeigt._"
     list_header:           "📋 **Benannte Sitzungen**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -277,6 +295,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     none_found:            "Keine Checkpoints für {cwd} gefunden"
     invalid_number:        "Ungültige Checkpoint-Nummer. Verwenden Sie 1-{max}."
     restored:              "✅ Auf Checkpoint {hash} wiederhergestellt: {reason}\nEin Pre-Rollback-Snapshot wurde automatisch gespeichert."
+    kept_user_edits:       "↷ Deine manuellen Änderungen wurden behalten: {files}\nNutze /rollback <N> --all, um auch diese wiederherzustellen."
+    kept_oversize:         "↷ Behalten (zu groß für Checkpoints, keine gespeicherte Kopie zum Zurücksetzen): {files}"
+    failed_deletes:        "⚠️ Konnte nicht entfernt werden (an Ort und Stelle belassen): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

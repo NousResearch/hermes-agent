@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
 from types import SimpleNamespace
 from typing import Any
@@ -151,6 +152,24 @@ def _redact_trace_accounting(acct: Any) -> Any:
     )
 
 
+# Cold-start caches. A MoA preset switch used to re-resolve the full
+# config + preset + every slot's provider runtime on EACH create() call
+# (once per tool-loop iteration), serially before the parallel fan-out could
+# start — adding 5-30s of "frozen" latency on complex presets
+# (#66793). The preset structure is immutable for the life of a turn, so
+# cache both the resolved preset and each (provider, model) runtime.
+_preset_cache_lock = threading.Lock()
+_preset_cache: dict[tuple, Any] = {}
+
+_runtime_cache_lock = threading.Lock()
+_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+# Runtime entries go stale when providers/credentials change (key rotation,
+# base_url edits). Deliberately short-lived: 300s collapses the per-iteration
+# re-resolution inside a turn while bounding credential staleness between
+# turns — the non-MoA path picks up rotated keys immediately, this path
+# within 5 minutes.
+_RUNTIME_CACHE_TTL_SECONDS = 300.0
 
 # Upper bound on concurrent reference-model calls. References are independent
 # advisory calls (no tools, no inter-dependence), so we fan them out the same
@@ -322,34 +341,33 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     api_key resolver the CLI, gateway, and delegate_task all use), so the slot
     gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
     GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
-
     Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
     resolved base_url/api_key when available). Falls back to the bare
     provider/model on any resolution error so a misconfigured slot still
     attempts the call rather than aborting the whole MoA turn.
+
+    The resolved runtime is cached per (provider, model) with a short TTL
+    (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O (catalog
+    query + config read) that used to run serially per create() call before
+    the parallel fan-out could start — the dominant source of MoA cold-start
+    latency (#66793). The TTL bounds credential staleness (key rotation,
+    base_url edits) instead of caching for the process lifetime.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
+    cache_key = (provider, model)
+    now = time.monotonic()
+    with _runtime_cache_lock:
+        entry = _runtime_cache.get(cache_key)
+    if entry is not None:
+        stamped_at, cached = entry
+        if now - stamped_at < _RUNTIME_CACHE_TTL_SECONDS:
+            return cached
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
-        # Forward the resolved endpoint through to call_llm unconditionally.
-        # call_llm's _resolve_task_provider_model() is the single chokepoint that
-        # decides whether an explicit base_url collapses a call to the generic
-        # ``custom`` route or keeps the provider's real identity: it preserves
-        # identity for any first-class provider (via
-        # _preserve_provider_with_base_url, a provider-catalog capability check),
-        # so provider branches that add auth refresh / request metadata /
-        # request-shape adapters — anthropic OAuth (Bearer + anthropic-beta),
-        # openai-codex Responses wrapping + Cloudflare headers, xai-oauth,
-        # bedrock SigV4 signing, nous Portal tags — still fire. Those branches
-        # re-resolve their own credentials by name and ignore a forwarded
-        # base_url/api_key, so forwarding is safe even for a placeholder key
-        # (bedrock's "aws-sdk"). We used to maintain a name-preservation set here
-        # too; that duplicated the chokepoint and drifted out of sync, so the
-        # single source of truth now lives in call_llm.
         if rt.get("base_url"):
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
@@ -362,7 +380,14 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
             if isinstance(extra_body, dict) and extra_body:
                 out["extra_body"] = dict(extra_body)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+        logger.debug("MoA slot runtime resolution failed for %s: %s",
+                     _slot_label(slot), exc)
+        # Never cache a fallback-shaped result: a transient resolution error
+        # (config mid-write, catalog hiccup) would otherwise pin the bare
+        # provider/model kwargs for a full TTL.
+        return out
+    with _runtime_cache_lock:
+        _runtime_cache[cache_key] = (now, out)
     return out
 
 
@@ -385,6 +410,7 @@ def _maybe_apply_moa_cache_control(
     runtime: dict[str, Any],
     *,
     cache_disabled: bool | None = None,
+    cache_ttl: str | None = None,
 ) -> list[dict[str, Any]]:
     """Decorate an advisor or aggregator request with cache_control when its
     route honors it.
@@ -402,13 +428,21 @@ def _maybe_apply_moa_cache_control(
     ``cache_disabled`` (or the live config when omitted) is stamped onto the
     policy stub so ``prompt_caching.cache_ttl: off`` is not bypassed by the
     blank-agent pattern (#76085).
+
+    ``cache_ttl`` threads the agent's configured tier (default ``5m``) so
+    advisor/synthesis requests stop regressing 1h → 5m; it is clamped
+    per-destination by :func:`effective_cache_ttl` (Qwen → 5m, #84733).
     """
     try:
         from agent.agent_runtime_helpers import (
             anthropic_prompt_cache_policy,
             blank_cache_policy_stub,
         )
-        from agent.prompt_caching import apply_anthropic_cache_control
+        from agent.prompt_caching import (
+            apply_anthropic_cache_control,
+            effective_cache_ttl,
+            envelope_tool_part_cache_markers_supported,
+        )
 
         # Prefer an explicit kwarg, then a snapshot on the runtime dict
         # (threaded from the live agent), else config via the stub factory.
@@ -429,7 +463,20 @@ def _maybe_apply_moa_cache_control(
         if not should_cache:
             return messages
         return apply_anthropic_cache_control(
-            messages, native_anthropic=native_layout
+            messages,
+            cache_ttl=effective_cache_ttl(
+                # effective_cache_ttl resolves None → "5m"; the should_cache
+                # gate above already returned for cache-disabled routes.
+                cache_ttl,
+                provider=runtime.get("provider") or "",
+                model=runtime.get("model") or "",
+            ),
+            native_anthropic=native_layout,
+            # LiteLLM-style envelope routes forward part-level markers into
+            # tool_result.content[] → non-retryable 400 (#89886).
+            tool_part_markers=envelope_tool_part_cache_markers_supported(
+                runtime.get("provider") or "", runtime.get("base_url") or ""
+            ),
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
         logger.debug("MoA cache_control decoration skipped: %s", exc)
@@ -445,6 +492,7 @@ def _run_reference(
     reference_timeout: float | None = None,
     context_length_cache: Any = None,
     cache_disabled: bool | None = None,
+    cache_ttl: str | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -511,7 +559,9 @@ def _run_reference(
         cache_runtime = runtime
         if cache_disabled is not None:
             cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
-        messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
+        messages = _maybe_apply_moa_cache_control(
+            messages, cache_runtime, cache_ttl=cache_ttl
+        )
         # Per-slot max_tokens takes precedence over the preset-level
         # reference_max_tokens passed in by the caller. This lets each
         # reference model have its own output cap independently.
@@ -818,6 +868,10 @@ def _run_references_parallel(
     cache_disabled = (
         getattr(agent, "_cache_disabled", None) if agent is not None else None
     )
+    # Thread the agent's configured cache TTL into every advisor request so
+    # the fan-out stops regressing 1h → 5m (#84733); the destination-aware
+    # clamp (Qwen → 5m) runs inside _maybe_apply_moa_cache_control.
+    cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -837,6 +891,7 @@ def _run_references_parallel(
                     reference_timeout=reference_timeout,
                     context_length_cache=_ctx_len_cache,
                     cache_disabled=cache_disabled,
+                    cache_ttl=cache_ttl,
                 )
             ] = idx
 
@@ -1297,6 +1352,9 @@ def aggregate_moa_context(
             **agg_runtime,
             "_cache_disabled": _agg_cache_disabled,
         }
+    # Thread the agent's configured cache TTL into the synthesis decoration
+    # so the one-shot /moa path stops regressing 1h → 5m (#84733).
+    _agg_cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
     try:
         # Same cache_control decoration as _run_reference's advisor calls
         # (see _maybe_apply_moa_cache_control) — this synthesis call is a
@@ -1309,7 +1367,9 @@ def aggregate_moa_context(
         # breakpoints, even when the resolved aggregator slot is a
         # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], agg_cache_runtime
+            [{"role": "user", "content": synth_prompt}],
+            agg_cache_runtime,
+            cache_ttl=_agg_cache_ttl,
         )
         response = call_llm(
             task="moa_aggregator",
@@ -1537,6 +1597,11 @@ class MoAChatCompletions:
         # caller to stitch in the live session_id + resolved aggregator output
         # and flush to the trace file (only when moa.save_traces is on).
         self._pending_trace: Any = None
+        # Per-advisor metrics for observability hooks. Unlike _pending_trace
+        # this is NOT consumed — post_api_request fires on a different branch
+        # than consume_and_save_trace, so a consuming read would race it. Holds
+        # until the next fan-out replaces it.
+        self._last_reference_metrics: Any = None
         # every_n fan-out cadence state. The iteration counter is scoped to a
         # single USER TURN (not the facade lifetime): it counts create() calls
         # since the last new user message and resets whenever the user-turn
@@ -1567,6 +1632,14 @@ class MoAChatCompletions:
             self._pending_reference_usage = CanonicalUsage()
             self._pending_reference_cost = None
         return usage, cost
+
+    def last_reference_metrics(self) -> Any:
+        """Per-advisor metrics from the most recent fan-out, or None.
+
+        Read-only: a MoA turn's post_api_request hook must not disturb the
+        accounting that consume_reference_usage and consume_and_save_trace own.
+        """
+        return self._last_reference_metrics
 
     def _record_late_reference_accounting(self, label: str, accounting: Any) -> None:
         """Fold a late-completing interrupted reference's real spend in.
@@ -1726,6 +1799,13 @@ class MoAChatCompletions:
                 api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "",
                 cache_disabled=_cache_disabled,
+                # Thread the agent's configured TTL and stable system prefix
+                # into the aggregator plan so MoA stops regressing 1h → 5m and
+                # marking the whole system prompt as one breakpoint (#84733).
+                cache_ttl=getattr(_agent, "_cache_ttl", None),
+                static_system_prefix=getattr(
+                    _agent, "_cached_system_prompt_static", None
+                ),
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))
@@ -1830,11 +1910,35 @@ class MoAChatCompletions:
                 raise TypeError("_moa_prepared_request must be a dict")
             return self._call_prepared_aggregator(prepared_request, api_kwargs)
 
-        from hermes_cli.config import load_config
+        from hermes_cli.config import get_config_path, load_config
         from hermes_cli.moa_config import resolve_moa_preset
 
+        # Resolve the preset once per (config st_mtime_ns, preset_name).
+        # resolve_moa_preset re-normalizes + re-validates the whole moa
+        # config block on every call, and create() runs once per tool-loop
+        # iteration — a serial cold-start cost before the parallel fan-out
+        # can begin (#66793). Keyed on the config FILE's mtime_ns (not a
+        # config-object attribute, which load_config()'s dicts don't carry),
+        # so a config edit invalidates on the next call.
+        try:
+            _cfg_stamp = get_config_path().stat().st_mtime_ns
+        except OSError:
+            _cfg_stamp = None
+        # load_config() is itself (mtime_ns, size)-cached upstream, so this
+        # read is cheap; the expensive part this cache skips is
+        # resolve_moa_preset's re-normalization + re-validation.
         _moa_raw = load_config().get("moa") or {}
-        preset = resolve_moa_preset(_moa_raw, self.preset_name)
+        preset_cache_key = (_cfg_stamp, self.preset_name)
+        preset = None
+        if _cfg_stamp is not None:
+            with _preset_cache_lock:
+                preset = _preset_cache.get(preset_cache_key)
+        if preset is None:
+            preset = resolve_moa_preset(_moa_raw, self.preset_name)
+            if _cfg_stamp is not None:
+                with _preset_cache_lock:
+                    _preset_cache.clear()  # one live config stamp at a time
+                    _preset_cache[preset_cache_key] = preset
         # Privacy filter mode: '' (off, default) | 'display' | 'full'. See
         # coerce_privacy_filter / the pattern block at the top of this module.
         # Remembered on self so _call_prepared_aggregator (which may run on a
@@ -2092,6 +2196,18 @@ class MoAChatCompletions:
                 "aggregator_slot": aggregator,
                 "aggregator_temperature": aggregator_temperature,
             }
+            # Derived from the same privacy-redacted _trace_refs, so an active
+            # privacy mode redacts the observability payload too.
+            try:
+                from agent.moa_trace import slot_metrics
+
+                self._last_reference_metrics = [
+                    slot_metrics(acct, label, output=text)
+                    for label, text, acct in _trace_refs
+                ]
+            except Exception as exc:  # pragma: no cover - never break a turn
+                logger.debug("MoA reference metrics render failed: %s", exc)
+                self._last_reference_metrics = None
 
             # Surface each reference model's answer to the display BEFORE the
             # aggregator acts — once per turn (only on the iteration that
@@ -2235,6 +2351,14 @@ class MoAClient:
         return self.chat.completions.consume_and_save_trace(
             session_id, aggregator_output_fallback=aggregator_output_fallback
         )
+
+    def last_reference_metrics(self) -> Any:
+        """Per-advisor metrics from the most recent fan-out, or None.
+
+        Read-only, unlike the two consume_* methods above: the observability
+        hook fires on a different branch than the accounting they own.
+        """
+        return self.chat.completions.last_reference_metrics()
 
 
 def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:

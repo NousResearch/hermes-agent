@@ -15,7 +15,10 @@ Play Pokemon via headless emulator + RAM reads.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/gaming/pokemon-player` |
-| Path | `optional-skills/gaming/pokemon-player` |
+| Path | `optional-skills/gaming\pokemon-player` |
+| Version | `1.0.0` |
+| Author | Teknium (teknium1), Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
@@ -40,13 +43,13 @@ Play Pokemon games via headless emulation using the `pokemon-agent` package.
 The repo is NousResearch/pokemon-agent on GitHub. Clone it, then
 set up a Python 3.10+ virtual environment. Use uv (preferred for speed)
 to create the venv and install the package in editable mode with the
-pyboy extra. If uv is not available, fall back to python3 -m venv + pip.
+pyboy extra. If uv is not available, fall back to python -m venv + pip.
 
-On this machine it is already set up at /home/teknium/pokemon-agent
-with a venv ready — just cd there and source .venv/bin/activate.
+If a checkout already exists (e.g. ~/pokemon-agent with a venv ready),
+just cd there and source .venv/bin/activate instead of recloning.
 
-You also need a ROM file. Ask the user for theirs. On this machine
-one exists at roms/pokemon_red.gb inside that directory.
+You also need a ROM file. Ask the user for theirs (a previous setup may
+already have one at roms/pokemon_red.gb inside the checkout).
 NEVER download or provide ROM files — always ask the user.
 
 ### 2. Start the game server
@@ -59,7 +62,8 @@ Wait 4 seconds for startup, then verify with GET /health.
 ### 3. Set up live dashboard for user to watch
 Use an SSH reverse tunnel via localhost.run so the user can view
 the dashboard in their browser. Connect with ssh, forwarding local
-port 9876 to remote port 80 on nokey@localhost.run. Redirect output
+port 9876 to remote port 80 on the keyless localhost.run endpoint
+(ssh -R 80:localhost:9876 ssh://nokey@localhost.run). Redirect output
 to a log file, wait 10 seconds, then grep the log for the .lhr.life
 URL. Give the user the URL with /dashboard/ appended.
 The tunnel URL changes each time — give the user the new one if restarted.

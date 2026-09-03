@@ -82,7 +82,7 @@ export function FlowPanel({
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submitOnboardingCode(ctx)}
           placeholder={t.onboarding.pasteAuthCode}
           value={flow.code}
         />

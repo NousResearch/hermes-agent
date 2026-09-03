@@ -9,11 +9,11 @@ import { resolveLocalReadPath } from './wsl-path-bridge'
 // so the wiring is exercised in isolation instead of buried in main.ts.
 
 /**
- * hermes-media:// stream handler: the request `pathname` (leading slashes plus
- * percent-encoding) → a bridged fs path.
+ * hermes-media:// stream handler (`resolveLocalFile` in media-protocol): the
+ * already-decoded target file path → a bridged fs path.
  */
-export function resolveMediaRequestPath(pathname: string): string {
-  return resolveLocalReadPath(decodeURIComponent(String(pathname ?? '').replace(/^\/+/, '')))
+export function resolveMediaRequestPath(filePath: string): string {
+  return resolveLocalReadPath(String(filePath ?? ''))
 }
 
 /**

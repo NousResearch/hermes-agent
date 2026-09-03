@@ -112,6 +112,23 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+def _estop_status_line():
+    """One-line pause banner for `hermes status`, or None when not paused.
+
+    Cheap: a single stat on $HERMES_HOME/ESTOP via agent.estop.
+    """
+    try:
+        from agent.estop import get_state
+    except ImportError:
+        return None
+    state = get_state()
+    if state is None:
+        return None
+    reason = state.get("reason")
+    suffix = f" — reason: {reason}" if reason else ""
+    return f"⏸️  PAUSED (global emergency stop{suffix}; `hermes resume` to lift)"
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     deep = getattr(args, 'deep', False)
@@ -120,6 +137,11 @@ def show_status(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    _paused_line = _estop_status_line()
+    if _paused_line:
+        print()
+        print(color(_paused_line, Colors.YELLOW, Colors.BOLD))
 
     # =========================================================================
     # Environment
@@ -163,6 +185,7 @@ def show_status(args):
         "DeepInfra": "DEEPINFRA_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
+        "Keenable": "KEENABLE_API_KEY",
         "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
@@ -456,6 +479,21 @@ def show_status(args):
             print(f"  Auth detail:  {line}")
         print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
         print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
+    else:
+        # Plugin-registered terminal backends: show availability via the
+        # provider's doctor rows (fail-soft — never break `hermes status`).
+        try:
+            from hermes_cli.plugins import discover_plugins
+
+            discover_plugins()
+            from agent.terminal_env_registry import get_provider
+
+            _provider = get_provider(terminal_env)
+            if _provider is not None:
+                for _ok, _label, _detail in _provider.doctor_checks():
+                    print(f"  {_label}: {check_mark(bool(_ok))} {_detail}")
+        except Exception:
+            pass
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
@@ -505,7 +543,13 @@ def show_status(args):
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            configured = entry.check_fn()
+            # Per-entry guard: one raising probe must not abort the listing
+            # of every remaining plugin platform (matches the other three
+            # check_fn call sites).
+            try:
+                configured = bool(entry.check_fn())
+            except Exception:
+                configured = False
             status_str = "configured" if configured else "not configured"
             label = entry.label
             print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")

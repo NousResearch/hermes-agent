@@ -19,22 +19,13 @@ beforeEach(() => {
   bridge.mockImplementation(() => BRIDGED)
 })
 
-test('resolveMediaRequestPath (hermes-media:// handler) bridges the decoded request pathname', () => {
-  // Mirror how the renderer builds the URL: hermes-media://stream/<encoded path>.
-  const url = new URL(`hermes-media://stream/${encodeURIComponent('/home/alex/My Clips/clip.mp4')}`)
-
-  const result = resolveMediaRequestPath(url.pathname)
+test('resolveMediaRequestPath (hermes-media:// handler) bridges the decoded target path', () => {
+  // media-protocol parses/decodes the request URL before resolveLocalFile runs.
+  const result = resolveMediaRequestPath('/home/alex/My Clips/clip.mp4')
 
   assert.equal(bridge.mock.calls.length, 1)
   assert.equal(bridge.mock.calls[0][0], '/home/alex/My Clips/clip.mp4')
   assert.equal(result, BRIDGED)
-})
-
-test('resolveMediaRequestPath strips leading slashes before decoding and bridging', () => {
-  resolveMediaRequestPath(`///${encodeURIComponent('/mnt/c/Users/alex/clip.mp4')}`)
-
-  assert.equal(bridge.mock.calls.length, 1)
-  assert.equal(bridge.mock.calls[0][0], '/mnt/c/Users/alex/clip.mp4')
 })
 
 test('resolveMediaRequestPath tolerates nullish pathname', () => {

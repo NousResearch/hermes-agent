@@ -133,6 +133,18 @@ describe('implicitSlashAcceptIndex', () => {
     expect(implicitSlashAcceptIndex('review', rows, 0, true)).toBe(0)
   })
 
+  // Regression for #98535: bare `/` + arrow-key selection must commit the
+  // highlighted row, not return null.  Before the fix, `!typed` fired first
+  // and the explicit-pick branch was never reached.
+  it('honours an arrowed pick on a bare `/` query', () => {
+    expect(implicitSlashAcceptIndex('/', rows, 1, true)).toBe(1)
+    expect(implicitSlashAcceptIndex('/', rows, 2, true)).toBe(2)
+  })
+
+  it('still returns null on a bare `/` with no arrow-key selection', () => {
+    expect(implicitSlashAcceptIndex('/', rows, 0, false)).toBeNull()
+  })
+
   it('matches an arg-stage prefix against the full completion text', () => {
     expect(implicitSlashAcceptIndex('personality alic', ['/personality alice', '/personality none'], 0, false)).toBe(0)
   })

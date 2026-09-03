@@ -1213,6 +1213,14 @@ def _push_batch_completion_event(
     for _k in ("scope_id", "user_id", "user_name"):
         if event_record.get(_k):
             evt[_k] = event_record[_k]
+    # Stable parent tool-call → child-session association. The initial
+    # delegate_task tool result carries the same fields; preserving them on
+    # detached completion keeps background delivery and reconnect consumers
+    # on one identity contract. Omit both for legacy/direct callers that do
+    # not have a provider tool-call ID.
+    if combined.get("parent_tool_call_id"):
+        evt["parent_tool_call_id"] = combined["parent_tool_call_id"]
+        evt["children"] = list(combined.get("children") or [])
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (

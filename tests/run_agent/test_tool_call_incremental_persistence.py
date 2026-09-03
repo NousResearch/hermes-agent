@@ -23,6 +23,7 @@ makes the corresponding assertion fail.
 """
 
 import copy
+import json
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -421,6 +422,73 @@ def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     assert [m["tool_call_id"] for m in tool_results] == ["c1", "c2", "c3"]
     # The results are marked as cancelled, not fabricated successes.
     assert all("cancelled" in m["content"].lower() for m in tool_results)
+
+
+def test_delegate_correlation_is_durable_when_tool_result_is_spilled(tmp_path):
+    """Child-session identity survives the model-content spill boundary."""
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "delegate-correlation-spill"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    tool_call = _mock_tool_call(
+        name="delegate_task",
+        call_id="delegate-call-1",
+    )
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    messages: list = []
+    full_result = json.dumps(
+        {
+            "results": [{"summary": "x" * 150_000}],
+            "parent_tool_call_id": "delegate-call-1",
+            "children": [
+                {
+                    "task_index": 0,
+                    "subagent_id": "subagent-1",
+                    "child_session_id": "child-session-1",
+                }
+            ],
+        }
+    )
+    persisted_pointer = "<persisted-output path='/tmp/delegate-result.txt' />"
+
+    try:
+        with (
+            patch.object(agent, "_dispatch_delegate_task", return_value=full_result),
+            patch.object(
+                agent,
+                "_append_guardrail_observation",
+                side_effect=lambda _name, _args, result, **_kwargs: (
+                    f"{result}\n[guardrail observation]"
+                ),
+            ),
+            patch(
+                "agent.tool_executor.maybe_persist_tool_result",
+                return_value=persisted_pointer,
+            ),
+        ):
+            agent._execute_tool_calls_sequential(
+                assistant_message,
+                messages,
+                "task-1",
+            )
+    finally:
+        db.close()
+
+    durable = _durable_messages(db_path, session_id)
+    assert len(durable) == 1
+    assert durable[0]["content"] == persisted_pointer
+    assert durable[0]["display_metadata"] == {
+        "delegate_correlation": {
+            "parent_tool_call_id": "delegate-call-1",
+            "children": [
+                {
+                    "task_index": 0,
+                    "child_session_id": "child-session-1",
+                    "subagent_id": "subagent-1",
+                }
+            ],
+        }
+    }
 
 
 @pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])

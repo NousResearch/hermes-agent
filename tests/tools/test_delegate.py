@@ -271,6 +271,39 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("depth limit", result["error"].lower())
 
+    def test_result_exposes_parent_tool_call_to_child_session_mapping(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.session_id = "child-session-1"
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    goal="map this child",
+                    parent_agent=parent,
+                    parent_tool_call_id="call-parent-1",
+                )
+            )
+
+        self.assertEqual(result["parent_tool_call_id"], "call-parent-1")
+        self.assertEqual(
+            result["children"],
+            [
+                {
+                    "task_index": 0,
+                    "subagent_id": mock_child._subagent_id,
+                    "child_session_id": "child-session-1",
+                }
+            ],
+        )
+
 
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
@@ -1647,6 +1680,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
                         },
                     ],
                 },
+                parent_tool_call_id="call-parent-1",
             )
 
         self.assertNotIn("acp_command", captured)
@@ -1654,6 +1688,7 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+        self.assertEqual(captured["parent_tool_call_id"], "call-parent-1")
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""
@@ -1669,6 +1704,61 @@ class TestDelegateEventEnum(unittest.TestCase):
 
         cb("tool.started", tool_name="terminal", preview="ls")
         parent._delegate_spinner.print_above.assert_called()
+
+    def test_progress_events_carry_originating_parent_tool_call_id(self):
+        parent = _make_mock_parent()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(
+            0,
+            "test goal",
+            parent,
+            task_count=1,
+            subagent_id="subagent-1",
+            parent_tool_call_id="call-parent-1",
+            session_ref={"session_id": "child-session-1"},
+        )
+        self.assertIsNotNone(cb)
+
+        cb("subagent.start", preview="starting")
+        cb("_thinking", preview="thinking")
+        cb("tool.started", tool_name="terminal", preview="pwd")
+        cb("subagent_progress", tool_name="nested progress")
+        cb("subagent.text", preview="answer")
+        cb("subagent.complete", preview="done", status="completed")
+        cb._flush()
+
+        self.assertGreaterEqual(parent.tool_progress_callback.call_count, 6)
+        for call in parent.tool_progress_callback.call_args_list:
+            self.assertEqual(
+                call.kwargs.get("parent_tool_call_id"),
+                "call-parent-1",
+            )
+
+    def test_nested_progress_preserves_inner_parent_tool_call_id(self):
+        parent = _make_mock_parent()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(
+            0,
+            "outer child",
+            parent,
+            task_count=1,
+            parent_tool_call_id="call-outer",
+        )
+        self.assertIsNotNone(cb)
+
+        cb(
+            "subagent_progress",
+            tool_name="grandchild progress",
+            parent_tool_call_id="call-inner",
+        )
+
+        parent.tool_progress_callback.assert_called_once()
+        self.assertEqual(
+            parent.tool_progress_callback.call_args.kwargs["parent_tool_call_id"],
+            "call-inner",
+        )
 
 
     def test_progress_callback_ignores_unknown_events(self):

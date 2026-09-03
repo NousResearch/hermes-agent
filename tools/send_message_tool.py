@@ -2224,6 +2224,25 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         # disconnect it. Correctness here depends on this branch returning
         # before the ephemeral ``adapter`` is constructed below, so the
         # ephemeral ``finally`` disconnect never touches the live session.
+        gateway_loop = getattr(runner, "_gateway_loop", None)
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        # Control-socket request handlers run on an executor thread. Matrix's
+        # aiohttp client and crypto queues belong to the gateway loop, so the
+        # whole send coroutine must run there rather than on the temporary
+        # loop created by the synchronous send_message_tool wrapper.
+        if gateway_loop is not None and current_loop is not gateway_loop:
+            future = asyncio.run_coroutine_threadsafe(
+                _matrix_send_core(
+                    live_adapter, chat_id, message, media_files, metadata
+                ),
+                gateway_loop,
+            )
+            return await asyncio.wrap_future(future)
+
         return await _matrix_send_core(
             live_adapter, chat_id, message, media_files, metadata
         )

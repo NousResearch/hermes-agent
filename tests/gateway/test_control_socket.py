@@ -128,6 +128,35 @@ def test_server_answers_identify_and_status(home: Path):
     assert status == {"gateway_state": "running"}
 
 
+def test_request_handler_receives_payload(home: Path):
+    async def scenario():
+        server = GatewayControlServer(
+            home,
+            request_handlers={
+                "echo": lambda request: {
+                    "received": request.get("payload"),
+                }
+            },
+        )
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None,
+                lambda: query_gateway_control(
+                    home,
+                    "echo",
+                    payload={"target": "matrix:!room:test", "message": "hi"},
+                ),
+            )
+        finally:
+            await server.stop()
+
+    assert _run(scenario()) == {
+        "received": {"target": "matrix:!room:test", "message": "hi"}
+    }
+
+
 def test_unknown_verb_and_malformed_request(home: Path):
     async def scenario():
         server = GatewayControlServer(

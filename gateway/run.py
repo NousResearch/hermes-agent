@@ -34355,8 +34355,60 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 "drain_timeout": _drain,
             }
 
+        def _send_message_handler(request: dict) -> dict:
+            """Send through this gateway's already-connected adapter.
+
+            The control server invokes request handlers on an executor thread.
+            ``send_message_tool`` detects this process's runner and marshals
+            the adapter coroutine back onto ``_main_loop``. This preserves a
+            single Olm/Megolm owner for encrypted Matrix delivery.
+            """
+            payload = request.get("payload")
+            if not isinstance(payload, dict):
+                return {"error": "send-message requires an object payload"}
+            target = payload.get("target")
+            message = payload.get("message")
+            if not isinstance(target, str) or not target.strip():
+                return {"error": "send-message requires a target"}
+            if not isinstance(message, str) or not message.strip():
+                return {"error": "send-message requires a message"}
+
+            # Never let the in-gateway dispatch fall back to a standalone
+            # sender during startup or teardown. That would defeat the reason
+            # this control verb exists for stateful encrypted platforms.
+            platform_name = target.split(":", 1)[0].strip().lower()
+            try:
+                from gateway.config import Platform
+
+                platform = Platform(platform_name)
+                adapter = runner.adapters.get(platform)
+            except Exception:
+                adapter = None
+            if adapter is None:
+                return {
+                    "error": (
+                        f"Gateway adapter for {platform_name or 'target'} "
+                        "is not connected"
+                    )
+                }
+
+            try:
+                from tools.send_message_tool import send_message_tool
+
+                result = send_message_tool(
+                    {"action": "send", "target": target, "message": message}
+                )
+                decoded = json.loads(result) if isinstance(result, str) else result
+                if isinstance(decoded, dict):
+                    return decoded
+                return {"error": "Gateway send returned an invalid result"}
+            except Exception as exc:
+                logger.exception("Gateway control send-message failed")
+                return {"error": f"Gateway send failed: {exc}"}
+
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler}
+            verb_handlers={"pause-for-update": _pause_for_update_handler},
+            request_handlers={"send-message": _send_message_handler},
         )
         if not await _control_server.start():
             _control_server = None

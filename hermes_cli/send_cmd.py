@@ -371,6 +371,50 @@ def cmd_send(args: argparse.Namespace) -> None:
     if subject:
         message = f"{subject}\n\n{message.lstrip()}"
 
+    # Prefer the running gateway's live adapter. Stateful platforms such as
+    # encrypted Matrix must never construct a second crypto machine in this
+    # CLI process, and a raw Client-Server API request would be plaintext.
+    try:
+        from gateway.control_socket import (
+            query_gateway_control,
+            resolve_client_socket_path,
+        )
+        from hermes_constants import get_hermes_home
+
+        gateway_home = get_hermes_home()
+        is_matrix_target = target.split(":", 1)[0].strip().lower() == "matrix"
+        gateway_socket_present = (
+            is_matrix_target
+            and resolve_client_socket_path(gateway_home) is not None
+        )
+        if gateway_socket_present:
+            live_result = query_gateway_control(
+                gateway_home,
+                "send-message",
+                payload={"target": target, "message": message},
+                timeout=40.0,
+            )
+            if live_result is None:
+                # The request may already have been accepted. Never retry an
+                # ambiguous Matrix send through a second transport/process.
+                live_result = {
+                    "error": (
+                        "Running gateway did not confirm the Matrix send; "
+                        "refusing an unsafe standalone retry"
+                    )
+                }
+        else:
+            live_result = None
+    except Exception:
+        live_result = None
+    if live_result is not None:
+        exit_code = _emit_result(
+            json.dumps(live_result),
+            json_mode=getattr(args, "json", False),
+            quiet=getattr(args, "quiet", False),
+        )
+        sys.exit(exit_code)
+
     # Import lazily so `hermes send --help` stays fast and does not pull in
     # the full tool registry / gateway config stack.
     from tools.send_message_tool import send_message_tool

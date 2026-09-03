@@ -135,6 +135,22 @@ class TestSendMattermost:
 
 
 class TestSendMatrix:
+    def test_encrypted_standalone_send_fails_closed(self):
+        extra = {
+            "homeserver": "https://matrix.example.com",
+            "e2ee_mode": "required",
+        }
+
+        with patch("aiohttp.ClientSession") as client_session:
+            result = asyncio.run(
+                _send_matrix(
+                    "syt_tok", extra, "!room:example.com", "secret report"
+                )
+            )
+
+        assert "requires the live gateway adapter" in result["error"]
+        client_session.assert_not_called()
+
     def test_success(self):
         resp = _make_aiohttp_resp(200, json_data={"event_id": "$abc123"})
         session_ctx, session = _make_aiohttp_session(resp)

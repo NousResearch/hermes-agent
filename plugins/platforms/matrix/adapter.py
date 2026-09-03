@@ -1727,6 +1727,144 @@ class MatrixAdapter(BasePlatformAdapter):
 
         return True
 
+    async def _allow_matrix_key_share(self, device: Any, request: Any) -> bool:
+        """Authorize recovery of a missed Megolm room key.
+
+        Mautrix only accepts room-key requests from another device of the
+        same Matrix account by default. Permit recovery for explicitly
+        allowed users, but only while the bot and requester are both joined
+        to the requested room and that room passes the configured policy.
+        """
+        client = self._client
+        olm = getattr(client, "crypto", None) if client else None
+        if olm is None:
+            return False
+
+        requester = str(getattr(device, "user_id", ""))
+        own_user_id = str(getattr(client, "mxid", "") or self._user_id)
+        if requester == own_user_id:
+            return await olm.default_allow_key_share(device, request)
+
+        # Cross-user recovery is deliberately narrower than normal message
+        # authorization: open/allow-all mode must never grant room history.
+        if not requester or requester not in self._allowed_user_ids:
+            return False
+        if bool(getattr(device, "deleted", False)):
+            return False
+
+        room_id = str(getattr(request, "room_id", ""))
+        if not room_id or room_id not in self._joined_rooms:
+            return False
+        if not await self._is_allowed_matrix_room_event(room_id):
+            return False
+
+        try:
+            joined_members = await client.get_joined_members(RoomID(room_id))
+        except Exception as exc:
+            logger.warning(
+                "Matrix: refusing room-key request from %s for %s: "
+                "could not verify current membership: %s",
+                requester,
+                room_id,
+                exc,
+            )
+            return False
+        if requester not in {str(user_id) for user_id in joined_members}:
+            return False
+
+        try:
+            trust = await olm.resolve_trust(device)
+        except Exception as exc:
+            logger.warning(
+                "Matrix: refusing room-key request from %s device %s: "
+                "could not resolve trust: %s",
+                requester,
+                getattr(device, "device_id", "?"),
+                exc,
+            )
+            return False
+        if trust < olm.share_keys_min_trust:
+            return False
+
+        logger.info(
+            "Matrix: accepting recovery key request from allowed member %s "
+            "device %s for room %s",
+            requester,
+            getattr(device, "device_id", "?"),
+            room_id,
+        )
+        return True
+
+    async def _share_matrix_keys_crash_safely(
+        self, olm: Any, current_otk_count: int | None
+    ) -> None:
+        """Upload Olm one-time keys without losing their private half."""
+        if current_otk_count is None or (
+            olm._last_key_share + 60 > time.monotonic()
+            and current_otk_count < 10
+        ):
+            olm.log.debug("Checking OTK count on server")
+            counts = await olm.client.upload_keys()
+            current_otk_count = next(
+                (
+                    int(count)
+                    for algorithm, count in counts.items()
+                    if str(algorithm) == "signed_curve25519"
+                ),
+                0,
+            )
+
+        current_otk_count = max(0, int(current_otk_count))
+        max_otk_count = int(olm.account.max_one_time_keys)
+        if current_otk_count > max_otk_count:
+            logger.error(
+                "Matrix: homeserver reports %d OTKs for this device, above "
+                "the local Olm maximum of %d; stale server keys must be reset",
+                current_otk_count,
+                max_otk_count,
+            )
+
+        device_keys = (
+            olm.account.get_device_keys(olm.client.mxid, olm.client.device_id)
+            if not olm.account.shared
+            else None
+        )
+        unpublished_count = sum(
+            len(keys) for keys in olm.account.one_time_keys.values()
+        )
+        generation_count = current_otk_count
+        if unpublished_count:
+            # These keys may be from a committed upload whose response was
+            # lost. Re-upload them verbatim instead of generating a new batch.
+            generation_count = max(generation_count, max_otk_count // 2)
+        one_time_keys = olm.account.get_one_time_keys(
+            olm.client.mxid, olm.client.device_id, generation_count
+        )
+        if not device_keys and not one_time_keys:
+            olm.log.warning(
+                "No one-time keys nor device keys got when trying to share keys"
+            )
+            return
+
+        if device_keys:
+            olm.log.debug("Going to upload initial account keys")
+        olm.log.debug("Uploading %d one-time keys", len(one_time_keys))
+
+        if one_time_keys:
+            # Once Synapse can see a public OTK, its private counterpart is
+            # already durable locally. This is the crash-safety boundary.
+            await olm.crypto_store.put_account(olm.account)
+
+        response = await olm.client.upload_keys(
+            one_time_keys=one_time_keys,
+            device_keys=device_keys,
+        )
+        olm.account.shared = True
+        olm.account.mark_keys_as_published()
+        olm._last_key_share = time.monotonic()
+        await olm.crypto_store.put_account(olm.account)
+        olm.log.debug("Shared keys and saved account, new keys: %s", response)
+
     # ------------------------------------------------------------------
     # Required overrides
     # ------------------------------------------------------------------
@@ -1935,6 +2073,20 @@ class MatrixAdapter(BasePlatformAdapter):
                         )
                         legacy_pickle.unlink()
 
+                    # Olm and Megolm ratchets have a single writer. In
+                    # particular, a standalone ``hermes send`` process must
+                    # not open the same SQLite crypto store while the gateway
+                    # is running: two in-memory OlmMachine instances can each
+                    # advance and then persist stale ratchet state, making
+                    # otherwise valid encrypted messages undecryptable.
+                    if not self._acquire_platform_lock(
+                        "matrix-crypto-store",
+                        str(_CRYPTO_DB_PATH.resolve()),
+                        "Matrix crypto store",
+                    ):
+                        await api.session.close()
+                        return False
+
                     crypto_db = Database.create(
                         f"sqlite:///{self._crypto_db_path}",
                         upgrade_table=PgCryptoStore.upgrade_table,
@@ -1981,11 +2133,26 @@ class MatrixAdapter(BasePlatformAdapter):
                     olm.share_keys_min_trust = TrustState.UNVERIFIED
                     olm.send_keys_min_trust = TrustState.UNVERIFIED
 
+                    async def _share_keys_crash_safely(
+                        current_otk_count: int | None,
+                    ) -> None:
+                        await self._share_matrix_keys_crash_safely(
+                            olm, current_otk_count
+                        )
+
+                    # mautrix saves newly generated private OTKs only after
+                    # the HTTP upload. Persist before that network boundary so
+                    # a committed request with a lost response remains safe to
+                    # retry after a process restart.
+                    olm._share_keys = _share_keys_crash_safely
+                    olm.allow_key_share = self._allow_matrix_key_share
+
                     await olm.load()
 
                     if not await self._verify_device_keys_on_server(client, olm):
                         await crypto_db.stop()
                         await api.session.close()
+                        self._release_platform_lock()
                         return False
 
                     try:
@@ -2002,6 +2169,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             )
                             await crypto_db.stop()
                             await api.session.close()
+                            self._release_platform_lock()
                             return False
                         logger.warning("Matrix: share_keys() warning during startup: %s", exc)
 
@@ -2069,6 +2237,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     if self._e2ee_mode == "optional":
+                        self._release_platform_lock()
                         logger.warning(
                             "Matrix: failed to create optional E2EE client; "
                             "continuing without encrypted-room support: %s. %s",
@@ -2077,6 +2246,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         )
                         self._encryption = False
                     else:
+                        self._release_platform_lock()
                         logger.error(
                             "Matrix: failed to create E2EE client: %s. %s",
                             exc,
@@ -2200,6 +2370,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._crypto_db.stop()
             except Exception as exc:
                 logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
+
+        self._release_platform_lock()
 
         if self._client:
             try:
@@ -5239,10 +5411,20 @@ async def _standalone_send(
     Implements the standalone_sender_fn contract so deliver=matrix cron jobs
     succeed when cron runs separately from the gateway. Converts markdown to
     HTML for rich rendering, falling back to plain text when the markdown
-    library is absent. Replaces the legacy _send_matrix helper.
+    library is absent. Replaces the legacy _send_matrix helper. Encrypted
+    configurations fail closed: a raw ``m.room.message`` request is not E2EE,
+    and creating another OlmMachine would race the running gateway's ratchets.
     """
     extra = getattr(pconfig, "extra", {}) or {}
     token = getattr(pconfig, "token", None)
+    if _resolve_e2ee_mode(extra) != "off":
+        return {
+            "error": (
+                "Encrypted Matrix delivery requires the live gateway adapter; "
+                "standalone sending is disabled to avoid plaintext delivery "
+                "and concurrent Olm/Megolm state corruption"
+            )
+        }
     try:
         import aiohttp
     except ImportError:

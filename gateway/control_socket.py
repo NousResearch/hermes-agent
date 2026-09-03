@@ -10,13 +10,16 @@ gateway process creates at startup and removes on clean shutdown, answering
 versioned JSON verbs. A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics.
 
-v1 verbs (observation only — no behavior change for the gateway):
+v1 verbs:
 
 - ``identify`` → pid, profile label, hermes_home, code_sha/code_version
   (the #91283 stamps, now queryable live), supervisor kind, served profiles,
   start_time, protocol version.
 - ``status``   → the live runtime-status payload (what ``gateway_state.json``
   holds today, but answered by the process itself, race-free).
+- ``send-message`` (when registered by the gateway runner) → delivers through
+  the gateway-owned live adapter. This keeps stateful transports such as
+  Matrix E2EE on their single event loop and crypto-store owner.
 
 Transport:
 
@@ -72,7 +75,7 @@ _MAX_UNIX_PATH = 100
 
 # Requests and responses are single JSON lines. Bound them so a misbehaving
 # peer can't balloon gateway memory.
-_MAX_REQUEST_BYTES = 64 * 1024
+_MAX_REQUEST_BYTES = 128 * 1024
 _MAX_RESPONSE_BYTES = 512 * 1024
 
 _DEFAULT_CLIENT_TIMEOUT = 2.0
@@ -224,7 +227,7 @@ def build_status_payload() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class GatewayControlServer:
-    """Gateway-owned control socket server (identify/status, v1).
+    """Gateway-owned control socket server (versioned local verbs, v1).
 
     Lifecycle is owned by the gateway process: ``start()`` after the PID-file
     claim (the point where this process becomes the authoritative gateway for
@@ -238,6 +241,9 @@ class GatewayControlServer:
         home: Optional[Path] = None,
         *,
         verb_handlers: Optional[dict[str, Callable[[], dict[str, Any]]]] = None,
+        request_handlers: Optional[
+            dict[str, Callable[[dict[str, Any]], dict[str, Any]]]
+        ] = None,
     ) -> None:
         if home is None:
             from gateway.status import _get_process_hermes_home
@@ -254,6 +260,7 @@ class GatewayControlServer:
         }
         if verb_handlers:
             self._handlers.update(verb_handlers)
+        self._request_handlers = dict(request_handlers or {})
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -353,18 +360,29 @@ class GatewayControlServer:
             request_id = request.get("id")
             verb = request.get("verb")
             handler = self._handlers.get(verb) if isinstance(verb, str) else None
-            if handler is None:
+            request_handler = (
+                self._request_handlers.get(verb)
+                if isinstance(verb, str)
+                else None
+            )
+            if handler is None and request_handler is None:
                 response: dict[str, Any] = {
                     "ok": False,
                     "error": f"unknown verb: {verb!r}",
                     "protocol": CONTROL_PROTOCOL_VERSION,
-                    "supported_verbs": sorted(self._handlers),
+                    "supported_verbs": sorted(
+                        set(self._handlers) | set(self._request_handlers)
+                    ),
                 }
             else:
                 response = {
                     "ok": True,
                     "protocol": CONTROL_PROTOCOL_VERSION,
-                    "result": handler(),
+                    "result": (
+                        request_handler(request)
+                        if request_handler is not None
+                        else handler()
+                    ),
                 }
         except Exception as exc:
             response = {
@@ -416,6 +434,7 @@ class _PipeControlProtocol(asyncio.Protocol):
         self._server = server
         self._transport: Any = None
         self._buffer = bytearray()
+        self._handling = False
 
     def connection_made(self, transport) -> None:  # pragma: no cover - windows
         self._transport = transport
@@ -425,12 +444,25 @@ class _PipeControlProtocol(asyncio.Protocol):
         if len(self._buffer) > _MAX_REQUEST_BYTES:
             self._transport.close()
             return
-        if b"\n" in self._buffer:
+        if b"\n" in self._buffer and not self._handling:
+            self._handling = True
             line, _, _ = bytes(self._buffer).partition(b"\n")
-            try:
-                self._transport.write(self._server.handle_request_line(line))
-            finally:
-                self._transport.close()
+            loop = asyncio.get_running_loop()
+            future = loop.run_in_executor(
+                None, self._server.handle_request_line, line
+            )
+
+            def _finish(done) -> None:
+                try:
+                    self._transport.write(done.result())
+                except Exception:
+                    logger.debug(
+                        "Control pipe request handler error", exc_info=True
+                    )
+                finally:
+                    self._transport.close()
+
+            future.add_done_callback(_finish)
 
 
 # ---------------------------------------------------------------------------
@@ -441,20 +473,27 @@ def query_gateway_control(
     home: Path,
     verb: str,
     *,
+    payload: Optional[dict[str, Any]] = None,
     timeout: float = _DEFAULT_CLIENT_TIMEOUT,
 ) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` a control verb; None when unanswered.
+
+    ``payload`` is included as an object for request-aware verbs. The socket's
+    owner-only filesystem permissions remain the authorization boundary.
 
     Returns the verb's ``result`` payload on success. Any failure — no
     socket, stale socket nobody accepts on, timeout, malformed answer,
     ``ok: false`` — returns None so callers fall back to the scan layer.
     Never raises.
     """
-    request = (
-        json.dumps({"verb": verb, "id": 1, "protocol": CONTROL_PROTOCOL_VERSION})
-        .encode("utf-8")
-        + b"\n"
-    )
+    request_data: dict[str, Any] = {
+        "verb": verb,
+        "id": 1,
+        "protocol": CONTROL_PROTOCOL_VERSION,
+    }
+    if payload is not None:
+        request_data["payload"] = payload
+    request = json.dumps(request_data).encode("utf-8") + b"\n"
     try:
         if _IS_WINDOWS:
             raw = _query_windows_pipe(Path(home), request, timeout)

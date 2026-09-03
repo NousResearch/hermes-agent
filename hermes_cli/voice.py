@@ -837,24 +837,29 @@ def _continuous_on_silence() -> None:
                 pass
         return
 
-    # CLI parity (cli.py:10619-10621): wait for any in-flight TTS to
-    # finish before re-arming the mic, then leave a small gap to avoid
-    # catching the tail of the speaker output.  Without this the voice
-    # loop becomes a feedback loop — the agent's spoken reply lands
-    # back in the mic and gets re-submitted.
-    if not _tts_playing.is_set():
-        _debug("_continuous_on_silence: waiting for TTS to finish")
-        _tts_playing.wait(timeout=60)
-        import time as _time
-        _time.sleep(0.3)
-
-        # User may have stopped the loop during the wait.
-        with _continuous_lock:
-            if not _continuous_active:
-                _debug("_continuous_on_silence: stopped while waiting for TTS")
-                return
-
     if _continuous_auto_restart:
+        # CLI parity (cli.py:17869-17871): wait for any in-flight TTS to
+        # finish before re-arming the mic, then leave a small gap to avoid
+        # catching the tail of the speaker output.  Without this the voice
+        # loop becomes a feedback loop — the agent's spoken reply lands
+        # back in the mic and gets re-submitted.
+        #
+        # Deliberately scoped to this branch: the wait exists only to guard
+        # the re-arm below.  The ``else`` branch never reopens the mic, so
+        # waiting there cannot prevent any feedback — it only withholds the
+        # terminal "idle" status and holds the loop "active" for up to 60s.
+        if not _tts_playing.is_set():
+            _debug("_continuous_on_silence: waiting for TTS to finish")
+            _tts_playing.wait(timeout=60)
+            import time as _time
+            _time.sleep(0.3)
+
+            # User may have stopped the loop during the wait.
+            with _continuous_lock:
+                if not _continuous_active:
+                    _debug("_continuous_on_silence: stopped while waiting for TTS")
+                    return
+
         # Restart for the next turn.
         _debug(f"_continuous_on_silence: restarting loop (no_speech={no_speech})")
         _play_beep(frequency=880, count=1)

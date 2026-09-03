@@ -433,6 +433,102 @@ class TestContinuousLoopSimulation:
         assert voice._continuous_no_speech_count == 0
         voice.stop_continuous()
 
+    class _RecordingTTSEvent:
+        """Non-blocking stand-in for ``voice._tts_playing``.
+
+        ``is_set()`` returns False ("TTS still playing") so the production
+        code takes the wait path wherever it reaches one, and ``wait()``
+        records the recorder's ``start_calls`` at that moment and returns
+        False — i.e. the 60s timeout expiring, without the test paying it.
+        """
+
+        def __init__(self, recorder):
+            self._recorder = recorder
+            self.waits = []
+
+        def is_set(self):
+            return False
+
+        def wait(self, timeout=None):
+            self.waits.append(self._recorder.start_calls)
+            return False
+
+    def test_non_restart_cycle_finalizes_without_waiting_on_tts(
+        self, fake_recorder, monkeypatch
+    ):
+        """auto_restart=False must not block on the re-arm's TTS wait.
+
+        The wait guards re-arming the mic against speaker feedback. This
+        branch never re-arms, so waiting on it cannot prevent feedback — it
+        only withholds "idle" and holds the loop "active" for up to 60s
+        while the mic is already stopped.
+        """
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "hello world"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        playing = self._RecordingTTSEvent(fake_recorder)
+        monkeypatch.setattr(voice, "_tts_playing", playing)
+
+        statuses = []
+        transcripts = []
+
+        voice.start_continuous(
+            on_transcript=lambda t: transcripts.append(t),
+            on_status=lambda s: statuses.append(s),
+            auto_restart=False,
+        )
+
+        fake_recorder.last_callback()
+
+        # The transcript is delivered before the wait either way, so the
+        # stall bought nothing.
+        assert transcripts == ["hello world"]
+        assert playing.waits == []
+        assert statuses[-1] == "idle"
+        assert voice.is_continuous_active() is False
+        assert fake_recorder.start_calls == 1  # never re-armed
+
+    def test_restart_path_still_waits_for_tts_before_rearming(
+        self, fake_recorder, monkeypatch
+    ):
+        """The auto-restart branch must keep waiting out in-flight TTS.
+
+        Guards against "fixing" the stall by deleting the wait outright,
+        which would reopen the mic into live speaker output and feed the
+        agent's own reply back in.
+        """
+        import hermes_cli.voice as voice
+
+        monkeypatch.setattr(
+            voice,
+            "transcribe_recording",
+            lambda _p: {"success": True, "transcript": "hello world"},
+        )
+        monkeypatch.setattr(voice, "is_whisper_hallucination", lambda _t: False)
+
+        playing = self._RecordingTTSEvent(fake_recorder)
+        monkeypatch.setattr(voice, "_tts_playing", playing)
+
+        voice.start_continuous(
+            on_transcript=lambda _t: None,
+            auto_restart=True,
+        )
+
+        fake_recorder.last_callback()
+
+        assert fake_recorder.start_calls == 2  # re-armed
+        # Waited exactly once, and did so while only the initial start had
+        # happened — i.e. before the mic was reopened, not after.
+        assert playing.waits == [1]
+
+        voice.stop_continuous()
+
 
 
 

@@ -996,6 +996,15 @@ class HermesACPAgent(acp.Agent):
         return target_provider, new_model
 
     @staticmethod
+    def _requested_session_model(kwargs: dict[str, Any]) -> str | None:
+        """Return the optional ACP session model parameter across client spellings."""
+        for key in ("model_id", "modelId", "model"):
+            raw_model = kwargs.get(key)
+            if isinstance(raw_model, str) and raw_model.strip():
+                return raw_model.strip()
+        return None
+
+    @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
         """Build ACP native context-usage data for clients like Zed.
 
@@ -1594,7 +1603,19 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        requested_provider = None
+        resolved_model = None
+        requested_model = self._requested_session_model(kwargs)
+        if requested_model:
+            requested_provider, resolved_model = self._resolve_model_selection(
+                requested_model,
+                detect_provider() or "openrouter",
+            )
+        state = self.session_manager.create_session(
+            cwd=cwd,
+            model=resolved_model,
+            requested_provider=requested_provider,
+        )
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
@@ -1616,7 +1637,36 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
-        state = self.session_manager.update_cwd(session_id, cwd)
+        requested_provider = None
+        resolved_model = None
+        current_base_url = None
+        current_api_mode = None
+        requested_model = self._requested_session_model(kwargs)
+        if requested_model:
+            current_state = self.session_manager.get_session(session_id)
+            current_provider = (
+                getattr(current_state.agent, "provider", None)
+                if current_state is not None
+                else None
+            )
+            requested_provider, resolved_model = self._resolve_model_selection(
+                requested_model,
+                current_provider or detect_provider() or "openrouter",
+            )
+            provider_changed = bool(
+                current_provider and requested_provider != current_provider
+            )
+            if current_state is not None and not provider_changed:
+                current_base_url = getattr(current_state.agent, "base_url", None)
+                current_api_mode = getattr(current_state.agent, "api_mode", None)
+        state = self.session_manager.update_cwd(
+            session_id,
+            cwd,
+            model=resolved_model,
+            requested_provider=requested_provider,
+            base_url=current_base_url,
+            api_mode=current_api_mode,
+        )
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None

@@ -21,12 +21,18 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
         "skills, sessions, and data (excludes the hermes-agent codebase). "
         "Use --quick for a fast snapshot of just critical state files.",
     )
-    backup_parser.add_argument(
+    # -o/--output writes a full archive at that path; --quick instead stores a
+    # state snapshot into HERMES_HOME/state-snapshots/ and never writes an
+    # archive, so the two cannot combine. Passing both used to accept -o and
+    # silently never write the file (exit 0, nothing created) (#98369); make it
+    # a clear argparse error instead.
+    _backup_target = backup_parser.add_mutually_exclusive_group()
+    _backup_target.add_argument(
         "-o",
         "--output",
-        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)",
+        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip); not used with --quick",
     )
-    backup_parser.add_argument(
+    _backup_target.add_argument(
         "-q",
         "--quick",
         action="store_true",

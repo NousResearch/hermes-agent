@@ -174,6 +174,16 @@ VALID_HOOKS: Set[str] = {
     # Streaming LLM output observer hooks. Fired asynchronously off the token
     # path by agent.plugin_stream_hooks; callbacks observe immutable normalized
     # text/lifecycle payloads and cannot transform the stream.
+    #
+    # All four share the base payload built by
+    # AIAgent._stream_hook_base_payload (run_agent.py) — see it for the exact
+    # fields and for the delivery-target semantics (chat_id/chat_type/thread_id
+    # vs session_id).
+    #
+    # on_stream_delta adds delta + kind ("text" or "reasoning"; reasoning is
+    # opt-in via plugins.stream_reasoning_deltas). on_stream_end adds
+    # final_text, finished and error. on_interim_message adds text and
+    # already_streamed.
     "on_stream_start",
     "on_stream_delta",
     "on_stream_end",

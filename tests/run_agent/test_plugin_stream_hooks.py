@@ -262,6 +262,88 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     assert end_call[1]["error"] is None
 
 
+def _gateway_agent():
+    """An agent shaped like a gateway session — one that HAS a chat to deliver to."""
+    from run_agent import AIAgent
+
+    return AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        provider="openrouter",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        platform="matrix",
+        chat_id="!room:example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+
+def test_stream_observer_payload_carries_the_delivery_target(monkeypatch):
+    """A per-chat observer has to know WHICH chat, not just which session.
+
+    One gateway serves many conversations at once, so a plugin mirroring a
+    turn's tokens somewhere (a second client, a bridge, a web view) cannot route
+    them by session_id alone.
+    """
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+
+    def observe(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({
+            "on_stream_start": [observe],
+            "on_stream_delta": [observe],
+            "on_stream_end": [observe],
+            "on_interim_message": [observe],
+        }),
+    )
+
+    agent = _gateway_agent()
+    agent._emit_stream_start()
+    agent._fire_stream_delta("hello")
+    agent._emit_stream_end(final_text="hello", finished=True, error=None)
+    _wait_for(lambda: len(calls) == 3)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    assert len(calls) == 3
+    for payload in calls:
+        assert payload["chat_id"] == "!room:example.org"
+        assert payload["chat_type"] == "group"
+        assert payload["thread_id"] == "$thread"
+        assert payload["surface"] == "matrix"
+
+
+def test_a_cli_turn_has_no_chat_rather_than_a_missing_key(monkeypatch):
+    """The keys are always present, so a consumer never has to guess."""
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_start": [lambda **kw: calls.append(kw)]}),
+    )
+
+    agent = _agent()
+    agent._emit_stream_start()
+    _wait_for(lambda: calls)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    assert calls[0]["chat_id"] == ""
+    assert calls[0]["chat_type"] == ""
+    assert calls[0]["thread_id"] == ""
+    assert calls[0]["surface"] == "cli"
+
+
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
 def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, monkeypatch):

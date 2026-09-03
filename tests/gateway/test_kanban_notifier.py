@@ -118,6 +118,9 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
+    message = adapter.sent[0]["text"]
+    assert "[worker]" in message
+    assert "@worker" not in message
     assert adapter.sent[0]["metadata"] == {
         "chat_type": "dm",
         "direct_messages_topic_id": "20197",
@@ -166,6 +169,8 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+    assert "[publisher]" in message
+    assert "@publisher" not in message
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

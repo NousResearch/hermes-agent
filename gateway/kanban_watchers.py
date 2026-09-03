@@ -577,7 +577,11 @@ class GatewayKanbanWatchersMixin:
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
+                        # Assignees are Hermes profile ids, not destination-
+                        # platform identities.  Keep the attribution inert:
+                        # adapters such as Buzz parse ``@name`` as a real
+                        # member mention and reject unknown profile names.
+                        tag = f"[{who}] " if who else ""
                         if kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried

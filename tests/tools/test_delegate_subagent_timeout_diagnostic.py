@@ -201,6 +201,7 @@ class TestRunSingleChildTimeoutDump:
 
         assert result["status"] == "timeout"
         assert result["api_calls"] == 0
+        assert result["timeout_source"] == "delegation.child_timeout_seconds"
         assert result["diagnostic_path"] is not None
         dump_path = Path(result["diagnostic_path"])
         assert dump_path.is_file()
@@ -236,5 +237,45 @@ class TestRunSingleChildTimeoutDump:
 
         assert result["status"] == "error"
         assert result["timeout_seconds"] is None
+        assert result["timeout_source"] is None
         assert result["timed_out_after_seconds"] is None
         assert result["timeout_phase"] is None
+
+    def test_internal_timeout_override_reports_config_source(self, hermes_home, monkeypatch):
+        """Role-specific callers can override the cap and expose its source."""
+        from tools import delegate_tool
+
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 30.0)
+        child = _StubChild(api_call_count=0, hang_seconds=10.0)
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+
+        result = delegate_tool._run_single_child(
+            task_index=0,
+            goal="review test goal",
+            child=child,
+            parent_agent=parent,
+            _child_timeout_seconds=0.3,
+            _child_timeout_source="auxiliary.review.child_timeout_seconds",
+        )
+
+        assert result["status"] == "timeout"
+        assert result["timeout_seconds"] == 0.3
+        assert result["timeout_source"] == "auxiliary.review.child_timeout_seconds"
+        assert "configured by auxiliary.review.child_timeout_seconds" in result["error"]
+        dump = Path(result["diagnostic_path"]).read_text(encoding="utf-8")
+        assert "configured_by:      auxiliary.review.child_timeout_seconds" in dump
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(0, None), (-1, None), (1, 30.0), (1200, 1200.0)],
+    )
+    def test_internal_timeout_override_uses_global_timeout_semantics(
+        self, configured, expected
+    ):
+        from tools.delegate_tool import _normalize_child_timeout_override
+
+        assert _normalize_child_timeout_override(
+            configured, "auxiliary.review.child_timeout_seconds"
+        ) == expected

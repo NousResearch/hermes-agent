@@ -1257,6 +1257,7 @@ DEFAULT_CONFIG = {
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url / provider override
             "api_mode": "",        # force transport: chat_completions | anthropic_messages | codex_responses
+            "child_timeout_seconds": None,  # unset = inherit delegation.child_timeout_seconds; 0 = no cap
         },
         "mcp": {
             "provider": "auto",

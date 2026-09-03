@@ -146,6 +146,64 @@ def test_load_review_credentials_cfg_missing_section(monkeypatch):
     assert re_mod._load_review_credentials_cfg() is None
 
 
+@pytest.mark.parametrize(
+    ("review_config", "expected"),
+    [
+        ({"child_timeout_seconds": 1200}, (1200, "auxiliary.review.child_timeout_seconds")),
+        ({"child_timeout_seconds": 0}, (0, "auxiliary.review.child_timeout_seconds")),
+        ({}, (None, None)),
+    ],
+)
+def test_load_review_timeout_override(monkeypatch, review_config, expected):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"auxiliary": {"review": review_config}},
+    )
+    assert re_mod._load_review_timeout_override() == expected
+
+
+def test_start_review_passes_dedicated_timeout_to_delegate_task(monkeypatch):
+    import tools.delegate_tool as dt
+
+    captured = {}
+
+    def fake_delegate_task(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"status": "dispatched", "delegation_id": "review-1"})
+
+    monkeypatch.setattr(dt, "delegate_task", fake_delegate_task)
+    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_timeout_override",
+        lambda: (1200, "auxiliary.review.child_timeout_seconds"),
+    )
+
+    start_review(_fake_parent(), [{"role": "user", "content": "review this"}])
+
+    assert captured["_child_timeout_seconds"] == 1200
+    assert captured["_child_timeout_source"] == "auxiliary.review.child_timeout_seconds"
+
+
+def test_start_review_omits_timeout_override_when_unset(monkeypatch):
+    import tools.delegate_tool as dt
+
+    captured = {}
+
+    def fake_delegate_task(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"status": "dispatched", "delegation_id": "review-1"})
+
+    monkeypatch.setattr(dt, "delegate_task", fake_delegate_task)
+    monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(re_mod, "_load_review_timeout_override", lambda: (None, None))
+
+    start_review(_fake_parent(), [{"role": "user", "content": "review this"}])
+
+    assert "_child_timeout_seconds" not in captured
+    assert "_child_timeout_source" not in captured
+
+
 # ---------------------------------------------------------------------------
 # delegate_task credentials_cfg override (the internal /review routing hook)
 # ---------------------------------------------------------------------------
@@ -210,6 +268,8 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
 
     def fake_run_single_child(task_index, goal, child=None, parent_agent=None, **kw):
         captured["goal"] = goal
+        captured["timeout_seconds"] = kw.get("_child_timeout_seconds")
+        captured["timeout_source"] = kw.get("_child_timeout_source")
         return {
             "task_index": 0, "status": "completed",
             "summary": "REVIEW: looks good", "api_calls": 2,
@@ -232,6 +292,11 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
     monkeypatch.setattr(dt, "_run_single_child", fake_run_single_child)
     monkeypatch.setattr(dt, "_resolve_delegation_credentials", lambda *a, **k: creds)
     monkeypatch.setattr(re_mod, "_load_review_credentials_cfg", lambda: None)
+    monkeypatch.setattr(
+        re_mod,
+        "_load_review_timeout_override",
+        lambda: (1, "auxiliary.review.child_timeout_seconds"),
+    )
 
     msgs = [
         {"role": "user", "content": "open a PR for the fix"},
@@ -256,6 +321,8 @@ def test_start_review_dispatches_background_and_completes(monkeypatch):
             continue
     assert evt is not None and evt["type"] == "async_delegation"
     assert evt["results"][0]["summary"] == "REVIEW: looks good"
+    assert captured["timeout_seconds"] == 30.0
+    assert captured["timeout_source"] == "auxiliary.review.child_timeout_seconds"
 
 
 def test_start_review_rejects_empty_conversation():

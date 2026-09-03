@@ -219,9 +219,12 @@ auxiliary:
   review:
     provider: openrouter               # or nous, anthropic, a direct base_url, ...
     model: anthropic/claude-opus-4.6   # a strong reviewer model
+    child_timeout_seconds: 1200        # optional /review-only wall-clock cap
 ```
 
 Credentials resolve exactly like a `delegation.provider` pin (full runtime-provider bundle: base_url, api key, api_mode). `provider: auto` with an empty `model` means "inherit the main agent's model" — the default.
+
+`child_timeout_seconds` controls only the reviewer subagent. When omitted, `/review` inherits `delegation.child_timeout_seconds`; `0` or a negative value disables the reviewer cap, and positive values use the same 30-second minimum as ordinary delegation. Timeout results identify the effective config key in `timeout_source` and in the human-readable error and zero-call diagnostic.
 
 `/review` is deliberately separate from `/refine`: `/refine` reviews the conversation to update memory and skills, `/review` reviews the *work product* the conversation created.
 

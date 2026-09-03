@@ -956,6 +956,7 @@ def _get_worktree_isolation() -> bool:
 
 
 _LEGACY_MAX_ASYNC_WARNED = False
+_CHILD_TIMEOUT_UNSET = object()
 
 
 def _get_max_async_children() -> int:
@@ -1025,6 +1026,23 @@ def _get_child_timeout() -> Optional[float]:
         else:
             return None if parsed <= 0 else max(30.0, parsed)
     return DEFAULT_CHILD_TIMEOUT
+
+
+def _normalize_child_timeout_override(value: Any, source: str) -> Any:
+    """Normalize an internal role-specific timeout or request inheritance."""
+    if value is _CHILD_TIMEOUT_UNSET:
+        return _CHILD_TIMEOUT_UNSET
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s=%r is not a valid number; falling back to "
+            "delegation.child_timeout_seconds",
+            source,
+            value,
+        )
+        return _CHILD_TIMEOUT_UNSET
+    return None if parsed <= 0 else max(30.0, parsed)
 
 
 def _get_max_spawn_depth() -> int:
@@ -2265,6 +2283,7 @@ def _dump_subagent_timeout_diagnostic(
     duration_seconds: float,
     worker_thread: Optional[threading.Thread],
     goal: str,
+    timeout_source: Optional[str] = None,
 ) -> Optional[str]:
     """Write a structured diagnostic dump for a subagent that timed out
     before making any API call.
@@ -2306,6 +2325,7 @@ def _dump_subagent_timeout_diagnostic(
         _w(f"  task_index:        {task_index}")
         _w(f"  subagent_id:       {subagent_id}")
         _w(f"  configured_timeout: {timeout_seconds}s")
+        _w(f"  configured_by:      {timeout_source or 'delegation.child_timeout_seconds'}")
         _w(f"  actual_duration:   {duration_seconds:.2f}s")
         _w("")
 
@@ -2622,6 +2642,8 @@ def _run_single_child(
     owner_session_id: Optional[str] = None,
     owner_transport: Any = None,
     owner_session_record: Any = None,
+    _child_timeout_seconds: Any = _CHILD_TIMEOUT_UNSET,
+    _child_timeout_source: Optional[str] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -2971,7 +2993,12 @@ def _run_single_child(
         # Run child with an optional hard timeout (off by default —
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
-        child_timeout = _get_child_timeout()
+        if _child_timeout_seconds is _CHILD_TIMEOUT_UNSET:
+            child_timeout = _get_child_timeout()
+            timeout_source = "delegation.child_timeout_seconds"
+        else:
+            child_timeout = _child_timeout_seconds
+            timeout_source = _child_timeout_source or "internal child timeout override"
         # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
         # below; a stdlib non-daemon worker would then block interpreter
         # exit at atexit-join time if the child never unwinds.
@@ -3062,6 +3089,7 @@ def _run_single_child(
                     duration_seconds=float(duration),
                     worker_thread=_worker_thread_holder.get("t"),
                     goal=goal,
+                    timeout_source=timeout_source,
                 )
                 if diagnostic_path:
                     logger.warning(
@@ -3089,7 +3117,8 @@ def _run_single_child(
             if is_timeout:
                 if child_api_calls == 0:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s without "
+                        f"Subagent timed out after {child_timeout}s "
+                        f"(configured by {timeout_source}) without "
                         f"making any API call — the child never reached its "
                         f"first LLM request (prompt construction, credential "
                         f"resolution, or transport may be stuck)."
@@ -3098,7 +3127,8 @@ def _run_single_child(
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s with "
+                        f"Subagent timed out after {child_timeout}s "
+                        f"(configured by {timeout_source}) with "
                         f"{child_api_calls} API call(s) completed — likely "
                         f"stuck on a slow API call, tool call, or unresponsive "
                         f"network request."
@@ -3117,6 +3147,7 @@ def _run_single_child(
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
                 "timeout_seconds": child_timeout if is_timeout else None,
+                "timeout_source": timeout_source if is_timeout else None,
                 "timed_out_after_seconds": duration if is_timeout else None,
                 "timeout_phase": (
                     "before_first_llm_call" if is_timeout and child_api_calls == 0
@@ -3933,6 +3964,8 @@ def delegate_task(
     message: Optional[str] = None,
     parent_agent=None,
     credentials_cfg: Optional[Dict[str, Any]] = None,
+    _child_timeout_seconds: Any = _CHILD_TIMEOUT_UNSET,
+    _child_timeout_source: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks, or control
@@ -4005,8 +4038,18 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    # Load config
+    # Load config. Role-specific callers may supply an internal timeout
+    # override; invalid values deliberately fall back to the global setting.
     cfg = _load_config()
+    effective_child_timeout = _normalize_child_timeout_override(
+        _child_timeout_seconds,
+        _child_timeout_source or "internal child timeout override",
+    )
+    effective_child_timeout_source = (
+        None
+        if effective_child_timeout is _CHILD_TIMEOUT_UNSET
+        else (_child_timeout_source or "internal child timeout override")
+    )
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -4262,6 +4305,8 @@ def delegate_task(
                 owner_session_id=_origin_ui_session_id or None,
                 owner_transport=_origin_owner_transport,
                 owner_session_record=_origin_owner_session_record,
+                _child_timeout_seconds=effective_child_timeout,
+                _child_timeout_source=effective_child_timeout_source,
             )
             results.append(result)
         else:
@@ -4287,6 +4332,8 @@ def delegate_task(
                         owner_session_id=_origin_ui_session_id or None,
                         owner_transport=_origin_owner_transport,
                         owner_session_record=_origin_owner_session_record,
+                        _child_timeout_seconds=effective_child_timeout,
+                        _child_timeout_source=effective_child_timeout_source,
                     )
                     futures[future] = i
 

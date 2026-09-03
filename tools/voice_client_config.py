@@ -184,7 +184,15 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
             "provider": "elevenlabs",
             "base_url": base_url,
             "api_key": api_key,
-            "model": section.get("model") or tt.DEFAULT_ELEVENLABS_STT_MODEL,
+            # ElevenLabs keys this ``model_id``, matching the relay path in
+            # tools.transcription_tools.transcribe_recording. A hand-edited
+            # legacy ``model`` key is deliberately NOT consulted: load_config()
+            # merges the ``model_id`` default into this section, so a fallback
+            # after ``model_id`` could never fire — and consulting ``model``
+            # first would invert canonical precedence AND diverge from the
+            # relay path, which has never read ``model``. Divergence between
+            # the two paths is the defect this resolver exists to prevent.
+            "model": section.get("model_id") or tt.DEFAULT_ELEVENLABS_STT_MODEL,
             "language": language,
         }
 

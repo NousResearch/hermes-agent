@@ -189,3 +189,72 @@ def test_resolution_never_raises(voice_home, monkeypatch):
     result = _resolve()
     assert result["stt"]["mode"] in {"direct", "relay"}
     assert result["tts"]["mode"] in {"direct", "relay"}
+
+
+def test_elevenlabs_stt_direct_honors_configured_model_id(voice_home, monkeypatch):
+    # The setup wizard, the config defaults and the relay path all key this
+    # ``model_id``; client-direct must read the same key or a pinned model is
+    # silently replaced by the default.
+    voice_home({
+        "stt": {
+            "provider": "elevenlabs",
+            "elevenlabs": {"model_id": "scribe_v1"},
+        },
+    })
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
+    stt = _resolve()["stt"]
+    assert stt["mode"] == "direct"
+    assert stt["wire"] == "elevenlabs-stt"
+    assert stt["model"] == "scribe_v1"
+
+
+def test_elevenlabs_stt_direct_canonical_model_id_wins_over_legacy(
+    voice_home, monkeypatch
+):
+    voice_home({
+        "stt": {
+            "provider": "elevenlabs",
+            "elevenlabs": {"model_id": "scribe_v1", "model": "scribe_v2"},
+        },
+    })
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
+    assert _resolve()["stt"]["model"] == "scribe_v1"
+
+
+def test_elevenlabs_stt_direct_ignores_legacy_model_key(
+    voice_home, monkeypatch
+):
+    # A hand-edited legacy ``model`` key was honored by the pre-fix direct
+    # path only — the relay path has never read it, so identical configs
+    # transcribed with different models depending on the path taken. It is now
+    # ignored on both, deliberately: load_config() merges the ``model_id``
+    # default into this section, so a fallback placed after ``model_id`` can
+    # never fire, and consulting ``model`` first would invert canonical
+    # precedence while re-creating the cross-path divergence.
+    voice_home({
+        "stt": {
+            "provider": "elevenlabs",
+            "elevenlabs": {"model": "scribe_v1"},
+        },
+    })
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
+    from tools import transcription_tools as tt
+    assert _resolve()["stt"]["model"] == tt.DEFAULT_ELEVENLABS_STT_MODEL
+
+
+def test_elevenlabs_stt_direct_env_default_when_no_config_key(
+    voice_home, monkeypatch
+):
+    # Full precedence chain: config model_id -> config legacy model -> the
+    # STT_ELEVENLABS_MODEL env default baked into DEFAULT_ELEVENLABS_STT_MODEL
+    # at import time -> hardcoded scribe_v2. The env value is read on import,
+    # so assert against the module constant rather than re-setting the env here.
+    voice_home({
+        "stt": {
+            "provider": "elevenlabs",
+            "elevenlabs": {},
+        },
+    })
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el_key")
+    from tools import transcription_tools as tt
+    assert _resolve()["stt"]["model"] == tt.DEFAULT_ELEVENLABS_STT_MODEL

@@ -1040,7 +1040,43 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+_PROVISIONAL_TOOL_STATUS_RE = re.compile(
+    r"\b(?:lookup|query|tool(?:\s+call)?)\s+failed\b"
+    r"|\bfailed\b.*\b(?:lookup|query|tool)\b"
+    # Localized MCP/tool failure status (#100543 live Discord: "최신 조회 실패").
+    r"|실패|失败|失敗",
+    re.IGNORECASE,
+)
+_PROVISIONAL_COMPRESSION_NOTICE_RE = re.compile(
+    r"compress|압축|压缩|壓縮",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_provisional_tool_status(text: str) -> bool:
+    """True for short operational tool-failure status, not compression notices.
+
+    Discord posted MCP/tool "lookup failed" warnings as chat messages while
+    the same turn later delivered a successful final result (#100367). Those
+    must stay off chat when interim assistant messages are disabled.
+    Compression recovery/abort copy is excluded — #100370's blanket
+    status_callback gate swallowed those.
+    """
+    body = str(text or "").strip()
+    if not body or len(body) > 160 or body.count("\n") > 2:
+        return False
+    if _PROVISIONAL_COMPRESSION_NOTICE_RE.search(body):
+        return False
+    return bool(_PROVISIONAL_TOOL_STATUS_RE.search(body))
+
+
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    interim_enabled: bool = True,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI sessions keep the raw diagnostic stream. Messaging gateway
@@ -1053,6 +1089,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    if (
+        not interim_enabled
+        and str(event_type or "") == "warn"
+        and _looks_like_provisional_tool_status(text)
+    ):
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -5903,6 +5945,7 @@ class TurnRunner:
             ctx.source.platform,
             event_type,
             message,
+            interim_enabled=ctx.interim_assistant_messages_enabled,
         )
         if prepared_message is None:
             logger.debug(

@@ -140,6 +140,78 @@ def test_telegram_status_keeps_legitimate_heartbeat_messages(message):
     assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
 
 
+@pytest.mark.parametrize("platform", ["discord", "telegram", "slack"])
+@pytest.mark.parametrize(
+    "message",
+    ["Latest lookup failed", "최신 조회 실패", "最新查询失败"],
+)
+def test_provisional_tool_warn_suppressed_when_interim_off(platform, message):
+    """#100367: MCP/tool lookup failures must not post as Discord replies
+    when interim assistant messages are disabled. Localized copies (#100543)
+    use the same warn path without English tokens."""
+    assert (
+        _prepare_gateway_status_message(
+            platform,
+            "warn",
+            message,
+            interim_enabled=False,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("platform", ["discord", "telegram"])
+def test_provisional_tool_warn_kept_when_interim_on(platform):
+    assert (
+        _prepare_gateway_status_message(
+            platform,
+            "warn",
+            "Latest lookup failed",
+            interim_enabled=True,
+        )
+        == "Latest lookup failed"
+    )
+
+
+@pytest.mark.parametrize("platform", ["discord", "telegram"])
+def test_compression_abort_warn_still_visible_when_interim_off(platform):
+    """#100370 rejected a blanket status gate; recovery notices stay."""
+    message = (
+        "⚠ Compression aborted: auth failure. No messages were dropped — "
+        "conversation continues unchanged. Run /compress to retry, or /new "
+        "to start a fresh session."
+    )
+    assert (
+        _prepare_gateway_status_message(
+            platform, "warn", message, interim_enabled=False
+        )
+        == message
+    )
+
+
+def test_localized_compression_abort_still_visible_when_interim_off():
+    """A Korean compression abort still contains 실패; do not hide it."""
+    message = "⚠ 압축이 실패했습니다. 메시지는 삭제되지 않았습니다."
+    assert (
+        _prepare_gateway_status_message(
+            "discord", "warn", message, interim_enabled=False
+        )
+        == message
+    )
+
+
+def test_webhook_keeps_provisional_tool_status_when_interim_off():
+    assert (
+        _prepare_gateway_status_message(
+            "webhook",
+            "warn",
+            "Latest lookup failed",
+            interim_enabled=False,
+        )
+        == "Latest lookup failed"
+    )
+
+
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 @pytest.mark.parametrize("message", NOISY_STATUS_MESSAGES)
 def test_all_chat_gateways_suppress_noise(platform, message):

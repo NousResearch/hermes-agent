@@ -676,6 +676,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         ),
     )
 
+    p_reclassify = sub.add_parser(
+        "reclassify-block",
+        help="Correct only the blocker kind on an already-blocked task",
+    )
+    p_reclassify.add_argument("task_id")
+    p_reclassify.add_argument(
+        "--kind", required=True, choices=sorted(kb.VALID_BLOCK_KINDS),
+        help="Correct blocker classifier; lifecycle state is preserved.",
+    )
+    p_reclassify.add_argument(
+        "--note", default=None,
+        help="Optional audit note recorded with the classifier correction.",
+    )
+
     p_schedule = sub.add_parser("schedule", help="Park one or more tasks in Scheduled (waiting on time, not human input)")
     p_schedule.add_argument("task_id")
     p_schedule.add_argument("reason", nargs="*", help="Reason/timing note (also appended as a comment)")
@@ -1166,6 +1180,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
+            "reclassify-block": _cmd_reclassify_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "request-review": _cmd_request_review,
@@ -2484,6 +2499,32 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 else:
                     print(f"Blocked {tid}{suffix}")
     return 0 if not failed else 1
+
+
+def _cmd_reclassify_block(args: argparse.Namespace) -> int:
+    tid = args.task_id
+    scoped_task = os.environ.get("HERMES_KANBAN_TASK")
+    if scoped_task and scoped_task != tid:
+        print(
+            f"cannot reclassify {tid}: task-scoped worker may only mutate {scoped_task}",
+            file=sys.stderr,
+        )
+        return 1
+    with kb.connect_closing() as conn:
+        if not kb.reclassify_blocked_task(
+            conn,
+            tid,
+            kind=args.kind,
+            actor=_profile_author(),
+            note=args.note,
+        ):
+            print(
+                f"cannot reclassify {tid} (unknown id or task is not blocked)",
+                file=sys.stderr,
+            )
+            return 1
+    print(f"Reclassified {tid}: {args.kind}")
+    return 0
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:

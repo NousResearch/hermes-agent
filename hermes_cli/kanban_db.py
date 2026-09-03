@@ -6482,6 +6482,46 @@ def block_task(
     return True
 
 
+def reclassify_blocked_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    kind: str,
+    actor: str,
+    note: Optional[str] = None,
+) -> bool:
+    """Correct only the classifier on an already-blocked task.
+
+    This deliberately bypasses ``unblock_task`` and ``block_task``: status,
+    claims, runs, dependency state, recurrence memory, and notification hooks
+    remain untouched while an operator corrects a stored classifier.
+    """
+    if kind not in VALID_BLOCK_KINDS:
+        raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)}")
+    if not actor or not actor.strip():
+        raise ValueError("actor is required")
+    clean_note = note.strip() if note and note.strip() else None
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None or row["status"] != "blocked":
+            return False
+        old_kind = row["block_kind"]
+        conn.execute(
+            "UPDATE tasks SET block_kind = ? WHERE id = ? AND status = 'blocked'",
+            (kind, task_id),
+        )
+        payload = {"old_kind": old_kind, "new_kind": kind, "actor": actor.strip()}
+        if clean_note:
+            payload["note"] = clean_note
+        _append_event(conn, task_id, "block_reclassified", payload)
+        comment = f"BLOCK CLASSIFIER: {old_kind or 'untyped'} → {kind}"
+        if clean_note:
+            comment += f" — {clean_note}"
+        add_comment(conn, task_id, actor.strip(), comment)
+    return True
+
 
 def redact_review_value(value: Any) -> Any:
     """Redact secrets at the domain boundary for durable review handoffs."""

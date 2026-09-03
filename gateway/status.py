@@ -683,11 +683,26 @@ def _record_matches_live_gateway_pid(
     profile's live gateway would make the dead profile look alive.  When the
     live command line cannot be read (Windows/permission), fall back to the
     persisted record so cross-platform behavior is preserved.
+
+    Exception: a record stamped ``multiplex_secondary: true`` describes a
+    SECONDARY profile served by a multiplex gateway's single SHARED process
+    (``gateway.multiplex_profiles: true`` — one bare ``gateway run`` command
+    with no ``-p``/``--profile`` flag serves every profile). The per-profile
+    ``-p <name>`` substring check below is written for the "one dedicated
+    process per profile" deployment and can never pass for a multiplex
+    secondary profile's shared process — that command line names no single
+    profile because it names all of them. Skip the substring check for a
+    record carrying that marker; the live-cmdline "looks like a gateway"
+    check above it (in the caller) plus the (pid, start_time) match already
+    guard against PID reuse, and the marker is only ever written by the
+    gateway's own multiplex startup path (never user-controllable input).
     """
     live_cmdline = _read_process_cmdline(pid)
     if live_cmdline:
         if not looks_like_gateway_runtime_command_line(live_cmdline):
             return False
+        if record.get("multiplex_secondary"):
+            return True
         if expected_home is not None and not _command_line_belongs_to_profile(
             live_cmdline, expected_home
         ):
@@ -1217,9 +1232,25 @@ def write_runtime_status(
     served_profiles: Any = _UNSET,
     session_store: Any = _UNSET,
     clear_profile_platforms: bool = False,
+    multiplex_secondary: Any = _UNSET,
+    path: Optional[Path] = None,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
-    path = _get_runtime_status_path()
+    """Persist gateway runtime health information for diagnostics/status.
+
+    ``path``: write to this file instead of the resolved
+    ``_get_runtime_status_path()``. Needed for a multiplex gateway's
+    secondary-profile refresh (see ``gateway/run.py``'s
+    ``_start_secondary_profile_adapters``): ``_get_runtime_status_path()``
+    deliberately resolves via ``_get_process_hermes_home()``, which SKIPS
+    the ``HERMES_HOME`` override contextvar on purpose (#56986 — gateway
+    identity files must not follow an active per-session profile-dispatch
+    override into the wrong directory). That means wrapping this call in
+    ``_profile_runtime_scope(profile_home)`` does NOT redirect the write —
+    it silently writes the ACTIVE profile's file again. An explicit
+    ``path`` is the only way to deliberately target another profile's own
+    ``gateway_state.json`` from the active profile's process.
+    """
+    path = path if path is not None else _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     previous_payload = copy.deepcopy(payload)
     current_record = _build_pid_record()
@@ -1261,6 +1292,14 @@ def write_runtime_status(
         # for a single-profile gateway. Lets `hermes status` show per-profile
         # coverage without a second probe.
         payload["served_profiles"] = list(served_profiles or [])
+    if multiplex_secondary is not _UNSET:
+        # Stamped True when this file is a SECONDARY profile's own
+        # gateway_state.json under a multiplex gateway (one shared process
+        # serving several profiles, no per-profile ``-p`` command line).
+        # Read by _record_matches_live_gateway_pid to skip its per-profile
+        # ``-p <name>`` command-line check, which can never match a shared
+        # multiplex process's bare argv. See that function's docstring.
+        payload["multiplex_secondary"] = bool(multiplex_secondary)
     if session_store is not _UNSET:
         state = "unknown"
         if isinstance(session_store, dict):

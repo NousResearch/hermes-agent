@@ -15,8 +15,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.run import GatewayRunner, _parse_session_key
+from gateway.session import SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +56,43 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
+
+
+class _TelegramDeliveryProbe(BasePlatformAdapter):
+    """Concrete adapter that records the final send contract."""
+
+    def __init__(self) -> None:
+        config = PlatformConfig(enabled=True, token="test")
+        config.typing_indicator = False
+        super().__init__(config, Platform.TELEGRAM)
+        self.sent = []
+
+    async def start(self):  # pragma: no cover - unused abstract surface
+        pass
+
+    async def stop(self):  # pragma: no cover - unused abstract surface
+        pass
+
+    async def connect(self):  # pragma: no cover - unused abstract surface
+        pass
+
+    async def disconnect(self):  # pragma: no cover - unused abstract surface
+        pass
+
+    async def get_chat_info(self, chat_id):  # pragma: no cover - unused
+        return {}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id="sent-1")
+
+    async def send_typing(self, chat_id, metadata=None):  # pragma: no cover - disabled
+        pass
 
 
 def _watcher_dict(session_id="proc_test", thread_id=""):
@@ -291,6 +330,138 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
     synth_event = adapter.handle_message.await_args.args[0]
     assert synth_event.message_id == "777"
     assert synth_event.source.thread_id == "24296"
+
+
+def test_process_event_source_strips_persisted_event_reply_anchor(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:dm:123:24296"
+    persisted_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="1",
+        message_id="pre-upgrade-100",
+    )
+    runner.session_store._entries[session_key] = SimpleNamespace(
+        origin=persisted_source
+    )
+
+    source = runner._build_process_event_source({"session_key": session_key})
+
+    assert source is not persisted_source
+    assert source.message_id is None
+    assert source.chat_id == "123"
+    assert source.thread_id == "24296"
+    assert persisted_source.message_id == "pre-upgrade-100"
+
+
+def test_process_event_source_strips_cached_event_reply_anchor(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:dm:123:24296"
+    cached_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="1",
+        message_id="last-live-200",
+    )
+    runner._cache_session_source(session_key, cached_source)
+
+    source = runner._build_process_event_source({"session_key": session_key})
+
+    assert source is not cached_source
+    assert source.message_id is None
+    assert source.chat_id == "123"
+    assert source.thread_id == "24296"
+    assert cached_source.message_id == "last-live-200"
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_stale_reply_anchor_from_background_completion(
+    monkeypatch, tmp_path
+):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="1",
+        message_id="old-100",
+    )
+    entry = runner.session_store.get_or_create_session(source)
+    session_key = build_session_key(source)
+    reset_entry = runner.session_store.reset_session(session_key)
+
+    assert reset_entry is not None
+    assert reset_entry.session_id != entry.session_id
+
+    await runner._inject_watch_notification(
+        "Build finished: unrelated completion output",
+        {"session_id": "proc_watch", "session_key": session_key},
+    )
+    synth_event = runner.adapters[Platform.TELEGRAM].handle_message.await_args.args[0]
+
+    delivery = _TelegramDeliveryProbe()
+    delivery.set_message_handler(lambda _event: asyncio.sleep(0, result="done"))
+    await delivery._process_message_background(synth_event, session_key)
+
+    assert delivery.sent == [{
+        "chat_id": "123",
+        "content": "done",
+        "reply_to": None,
+        "metadata": {
+            "thread_id": "24296",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "24296",
+            "notify": True,
+        },
+    }]
+
+
+@pytest.mark.asyncio
+async def test_switch_clears_stale_reply_anchor_from_background_completion(
+    monkeypatch, tmp_path
+):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        thread_id="24296",
+        user_id="1",
+        message_id="old-100",
+    )
+    runner.session_store.get_or_create_session(source)
+    session_key = build_session_key(source)
+    switched_entry = runner.session_store.switch_session(session_key, "target-session")
+
+    assert switched_entry is not None
+    assert switched_entry.session_id == "target-session"
+
+    await runner._inject_watch_notification(
+        "Build finished: unrelated completion output",
+        {"session_id": "proc_watch", "session_key": session_key},
+    )
+    synth_event = runner.adapters[Platform.TELEGRAM].handle_message.await_args.args[0]
+
+    delivery = _TelegramDeliveryProbe()
+    delivery.set_message_handler(lambda _event: asyncio.sleep(0, result="done"))
+    await delivery._process_message_background(synth_event, session_key)
+
+    assert delivery.sent == [{
+        "chat_id": "123",
+        "content": "done",
+        "reply_to": None,
+        "metadata": {
+            "thread_id": "24296",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "24296",
+            "notify": True,
+        },
+    }]
 
 
 @pytest.mark.asyncio

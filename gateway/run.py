@@ -28104,7 +28104,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self.session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
-                    return entry.origin
+                    return dataclasses.replace(entry.origin, message_id=None)
             except Exception as exc:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",
@@ -28114,7 +28114,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
-                return cached_source
+                return dataclasses.replace(cached_source, message_id=None)
 
             _parsed = _parse_session_key(session_key)
             if _parsed:

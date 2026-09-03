@@ -1679,7 +1679,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     _ttfb_disable_above,
                 )
                 _ttfb_timeout = _large_request_ttfb_timeout
-        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
+        # Independent hard cap on the TTFB cutoff. Opt-in: default 0 means no
+        # cap, so the size-based ladder above (e.g. 180s for >100K-token
+        # requests) survives. A previous default of 120s silently reverted the
+        # large-request scale-up on every call, cancelling the safety margin.
+        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
         if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
             logger.info(
                 "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "

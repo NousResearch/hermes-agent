@@ -16,6 +16,7 @@ stall.
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 import types
@@ -428,6 +429,73 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
         assert "with no response" in str(excinfo.value)
     finally:
         stop["flag"] = True
+
+
+def _run_large_request_and_capture(agent, monkeypatch, caplog):
+    """Drive one healthy >100k-token Codex request and return captured logs."""
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        # Bytes flow immediately so the TTFB watchdog never fires; we only care
+        # about the timeout computation logged before the stream starts.
+        agent._codex_stream_last_event_ts = time.time()
+        if on_first_delta:
+            on_first_delta()
+        return sentinel
+
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: SimpleNamespace())
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda c, reason=None: None)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda c, reason=None: None)
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    from agent import chat_completion_helpers as h
+
+    large_input = "x" * 480_000  # >100k estimated tokens → size ladder default 180s
+    with caplog.at_level(logging.INFO):
+        resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+    assert resp is sentinel
+    return caplog.text
+
+
+def test_large_request_ttfb_scaling_survives_without_explicit_cap(tmp_path, monkeypatch, caplog):
+    """#97682 regression: with no HERMES_CODEX_TTFB_* overrides, the >100k-token
+    scale-up to 180s must NOT be silently reverted by the (now opt-in) cap."""
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    for var in (
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+        "HERMES_CODEX_TTFB_STRICT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    text = _run_large_request_and_capture(agent, monkeypatch, caplog)
+    assert "Scaling openai-codex no-byte TTFB watchdog from 120s to 180s" in text
+    assert "Capping openai-codex no-byte TTFB timeout" not in text
+
+
+def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch, caplog):
+    """An operator-provided HERMES_CODEX_TTFB_MAX_SECONDS still caps the
+    size-based allowance — the opt-in cap is honored when explicitly set."""
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_STRICT", raising=False)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "120")
+
+    text = _run_large_request_and_capture(agent, monkeypatch, caplog)
+    assert "Scaling openai-codex no-byte TTFB watchdog from 120s to 180s" in text
+    assert "Capping openai-codex no-byte TTFB timeout from 180s to 120s" in text
+
+
+def test_ttfb_strict_prevents_scale_up(tmp_path, monkeypatch, caplog):
+    """HERMES_CODEX_TTFB_STRICT=1 keeps the smaller cutoff — no scale-up log."""
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_MAX_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
+
+    text = _run_large_request_and_capture(agent, monkeypatch, caplog)
+    assert "Scaling openai-codex no-byte TTFB watchdog" not in text
+    assert "Capping openai-codex no-byte TTFB timeout" not in text
 
 
 

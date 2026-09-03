@@ -272,3 +272,117 @@ def test_ws_transport_preserves_cross_batch_order():
     asyncio.run(scenario())
 
 
+def test_ws_transport_anchors_coalesced_token_flush():
+    """The coalesce timer empties _pending_tokens before it creates the send
+    task, so that task holds the only surviving reference to the batch. A bare
+    asyncio.create_task() is only weakly referenced by the loop, so the
+    transport must keep a strong reference of its own — otherwise a pending
+    flush can be collected mid-flight and those streamed tokens never reach the
+    client, with nothing left to retry or re-queue them."""
+
+    async def scenario():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        sent = []
+
+        class FakeWS:
+            async def send_text(self, line):
+                entered.set()
+                await release.wait()
+                sent.append(line)
+
+        transport = ws_mod.WSTransport(
+            FakeWS(), asyncio.get_running_loop(), peer="anchor-test"
+        )
+        with transport._token_lock:
+            transport._pending_tokens.extend(["T1", "T2"])
+            transport._token_flush_armed = True
+
+        transport._flush_tokens()
+
+        # The batch is no longer reachable through the buffer.
+        assert transport._pending_tokens == []
+
+        await entered.wait()
+        in_flight = [t for t in transport._background_tasks if not t.done()]
+        assert len(in_flight) == 1
+
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*in_flight), timeout=5)
+        assert sent == ["T1", "T2"]
+        # The done callback releases the reference, so the set cannot grow
+        # across a streamed turn's hundreds of flushes.
+        assert not transport._background_tasks
+
+    asyncio.run(scenario())
+
+
+def test_ws_transport_close_cancels_in_flight_batch_send():
+    """close() latches _closed, but _safe_send_many only re-checks that between
+    frames: a send already suspended inside ws.send_text() on a wedged socket
+    never observes it. Now that the transport anchors that task, teardown has to
+    cancel it, or the task and the transport keep each other alive after
+    handle_ws has returned."""
+
+    async def scenario():
+        entered = asyncio.Event()
+        wedged = asyncio.Event()  # never set: the socket never completes a send
+
+        class FakeWS:
+            async def send_text(self, line):
+                entered.set()
+                await wedged.wait()
+
+        transport = ws_mod.WSTransport(
+            FakeWS(), asyncio.get_running_loop(), peer="close-cancel-test"
+        )
+        with transport._token_lock:
+            transport._pending_tokens.append("T1")
+            transport._token_flush_armed = True
+
+        transport._flush_tokens()
+
+        await entered.wait()
+        in_flight = [t for t in transport._background_tasks if not t.done()]
+        assert len(in_flight) == 1
+        task = in_flight[0]
+
+        transport.close()
+
+        # Tracking is dropped synchronously rather than one done callback at a
+        # time, so close() leaves no transport -> set -> task -> transport cycle
+        # behind for the loop to unpick later.
+        assert not transport._background_tasks
+
+        _done, pending = await asyncio.wait({task}, timeout=5)
+        assert not pending, "close() left an in-flight batch send pending"
+        assert task.cancelled()
+
+    asyncio.run(scenario())
+
+
+def test_ws_transport_close_drops_the_coalesce_buffer():
+    """close() cancels the coalesce TimerHandle, which is the only caller that
+    would ever have drained _pending_tokens. Anything still buffered there is
+    undeliverable from that moment on, so close() must release it instead of
+    pinning the frames on a dead transport."""
+
+    async def scenario():
+        class FakeWS:
+            async def send_text(self, line):
+                raise AssertionError("a closed transport must not send")
+
+        transport = ws_mod.WSTransport(
+            FakeWS(), asyncio.get_running_loop(), peer="close-buffer-test"
+        )
+        with transport._token_lock:
+            transport._pending_tokens.extend(["T1", "T2"])
+            transport._token_flush_armed = True
+
+        transport.close()
+
+        assert transport._pending_tokens == []
+
+    asyncio.run(scenario())
+
+

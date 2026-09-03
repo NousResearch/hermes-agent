@@ -13,6 +13,7 @@ Residual insight extracted from closed PR #84191 (@MaximCrabbe).
 import asyncio
 
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -39,6 +40,32 @@ class FailingWakeAdapter(RecordingAdapter):
         raise RuntimeError("simulated wake failure")
 
 
+class InvalidRouteAdapter(RecordingAdapter):
+    def __init__(self):
+        super().__init__()
+        self.probes = []
+
+    async def probe_delivery_route(self, chat_id, metadata=None):
+        self.probes.append({"chat_id": chat_id, "metadata": metadata or {}})
+        return SendResult(
+            success=False,
+            error="closed topic",
+            retryable=False,
+            error_kind="not_found",
+        )
+
+
+class TransientRouteAdapter(InvalidRouteAdapter):
+    async def probe_delivery_route(self, chat_id, metadata=None):
+        self.probes.append({"chat_id": chat_id, "metadata": metadata or {}})
+        return SendResult(
+            success=False,
+            error="temporary network failure",
+            retryable=True,
+            error_kind="transient",
+        )
+
+
 async def _run_one_notifier_tick(monkeypatch, runner):
     real_sleep = asyncio.sleep
 
@@ -61,7 +88,7 @@ def _make_runner(adapter):
     return runner
 
 
-def _make_completed_task(delivery_mode):
+def _make_completed_task(delivery_mode, thread_id=None):
     conn = kb.connect()
     try:
         tid = kb.create_task(
@@ -75,6 +102,7 @@ def _make_completed_task(delivery_mode):
             task_id=tid,
             platform="telegram",
             chat_id="chat-1",
+            thread_id=thread_id,
             chat_type="dm",
             delivery_mode=delivery_mode,
         )
@@ -84,7 +112,7 @@ def _make_completed_task(delivery_mode):
         conn.close()
 
 
-def _unseen_terminal_events(tid):
+def _unseen_terminal_events(tid, thread_id=None):
     conn = kb.connect()
     try:
         _, events = kb.unseen_events_for_sub(
@@ -92,6 +120,7 @@ def _unseen_terminal_events(tid):
             task_id=tid,
             platform="telegram",
             chat_id="chat-1",
+            thread_id=thread_id,
             kinds=["completed", "blocked", "gave_up", "crashed", "timed_out"],
         )
         return events
@@ -200,3 +229,44 @@ def test_wake_only_failure_cap_drops_subscription(tmp_path, monkeypatch):
     assert runner._kanban_sub_fail_counts == {}, (
         "counter entry must clear when the subscription is dropped"
     )
+
+
+def test_wake_only_permanent_invalid_route_unsubscribes_without_wake(
+    tmp_path, monkeypatch,
+):
+    """A closed topic is removed before an agent can reply into it."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-closed.db"))
+    kb.init_db()
+    tid = _make_completed_task("wake", thread_id="10728")
+
+    adapter = InvalidRouteAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.probes == [
+        {"chat_id": "chat-1", "metadata": {"thread_id": "10728"}},
+    ]
+    assert adapter.handled == []
+    assert adapter.sent == []
+    assert _subs(tid) == []
+    assert runner._kanban_sub_fail_counts == {}
+
+
+def test_wake_only_transient_route_failure_rewinds_without_wake(
+    tmp_path, monkeypatch,
+):
+    """A transient probe failure retains both event and subscription."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "wake-transient.db"))
+    kb.init_db()
+    tid = _make_completed_task("wake")
+
+    adapter = TransientRouteAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.probes) == 1
+    assert adapter.handled == []
+    assert adapter.sent == []
+    assert len(_unseen_terminal_events(tid)) == 1
+    assert len(_subs(tid)) == 1
+    assert list(runner._kanban_sub_fail_counts.values()) == [1]

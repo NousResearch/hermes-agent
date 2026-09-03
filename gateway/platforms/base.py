@@ -2754,6 +2754,7 @@ _SUBCHAT_NOT_FOUND_SUBSTRINGS = (
     "message to edit not found",
     "message to reply not found",
     "thread not found",
+    "topic_closed",
     "topic_deleted",
     "message_id_invalid",
 )

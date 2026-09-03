@@ -92,6 +92,15 @@ _HARDLINE_BLOCK = [
     "dd if=anything of=/dev/hda",
     "echo bad > /dev/sda",
     "cat /dev/urandom > /dev/sdb",
+    # Raw-disk destruction siblings of dd (positional device path, #102371)
+    "shred -n1 -z /dev/sda",
+    "shred /dev/nvme0n1",
+    'shred "/dev/sda"',
+    "sudo shred /dev/sda",
+    "wipefs -a /dev/sda",
+    "wipefs --all /dev/nvme0n1",
+    "blkdiscard /dev/sda",
+    "blkdiscard -o 0 -l 1M /dev/sda",
     # Fork bomb
     ":(){ :|:& };:",
     # System-wide kill
@@ -173,6 +182,15 @@ _HARDLINE_ALLOW = [
     # dd to regular files
     "dd if=/dev/zero of=./image.bin",
     "dd if=./data of=./backup.bin",
+    # shredding regular files is legitimate secure deletion (#102371)
+    "shred secrets.txt",
+    "shred -u -n3 oldkey.pem",
+    # wipefs without an erase flag only lists signatures
+    "wipefs /dev/sda",
+    # disk-tool prose and lookalike binaries
+    'echo "shred /dev/sda"',
+    'git commit -m "shred /dev/sda"',
+    "shredder /dev/sda",
     # Redirect to regular files / non-block devices
     "echo done > /tmp/flag",
     "echo test > /dev/null",

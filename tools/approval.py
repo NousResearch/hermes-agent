@@ -578,6 +578,15 @@ HARDLINE_PATTERNS = [
     # argument, not a command. The argument tail ([^\n]*of=/dev/...) is kept
     # so flag order doesn't matter.
     (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Raw-disk destruction siblings of dd: shred/wipefs/blkdiscard take the
+    # device as a positional path, not an of= operand, so the dd rule never
+    # matches them. Gate on a block-device path so shredding regular files
+    # (legitimate secure deletion) stays clean, and accept a quote before
+    # the path so `shred "/dev/sda"` is not a bypass. wipefs without -a/--all
+    # only lists signatures, so the erase flag is required there (#102371).
+    (_CMDPOS + r'shred\b[^\n]*?["\'\s]/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "shred on raw block device"),
+    (_CMDPOS + r'wipefs\b(?=[^\n]*\s-(?:-all\b|[a-z]*a))[^\n]*?["\'\s]/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "wipefs erase on raw block device"),
+    (_CMDPOS + r'blkdiscard\b[^\n]*?["\'\s]/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "blkdiscard on raw block device"),
     # The redirect rule has no command-name token to anchor (`>` appears
     # mid-command: `cat f > /dev/sda`), so command-position anchoring is the
     # wrong tool. It is instead matched against a QUOTE-MASKED variant of the

@@ -29,8 +29,8 @@ class _FakeSD:
     def __init__(self):
         self.played = []
 
-    def play(self, audio, samplerate=None):
-        self.played.append((audio, samplerate))
+    def play(self, audio, samplerate=None, **kwargs):
+        self.played.append((audio, samplerate, kwargs))
 
     def stop(self):
         pass
@@ -137,3 +137,43 @@ class TestAudioOutputRefcount:
             vm.play_audio_file(str(tmp_path / "x.wav"))
         assert seen == [True]
         assert vm.is_audio_output_active() is False
+
+
+class TestWslUnderrunMitigation:
+    """WSLg's RDP bridge underruns short blips on the default small buffer
+    (ALSA snd_pcm_recover spam, microsoft/wslg#1257). On WSL the loop must
+    prepend 0.1 s of warmup silence and play with blocksize=4096 — same
+    treatment play_audio_file already applies to its WSL path."""
+
+    def _one_blip_kwargs(self, wsl: bool):
+        _reset()
+        fake = _FakeSD()
+        stop = threading.Event()
+        with patch.object(vm, "_sounddevice_output_allowed", return_value=True), \
+             patch.object(vm, "_import_audio", return_value=(fake, np)), \
+             patch.object(vm, "_get_beep_volume", return_value=0.3), \
+             patch.object(vm, "_is_wsl", return_value=wsl):
+            t = threading.Thread(
+                target=vm._thinking_sound_loop, args=(stop, None), daemon=True
+            )
+            t.start()
+            deadline = time.monotonic() + 3.0
+            while not fake.played and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stop.set()
+            t.join(timeout=3.0)
+        assert fake.played, "loop never played a blip"
+        audio, _, kwargs = fake.played[0]
+        return audio, kwargs
+
+    def test_wsl_blips_warmed_up_and_large_blocksize(self):
+        audio, kwargs = self._one_blip_kwargs(wsl=True)
+        assert kwargs.get("blocksize") == 4096
+        # 0.1 s warmup silence + the 0.16 s blip.
+        assert len(audio) >= int(vm.SAMPLE_RATE * 0.26)
+        assert int(np.abs(audio[:100]).max()) == 0  # leading silence
+
+    def test_off_wsl_default_blocksize(self):
+        audio, kwargs = self._one_blip_kwargs(wsl=False)
+        assert kwargs.get("blocksize") == 0
+        assert len(audio) == int(vm.SAMPLE_RATE * 0.16)

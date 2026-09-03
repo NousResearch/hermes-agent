@@ -714,6 +714,45 @@ class TestPlayBeep:
         assert audio_arg.dtype == np.int16
         assert len(audio_arg) > 0
 
+    def test_beep_wsl_warmup_and_blocksize(self, mock_sd, monkeypatch):
+        """On WSL the beep must carry 0.1 s of warmup silence and a 4096
+        blocksize (WSLg RDP underrun fix, microsoft/wslg#1257)."""
+        np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode._is_wsl", lambda: True)
+
+        mock_stream = MagicMock()
+        mock_stream.active = False
+        mock_sd.get_stream.return_value = mock_stream
+
+        from tools.voice_mode import play_beep, SAMPLE_RATE
+
+        play_beep(frequency=880, duration=0.1, count=1)
+
+        mock_sd.play.assert_called_once()
+        kwargs = mock_sd.play.call_args.kwargs
+        assert kwargs.get("blocksize") == 4096
+        audio_arg = mock_sd.play.call_args[0][0]
+        # 0.1 s silence + the 0.1 s beep.
+        assert len(audio_arg) >= int(SAMPLE_RATE * 0.2)
+        assert int(np.abs(audio_arg[:100]).max()) == 0
+
+    def test_beep_non_wsl_default_blocksize(self, mock_sd, monkeypatch):
+        np = pytest.importorskip("numpy")
+        monkeypatch.setattr("tools.voice_mode._is_wsl", lambda: False)
+
+        mock_stream = MagicMock()
+        mock_stream.active = False
+        mock_sd.get_stream.return_value = mock_stream
+
+        from tools.voice_mode import play_beep, SAMPLE_RATE
+
+        play_beep(frequency=880, duration=0.1, count=1)
+
+        kwargs = mock_sd.play.call_args.kwargs
+        assert kwargs.get("blocksize") == 0
+        audio_arg = mock_sd.play.call_args[0][0]
+        assert len(audio_arg) == int(SAMPLE_RATE * 0.1)
+
 # ============================================================================
 # Silence detection
 # ============================================================================

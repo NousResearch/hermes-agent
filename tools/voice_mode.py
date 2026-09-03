@@ -515,10 +515,18 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
             return
 
         try:
-            sd, _ = _import_audio()
+            sd, np = _import_audio()
         except (ImportError, OSError):
             return
-        sd.play(audio, samplerate=SAMPLE_RATE)
+        blocksize = 0  # default (auto)
+        if _is_wsl():
+            # WSLg RDP audio: short beeps on the default small buffer
+            # underrun over the bridge (ALSA snd_pcm_recover spam,
+            # microsoft/wslg#1257) — same treatment as play_audio_file's
+            # WSL path: warmup silence + larger blocksize.
+            audio = np.concatenate([np.zeros(int(0.1 * SAMPLE_RATE), dtype=np.int16), audio])
+            blocksize = 4096
+        sd.play(audio, samplerate=SAMPLE_RATE, blocksize=blocksize)
         # sd.wait() calls Event.wait() without timeout — hangs forever if the
         # audio device stalls.  Poll with a 2s ceiling and force-stop.
         deadline = time.monotonic() + 2.0
@@ -630,12 +638,20 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
 
     pitches = (392.0, 329.6)  # G4 / E4 — calm, low, alternating
     blips = [_synth_thinking_blip(np, p) for p in pitches]
+    blocksize = 0  # default (auto)
+    if _is_wsl():
+        # WSLg RDP audio: repeated short blips on the default small buffer
+        # underrun over the bridge (ALSA snd_pcm_recover spam,
+        # microsoft/wslg#1257) — prepend warmup silence and enlarge the
+        # blocksize, same treatment as play_audio_file's WSL path.
+        blips = [np.concatenate([np.zeros(int(0.1 * SAMPLE_RATE), dtype=np.int16), b]) for b in blips]
+        blocksize = 4096
     i = 0
     while not stop.is_set():
         try:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
-                sd.play(blip, samplerate=SAMPLE_RATE)
+                sd.play(blip, samplerate=SAMPLE_RATE, blocksize=blocksize)
                 stop.wait(len(blip) / SAMPLE_RATE + 0.02)
                 sd.stop()
                 i += 1

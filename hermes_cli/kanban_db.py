@@ -4959,6 +4959,7 @@ def release_stale_claims(
     conn: sqlite3.Connection,
     *,
     signal_fn=None,
+    failure_limit: int = None,
 ) -> int:
     """Reset any ``running`` task whose claim has expired.
 
@@ -4982,11 +4983,17 @@ def release_stale_claims(
     API traffic. ``enforce_max_runtime`` and ``detect_crashed_workers``
     remain the upper bounds for genuinely wedged or dead workers.
 
+    Every actual reclaim is a non-success attempt and therefore consumes the
+    same bounded retry budget as crashes/timeouts.  A stale claim is not a
+    harmless requeue: repeatedly returning it to ``ready`` bypasses
+    ``max_retries`` and can burn provider budget indefinitely.
+
     Returns the number of stale claims actually reclaimed (live-pid
     extensions don't count). Safe to call often.
     """
     now = int(time.time())
     reclaimed = 0
+    release_stale_claims._last_auto_blocked = []  # type: ignore[attr-defined]
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
@@ -5101,6 +5108,27 @@ def release_stale_claims(
                 run_id=run_id,
             )
             reclaimed += 1
+        # Account outside the reclaim transaction: _record_task_failure opens
+        # its own write transaction.  The run is already closed above, so this
+        # only advances the unified counter and flips the requeued task to
+        # blocked when its configured retry limit is exhausted.
+        tripped = _record_task_failure(
+            conn,
+            row["id"],
+            error=f"stale claim reclaimed: {row['claim_lock']}",
+            outcome="reclaimed",
+            failure_limit=failure_limit,
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={
+                "stale_lock": row["claim_lock"],
+                "worker_pid": row["worker_pid"],
+            },
+        )
+        if tripped:
+            auto_blocked = getattr(release_stale_claims, "_last_auto_blocked", [])
+            auto_blocked.append(row["id"])
+            release_stale_claims._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
         # Worker-lifecycle observer (RFC #58548): the reclaim txn above has
         # committed. The ``continue`` branches (rowcount mismatch, claim
         # extension, deferred reclaim) never reach this point, so only a
@@ -7979,6 +8007,129 @@ DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
+# Absolute task-lifetime circuit breaker. These limits are deliberately
+# independent of ``consecutive_failures``: a recovery path must never be able
+# to turn one task into an unbounded spend loop merely by classifying each
+# aborted worker as a neutral reclaim. Config may tighten these values, but it
+# may not disable them (0/negative/invalid values fall back to the defaults).
+DEFAULT_MAX_TOTAL_RUNS_PER_TASK = 8
+DEFAULT_MAX_TOTAL_RUNTIME_SECONDS_PER_TASK = 4 * 60 * 60
+
+
+def _runaway_limits() -> tuple[int, int]:
+    """Return finite lifetime caps for a task's attempts and wall-clock time."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = (load_config_readonly() or {}).get("kanban") or {}
+    except Exception:
+        cfg = {}
+    return (
+        _positive_int(
+            cfg.get("max_total_runs_per_task"),
+            DEFAULT_MAX_TOTAL_RUNS_PER_TASK,
+        ),
+        _positive_int(
+            cfg.get("max_total_runtime_seconds_per_task"),
+            DEFAULT_MAX_TOTAL_RUNTIME_SECONDS_PER_TASK,
+        ),
+    )
+
+
+def _task_run_totals(
+    conn: sqlite3.Connection, task_id: str, now: int,
+) -> tuple[int, int]:
+    """Return (run_count, elapsed_seconds), including an active run to *now*."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS run_count,
+               COALESCE(SUM(
+                   CASE WHEN COALESCE(ended_at, ?) > started_at
+                        THEN COALESCE(ended_at, ?) - started_at
+                        ELSE 0 END
+               ), 0) AS elapsed_seconds
+          FROM task_runs
+         WHERE task_id = ?
+        """,
+        (now, now, task_id),
+    ).fetchone()
+    return int(row["run_count"] or 0), int(row["elapsed_seconds"] or 0)
+
+
+def enforce_runaway_limits(
+    conn: sqlite3.Connection,
+    *,
+    signal_fn=None,
+) -> list[str]:
+    """Hard-block tasks that exhausted a finite lifetime run/time budget.
+
+    ``blocked`` + ``block_kind='capability'`` is intentional: this is an
+    operator cost-safety stop, never an auto-retry state. A running worker is
+    terminated before its claim is released, so the dispatcher cannot spawn a
+    duplicate while it dies.
+    """
+    now = int(time.time())
+    max_runs, max_runtime = _runaway_limits()
+    blocked: list[str] = []
+    rows = conn.execute(
+        "SELECT id, status, worker_pid, claim_lock FROM tasks "
+        "WHERE status IN ('ready', 'review', 'running')"
+    ).fetchall()
+    for row in rows:
+        task_id = row["id"]
+        run_count, elapsed = _task_run_totals(conn, task_id, now)
+        if run_count < max_runs and elapsed < max_runtime:
+            continue
+        reason = (
+            "runaway guard: total runs="
+            f"{run_count}/{max_runs}, total runtime={elapsed}s/{max_runtime}s; "
+            "task blocked for operator review"
+        )
+        termination: dict[str, Any] = {}
+        if row["status"] == "running":
+            termination = _terminate_reclaimed_worker(
+                row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            )
+            if _worker_survived_termination(termination):
+                _defer_reclaim_for_live_worker(
+                    conn, task_id, row["claim_lock"], now, termination,
+                    reason="runaway_limit_worker_alive",
+                )
+                continue
+        with write_txn(conn):
+            current = conn.execute(
+                "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if current is None or current["status"] not in {'ready', 'review', 'running'}:
+                continue
+            if current["status"] == "running" and current["claim_lock"] != row["claim_lock"]:
+                continue
+            run_id = _end_run(
+                conn, task_id, outcome="blocked", status="blocked", summary=reason,
+            )
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET status='blocked', claim_lock=NULL, claim_expires=NULL,
+                       worker_pid=NULL, block_kind='capability'
+                 WHERE id = ?
+                """,
+                (task_id,),
+            )
+            payload = {
+                "reason": reason,
+                "kind": "capability",
+                "runaway": {
+                    "total_runs": run_count,
+                    "max_total_runs": max_runs,
+                    "total_runtime_seconds": elapsed,
+                    "max_total_runtime_seconds": max_runtime,
+                },
+            }
+            payload.update(termination)
+            _append_event(conn, task_id, "blocked", payload, run_id=run_id)
+            blocked.append(task_id)
+    return blocked
+
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -8064,6 +8215,8 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    runaway_blocked: list[str] = field(default_factory=list)
+    """Task ids hard-blocked by finite task-lifetime run/time budgets."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -8172,6 +8325,18 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     except Exception:
         pass
     return ("unknown", None)
+
+
+def _worker_hit_max_turns(task_id: str) -> bool:
+    """Return whether the task's worker log reports exhausted agent turns."""
+    try:
+        path = worker_log_path(task_id)
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 64 * 1024))
+            return b"reached max turns" in handle.read().lower()
+    except OSError:
+        return False
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -8977,7 +9142,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             else:
                 protocol_violation = False
                 if kind == "nonzero_exit":
-                    error_text = f"pid {pid} exited with code {code}"
+                    if _worker_hit_max_turns(row["id"]):
+                        error_text = (
+                            f"pid {pid} exhausted its turn budget "
+                            "(Reached max turns)"
+                        )
+                    else:
+                        error_text = f"pid {pid} exited with code {code}"
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
                 else:
@@ -9953,7 +10124,10 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
-    result.reclaimed = release_stale_claims(conn)
+    result.reclaimed = release_stale_claims(conn, failure_limit=failure_limit)
+    _reclaim_auto_blocked = getattr(release_stale_claims, "_last_auto_blocked", [])
+    if _reclaim_auto_blocked:
+        result.auto_blocked.extend(_reclaim_auto_blocked)
     if reconcile_orphans:
         # Orphaned-card reconciliation: requeue 'running' cards whose claim
         # bookkeeping is broken (no valid claim, dead/gone worker) that the
@@ -9980,6 +10154,7 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+    result.runaway_blocked = enforce_runaway_limits(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

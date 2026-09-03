@@ -117,13 +117,56 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+When a top-level agent provides a `tasks` array without dependency metadata, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+
+### Dependency-aware scheduling
+
+For ordered work, the agent can give every task a unique `id` and list the
+task ids it consumes in `depends_on`:
+
+```python
+delegate_task(tasks=[
+    {"id": "research", "goal": "Find the relevant API behavior"},
+    {"id": "inspect", "goal": "Inspect the current implementation"},
+    {
+        "id": "design",
+        "goal": "Design the smallest compatible change",
+        "depends_on": ["research", "inspect"],
+    },
+    {"id": "notes", "goal": "Draft independent release notes"},
+])
+```
+
+Hermes validates the declaration before spawning anything: ids must be unique,
+references must exist, and dependency cycles are rejected. `research` and
+`inspect` start immediately; `design` remains pending without occupying a
+worker. Once both prerequisites succeed, their bounded summaries are appended
+to `design`'s kickoff turn as clearly labeled, untrusted result data. A failed
+prerequisite blocks its descendants without spending another model call.
+When worktree isolation is enabled, the kickoff also includes upstream branch
+metadata so a dependent task can inspect or merge prerequisite file changes
+into its own isolated worktree.
+
+Disconnected parts of the graph are independent delivery clusters. In the
+example, `notes` can complete and re-enter the parent conversation without
+waiting for the research/design cluster. Each cluster uses the existing
+durable async-completion ledger, so result delivery remains serialized through
+fresh turns and preserves prompt caching and role alternation.
+
+Independent delivery automatically disables itself when it would be unsafe or
+unavailable: a flat batch has no ids, the graph has only one connected
+component, the caller is a synchronous nested orchestrator, the session cannot
+receive a later completion, or the background pool cannot atomically reserve a
+slot for every component. In those cases Hermes uses one consolidated batch;
+declared dependency ordering is still honored. Omitting `id` and `depends_on`
+from the whole batch preserves the historical flat-parallel behavior exactly.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
 - **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. Synchronous orchestrator children still follow their parent's interrupt state
+- **Dependency failures:** A task whose prerequisite fails is returned with `failure_reason="dependency_failed"` and `api_calls=0`; unrelated clusters continue
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.
 

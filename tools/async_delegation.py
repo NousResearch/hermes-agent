@@ -252,6 +252,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         key: record.get(key)
         for key in (
             "goal", "goals", "context", "toolsets", "role", "model", "is_batch",
+            "batch_metadata",
             # Routing origin (scope_id/user_id/user_name): persisted so a
             # restart-recovered completion can reconstruct a full
             # SessionSource — see _capture_routing_origin.
@@ -376,6 +377,7 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "batch_metadata": task.get("batch_metadata"),
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -1020,6 +1022,206 @@ def _push_completion_event(
         )
 
 
+def dispatch_async_delegation_batches(
+    *,
+    batches: List[Dict[str, Any]],
+    max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+) -> Dict[str, Any]:
+    """Atomically reserve and dispatch independent background batches.
+
+    Dependency-aware delegation can derive multiple disconnected components
+    from one model tool call.  Each component needs its own durable completion
+    so a fast component can re-enter the conversation without waiting for a
+    slow sibling.  Capacity is reserved for the whole set under one lock: the
+    caller either gets every component or none, making it safe to fall back to
+    the historical single consolidated batch without duplicate work.
+
+    ``batches`` entries use the same fields as
+    :func:`dispatch_async_delegation_batch`, including a ``runner`` callable.
+    Returns ``status='rejected'`` before any runner starts when the full set
+    cannot be admitted.
+    """
+    if not batches:
+        return {"status": "rejected", "error": "No async batches provided."}
+
+    routing_origin = _capture_routing_origin()
+    records_and_specs: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+    seen_ids = set()
+    for spec in batches:
+        goals = list(spec.get("goals") or [])
+        delegation_id = spec.get("delegation_id") or _new_delegation_id()
+        if delegation_id in seen_ids:
+            return {
+                "status": "rejected",
+                "error": f"Duplicate async delegation id: {delegation_id}.",
+            }
+        seen_ids.add(delegation_id)
+        dispatched_at = time.time()
+        n = len(goals)
+        combined_goal = (
+            goals[0]
+            if n == 1
+            else f"{n} parallel subagents: " + "; ".join(g[:40] for g in goals)
+        )
+        record: Dict[str, Any] = {
+            "delegation_id": delegation_id,
+            "goal": combined_goal,
+            "goals": goals,
+            "context": spec.get("context"),
+            "toolsets": (
+                list(spec["toolsets"]) if spec.get("toolsets") else None
+            ),
+            "role": spec.get("role") or "leaf",
+            "model": spec.get("model"),
+            "session_key": spec.get("session_key") or "",
+            "origin_ui_session_id": spec.get("origin_ui_session_id") or "",
+            "origin_session_id": spec.get("origin_session_id") or "",
+            "parent_session_id": spec.get("parent_session_id"),
+            **routing_origin,
+            "status": "running",
+            "dispatched_at": dispatched_at,
+            "completed_at": None,
+            "interrupt_fn": spec.get("interrupt_fn"),
+            "is_batch": True,
+            "batch_metadata": dict(spec.get("batch_metadata") or {}),
+            "progress_fn": spec.get("progress_fn"),
+            "_progress_token": None,
+            "_progress_ts": dispatched_at,
+            "_interrupted_at": None,
+        }
+        records_and_specs.append((record, spec))
+
+    with _records_lock:
+        running = sum(
+            1
+            for record in _records.values()
+            if record.get("status") in ("running", "stalling", "finalizing")
+        )
+        available = max(0, max_async_children - running)
+        required = len(records_and_specs)
+        if required > available:
+            return {
+                "status": "rejected",
+                "error": (
+                    f"Async delegation capacity cannot atomically admit "
+                    f"{required} independent component(s): {available} of "
+                    f"{max_async_children} slot(s) available."
+                ),
+                "required_slots": required,
+                "available_slots": available,
+            }
+        if any(record["delegation_id"] in _records for record, _ in records_and_specs):
+            return {
+                "status": "rejected",
+                "error": "An async delegation id is already active.",
+            }
+        for record, _spec in records_and_specs:
+            _records[record["delegation_id"]] = record
+
+    persisted_ids: List[str] = []
+    try:
+        for record, _spec in records_and_specs:
+            _persist_dispatch(record)
+            persisted_ids.append(record["delegation_id"])
+    except Exception as exc:
+        with _records_lock:
+            for record, _spec in records_and_specs:
+                _records.pop(record["delegation_id"], None)
+        for delegation_id in persisted_ids:
+            try:
+                _delete_durable_delegation(delegation_id)
+            except Exception:
+                logger.debug("Could not roll back async batch reservation", exc_info=True)
+        return {
+            "status": "rejected",
+            "error": f"Failed to persist async delegation batches: {exc}",
+        }
+
+    executor = _get_executor(max_async_children)
+    start_gate = threading.Event()
+    cancel_gate = threading.Event()
+    futures = []
+
+    def _worker(record: Dict[str, Any], runner: Callable[[], Dict[str, Any]]) -> None:
+        start_gate.wait()
+        if cancel_gate.is_set():
+            return
+        combined: Dict[str, Any] = {}
+        status = "error"
+        try:
+            combined = runner() or {}
+            child_results = combined.get("results") or []
+            if child_results and all(
+                result.get("status") not in ("completed", "success")
+                for result in child_results
+            ):
+                status = "error"
+            else:
+                status = "completed"
+        except Exception as exc:  # noqa: BLE001 - background boundary
+            logger.exception(
+                "Async delegation batch %s crashed", record["delegation_id"]
+            )
+            combined = {
+                "results": [],
+                "error": f"{type(exc).__name__}: {exc}",
+                "total_duration_seconds": round(
+                    time.time() - record["dispatched_at"], 2
+                ),
+            }
+            status = "error"
+        finally:
+            _finalize_batch(record["delegation_id"], combined, status)
+
+    try:
+        for record, spec in records_and_specs:
+            runner = spec.get("runner")
+            if not callable(runner):
+                raise TypeError("Each async batch requires a callable runner.")
+            worker = propagate_context_to_thread(
+                lambda record=record, runner=runner: _worker(record, runner)
+            )
+            futures.append(executor.submit(worker))
+    except Exception as exc:  # pragma: no cover - executor rejection is rare
+        cancel_gate.set()
+        start_gate.set()
+        for future in futures:
+            future.cancel()
+        with _records_lock:
+            for record, _spec in records_and_specs:
+                _records.pop(record["delegation_id"], None)
+        for record, _spec in records_and_specs:
+            try:
+                _delete_durable_delegation(record["delegation_id"])
+            except Exception:
+                logger.debug("Could not roll back async batch schedule", exc_info=True)
+        return {
+            "status": "rejected",
+            "error": f"Failed to schedule async delegation batches: {exc}",
+        }
+
+    start_gate.set()
+    if any(record.get("progress_fn") is not None for record, _ in records_and_specs):
+        _ensure_stale_monitor()
+
+    delegations = []
+    for record, _spec in records_and_specs:
+        logger.info(
+            "Dispatched async delegation batch %s (%d task(s), session_key=%s)",
+            record["delegation_id"],
+            len(record.get("goals") or []),
+            record.get("session_key") or "<cli>",
+        )
+        delegations.append(
+            {
+                "delegation_id": record["delegation_id"],
+                "count": len(record.get("goals") or []),
+                "batch_metadata": record.get("batch_metadata") or {},
+            }
+        )
+    return {"status": "dispatched", "delegations": delegations}
+
+
 def dispatch_async_delegation_batch(
     *,
     goals: List[str],
@@ -1036,121 +1238,36 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    batch_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Dispatch a WHOLE fan-out batch as ONE background unit.
-
-    Unlike ``dispatch_async_delegation`` (which backs a single subagent),
-    ``runner`` here runs the entire batch — it builds and joins on every child
-    in parallel and returns the combined ``{"results": [...],
-    "total_duration_seconds": N}`` dict that the synchronous path would have
-    returned. We occupy ONE async slot for the whole batch (the in-batch
-    parallelism is bounded separately by ``max_concurrent_children``), so a
-    single ``delegate_task`` fan-out never exhausts the async pool by itself.
-
-    When the batch finishes, a SINGLE completion event is pushed onto the
-    shared ``process_registry.completion_queue`` carrying the full per-task
-    ``results`` list, so the consolidated summaries re-enter the conversation
-    as one message once every child is done — the chat is never blocked while
-    they run.
-
-    Returns ``{"status": "dispatched", "delegation_id": ...}`` on success or
-    ``{"status": "rejected", "error": ...}`` when the async pool is at
-    capacity.
-    """
-    delegation_id = delegation_id or _new_delegation_id()
-    dispatched_at = time.time()
-    n = len(goals)
-    # A combined goal label for status listings / the completion header.
-    combined_goal = (
-        goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in goals)
+    """Dispatch one fan-out batch as one durable background unit."""
+    result = dispatch_async_delegation_batches(
+        batches=[
+            {
+                "goals": goals,
+                "context": context,
+                "toolsets": toolsets,
+                "role": role,
+                "model": model,
+                "session_key": session_key,
+                "parent_session_id": parent_session_id,
+                "runner": runner,
+                "origin_ui_session_id": origin_ui_session_id,
+                "origin_session_id": origin_session_id,
+                "interrupt_fn": interrupt_fn,
+                "delegation_id": delegation_id,
+                "progress_fn": progress_fn,
+                "batch_metadata": batch_metadata,
+            }
+        ],
+        max_async_children=max_async_children,
     )
-    record: Dict[str, Any] = {
-        "delegation_id": delegation_id,
-        "goal": combined_goal,
-        "goals": list(goals),
-        "context": context,
-        "toolsets": list(toolsets) if toolsets else None,
-        "role": role,
-        "model": model,
-        "session_key": session_key,
-        "origin_ui_session_id": origin_ui_session_id,
-        "origin_session_id": origin_session_id,
-        "parent_session_id": parent_session_id,
-        **_capture_routing_origin(),
-        "status": "running",
-        "dispatched_at": dispatched_at,
-        "completed_at": None,
-        "interrupt_fn": interrupt_fn,
-        "is_batch": True,
-        "progress_fn": progress_fn,
-        "_progress_token": None,
-        "_progress_ts": dispatched_at,
-        "_interrupted_at": None,
+    if result.get("status") != "dispatched":
+        return result
+    return {
+        "status": "dispatched",
+        "delegation_id": result["delegations"][0]["delegation_id"],
     }
-    with _records_lock:
-        running = sum(
-            1 for r in _records.values()
-            if r.get("status") in ("running", "stalling")
-        )
-        if running >= max_async_children:
-            return {
-                "status": "rejected",
-                "error": (
-                    f"Async delegation capacity reached ({max_async_children} "
-                    f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or raise delegation.max_concurrent_children in "
-                    f"config.yaml to allow more concurrent background units."
-                ),
-            }
-        _records[delegation_id] = record
-
-    _persist_dispatch(record)
-    executor = _get_executor(max_async_children)
-
-    def _worker() -> None:
-        combined: Dict[str, Any] = {}
-        status = "error"
-        try:
-            combined = runner() or {}
-            # Batch status: completed unless every child errored/was interrupted.
-            child_results = combined.get("results") or []
-            if child_results and all(
-                (r.get("status") not in ("completed", "success"))
-                for r in child_results
-            ):
-                status = "error"
-            else:
-                status = "completed"
-        except Exception as exc:  # noqa: BLE001 — must never crash the worker
-            logger.exception("Async delegation batch %s crashed", delegation_id)
-            combined = {
-                "results": [],
-                "error": f"{type(exc).__name__}: {exc}",
-                "total_duration_seconds": round(time.time() - dispatched_at, 2),
-            }
-            status = "error"
-        finally:
-            _finalize_batch(delegation_id, combined, status)
-
-    try:
-        # Propagate the dispatching profile to the detached batch children.
-        executor.submit(propagate_context_to_thread(_worker))
-    except Exception as exc:  # pragma: no cover
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
-        return {
-            "status": "rejected",
-            "error": f"Failed to schedule async delegation batch: {exc}",
-        }
-    if progress_fn is not None:
-        _ensure_stale_monitor()
-
-    logger.info(
-        "Dispatched async delegation batch %s (%d task(s), session_key=%s)",
-        delegation_id, n, session_key or "<cli>",
-    )
-    return {"status": "dispatched", "delegation_id": delegation_id}
 
 
 def _finalize_batch(
@@ -1197,6 +1314,7 @@ def _push_batch_completion_event(
         "model": event_record.get("model"),
         "status": status,
         "is_batch": True,
+        "batch_metadata": event_record.get("batch_metadata") or {},
         # The full per-task results list — the formatter renders a
         # consolidated multi-task block from this.
         "results": combined.get("results") or [],

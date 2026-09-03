@@ -336,6 +336,38 @@ class TestGatewayRuntimeStatus:
         cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
         assert status._command_line_belongs_to_profile(cmdline, home) is True
 
+    def test_explicit_profile_default_belongs_to_default_home(self):
+        """An explicit ``--profile default`` names THE DEFAULT PROFILE, so a
+        hand-written launchd plist mirroring the named-profile service shape
+        (to make identity explicit) must still be reported running. The old
+        bare 'any --profile flag disqualifies' branch reported a live
+        default gateway as stopped (#100817)."""
+        from hermes_constants import get_hermes_home
+
+        default_home = get_hermes_home()
+        for cmdline in (
+            "hermes --profile default gateway run --replace --external-supervisor",
+            "/opt/hermes/.venv/bin/hermes -p default gateway run",
+        ):
+            assert (
+                status._command_line_belongs_to_profile(cmdline, default_home) is True
+            ), cmdline
+
+    def test_foreign_profile_still_rejected_for_default_home(self):
+        """Guard: the #100817 carve-out must not swallow the original
+        protection — a named-profile gateway's PID must still NOT count as
+        the default profile's gateway."""
+        from hermes_constants import get_hermes_home
+
+        default_home = get_hermes_home()
+        for cmdline in (
+            "hermes --profile joi gateway run",
+            "hermes -p coder gateway run",
+        ):
+            assert (
+                status._command_line_belongs_to_profile(cmdline, default_home) is False
+            ), cmdline
+
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

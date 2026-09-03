@@ -657,7 +657,13 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     # a non-matching explicit HERMES_HOME= on the argv. HERMES_HOME is usually
     # passed via the environment (not visible on the command line), so its mere
     # absence is not disqualifying — only a conflicting explicit value is.
-    if "--profile " in command_lc or " -p " in command_lc:
+    # An explicit "--profile default"/"-p default" names THE DEFAULT PROFILE
+    # ITSELF (hand-written launchd plists mirror the named-profile service
+    # shape to make identity explicit), so it belongs to the default home —
+    # rejecting it reported a running default gateway as stopped (#100817).
+    if "--profile default" in command_lc or " -p default" in command_lc:
+        pass  # explicitly the default profile — belongs to this home
+    elif "--profile " in command_lc or " -p " in command_lc:
         return False
     if "hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc:
         return False

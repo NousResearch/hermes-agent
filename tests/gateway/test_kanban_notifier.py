@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.kanban_notifications import ACTIONABLE_TEXT_LIMIT
 from gateway.kanban_watchers import (
     _acquire_singleton_lock,
     _release_singleton_lock,
@@ -166,6 +167,69 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+
+
+def test_blocked_notification_preserves_full_actionable_reason(tmp_path, monkeypatch):
+    db_path = tmp_path / "full-block-reason.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    reason = (
+        "Approve the reviewed staged deployment, including VMID 115, Ceph storage, "
+        "Loki, Alloy, and the initial source inventory; keep notifications disabled. "
+        "REPLY_MARKER_AT_THE_END"
+    )
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="approval", assignee="default")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            notifier_profile="default",
+        )
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "default"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert reason in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"].endswith("REPLY_MARKER_AT_THE_END")
+
+
+def test_blocked_notification_bounds_reason_without_losing_trailing_action(
+    tmp_path, monkeypatch,
+):
+    db_path = tmp_path / "bounded-block-reason.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    reason = "OPENING_CONTEXT " + ("middle " * 300) + "REPLY_MARKER_AT_THE_END"
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="approval", assignee="default")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            notifier_profile="default",
+        )
+        kb.block_task(conn, tid, reason=reason, kind="needs_input")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "default"
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    message = adapter.sent[0]["text"]
+    rendered_reason = message.split(" blocked: ", 1)[1]
+    assert len(rendered_reason) == ACTIONABLE_TEXT_LIMIT
+    assert rendered_reason.startswith("OPENING_CONTEXT")
+    assert "[middle truncated]" in rendered_reason
+    assert rendered_reason.endswith("REPLY_MARKER_AT_THE_END")
+    assert reason not in message
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(
@@ -589,6 +653,7 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     db_path = tmp_path / "block-loop.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
+    reason = "needs credentials " + ("approval scope " * 20) + "REPLY_MARKER_AT_THE_END"
 
     conn = kb.connect()
     try:
@@ -596,7 +661,7 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
         kb._append_event(
             conn, tid, "block_loop_detected",
-            {"reason": "needs credentials", "kind": "needs_input",
+            {"reason": reason, "kind": "needs_input",
              "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
         )
     finally:
@@ -611,7 +676,8 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     text = adapter.sent[0]["text"]
     assert "TRIAGE" in text
     assert tid in text
-    assert "needs credentials" in text
+    assert reason in text
+    assert text.endswith("REPLY_MARKER_AT_THE_END")
     # Cursor advanced: the event is claimed and not re-delivered.
     conn = kb.connect()
     try:

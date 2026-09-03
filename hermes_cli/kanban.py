@@ -385,8 +385,35 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--triage", action="store_true",
                           help="Park in triage — a specifier will flesh out the spec and promote to todo")
     p_create.add_argument("--idempotency-key", default=None,
-                          help="Dedup key. If a non-archived task with this key exists, "
-                               "its id is returned instead of creating a duplicate.")
+                          help="Dedup key. If a matching task with this key exists, "
+                               "its id is returned instead of creating a duplicate. "
+                               "See --dedupe-scope for what counts as matching.")
+    p_create.add_argument("--dedupe-scope", default="any",
+                          choices=sorted(kb.VALID_DEDUPE_SCOPES),
+                          help="What --idempotency-key matches. 'any' (default) "
+                               "matches any non-archived task, including completed "
+                               "ones — right for retried webhooks, where the second "
+                               "call is the same event. 'open' matches only tasks "
+                               "that are still open — right for recurring alerts, "
+                               "where a task that was already fixed and closed must "
+                               "not suppress the next occurrence.")
+    p_create.add_argument("--on-duplicate", default="return",
+                          choices=sorted(kb.VALID_ON_DUPLICATE),
+                          help="What to do when --idempotency-key matches. "
+                               "'return' (default) returns the id silently. "
+                               "'comment' also records the recurrence on the "
+                               "existing task, so one card shows how often the "
+                               "problem is still happening instead of reading "
+                               "like a one-off.")
+    p_create.add_argument("--recurrence-throttle", type=int,
+                          default=kb.DEFAULT_RECURRENCE_THROTTLE_SECONDS,
+                          metavar="SECONDS",
+                          help="With --on-duplicate comment, how long to keep "
+                               "updating one recurrence line before starting a "
+                               "new one (default: 3600). The running total stays "
+                               "accurate regardless; this only bounds how many "
+                               "lines a job on a timer can add. 0 = one line per "
+                               "occurrence.")
     p_create.add_argument("--max-runtime", default=None,
                           help="Per-task runtime cap. Accepts seconds (300) or "
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
@@ -1678,6 +1705,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()),
             triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
+            dedupe_scope=getattr(args, "dedupe_scope", "any") or "any",
+            on_duplicate=getattr(args, "on_duplicate", "return") or "return",
+            recurrence_throttle_seconds=getattr(
+                args, "recurrence_throttle",
+                kb.DEFAULT_RECURRENCE_THROTTLE_SECONDS),
             max_runtime_seconds=max_runtime,
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,

@@ -134,6 +134,47 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# What an ``idempotency_key`` is allowed to match, per ``create_task``'s
+# ``dedupe_scope``. Two different needs share that one key:
+#
+#   'any'  — request idempotency. "I may send this same call twice." A retried
+#            webhook is the same event, so matching a completed task is right.
+#   'open' — open-item dedup. "Do not open a second ticket while one is open."
+#            A recurring alert is a NEW event, so a completed task must not
+#            match: the fault came back after somebody fixed it, which is the
+#            most important moment to have a card on the board.
+#
+# 'any' stays the default because changing it would silently alter the meaning
+# of every existing caller's key.
+DEDUPE_EXCLUDED_STATUSES = {
+    "any": ("archived",),
+    "open": ("archived", "done"),
+}
+VALID_DEDUPE_SCOPES = frozenset(DEDUPE_EXCLUDED_STATUSES)
+
+# What ``create_task`` does when ``idempotency_key`` matches an existing task.
+#
+#   'return'  — return the id, say nothing. The historical behaviour.
+#   'comment' — record the recurrence on the existing task, then return the id.
+#
+# Deduping is right, but silence is not the same thing. A card that says
+# "failed at 15:18" reads like a one-off even when the job has failed every ten
+# minutes since; nothing on the board separates a blip from an outage. 'comment'
+# is the missing half: one card, and a visible count of how bad it is.
+VALID_ON_DUPLICATE = frozenset({"return", "comment"})
+
+# Prefix identifying a recurrence comment, so repeats can be counted and
+# throttled without a schema change.
+RECURRENCE_COMMENT_PREFIX = "[recurrence]"
+
+# How long to stay quiet after recording a recurrence, in seconds.
+#
+# Non-zero by default on purpose. The flag exists for automation that retries
+# on a timer, and a ten-minute job would otherwise leave 144 comments a day —
+# re-creating, one level down, the very noise that made dedup necessary. Pass
+# 0 to comment on every duplicate.
+DEFAULT_RECURRENCE_THROTTLE_SECONDS = 3600
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """Normalize a per-task reasoning effort into a storable level.
@@ -3181,6 +3222,9 @@ def create_task(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    dedupe_scope: str = "any",
+    on_duplicate: str = "return",
+    recurrence_throttle_seconds: int = DEFAULT_RECURRENCE_THROTTLE_SECONDS,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -3203,10 +3247,37 @@ def create_task(
     parents — a specifier/triager is expected to promote the task to
     ``todo`` once the spec is fleshed out.
 
-    If ``idempotency_key`` is provided and a non-archived task with the
-    same key already exists, returns the existing task's id instead of
-    creating a duplicate. Useful for retried webhooks / automation that
-    should not double-write.
+    If ``idempotency_key`` is provided and a matching task already exists,
+    returns the existing task's id instead of creating a duplicate. Useful
+    for retried webhooks / automation that should not double-write.
+
+    ``dedupe_scope`` decides what "already exists" means, because two
+    different needs have always been sharing this one key:
+
+    * ``"any"`` (default, and the historical behaviour) matches any
+      non-archived task. This is *request* idempotency: "I may send this
+      same call twice, do not create two tasks." Correct for a webhook
+      retry, where the second call is the same event.
+
+    * ``"open"`` matches only tasks that are still open — anything not
+      ``done`` and not ``archived``. This is *open-item* dedup: "do not
+      open a second ticket while one is already open." Correct for
+      recurring automation, where the second call is a *new* occurrence.
+
+    The distinction matters because under ``"any"`` a completed task keeps
+    matching forever. Alerting automation files once, a human fixes it and
+    marks it ``done``, and from then on every recurrence silently returns
+    the closed task's id — while still exiting 0 with a plausible id, so the
+    caller cannot tell it was suppressed. The fault reappears and the board
+    stays empty. ``"open"`` is almost always what recurring automation wants.
+
+    ``on_duplicate`` decides whether a deduped call leaves a trace.
+    ``"return"`` (default) is silent, as before. ``"comment"`` records the
+    recurrence on the matched task via :func:`record_recurrence`, so one card
+    carries a running count instead of reading like a single incident — the
+    difference between "failed at 15:18" and "failed at 15:18, occurrence
+    #47". ``recurrence_throttle_seconds`` bounds how many comment lines that
+    can add; the count itself is always exact.
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -3410,13 +3481,39 @@ def create_task(
     # acceptable: two concurrent creators with the same key might both
     # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
+        if dedupe_scope not in VALID_DEDUPE_SCOPES:
+            raise ValueError(
+                f"dedupe_scope must be one of {sorted(VALID_DEDUPE_SCOPES)}"
+            )
+        # 'open' additionally excludes `done`, so a completed task cannot
+        # suppress a fresh occurrence of a recurring fault.
+        excluded = DEDUPE_EXCLUDED_STATUSES[dedupe_scope]
+        placeholders = ", ".join("?" * len(excluded))
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
+            f"AND status NOT IN ({placeholders}) "
             "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            (idempotency_key, *excluded),
         ).fetchone()
         if row:
+            if on_duplicate not in VALID_ON_DUPLICATE:
+                raise ValueError(
+                    f"on_duplicate must be one of {sorted(VALID_ON_DUPLICATE)}"
+                )
+            if on_duplicate == "comment":
+                # Never let bookkeeping break the caller: the point of dedup is
+                # that this path is the *quiet* one. A task that vanished
+                # between the SELECT and here is exactly the race the comment
+                # is not worth failing for.
+                try:
+                    record_recurrence(
+                        conn,
+                        row["id"],
+                        author=created_by or "automation",
+                        throttle_seconds=recurrence_throttle_seconds,
+                    )
+                except (ValueError, sqlite3.Error):
+                    pass
             return row["id"]
 
     now = int(time.time())
@@ -3989,6 +4086,73 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
 # ---------------------------------------------------------------------------
 # Comments & events
 # ---------------------------------------------------------------------------
+
+def _latest_recurrence(conn: sqlite3.Connection, task_id: str):
+    """The most recent recurrence comment on ``task_id``, or None."""
+    return conn.execute(
+        "SELECT id, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND body LIKE ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id, RECURRENCE_COMMENT_PREFIX + "%"),
+    ).fetchone()
+
+
+def count_recurrences(conn: sqlite3.Connection, task_id: str) -> int:
+    """How many times this task's problem has been reported again.
+
+    Read from the running total carried in the newest recurrence comment
+    rather than by counting comments, because throttling coalesces several
+    occurrences into one line — counting rows would report how often we
+    chose to write, not how often it happened.
+
+    Stored in the comment body rather than a column so recurrence tracking
+    needs no migration and degrades to 0 on any older database.
+    """
+    row = _latest_recurrence(conn, task_id)
+    if not row:
+        return 0
+    match = re.search(r"occurrence #(\d+)", row["body"] or "")
+    return int(match.group(1)) if match else 0
+
+
+def record_recurrence(
+    conn: sqlite3.Connection,
+    task_id: str,
+    author: str = "automation",
+    throttle_seconds: int = DEFAULT_RECURRENCE_THROTTLE_SECONDS,
+    detail: Optional[str] = None,
+) -> int:
+    """Note that a deduped task's underlying problem happened again.
+
+    Returns the comment id carrying the count. Within the throttle window the
+    existing comment is updated in place rather than a new one appended, so a
+    job on a ten-minute timer leaves one line that climbs — "occurrence #47" —
+    instead of 47 lines. The total stays true either way; only the number of
+    lines is throttled.
+    """
+    occurrence = count_recurrences(conn, task_id) + 1
+    body = f"{RECURRENCE_COMMENT_PREFIX} occurrence #{occurrence}"
+    if detail:
+        body = f"{body} — {detail}"
+
+    if throttle_seconds > 0:
+        last = _latest_recurrence(conn, task_id)
+        now = int(time.time())
+        if last and (now - int(last["created_at"])) < throttle_seconds:
+            # Body only — `created_at` stays anchored to the start of this
+            # window, so the window still expires and the next occurrence
+            # after it opens a fresh line. That keeps the card readable as a
+            # heartbeat ("still happening, an hour later") instead of one
+            # number that could have stopped moving days ago.
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE task_comments SET body = ? WHERE id = ?",
+                    (body, last["id"]),
+                )
+            return int(last["id"])
+
+    return add_comment(conn, task_id, author=author, body=body)
+
 
 def add_comment(
     conn: sqlite3.Connection, task_id: str, author: str, body: str

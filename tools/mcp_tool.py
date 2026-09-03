@@ -4982,9 +4982,22 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     if annotations is None:
         return False
     if isinstance(annotations, dict):
+        # Schema-cache JSON preserves the camelCase wire spelling. Accept the
+        # snake_case field name too, so a dict produced by ``model_dump()``
+        # without ``by_alias=True`` is not silently misread as write-capable.
         hint = annotations.get("readOnlyHint")
+        if hint is None:
+            hint = annotations.get("read_only_hint")
     else:
-        hint = getattr(annotations, "readOnlyHint", None)
+        # The MCP Python SDK declares ``ToolAnnotations.read_only_hint`` with
+        # ``alias="readOnlyHint"``. The alias is a *serialization* name — it is
+        # not an attribute — so ``getattr(annotations, "readOnlyHint")`` always
+        # missed and every tool on an untrusted server was classified
+        # write-capable. Read the field name first, keeping the camelCase
+        # lookup as a fallback for duck-typed stand-ins.
+        hint = getattr(annotations, "read_only_hint", None)
+        if hint is None:
+            hint = getattr(annotations, "readOnlyHint", None)
     return hint is True
 
 

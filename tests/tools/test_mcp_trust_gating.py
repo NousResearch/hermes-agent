@@ -245,3 +245,47 @@ class TestAnnotationCaptureAtDiscovery:
         assert mcp_tool._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_real_sdk_tool_annotations_object(self):
+        """A genuine SDK ``ToolAnnotations`` must be read correctly.
+
+        Regression guard. ``ToolAnnotations`` declares the field as
+        ``read_only_hint`` with ``alias="readOnlyHint"``; the alias is a
+        serialization name, NOT an attribute. Reading only the camelCase
+        spelling therefore always missed, and EVERY tool on EVERY
+        ``trust: untrusted`` server was classified write-capable — including
+        pure-read tools like search, which then blocked on an approval that
+        non-interactive callers (gateway, cron) can never satisfy.
+
+        The pre-existing tests all passed dicts or SimpleNamespace stand-ins,
+        which is exactly why the bug survived them. This one uses the real
+        model so the regression cannot come back unnoticed.
+        """
+        from mcp.types import ToolAnnotations
+
+        read_only = ToolAnnotations.model_validate({"readOnlyHint": True})
+        # Guard the premise: the camelCase alias is not an attribute.
+        assert not hasattr(read_only, "readOnlyHint")
+        assert read_only.read_only_hint is True
+
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(annotations=read_only)
+        ) is True
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(
+                annotations=ToolAnnotations.model_validate({"readOnlyHint": False})
+            )
+        ) is False
+        # Annotations present but hint omitted ⇒ fail closed.
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(annotations=ToolAnnotations.model_validate({}))
+        ) is False
+
+    def test_snake_case_dict_annotations(self):
+        """``model_dump()`` without ``by_alias=True`` yields snake_case keys."""
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": True})
+        ) is True
+        assert mcp_tool._annotation_read_only_hint(
+            SimpleNamespace(annotations={"read_only_hint": False})
+        ) is False

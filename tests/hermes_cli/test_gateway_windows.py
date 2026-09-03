@@ -340,6 +340,54 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_write_tmp_then_replace_succeeds_cleanly(tmp_path):
+    """Successful write+rename must leave no .tmp behind and populate target."""
+    target = tmp_path / "Hermes_Gateway.vbs"
+    tmp = target.with_name(target.name + ".tmp")
+
+    gateway_windows._write_tmp_then_replace(tmp, target, "content\r\n")
+
+    assert open(target, encoding="utf-8", newline="").read() == "content\r\n"
+    assert not tmp.exists()
+
+
+def test_write_tmp_then_replace_cleans_up_on_rename_failure(tmp_path, monkeypatch):
+    """A failed rename must not leave a stale .tmp behind (Windows pops the
+    \"How do you want to open this file?\" dialog for Startup-folder files)."""
+    target = tmp_path / "Hermes_Gateway.vbs"
+    tmp = target.with_name(target.name + ".tmp")
+
+    def _boom(self, *args):
+        raise PermissionError("simulated rename failure")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+
+    with pytest.raises(PermissionError):
+        gateway_windows._write_tmp_then_replace(tmp, target, "content\r\n")
+
+    assert not tmp.exists()
+    assert not target.exists()
+
+
+def test_write_tmp_then_replace_ignores_cleanup_error(tmp_path, monkeypatch):
+    """If even the cleanup unlink fails, the error must not mask the original
+    rename failure — the caller should still see the root cause."""
+    target = tmp_path / "Hermes_Gateway.vbs"
+    tmp = target.with_name(target.name + ".tmp")
+
+    def _boom(self, *args):
+        raise PermissionError("simulated rename failure")
+
+    def _unlink_boom(self, *args, **kwargs):
+        raise OSError("simulated cleanup failure")
+
+    monkeypatch.setattr(Path, "replace", _boom)
+    monkeypatch.setattr(Path, "unlink", _unlink_boom)
+
+    with pytest.raises(PermissionError):
+        gateway_windows._write_tmp_then_replace(tmp, target, "content\r\n")
+
+
 
 
 

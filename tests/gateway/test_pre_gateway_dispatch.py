@@ -118,3 +118,94 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_authorize_action_bypasses_allowlist(monkeypatch):
+    """{"action": "authorize"} skips the platform allowlist check.
+
+    The hook vouches for the sender (e.g. an identity plugin that resolved
+    a cross-platform identity and mutated source.user_id to a canonical
+    id that does not exist in this platform's allowlist). Dispatch must
+    proceed without _is_user_authorized / pairing.
+    """
+    _clear_auth_env(monkeypatch)
+    # Explicitly restricted allowlist that does NOT include the sender.
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "someone-else")
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": "authorize"}]
+        return []
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    result = await runner._handle_message(_make_event("hi"))
+    # Dispatched to the agent loop despite not being on the allowlist,
+    # and no pairing-code DM was sent.
+    assert result == "ok"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_allow_action_still_runs_auth(monkeypatch):
+    """{"action": "allow"} keeps existing auth semantics (regression guard).
+
+    An allow result must NOT bypass the allowlist — only authorize does.
+    The unauthorized sender hits the pairing flow exactly as before.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "someone-else")
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [{"action": "allow"}]
+        return []
+
+    agent_called = {"count": 0}
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        agent_called["count"] += 1
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    result = await runner._handle_message(_make_event("hi"))
+    # Auth rejected the sender: message dropped, agent loop never ran.
+    assert result is None
+    assert agent_called["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_authorize_does_not_apply_to_internal_events(monkeypatch):
+    """Internal events skip the hook entirely — authorize cannot fire."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "someone-else")
+
+    hook_called = {"count": 0}
+
+    def _fake_hook(name, **kwargs):
+        hook_called["count"] += 1
+        return [{"action": "authorize"}]
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        return "ok"
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture  # noqa: SLF001
+
+    event = _make_event("hi")
+    event.internal = True
+
+    await runner._handle_message(event)
+    assert hook_called["count"] == 0

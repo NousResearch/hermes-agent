@@ -232,6 +232,7 @@ def activate_durable_lazy_target() -> None:
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
+harden_import_path()
 
 # Activate the durable lazy-install target (immutable Docker images) so
 # packages installed into the data volume on a previous run are importable

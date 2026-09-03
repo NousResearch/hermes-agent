@@ -808,7 +808,31 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
 def is_project_root_trusted(root: Path) -> bool:
     """True when *root* is listed in ``skills.trusted_project_dirs``."""
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        resolved_root = Path(root).resolve()
+        trusted_roots = _project_trusted_dirs_from_config()
+        if resolved_root in trusted_roots:
+            return True
+
+        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+        workspaces_root = os.environ.get(
+            "HERMES_KANBAN_WORKSPACES_ROOT", ""
+        ).strip()
+        if not task_id or task_id != resolved_root.name or not workspace or not workspaces_root:
+            return False
+        resolved_workspace = Path(workspace).resolve()
+        resolved_workspaces_root = Path(workspaces_root).resolve()
+        board_owned_workspace = (
+            resolved_root == resolved_workspace
+            and resolved_root.parent == resolved_workspaces_root
+            and resolved_workspaces_root.parent in trusted_roots
+        )
+        migrated_trusted_worktree = (
+            resolved_root == resolved_workspace
+            and resolved_root.parent.name == ".worktrees"
+            and resolved_root.parent.parent in trusted_roots
+        )
+        return board_owned_workspace or migrated_trusted_worktree
     except OSError:
         return False
 

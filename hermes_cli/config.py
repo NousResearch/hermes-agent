@@ -4079,6 +4079,25 @@ def apply_terminal_config_to_env(
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
             continue
+        pinned_worker_cwd = False
+        if (
+            cfg_key == "cwd"
+            and target.get("HERMES_KANBAN_TASK")
+            and target.get("HERMES_KANBAN_WORKSPACE")
+            and target.get("TERMINAL_CWD")
+        ):
+            try:
+                pinned_worker_cwd = Path(target["TERMINAL_CWD"]).resolve().is_relative_to(
+                    Path(target["HERMES_KANBAN_WORKSPACE"]).resolve()
+                )
+            except (OSError, RuntimeError):
+                pinned_worker_cwd = False
+        if pinned_worker_cwd:
+            # Dispatcher-owned workers are already pinned to their isolated
+            # task worktree or one of its subdirectories. A profile's default
+            # terminal.cwd is only a launch fallback and must not redirect tools
+            # back into the stable base.
+            continue
         value = terminal_cfg[cfg_key]
         if not _terminal_config_value_is_bridgeable(cfg_key, value):
             continue

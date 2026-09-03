@@ -170,8 +170,9 @@ def finalize_turn(
         and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     )
+    missing_final_response = not flatten_message_text(final_response).strip()
     continuation_budget_exhausted = (
-        final_response is None
+        missing_final_response
         and bool(_pending_verification_response)
         and budget_fallback_eligible
     )
@@ -193,7 +194,7 @@ def finalize_turn(
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         iteration_limit_fallback = True
         preserved_verification_fallback = True
-    elif final_response is None and budget_fallback_eligible:
+    elif missing_final_response and budget_fallback_eligible:
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.

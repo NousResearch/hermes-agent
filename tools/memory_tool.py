@@ -1128,6 +1128,15 @@ def memory_tool(
 
     # --- Batch path -------------------------------------------------------
     if operations:
+        # Some providers (esp. open-weight models via agent-loop path) emit the
+        # operations array as a JSON-encoded string. Normalize it here — the
+        # agent-loop path skips model_tools.coerce_tool_args, so this is the
+        # only guard. Mirrors todo_tool #14185 defensive coercion.
+        if isinstance(operations, str):
+            try:
+                operations = json.loads(operations)
+            except (json.JSONDecodeError, TypeError):
+                return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         gate_result = _apply_batch_write_gate(target, operations)

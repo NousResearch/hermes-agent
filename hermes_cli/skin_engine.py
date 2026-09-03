@@ -858,6 +858,21 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     )
 
 
+def _safe_user_skin_path(name: str) -> Optional[Path]:
+    """Return a contained user-skin path, or None for unsafe identifiers."""
+    if not name or name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name:
+        return None
+
+    skins_path = _skins_dir().resolve()
+    candidate = (skins_path / f"{name}.yaml").resolve()
+    try:
+        candidate.relative_to(skins_path)
+    except ValueError:
+        return None
+
+    return candidate
+
+
 def list_skins() -> List[Dict[str, str]]:
     """List all available skins (built-in + user-installed).
 
@@ -876,7 +891,9 @@ def list_skins() -> List[Dict[str, str]]:
         for f in sorted(skins_path.glob("*.yaml")):
             data = _load_skin_from_yaml(f)
             if data:
-                skin_name = data.get("name", f.stem)
+                skin_name = str(data.get("name", f.stem))
+                if _safe_user_skin_path(skin_name) is None:
+                    continue
                 # Skip if it shadows a built-in
                 if any(s["name"] == skin_name for s in result):
                     continue
@@ -892,9 +909,8 @@ def list_skins() -> List[Dict[str, str]]:
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name. Checks user skins first, then built-in."""
     # Check user skins directory
-    skins_path = _skins_dir()
-    user_file = skins_path / f"{name}.yaml"
-    if user_file.is_file():
+    user_file = _safe_user_skin_path(name)
+    if user_file is not None and user_file.is_file():
         data = _load_skin_from_yaml(user_file)
         if data:
             return _build_skin_config(data)

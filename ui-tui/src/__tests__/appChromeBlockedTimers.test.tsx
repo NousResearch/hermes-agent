@@ -355,6 +355,7 @@ describe('status-chrome timers track the current overlay model', () => {
     ['pager', { pager: { lines: ['a'], offset: 0 } }],
     ['petPicker', { petPicker: true }],
     ['pluginsHub', { pluginsHub: true }],
+    ['skinPicker', { skinPicker: true }],
     ['sessions', { sessions: true }],
     ['skillsHub', { skillsHub: true }],
     ['widget', { widget: { appId: 'demo', state: null } }]

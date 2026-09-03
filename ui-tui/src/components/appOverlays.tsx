@@ -18,6 +18,7 @@ import { PetPicker } from './petPicker.js'
 import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
+import { SkinPicker } from './skinPicker.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
@@ -265,6 +266,17 @@ export function FloatingOverlays({
       render: width => (
         <FloatBox color={theme.color.border}>
           <PetPicker gw={gw} maxWidth={width} onClose={() => patchOverlayState({ petPicker: false })} t={theme} />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.skinPicker) {
+    widgets.push({
+      id: 'skin-picker',
+      render: width => (
+        <FloatBox color={theme.color.border}>
+          <SkinPicker gw={gw} maxWidth={width} onClose={() => patchOverlayState({ skinPicker: false })} t={theme} />
         </FloatBox>
       )
     })

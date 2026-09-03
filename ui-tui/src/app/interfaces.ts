@@ -296,6 +296,7 @@ export interface OverlayState {
   pager: null | PagerState
   petPicker: boolean
   pluginsHub: boolean
+  skinPicker: boolean
   secret: null | SecretReq
   sessions: boolean
   skillsHub: boolean

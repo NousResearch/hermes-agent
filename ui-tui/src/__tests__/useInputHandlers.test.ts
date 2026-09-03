@@ -7,6 +7,7 @@ import {
   handleIdleHotkeyExit,
   resolveCtrlCComposerAction,
   shouldAllowIdleHotkeyExit,
+  shouldDeferSkinPickerCtrlC,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -182,5 +183,15 @@ describe('dismissSensitivePrompt', () => {
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
     await pending
+  })
+})
+
+describe('shouldDeferSkinPickerCtrlC', () => {
+  it('leaves skin-picker cancellation to its busy-aware input handler', () => {
+    resetOverlayState()
+    patchOverlayState({ skinPicker: true })
+
+    expect(shouldDeferSkinPickerCtrlC(getOverlayState())).toBe(true)
+    expect(getOverlayState().skinPicker).toBe(true)
   })
 })

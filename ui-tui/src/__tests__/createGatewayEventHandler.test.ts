@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import {
+  applyPersistedSkin,
+  applySkinPreview,
+  createGatewayEventHandler,
+  restorePersistedSkin
+} from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -832,6 +837,32 @@ describe('createGatewayEventHandler', () => {
     createGatewayEventHandler(buildCtx(appended))({ payload: skin, type: 'skin.changed' } as any)
     expect(getUiState().theme.color.primary).toBe('#8B0000')
     vi.unstubAllEnvs()
+  })
+
+  it('restores the newest persisted skin after a temporary preview', () => {
+    applyPersistedSkin({ colors: { banner_title: '#AA0000' } } as any)
+    const persistedPrimary = getUiState().theme.color.primary
+
+    applySkinPreview({ colors: { banner_title: '#0000AA' } } as any)
+    expect(getUiState().theme.color.primary).not.toBe(persistedPrimary)
+
+    restorePersistedSkin()
+
+    expect(getUiState().theme.color.primary).toBe(persistedPrimary)
+  })
+
+  it('clears persisted skin state when a new gateway handler is created', () => {
+    const fallback = { colors: { banner_title: '#00AA00' } } as any
+
+    applySkinPreview(fallback)
+    const fallbackPrimary = getUiState().theme.color.primary
+    applyPersistedSkin({ colors: { banner_title: '#AA0000' } } as any)
+    createGatewayEventHandler(buildCtx([]))
+
+    applySkinPreview({ colors: { banner_title: '#0000AA' } } as any)
+    restorePersistedSkin(fallback)
+
+    expect(getUiState().theme.color.primary).toBe(fallbackPrimary)
   })
 
   it('a skin that owns the background paints BOTH terminal defaults (OSC 11 bg + OSC 10 fg)', () => {

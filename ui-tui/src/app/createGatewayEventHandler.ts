@@ -75,6 +75,8 @@ const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 // The last gateway skin, kept so the theme can be re-derived when the OSC-11
 // background answer arrives after (or without) gateway.ready.
 let lastSkin: GatewaySkin | null = null
+let lastPersistedSkin: GatewaySkin | null = null
+let persistedSkinRevision = 0
 
 const themeForSkin = (s: GatewaySkin) => {
   // Polarity overrides OVERLAY the base palette, they don't replace it: a skin
@@ -170,12 +172,33 @@ const paintTerminalDefaults = (theme: Theme) => {
   setTerminalForeground(isPaintableHex(background) ? themeToneHex(theme.color.text) : '')
 }
 
-const applySkin = (s: GatewaySkin) => {
+export const applySkinPreview = (s: GatewaySkin) => {
   lastSkin = s
   const theme = themeForSkin(s)
 
   commitTheme(theme)
   paintTerminalDefaults(theme)
+}
+
+export const applyPersistedSkin = (s: GatewaySkin) => {
+  lastPersistedSkin = s
+  persistedSkinRevision += 1
+  applySkinPreview(s)
+}
+
+export const clearPersistedSkin = () => {
+  lastPersistedSkin = null
+  persistedSkinRevision += 1
+}
+
+export const getPersistedSkinRevision = () => persistedSkinRevision
+
+export const restorePersistedSkin = (fallback?: GatewaySkin) => {
+  const skin = lastPersistedSkin ?? fallback
+
+  if (skin) {
+    applySkinPreview(skin)
+  }
 }
 
 /** Re-derive the theme from current detection signals (env overrides, cached
@@ -416,6 +439,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
 }
 
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
+  clearPersistedSkin()
   syncThemeToTerminalBackground()
 
   const { rpc } = ctx.gateway
@@ -661,7 +685,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const handleReady = (skin?: GatewaySkin) => {
     if (skin) {
-      applySkin(skin)
+      applyPersistedSkin(skin)
+    } else {
+      clearPersistedSkin()
     }
 
     // Kick off the config fetch once the gateway is actually ready. If handler
@@ -777,7 +803,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'skin.changed':
         if (ev.payload) {
-          applySkin(ev.payload)
+          applyPersistedSkin(ev.payload)
         }
 
         return

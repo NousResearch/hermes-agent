@@ -475,9 +475,9 @@ export const sessionCommands: SlashCommand[] = [
     name: 'skin',
     run: (arg, ctx) => {
       if (!arg) {
-        return ctx.gateway
-          .rpc<ConfigGetValueResponse>('config.get', { key: 'skin' })
-          .then(ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`skin: ${r.value || 'default'}`)))
+        patchOverlayState({ skinPicker: true })
+
+        return
       }
 
       ctx.gateway

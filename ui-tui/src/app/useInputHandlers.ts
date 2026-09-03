@@ -85,6 +85,8 @@ export function resolveCtrlCComposerAction(opts: {
   return 'exit'
 }
 
+export const shouldDeferSkinPickerCtrlC = (overlay: OverlayState): boolean => overlay.skinPicker
+
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
  * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
@@ -225,6 +227,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.sudo || overlay.secret) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
+    }
+
+    if (shouldDeferSkinPickerCtrlC(overlay)) {
+      return
     }
 
     if (overlay.modelPicker) {

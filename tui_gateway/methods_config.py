@@ -415,6 +415,46 @@ def _readiness_profile_scope(params: dict):
     return profile, _server._session_profile_runtime_scope({"profile_home": str(home)})
 
 
+@method("skin.options")
+def _(rid, params: dict) -> dict:
+    """Return every discovered skin plus the active skin's resolved payload."""
+    try:
+        from hermes_cli.skin_engine import list_skins
+
+        active_skin = resolve_skin()
+        if not active_skin:
+            return _err(rid, 5020, "could not resolve active skin")
+        active = str(active_skin["name"])
+        return _ok(
+            rid,
+            {
+                "active": active,
+                "active_skin": active_skin,
+                "skins": list_skins(),
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5020, str(e))
+
+
+@method("skin.preview")
+def _(rid, params: dict) -> dict:
+    """Resolve one skin for a local live preview without changing config."""
+    try:
+        from hermes_cli.skin_engine import list_skins
+
+        name = str(params.get("name") or "").strip().lower()
+        available = {skin["name"] for skin in list_skins()}
+        if not name or name not in available:
+            return _err(rid, 4002, f"unknown skin: {name or '(empty)'}")
+        skin = resolve_skin(name)
+        if not skin:
+            return _err(rid, 5020, f"could not resolve skin: {name}")
+        return _ok(rid, skin)
+    except Exception as e:
+        return _err(rid, 5020, str(e))
+
+
 @method("setup.status")
 def _(rid, params: dict) -> dict:
     """Loose provider check; ``profile`` (optional) scopes it to that profile's home."""

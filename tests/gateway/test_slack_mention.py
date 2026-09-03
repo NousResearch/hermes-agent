@@ -7,6 +7,7 @@ Follows the same pattern as test_whatsapp_group_gating.py.
 import sys
 import inspect
 import logging
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -60,7 +61,7 @@ OTHER_CHANNEL_ID = "C9999999999"
 
 
 def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None,
-                  allowed_channels=None, mention_patterns=None):
+                  allowed_channels=None, mention_patterns=None, **extra_overrides):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
@@ -72,12 +73,14 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
         extra["allowed_channels"] = allowed_channels
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
+    extra.update(extra_overrides)
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
     adapter.config = PlatformConfig(enabled=True, extra=extra)
     adapter._bot_user_id = BOT_USER_ID
     adapter._team_bot_user_ids = {}
+    adapter._bot_display_name = "cleo_local"
     return adapter
 
 
@@ -498,6 +501,346 @@ def test_allowed_channels_env_var_blocks_channel(monkeypatch):
     adapter = _make_adapter()  # no config value → falls back to env
     assert _would_process(adapter, channel_id=OTHER_CHANNEL_ID, text="hello") is False
     assert _would_process(adapter, channel_id=CHANNEL_ID, mentioned=True) is True
+
+
+def test_explicit_channel_approval_aliases_do_not_include_profile_or_bot_name(monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", "/Users/agents/.hermes/profiles/cleo")
+    adapter = _make_adapter(
+        channel_approval_aliases=["cleo"],
+    )
+    adapter._bot_display_name = "cleo_local"
+
+    aliases = adapter._slack_agent_approval_aliases()
+
+    assert "cleo" in aliases
+    assert "cleo_local" not in aliases
+
+
+def test_channel_approval_commands_require_exact_here_phrase():
+    adapter = _make_adapter(
+        channel_approval_aliases=["cleo"],
+    )
+
+    assert adapter._slack_channel_approval_action("approve cleo here") == "approve"
+    assert adapter._slack_channel_approval_action("revoke cleo here") == "revoke"
+    assert adapter._slack_channel_approval_action("approve cleo") is None
+    assert adapter._slack_channel_approval_action("cleo approved") is None
+    assert adapter._slack_channel_approval_action("remove cleo here") is None
+
+
+@pytest.mark.asyncio
+async def test_unapproved_slash_command_is_intercepted_before_agent(tmp_path):
+    adapter = _make_adapter(
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(tmp_path / "approvals.json"),
+    )
+    adapter._channel_team = {}
+    adapter._channel_teams = {}
+    adapter._CHANNEL_TEAM_MAX = 10000
+    adapter.handle_message = AsyncMock()
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    await adapter._handle_slash_command({
+        "command": "/hermes",
+        "text": "please do work",
+        "user_id": "U_OWNER",
+        "channel_id": CHANNEL_ID,
+        "team_id": "T1",
+    })
+
+    adapter.handle_message.assert_not_awaited()
+    client.chat_postMessage.assert_awaited_once()
+    assert "not approved" in client.chat_postMessage.await_args.kwargs["text"]
+
+
+
+
+def test_apply_slack_yaml_config_bridges_channel_approval_env(monkeypatch):
+    from plugins.platforms.slack.adapter import _apply_yaml_config
+
+    _apply_yaml_config({}, {
+        "channel_approval_required": True,
+        "channel_approval_owners": ["U_OWNER"],
+        "channel_approval_aliases": ["cleo"],
+        "channel_approval_file": "/tmp/approvals.json",
+    })
+
+    assert os.environ["SLACK_CHANNEL_APPROVAL_REQUIRED"] == "true"
+    assert os.environ["SLACK_CHANNEL_APPROVAL_OWNERS"] == "U_OWNER"
+    assert os.environ["SLACK_CHANNEL_APPROVAL_ALIASES"] == "cleo"
+    assert os.environ["SLACK_CHANNEL_APPROVAL_FILE"] == "/tmp/approvals.json"
+
+
+def test_approved_channels_are_scoped_by_team_id(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_file=str(approval_file),
+    )
+    adapter._write_slack_channel_approval_state({
+        "approved_channels": {OTHER_CHANNEL_ID: {"approved_by": "U_OWNER", "team_id": "T_APPROVED"}},
+        "pending_channels": {},
+        "revoked_channels": {},
+    })
+
+    assert OTHER_CHANNEL_ID in adapter._slack_approved_channels(team_id="T_APPROVED")
+    assert OTHER_CHANNEL_ID not in adapter._slack_approved_channels(team_id="T_OTHER")
+    assert OTHER_CHANNEL_ID not in adapter._slack_approved_channels()
+
+
+def test_approved_channel_state_keys_are_team_scoped(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_file=str(approval_file),
+    )
+    adapter._team_clients = {"T1": object(), "T2": object()}
+    adapter._write_slack_channel_approval_state({
+        "approved_channels": {
+            f"T1:{OTHER_CHANNEL_ID}": {"approved_by": "U_OWNER", "team_id": "T1", "channel_id": OTHER_CHANNEL_ID}
+        },
+        "pending_channels": {},
+        "revoked_channels": {},
+    })
+
+    assert OTHER_CHANNEL_ID in adapter._slack_approved_channels(team_id="T1")
+    assert OTHER_CHANNEL_ID not in adapter._slack_approved_channels(team_id="T2")
+    assert OTHER_CHANNEL_ID not in adapter._slack_approved_channels()
+
+
+def test_allowed_channels_require_team_qualification_in_multi_workspace():
+    adapter = _make_adapter(
+        allowed_channels=[OTHER_CHANNEL_ID, f"T1:{CHANNEL_ID}"],
+    )
+    adapter._team_clients = {"T1": object(), "T2": object()}
+
+    assert CHANNEL_ID in adapter._slack_approved_channels(team_id="T1")
+    assert CHANNEL_ID not in adapter._slack_approved_channels(team_id="T2")
+    assert OTHER_CHANNEL_ID not in adapter._slack_approved_channels(team_id="T1")
+
+
+@pytest.mark.asyncio
+async def test_unapproved_channel_mention_posts_approval_prompt(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    handled = await adapter._handle_slack_channel_approval_gate(
+        channel_id=OTHER_CHANNEL_ID,
+        user_id="U_REQUESTER",
+        text=f"<@{BOT_USER_ID}> help",
+        is_mentioned=True,
+        thread_ts="1710000000.000100",
+        team_id="T1",
+    )
+
+    assert handled is True
+    client.chat_postMessage.assert_awaited_once()
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert kwargs["channel"] == OTHER_CHANNEL_ID
+    assert "not approved" in kwargs["text"]
+    assert "approve cleo here" in kwargs["text"]
+    assert f"T1:{OTHER_CHANNEL_ID}" in adapter._read_slack_channel_approval_state()["pending_channels"]
+
+
+@pytest.mark.asyncio
+async def test_owner_can_approve_unapproved_channel(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    handled = await adapter._handle_slack_channel_approval_gate(
+        channel_id=OTHER_CHANNEL_ID,
+        user_id="U_OWNER",
+        text="approve cleo here",
+        is_mentioned=False,
+        thread_ts=None,
+        team_id="T1",
+    )
+
+    assert handled is True
+    assert OTHER_CHANNEL_ID in adapter._slack_approved_channels(team_id="T1")
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert "Approved" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_non_owner_cannot_approve_unapproved_channel(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    handled = await adapter._handle_slack_channel_approval_gate(
+        channel_id=OTHER_CHANNEL_ID,
+        user_id="U_OTHER",
+        text="approve cleo here",
+        is_mentioned=False,
+        thread_ts=None,
+        team_id="T1",
+    )
+
+    assert handled is True
+    assert OTHER_CHANNEL_ID not in adapter._slack_approved_channels()
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert "approval owner" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_approved_channel_passes_gate_without_handling(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    adapter._write_slack_channel_approval_state({
+        "approved_channels": {OTHER_CHANNEL_ID: {"approved_by": "U_OWNER"}},
+        "pending_channels": {},
+        "revoked_channels": {},
+    })
+
+    handled = await adapter._handle_slack_channel_approval_gate(
+        channel_id=OTHER_CHANNEL_ID,
+        user_id="U_REQUESTER",
+        text=f"<@{BOT_USER_ID}> help",
+        is_mentioned=True,
+        thread_ts=None,
+        team_id="T1",
+    )
+
+    assert handled is False
+
+
+@pytest.mark.asyncio
+async def test_owner_can_revoke_channel_approval(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    adapter._write_slack_channel_approval_state({
+        "approved_channels": {OTHER_CHANNEL_ID: {"approved_by": "U_OWNER"}},
+        "pending_channels": {},
+        "revoked_channels": {},
+    })
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    handled = await adapter._handle_slack_channel_approval_gate(
+        channel_id=OTHER_CHANNEL_ID,
+        user_id="U_OWNER",
+        text="revoke cleo here",
+        is_mentioned=False,
+        thread_ts=None,
+        team_id="T1",
+    )
+
+    assert handled is True
+    state = adapter._read_slack_channel_approval_state()
+    assert OTHER_CHANNEL_ID not in state["approved_channels"]
+    assert f"T1:{OTHER_CHANNEL_ID}" in state["revoked_channels"]
+
+
+@pytest.mark.asyncio
+async def test_channel_approval_gate_intercepts_unapproved_mention_before_agent(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        allowed_channels=[CHANNEL_ID],
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    adapter._dedup = MagicMock(is_duplicate=MagicMock(return_value=False))
+    adapter._lookup_assistant_thread_metadata = MagicMock(return_value={})
+    adapter._channel_team = {}
+    adapter._CHANNEL_TEAM_MAX = 10000
+    adapter._resolve_user_is_bot = AsyncMock(return_value=False)
+    adapter.handle_message = AsyncMock()
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    event = {
+        "channel": OTHER_CHANNEL_ID,
+        "channel_type": "channel",
+        "ts": "1710000000.000100",
+        "team": "T1",
+        "user": "U_REQUESTER",
+        "client_msg_id": "cmid-approval-needed",
+        "text": f"<@{BOT_USER_ID}> help here",
+    }
+
+    await adapter._handle_slack_message(event)
+
+    adapter.handle_message.assert_not_awaited()
+    client.chat_postMessage.assert_awaited_once()
+    assert f"T1:{OTHER_CHANNEL_ID}" in adapter._read_slack_channel_approval_state()["pending_channels"]
+
+
+@pytest.mark.asyncio
+async def test_channel_approval_command_intercepts_without_mention(tmp_path):
+    approval_file = tmp_path / "approvals.json"
+    adapter = _make_adapter(
+        allowed_channels=[CHANNEL_ID],
+        channel_approval_required=True,
+        channel_approval_owners=["U_OWNER"],
+        channel_approval_aliases=["cleo"],
+        channel_approval_file=str(approval_file),
+    )
+    adapter._dedup = MagicMock(is_duplicate=MagicMock(return_value=False))
+    adapter._lookup_assistant_thread_metadata = MagicMock(return_value={})
+    adapter._channel_team = {}
+    adapter._CHANNEL_TEAM_MAX = 10000
+    adapter._resolve_user_is_bot = AsyncMock(return_value=False)
+    adapter.handle_message = AsyncMock()
+    client = MagicMock()
+    client.chat_postMessage = AsyncMock()
+    adapter._get_client = MagicMock(return_value=client)
+
+    event = {
+        "channel": OTHER_CHANNEL_ID,
+        "channel_type": "channel",
+        "ts": "1710000000.000101",
+        "team": "T1",
+        "user": "U_OWNER",
+        "client_msg_id": "cmid-approve-command",
+        "text": "approve cleo here",
+    }
+
+    await adapter._handle_slack_message(event)
+
+    adapter.handle_message.assert_not_awaited()
+    assert OTHER_CHANNEL_ID in adapter._slack_approved_channels(team_id="T1")
+    kwargs = client.chat_postMessage.await_args.kwargs
+    assert "Approved" in kwargs["text"]
 
 
 @pytest.mark.asyncio

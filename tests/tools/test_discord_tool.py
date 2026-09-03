@@ -13,6 +13,7 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
+    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,
@@ -278,6 +279,57 @@ class TestFetchMessages:
 # ---------------------------------------------------------------------------
 # Action: create_thread
 # ---------------------------------------------------------------------------
+
+class TestReactions:
+    @patch("tools.discord_tool._discord_request")
+    def test_add_reaction(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_core(
+            action="add_reaction", channel_id="11", message_id="1001", emoji="🟢",
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PUT", "/channels/11/messages/1001/reactions/%F0%9F%9F%A2/@me", "test-token",
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_add_reaction_keeps_custom_emoji_name_id_form(self, mock_req, monkeypatch):
+        """Custom emoji address as name:id — the colon must survive encoding."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        discord_core(action="add_reaction", channel_id="11", message_id="1001", emoji="party:12345")
+        assert mock_req.call_args[0][1] == "/channels/11/messages/1001/reactions/party:12345/@me"
+
+    @patch("tools.discord_tool._discord_request")
+    def test_remove_reaction(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = None
+        result = json.loads(discord_core(
+            action="remove_reaction", channel_id="11", message_id="1001", emoji="🟢",
+        ))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "DELETE", "/channels/11/messages/1001/reactions/%F0%9F%9F%A2/@me", "test-token",
+        )
+
+    def test_reactions_are_core_not_admin(self):
+        """Reacting is participation, like create_thread — not server management."""
+        assert "add_reaction" in _CORE_ACTIONS
+        assert "remove_reaction" in _CORE_ACTIONS
+        assert "add_reaction" not in _ADMIN_ACTIONS
+
+    def test_add_reaction_is_documented_in_the_schema(self):
+        # _build_schema rather than get_dynamic_schema_core: the dynamic one
+        # needs a live bot token for capability detection and returns None
+        # without one.
+        schema = _build_schema(
+            list(_CORE_ACTIONS.keys()), caps={"detected": False}, tool_name="discord",
+        )
+        assert "add_reaction" in schema["parameters"]["properties"]["action"]["enum"]
+        assert "emoji" in schema["parameters"]["properties"]
+        assert "add_reaction(channel_id, message_id, emoji)" in schema["description"]
+
 
 class TestCreateThread:
     @patch("tools.discord_tool._discord_request")

@@ -583,6 +583,38 @@ def _delete_message(token: str, channel_id: str, message_id: str, **_kwargs: Any
     return json.dumps({"success": True, "message": f"Message {message_id} deleted."})
 
 
+def _reaction_path(channel_id: str, message_id: str, emoji: str) -> str:
+    """Build the reaction endpoint path for the bot's own reaction.
+
+    Unicode emoji are percent-encoded. Custom emoji address as ``name:id``,
+    so the colon is preserved rather than escaped.
+    """
+    encoded = urllib.parse.quote(emoji, safe=":")
+    return f"/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
+
+
+def _add_reaction(
+    token: str, channel_id: str, message_id: str, emoji: str, **_kwargs: Any
+) -> str:
+    """React to a message with an emoji."""
+    _discord_request("PUT", _reaction_path(channel_id, message_id, emoji), token)
+    return json.dumps({
+        "success": True,
+        "message": f"Reacted {emoji} to message {message_id}.",
+    })
+
+
+def _remove_reaction(
+    token: str, channel_id: str, message_id: str, emoji: str, **_kwargs: Any
+) -> str:
+    """Retract the bot's own emoji reaction from a message."""
+    _discord_request("DELETE", _reaction_path(channel_id, message_id, emoji), token)
+    return json.dumps({
+        "success": True,
+        "message": f"Removed {emoji} reaction from message {message_id}.",
+    })
+
+
 def _create_thread(
     token: str, channel_id: str, name: str,
     message_id: Optional[str] = None,
@@ -643,11 +675,16 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "add_reaction": _add_reaction,
+    "remove_reaction": _remove_reaction,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({
+    "fetch_messages", "search_members", "create_thread",
+    "add_reaction", "remove_reaction",
+})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -665,6 +702,8 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
     ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("add_reaction", "(channel_id, message_id, emoji)", "react to a message with an emoji"),
+    ("remove_reaction", "(channel_id, message_id, emoji)", "retract your own reaction"),
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
@@ -691,6 +730,8 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "add_reaction": ["channel_id", "message_id", "emoji"],
+    "remove_reaction": ["channel_id", "message_id", "emoji"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
@@ -852,6 +893,13 @@ def _build_schema(
             "type": "string",
             "description": "New thread name (create_thread).",
         },
+        "emoji": {
+            "type": "string",
+            "description": (
+                "Emoji to react with (add_reaction, remove_reaction). A unicode "
+                "emoji such as '\U0001f7e2', or 'name:id' for a custom emoji."
+            ),
+        },
         "limit": {
             "type": "integer",
             "minimum": 1,
@@ -994,6 +1042,7 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    emoji: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -1029,6 +1078,7 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "emoji": emoji,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -1047,6 +1097,7 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            emoji=emoji,
             limit=limit,
             before=before,
             after=after,
@@ -1078,7 +1129,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
-    "role_id": "", "message_id": "", "query": "", "name": "",
+    "role_id": "", "message_id": "", "query": "", "name": "", "emoji": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 

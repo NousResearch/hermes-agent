@@ -1023,7 +1023,7 @@ def _apply_pricing(
                 if not row.get("warning"):
                     row["warning"] = (
                         "Checking Nous plan entitlement… models unlock on the "
-                        "next picker open (or refresh)."
+                        "next picker open or refresh."
                     )
                 continue
         if not raw_pricing:

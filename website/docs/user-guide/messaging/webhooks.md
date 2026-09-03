@@ -80,6 +80,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 |----------|----------|-------------|
 | `events` | No | List of event types to accept (e.g. `["pull_request"]`). If empty, all events are accepted. Event type is read from `X-GitHub-Event`, `X-GitLab-Event`, or `event_type` in the payload. |
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
+| `signature` | No | Describes a provider's signature header layout so it can be validated without provider-specific code — see [Custom signature schemes](#custom-signature-schemes). Setting it pins the route to that scheme exclusively. |
 | `profile` | No | Profile authorized to execute this route when `gateway.multiplex_profiles` is enabled. Omit it for a default-profile-only route; set a profile name (for example `coder`) to bind the route and its secret to `/p/coder/webhooks/<route>`. |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
@@ -503,6 +504,87 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
 
+### Custom signature schemes {#custom-signature-schemes}
+
+Many providers use the same construction as the generic V2 scheme — an HMAC over a
+timestamp-bound message — and differ only in how they package it into headers.
+Rather than requiring a code change per provider, a route can describe that
+packaging with a `signature` block:
+
+```yaml
+routes:
+  elevenlabs-calls:
+    secret: "wsec_your_elevenlabs_webhook_secret"
+    signature:
+      header: "ElevenLabs-Signature"   # ElevenLabs-Signature: t=<unix>,v0=<hex>
+      signature_part: "v0"
+      timestamp_part: "t"
+      template: "{timestamp}.{body}"
+      tolerance_seconds: 1800          # ElevenLabs allows 30 minutes
+    prompt: "Post-call webhook: {__raw__}"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `header` | — (required) | Header carrying the signature. |
+| `signature_part` | _(none)_ | When the header is a `k=v,k=v` list, the label holding the digest (e.g. `v0`, `v1`). Omit when the whole header value is the signature. |
+| `signature_prefix` | `""` | Literal prefix that must be present on the signature value and is stripped before comparison (e.g. `sha256=`, `v0=`). |
+| `timestamp_part` | _(none)_ | Label inside the same header holding the Unix-seconds timestamp. |
+| `timestamp_header` | _(none)_ | Separate header holding the timestamp. Mutually exclusive with `timestamp_part`. |
+| `template` | `{timestamp}.{body}` | The exact message the provider signs. Must contain `{body}` **exactly once**; `{timestamp}` is optional and may repeat. |
+| `algorithm` | `sha256` | `sha1`, `sha256`, or `sha512`. |
+| `encoding` | `hex` | `hex` or `base64`. |
+| `tolerance_seconds` | `300` | Maximum clock skew, in either direction, between the signed timestamp and the server. |
+
+Other common providers:
+
+```yaml
+# Stripe — Stripe-Signature: t=<unix>,v1=<hex>
+signature:
+  header: "Stripe-Signature"
+  signature_part: "v1"
+  timestamp_part: "t"
+
+# Slack — X-Slack-Signature: v0=<hex>, timestamp in its own header
+signature:
+  header: "X-Slack-Signature"
+  signature_prefix: "v0="
+  timestamp_header: "X-Slack-Request-Timestamp"
+  template: "v0:{timestamp}:{body}"
+
+# A provider that signs the body only, under its own header name
+signature:
+  header: "X-Gitea-Signature"
+  template: "{body}"
+```
+
+Notes:
+
+- **It is exclusive.** When `signature` is set, the built-in GitHub / GitLab /
+  Svix / Linear / generic probing is skipped for that route, and a request that
+  does not carry a valid signature in the configured header is rejected. A route
+  pinned to one provider therefore cannot be authenticated through a different,
+  possibly weaker, scheme — including the legacy V1 fallback. Restating the
+  built-in V2 scheme as a `signature` block (`header: X-Webhook-Signature-V2`,
+  `timestamp_header: X-Webhook-Timestamp`) is how you opt a route out of V1.
+- **It fails closed.** A missing header, a missing or empty signature part, a
+  missing or non-numeric timestamp, a timestamp outside the tolerance in either
+  direction, conflicting repeated timestamp parts, or a malformed `signature`
+  block all reject the request. Nothing falls through to another scheme.
+- **Rotation works.** A repeated signature label (Stripe emits one `v1=` per
+  live secret during a roll) is accepted if any of the values verifies.
+- **Timestamps are required for replay protection.** A `template` without
+  `{timestamp}` signs the body alone, so a captured request replays
+  indefinitely; the gateway logs a warning once per route. Bind a timestamp
+  whenever the provider offers one.
+- A malformed `signature` block on a route in `config.yaml` stops the gateway at
+  startup with an error naming the route and key, rather than silently
+  rejecting every delivery. A route registered dynamically never reaches that
+  startup check, so the same validation runs on the request path and rejects
+  with `401` — it never raises.
+- Every string-valued key is type-checked. `template` must contain `{body}`
+  exactly once, so the signed message is never ambiguous.
+
 ### Secret is required
 
 Every route must have a secret — either set directly on the route or inherited from the global `secret`. Routes without a secret cause the adapter to fail at startup with an error. For development/testing only, you can set the secret to `"INSECURE_NO_AUTH"` to skip validation entirely.
@@ -571,6 +653,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- If the provider is not one of the built-ins, describe its header layout with a [`signature` block](#custom-signature-schemes) rather than disabling auth
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored

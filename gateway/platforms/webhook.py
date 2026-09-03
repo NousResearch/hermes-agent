@@ -27,6 +27,10 @@ Security:
     binds a timestamp into the signed data for replay protection; the
     legacy body-only V1 (X-Webhook-Signature) is deprecated but still
     accepted with a warning, since it has no replay protection
+  - A route may instead declare a `signature` block describing the header
+    layout its provider uses (see "Route-configurable signature schemes"
+    below).  That is exclusive: built-in header probing, including the
+    legacy V1 fallback, is skipped for that route
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
@@ -170,6 +174,206 @@ def _hmac_str_equal(provided: str, expected: str) -> bool:
     return hmac.compare_digest(provided.encode(), expected.encode())
 
 
+# ---------------------------------------------------------------------------
+# Route-configurable signature schemes
+# ---------------------------------------------------------------------------
+#
+# A large family of providers authenticates webhooks in exactly the same way —
+# an HMAC over a timestamp-bound message — and differs only in how the pieces
+# are packaged into headers:
+#
+#   ElevenLabs  ElevenLabs-Signature: t=<unix>,v0=<hex>    over "<t>.<body>"
+#   Stripe      Stripe-Signature:     t=<unix>,v1=<hex>    over "<t>.<body>"
+#   Slack       X-Slack-Signature:    v0=<hex>             over "v0:<ts>:<body>"
+#               X-Slack-Request-Timestamp: <unix>
+#
+# The cryptography there is byte-identical to the generic V2 scheme this
+# adapter already implements; only the packaging differs.  Growing one
+# hard-coded branch per vendor does not scale — each new provider needs a code
+# change and a release — so a route can instead describe the packaging in
+# config and reuse the same verified primitive:
+#
+#   routes:
+#     my-provider:
+#       secret: "..."
+#       signature:
+#         header: "ElevenLabs-Signature"
+#         signature_part: "v0"      # label inside a "k=v,k=v" header
+#         timestamp_part: "t"       # or timestamp_header: "X-Some-Timestamp"
+#         template: "{timestamp}.{body}"
+#         algorithm: "sha256"       # sha1 | sha256 | sha512
+#         encoding: "hex"           # hex | base64
+#         tolerance_seconds: 1800
+#
+# Configuring `signature` is EXCLUSIVE: the built-in GitHub/GitLab/Svix/
+# Linear/generic probing is skipped entirely for that route.  A route pinned to
+# one provider therefore cannot be authenticated through a different — possibly
+# weaker — scheme, which also closes the legacy V1 downgrade path for it.
+
+_SIGNATURE_ALGORITHMS = {
+    # HMAC remains a sound authenticator over SHA-1, and some providers still
+    # offer nothing stronger; the docs steer new integrations to sha256.
+    "sha1": hashlib.sha1,
+    "sha256": hashlib.sha256,
+    "sha512": hashlib.sha512,
+}
+_SIGNATURE_ENCODINGS = ("hex", "base64")
+_SIGNATURE_TEMPLATE_TOKENS = ("body", "timestamp")
+_DEFAULT_SIGNATURE_TEMPLATE = "{timestamp}.{body}"
+_DEFAULT_SIGNATURE_TOLERANCE_SECONDS = 300
+_TEMPLATE_TOKEN_RE = re.compile(r"\{([^{}]*)\}")
+
+
+def _parse_signature_spec(route_name: str, raw: Any) -> Dict[str, Any]:
+    """Normalise a route's ``signature`` block, or raise ``ValueError``.
+
+    Every rejection here is a configuration bug the operator can fix, so the
+    message names the route and the offending key. ``connect()`` lets the error
+    propagate (a typo should stop the gateway, not silently 401 every delivery
+    until someone reads the logs); the request path catches it and fails
+    closed, because dynamically-registered routes never pass through
+    ``connect()``.
+    """
+    prefix = f"[webhook] Route '{route_name}' signature config"
+    if not isinstance(raw, dict):
+        raise ValueError(f"{prefix} must be a mapping, got {type(raw).__name__}")
+
+    def _opt_str(key: str) -> str:
+        value = raw.get(key, "")
+        if value in (None, ""):
+            return ""
+        if not isinstance(value, str):
+            raise ValueError(f"{prefix} key '{key}' must be a string")
+        return value.strip()
+
+    header = _opt_str("header")
+    if not header:
+        raise ValueError(f"{prefix} requires a non-empty 'header'")
+
+    algorithm_name = (_opt_str("algorithm") or "sha256").lower()
+    if algorithm_name not in _SIGNATURE_ALGORITHMS:
+        raise ValueError(
+            f"{prefix} has unknown algorithm '{algorithm_name}' "
+            f"(expected one of {', '.join(sorted(_SIGNATURE_ALGORITHMS))})"
+        )
+
+    encoding = (_opt_str("encoding") or "hex").lower()
+    if encoding not in _SIGNATURE_ENCODINGS:
+        raise ValueError(
+            f"{prefix} has unknown encoding '{encoding}' "
+            f"(expected one of {', '.join(_SIGNATURE_ENCODINGS)})"
+        )
+
+    template = raw.get("template", _DEFAULT_SIGNATURE_TEMPLATE)
+    if not isinstance(template, str) or not template:
+        raise ValueError(f"{prefix} key 'template' must be a non-empty string")
+    tokens = set(_TEMPLATE_TOKEN_RE.findall(template))
+    unknown = sorted(tokens - set(_SIGNATURE_TEMPLATE_TOKENS))
+    if unknown:
+        raise ValueError(
+            f"{prefix} template uses unknown placeholder(s) "
+            f"{', '.join('{%s}' % t for t in unknown)} "
+            f"(expected only {', '.join('{%s}' % t for t in _SIGNATURE_TEMPLATE_TOKENS)})"
+        )
+    # Exactly one, not merely at least one: the renderer splices the raw body
+    # at a single point, so a repeated marker would leave a literal "{body}" in
+    # the signed message. Rejecting is the fail-closed reading, and it is the
+    # direction that stays compatible — a later release can accept more
+    # templates without breaking anyone, whereas tightening this later would
+    # break configs that had silently "worked".
+    body_markers = template.count("{body}")
+    if body_markers == 0:
+        raise ValueError(
+            f"{prefix} template must contain '{{body}}' — a signature that "
+            f"does not cover the payload authenticates nothing about it"
+        )
+    if body_markers > 1:
+        raise ValueError(
+            f"{prefix} template contains '{{body}}' {body_markers} times; "
+            f"exactly one is required so the signed message is unambiguous"
+        )
+    uses_timestamp = "timestamp" in tokens
+
+    timestamp_part = _opt_str("timestamp_part")
+    timestamp_header = _opt_str("timestamp_header")
+    if timestamp_part and timestamp_header:
+        raise ValueError(
+            f"{prefix} sets both 'timestamp_part' and 'timestamp_header'; "
+            f"the timestamp comes from exactly one place"
+        )
+    if uses_timestamp and not (timestamp_part or timestamp_header):
+        raise ValueError(
+            f"{prefix} template uses '{{timestamp}}' but neither "
+            f"'timestamp_part' nor 'timestamp_header' says where to read it"
+        )
+    if (timestamp_part or timestamp_header) and not uses_timestamp:
+        raise ValueError(
+            f"{prefix} reads a timestamp but the template never uses "
+            f"'{{timestamp}}', so it would not be authenticated"
+        )
+
+    tolerance = raw.get("tolerance_seconds", _DEFAULT_SIGNATURE_TOLERANCE_SECONDS)
+    if isinstance(tolerance, bool) or not isinstance(tolerance, int):
+        raise ValueError(f"{prefix} key 'tolerance_seconds' must be an integer")
+    if tolerance <= 0:
+        raise ValueError(f"{prefix} key 'tolerance_seconds' must be positive")
+
+    return {
+        "header": header,
+        "signature_part": _opt_str("signature_part"),
+        "signature_prefix": _opt_str("signature_prefix"),
+        "timestamp_part": timestamp_part,
+        "timestamp_header": timestamp_header,
+        "template": template,
+        "uses_timestamp": uses_timestamp,
+        "algorithm": _SIGNATURE_ALGORITHMS[algorithm_name],
+        "algorithm_name": algorithm_name,
+        "encoding": encoding,
+        "tolerance_seconds": tolerance,
+    }
+
+
+def _split_signature_header(value: str) -> Dict[str, List[str]]:
+    """Parse a ``k=v,k=v`` signature header into label → list of values.
+
+    Values collect into a list because providers emit a label more than once
+    during secret rotation (Stripe sends several ``v1=`` entries while the old
+    and new secrets are both live), and accepting any of them is what makes
+    rotation non-breaking. Chunks without ``=`` are ignored rather than fatal:
+    a hostile sender can pad the header with junk, and the parts that matter
+    are looked up by name, never by position.
+    """
+    parsed: Dict[str, List[str]] = {}
+    for chunk in value.split(","):
+        label, sep, part = chunk.partition("=")
+        if not sep:
+            continue
+        parsed.setdefault(label.strip(), []).append(part.strip())
+    return parsed
+
+
+def _render_signed_message(template: str, timestamp: str, body: bytes) -> bytes:
+    """Build the exact byte string the sender signed.
+
+    The body is spliced in as raw bytes rather than decoded to ``str``: a
+    signature covers the bytes on the wire, and round-tripping a payload that
+    is not valid UTF-8 (or that re-encodes differently) would turn a genuine
+    delivery into a mismatch.
+
+    ``{body}`` is located in the *template* before the timestamp is
+    substituted, so an attacker-supplied timestamp cannot introduce a second
+    ``{body}`` marker and move where the payload is spliced. The template is
+    validated to hold exactly one ``{body}``; ``{timestamp}`` may repeat, and
+    every occurrence is substituted.
+    """
+    head, _, tail = template.partition("{body}")
+    return (
+        head.replace("{timestamp}", timestamp).encode()
+        + body
+        + tail.replace("{timestamp}", timestamp).encode()
+    )
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -201,6 +405,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # Routes already warned about legacy V1 body-only signatures
         # (once-per-route so a busy sender doesn't spam the log).
         self._v1_signature_warned: set[str] = set()
+        # Routes whose configured signature template binds no timestamp
+        self._unbound_signature_warned: set[str] = set()
 
         # Delivery info keyed by session chat_id.
         #
@@ -271,6 +477,11 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"INSECURE_NO_AUTH is for local testing only. "
                     f"Refusing to start to prevent accidental exposure."
                 )
+
+            # Surface a malformed `signature` block at startup rather than as
+            # a 401 on every delivery that the operator has to guess at.
+            if route.get("signature") is not None:
+                _parse_signature_spec(name, route["signature"])
             # deliver_only routes bypass the agent — the POST body becomes a
             # direct push notification via the configured delivery target.
             # Validate up-front so misconfiguration surfaces at startup rather
@@ -733,7 +944,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
-            if not self._validate_signature(request, raw_body, secret):
+            if not self._validate_signature(
+                request, raw_body, secret, route_config=route_config
+            ):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
                 )
@@ -1102,14 +1315,55 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _validate_signature(
-        self, request: "web.Request", body: bytes, secret: str
+        self,
+        request: "web.Request",
+        body: bytes,
+        secret: str,
+        route_config: Optional[dict] = None,
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
+        """Validate a webhook signature.
+
+        A route carrying a ``signature`` block is validated against exactly
+        that scheme; otherwise the built-in providers are probed in turn
+        (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256).
+        """
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
                 or request.headers.get(name.lower(), "")
                 or request.headers.get(name.upper(), "")
+            )
+
+        route_name = request.match_info.get("route_name", "")
+        if route_config is None:
+            # Direct callers (and the test suite) may not pass the route in.
+            # Resolving it here keeps a configured scheme authoritative on
+            # every path instead of silently reverting to header probing.
+            route_config = self._routes.get(route_name) or {}
+
+        # Route-configured scheme: exclusive and fail-closed. Built-in probing
+        # below is unreachable for such a route, so a sender cannot downgrade
+        # it to a weaker scheme it happens to also have headers for.
+        configured = route_config.get("signature")
+        if configured is not None:
+            try:
+                spec = _parse_signature_spec(route_name, configured)
+            except ValueError as exc:
+                # Reachable for dynamically-registered routes, which never go
+                # through connect()'s startup validation.
+                logger.error("%s", exc)
+                return False
+            return self._validate_configured_signature(
+                route_name=route_name,
+                spec=spec,
+                header_value=_header(spec["header"]),
+                timestamp_value=(
+                    _header(spec["timestamp_header"])
+                    if spec["timestamp_header"]
+                    else ""
+                ),
+                body=body,
+                secret=secret,
             )
 
         # Svix / AgentMail:
@@ -1209,7 +1463,6 @@ class WebhookAdapter(BasePlatformAdapter):
             expected = hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            route_name = request.match_info.get("route_name", "")
             if route_name not in self._v1_signature_warned:
                 self._v1_signature_warned.add(route_name)
                 logger.warning(
@@ -1225,6 +1478,152 @@ class WebhookAdapter(BasePlatformAdapter):
         # No recognised signature header but secret is configured → reject
         logger.debug(
             "[webhook] Secret configured but no signature header found"
+        )
+        return False
+
+    def _validate_configured_signature(
+        self,
+        *,
+        route_name: str,
+        spec: Dict[str, Any],
+        header_value: str,
+        timestamp_value: str,
+        body: bytes,
+        secret: str,
+    ) -> bool:
+        """Validate a signature described by a route's ``signature`` block.
+
+        Every path out of here is either an explicit ``True`` on a verified
+        HMAC or a logged ``False`` — there is no fall-through to another
+        scheme, because the block exists precisely to pin a route to one.
+        """
+        if not header_value:
+            logger.warning(
+                "[webhook] Route '%s' expects signature header '%s' but the "
+                "request did not send it",
+                route_name,
+                spec["header"],
+            )
+            return False
+
+        needs_parts = bool(spec["signature_part"] or spec["timestamp_part"])
+        parts = _split_signature_header(header_value) if needs_parts else {}
+
+        if spec["signature_part"]:
+            candidates = parts.get(spec["signature_part"], [])
+            if not candidates:
+                logger.warning(
+                    "[webhook] Route '%s' header '%s' has no '%s=' part",
+                    route_name,
+                    spec["header"],
+                    spec["signature_part"],
+                )
+                return False
+        else:
+            candidates = [header_value.strip()]
+
+        signature_prefix = spec["signature_prefix"]
+        if signature_prefix:
+            candidates = [
+                candidate[len(signature_prefix):]
+                for candidate in candidates
+                if candidate.startswith(signature_prefix)
+            ]
+            if not candidates:
+                logger.warning(
+                    "[webhook] Route '%s' header '%s' is missing the required "
+                    "'%s' prefix",
+                    route_name,
+                    spec["header"],
+                    signature_prefix,
+                )
+                return False
+
+        candidates = [candidate for candidate in candidates if candidate]
+        if not candidates:
+            logger.warning(
+                "[webhook] Route '%s' header '%s' carried an empty signature",
+                route_name,
+                spec["header"],
+            )
+            return False
+
+        timestamp = ""
+        if spec["uses_timestamp"]:
+            if spec["timestamp_part"]:
+                # A hostile sender can repeat "t=" to pair one timestamp with
+                # another's signature. Only the first occurrence is honoured,
+                # and a conflicting second one is refused outright rather than
+                # letting the caller pick whichever value validates.
+                found = parts.get(spec["timestamp_part"], [])
+                if len(set(found)) > 1:
+                    logger.warning(
+                        "[webhook] Route '%s' header '%s' carried conflicting "
+                        "'%s=' values",
+                        route_name,
+                        spec["header"],
+                        spec["timestamp_part"],
+                    )
+                    return False
+                timestamp = found[0] if found else ""
+            else:
+                timestamp = timestamp_value.strip()
+
+            if not timestamp:
+                logger.warning(
+                    "[webhook] Route '%s' signature requires a timestamp but "
+                    "none was sent",
+                    route_name,
+                )
+                return False
+            try:
+                ts = int(timestamp)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[webhook] Route '%s' sent a non-integer signature "
+                    "timestamp",
+                    route_name,
+                )
+                return False
+            # Symmetric window: a timestamp far in the future is as much a
+            # sign of a forged or misconfigured sender as a stale one, and
+            # accepting it would hand an attacker an unbounded replay ticket.
+            if abs(int(time.time()) - ts) > spec["tolerance_seconds"]:
+                logger.warning(
+                    "[webhook] Route '%s' signature timestamp outside the "
+                    "%ds replay window",
+                    route_name,
+                    spec["tolerance_seconds"],
+                )
+                return False
+        elif route_name not in self._unbound_signature_warned:
+            self._unbound_signature_warned.add(route_name)
+            logger.warning(
+                "[webhook] Route '%s' signs the body only (no '{timestamp}' "
+                "in the template), so a captured request replays "
+                "indefinitely. Bind a timestamp if the provider offers one.",
+                route_name,
+            )
+
+        message = _render_signed_message(spec["template"], timestamp, body)
+        digest = hmac.new(secret.encode(), message, spec["algorithm"]).digest()
+        if spec["encoding"] == "hex":
+            expected = digest.hex()
+            # Hex case carries no information, so normalising it before the
+            # compare keeps the timing guarantee while accepting providers
+            # that emit uppercase.
+            candidates = [candidate.lower() for candidate in candidates]
+        else:
+            expected = base64.b64encode(digest).decode()
+
+        for candidate in candidates:
+            if _hmac_str_equal(candidate, expected):
+                return True
+
+        logger.warning(
+            "[webhook] Route '%s' signature mismatch on header '%s'",
+            route_name,
+            spec["header"],
         )
         return False
 

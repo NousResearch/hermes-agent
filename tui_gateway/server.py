@@ -9318,6 +9318,31 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    tier = (
+        service_tier_override
+        if service_tier_override is not None
+        else _load_service_tier()
+    )
+    # Bridge the configured/pinned tier onto request_overrides at build time,
+    # like the classic CLI (cli_agent_setup_mixin) and the messaging gateway
+    # (gateway/run.py) do: transports read only agent.request_overrides, so
+    # agent.service_tier alone never reaches the wire. Without this a
+    # persisted agent.service_tier is inert for every rebuilt session
+    # (deferred build, session.create fast=true, DB resume, /new) while
+    # session.info still reports fast enabled. auto/cold stay None — their
+    # bounded window is applied per request by agent.fast_mode, not pinned.
+    fast_overrides = None
+    if tier == "priority":
+        try:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            fast_overrides = resolve_fast_mode_overrides(
+                model,
+                provider=runtime.get("provider"),
+                base_url=runtime.get("base_url"),
+            )
+        except Exception:
+            fast_overrides = None
     agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -9339,11 +9364,8 @@ def _make_agent(
             if reasoning_config_override is not None
             else _load_reasoning_config(str(model or ""))
         ),
-        service_tier=(
-            service_tier_override
-            if service_tier_override is not None
-            else _load_service_tier()
-        ),
+        service_tier=tier,
+        request_overrides=fast_overrides,
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

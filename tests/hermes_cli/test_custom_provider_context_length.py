@@ -51,6 +51,51 @@ class TestGetCustomProviderContextLength:
         assert get_custom_provider_context_length("m", "http://x", None) is None
         assert get_custom_provider_context_length("m", "http://x", []) is None
 
+    def test_provider_context_length_is_default_for_its_models(self):
+        custom = [
+            {
+                "base_url": "http://127.0.0.1:8081/v1",
+                "context_length": 262_144,
+                "models": {"qwen3.8-27b": {}},
+            }
+        ]
+
+        assert get_custom_provider_context_length(
+            "qwen3.8-27b", "http://127.0.0.1:8081/v1", custom
+        ) == 262_144
+        assert get_custom_provider_context_length(
+            "qwen3.8-27b", "http://127.0.0.1:9090/v1", custom
+        ) is None
+
+    def test_per_model_context_length_wins_over_provider_default(self):
+        custom = [
+            {
+                "base_url": "http://127.0.0.1:8081/v1",
+                "context_length": 262_144,
+                "models": {"qwen3.8-27b": {"context_length": 524_288}},
+            }
+        ]
+
+        assert get_custom_provider_context_length(
+            "qwen3.8-27b", "http://127.0.0.1:8081/v1", custom
+        ) == 524_288
+
+    def test_per_model_override_wins_across_duplicate_route_entries(self):
+        custom = [
+            {
+                "base_url": "http://127.0.0.1:8081/v1",
+                "context_length": 262_144,
+            },
+            {
+                "base_url": "http://127.0.0.1:8081/v1",
+                "models": {"qwen3.8-27b": {"context_length": 524_288}},
+            },
+        ]
+
+        assert get_custom_provider_context_length(
+            "qwen3.8-27b", "http://127.0.0.1:8081/v1", custom
+        ) == 524_288
+
 
 class TestGetCustomProviderModelCapability:
     def test_matches_exact_model_on_normalized_route(self):

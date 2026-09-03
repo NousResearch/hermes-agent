@@ -2132,11 +2132,12 @@ def get_custom_provider_context_length(
     custom_providers: Optional[List[Dict[str, Any]]] = None,
     config: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
-    """Look up a per-model ``context_length`` override from ``custom_providers``.
+    """Look up the effective ``context_length`` for a custom-provider model.
 
     Matches any entry whose normalized route identity equals ``base_url`` and
-    returns ``custom_providers[i].models.<model>.context_length`` if present and
-    valid.  Returns ``None`` when no override applies.
+    prefers ``custom_providers[i].models.<model>.context_length`` when present
+    and valid. Otherwise the entry-level ``context_length`` is the provider's
+    default for models on that route. Returns ``None`` when no override applies.
 
     This is the single source of truth for custom-provider context overrides,
     used by:
@@ -2167,28 +2168,36 @@ def get_custom_provider_context_length(
     if not target_url:
         return None
 
+    provider_default = None
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if not entry_url or entry_url != target_url:
             continue
+
+        raw_provider_ctx = entry.get("context_length")
+        if raw_provider_ctx is not None and provider_default is None:
+            try:
+                parsed_provider_ctx = int(raw_provider_ctx)
+            except (TypeError, ValueError):
+                parsed_provider_ctx = 0
+            if parsed_provider_ctx > 0:
+                provider_default = parsed_provider_ctx
+
         models = entry.get("models")
-        if not isinstance(models, dict):
-            continue
-        model_cfg = models.get(model)
-        if not isinstance(model_cfg, dict):
-            continue
-        raw_ctx = model_cfg.get("context_length")
-        if raw_ctx is None:
-            continue
-        try:
-            ctx = int(raw_ctx)
-        except (TypeError, ValueError):
-            continue
-        if ctx > 0:
-            return ctx
-    return None
+        if isinstance(models, dict):
+            model_cfg = models.get(model)
+            if isinstance(model_cfg, dict):
+                raw_ctx = model_cfg.get("context_length")
+                if raw_ctx is not None:
+                    try:
+                        ctx = int(raw_ctx)
+                    except (TypeError, ValueError):
+                        ctx = 0
+                    if ctx > 0:
+                        return ctx
+    return provider_default
 
 
 def get_custom_provider_model_capability(

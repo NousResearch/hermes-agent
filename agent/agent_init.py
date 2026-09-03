@@ -2860,6 +2860,7 @@ def init_agent(
             base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""),
             config_context_length=_effective_context_length,
+            custom_providers=_custom_providers,
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,

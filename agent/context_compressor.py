@@ -2535,6 +2535,7 @@ class ContextCompressor(ContextEngine):
                 api_key=self.api_key,
                 config_context_length=self._config_context_length,
                 provider=self.provider,
+                custom_providers=self._custom_providers,
             )
             # Small-context threshold floor: models under 512K trigger at
             # >=75% so compaction doesn't fire with half the window still
@@ -3476,6 +3477,7 @@ class ContextCompressor(ContextEngine):
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
+        custom_providers: Optional[List[Dict[str, Any]]] = None,
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
@@ -3602,6 +3604,7 @@ class ContextCompressor(ContextEngine):
         # so switching small -> large correctly drops back to the configured
         # value.
         self._config_context_length = config_context_length
+        self._custom_providers = custom_providers
         self._configured_threshold_percent = self.threshold_percent
         self._resolved_context_length: int | None = None
         self._threshold_tokens: int | None = None

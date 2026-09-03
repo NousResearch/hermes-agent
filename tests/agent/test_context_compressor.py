@@ -2462,6 +2462,30 @@ class TestLazyContextResolution:
             result = c.context_length
             assert result == 200_000
 
+    def test_custom_provider_context_reaches_deferred_resolver(self):
+        custom_providers = [
+            {
+                "base_url": "http://127.0.0.1:8081/v1",
+                "models": {"qwen3.8-27b": {"context_length": 262_144}},
+            }
+        ]
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            side_effect=lambda model, **kwargs: (
+                kwargs["custom_providers"][0]["models"][model]["context_length"]
+            ),
+        ) as mock_get:
+            c = ContextCompressor(
+                model="qwen3.8-27b",
+                base_url="http://127.0.0.1:8081/v1",
+                provider="custom",
+                custom_providers=custom_providers,
+                quiet_mode=True,
+            )
+
+            assert c.context_length == 262_144
+            mock_get.assert_called_once()
+
 
 class TestPreflightSentinelGuard:
     """Regression guards for the preflight token-display seed

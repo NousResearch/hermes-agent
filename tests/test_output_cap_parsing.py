@@ -191,3 +191,36 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+class TestParseVllmMaxModelLenOutputCap:
+    """vLLM rejects max_tokens > max_model_len with:
+    'max_tokens=393216 cannot be greater than max_model_len=max_total_tokens=262144.
+    Please request fewer output tokens.'
+    """
+
+    _VLLM_OUTPUT_CAP_MSG = (
+        "400: max_tokens=393216 cannot be greater than "
+        "max_model_len=max_total_tokens=262144. Please request fewer output tokens. "
+        "(parameter=max_tokens, value=393216)"
+    )
+
+    def test_vllm_max_model_len_extracted(self):
+        assert parse_available_output_tokens_from_error(self._VLLM_OUTPUT_CAP_MSG) == 262144
+
+    def test_vllm_max_model_len_without_total_tokens_extracted(self):
+        msg = "max_tokens=100000 cannot be greater than max_model_len=65536. Please request fewer output tokens."
+        assert parse_available_output_tokens_from_error(msg) == 65536
+
+    def test_vllm_max_total_tokens_alone_extracted(self):
+        msg = "max_tokens=100000 cannot be greater than max_total_tokens=65536. Please request fewer output tokens."
+        assert parse_available_output_tokens_from_error(msg) == 65536
+
+    def test_vllm_is_output_cap_error(self):
+        assert is_output_cap_error(self._VLLM_OUTPUT_CAP_MSG) is True
+
+    def test_vllm_request_fewer_output_tokens_is_output_cap(self):
+        assert is_output_cap_error(
+            "Please request fewer output tokens: max_tokens=100000 cannot be greater than 65536."
+        ) is True
+
+

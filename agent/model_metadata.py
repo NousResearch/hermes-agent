@@ -1786,7 +1786,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
-        r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
+        r'(?:max_model_len(?:\s*=\s*max_total_tokens)?|max_total_tokens)\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", "=max_total_tokens=262144", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
@@ -1882,6 +1882,12 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # This is independent of the input context window.
         "exceeds model" in error_lower
         and "maximum output tokens" in error_lower
+    ) or (
+        # vLLM phrasing:
+        #   "max_tokens=393216 cannot be greater than max_model_len=max_total_tokens=262144.
+        #    Please request fewer output tokens."
+        ("cannot be greater than" in error_lower or "request fewer output tokens" in error_lower or "fewer output tokens" in error_lower)
+        and ("max_tokens" in error_lower or "max_model_len" in error_lower or "max_total_tokens" in error_lower)
     )
     if not is_output_cap_error:
         return None
@@ -1905,6 +1911,21 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     )
     if _m_range:
         _cap = int(_m_range.group(1))
+        if _cap >= 1:
+            return _cap
+
+    # vLLM total-window output-cap form:
+    #   "max_tokens=393216 cannot be greater than max_model_len=max_total_tokens=262144. Please request fewer output tokens."
+    # The error gives the model's total max_model_len / max_total_tokens window.
+    # Returning this cap is safe: conversation_loop.py computes
+    #   safe_out = max(1, min(available_out, old_ctx - request_input_estimate) - 64)
+    # which yields exactly window - input - margin.
+    _m_vllm_total = re.search(
+        r'(?:max_model_len(?:\s*=\s*max_total_tokens)?|max_total_tokens)\s*[:=]\s*(\d+)',
+        error_lower,
+    )
+    if _m_vllm_total:
+        _cap = int(_m_vllm_total.group(1))
         if _cap >= 1:
             return _cap
 
@@ -2035,6 +2056,9 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "must be" in error_lower
         or ("exceeds model" in error_lower
             and "maximum output tokens" in error_lower)
+        or "cannot be greater than" in error_lower          # vLLM: "max_tokens=X cannot be greater than max_model_len=..."
+        or "request fewer output tokens" in error_lower     # vLLM: "Please request fewer output tokens."
+        or "fewer output tokens" in error_lower
     )
     if not output_cap_signal:
         return False

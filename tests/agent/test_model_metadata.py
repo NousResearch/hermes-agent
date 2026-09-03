@@ -1450,6 +1450,9 @@ class TestParseContextLimitFromError:
         ("maximum model length 131072", 131072),
         ("maximum model length is 131072", 131072),
         ("maximum model length: 131072", 131072),
+        ("max_model_len=max_total_tokens=262144", 262144),
+        ("max_total_tokens=262144", 262144),
+        ("max_tokens=393216 cannot be greater than max_model_len=max_total_tokens=262144. Please request fewer output tokens.", 262144),
     ])
     def test_vllm_delimiter_variants(self, msg, expected):
         """vLLM emits the limit with various delimiters (space/colon/equals/

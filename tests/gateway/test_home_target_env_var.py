@@ -8,7 +8,21 @@ to env vars nothing read on startup — the home channel appeared to set
 successfully but was lost on every new gateway session.
 """
 
-from gateway.run import _home_target_env_var, _home_thread_env_var
+from gateway.run import (
+    _home_channel_prompt_enabled,
+    _home_target_env_var,
+    _home_thread_env_var,
+)
+
+
+def test_home_channel_prompt_defaults_to_enabled():
+    assert _home_channel_prompt_enabled({}) is True
+    assert _home_channel_prompt_enabled({"onboarding": {}}) is True
+
+
+def test_profile_can_suppress_home_channel_prompt():
+    assert _home_channel_prompt_enabled({"onboarding": {"home_channel_prompt": False}}) is False
+    assert _home_channel_prompt_enabled({"onboarding": {"home_channel_prompt": "off"}}) is False
 
 
 def test_matrix_home_target_env_var_uses_home_room():

@@ -129,6 +129,28 @@ class TestProfileMessageHandler:
         assert seen["profile"] == "coder"
 
     @pytest.mark.asyncio
+    async def test_primary_handler_stamps_active_profile(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._active_profile_name = lambda: "nova-teen-club"
+        seen = {}
+
+        async def _fake_handle(event):
+            seen["profile"] = event.source.profile
+            return "ok"
+
+        runner._handle_message = _fake_handle
+        handler = runner._active_profile_message_handler()
+
+        class _Src:
+            profile = None
+
+        class _Evt:
+            source = _Src()
+
+        assert await handler(_Evt()) == "ok"
+        assert seen["profile"] == "nova-teen-club"
+
+    @pytest.mark.asyncio
     async def test_does_not_override_existing_profile(self):
         runner = GatewayRunner.__new__(GatewayRunner)
         seen = {}

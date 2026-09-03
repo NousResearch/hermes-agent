@@ -1587,6 +1587,22 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
+def _home_channel_prompt_enabled(user_config: dict) -> bool:
+    """Whether first-contact chat surfaces may offer `/sethome`.
+
+    A dedicated, constrained profile (for example a youth/community bot) may
+    intentionally have no Hermes home channel.  In that profile, teaching an
+    ordinary member to configure one is both confusing and an internal-control
+    leak.  Keep the historical opt-in-by-default behavior everywhere else;
+    only an explicit ``onboarding.home_channel_prompt: false`` suppresses it.
+    """
+    onboarding = user_config.get("onboarding") if isinstance(user_config, dict) else None
+    value = onboarding.get("home_channel_prompt", True) if isinstance(onboarding, dict) else True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "no", "0", "off"}
+    return bool(value)
+
+
 def _home_target_env_var(platform_name: str) -> str:
     """Return the configured home-target env var for a platform.
 
@@ -8328,8 +8344,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning("No adapter available for %s", _pval)
                 continue
             
-            # Set up message + fatal error handlers
-            adapter.set_message_handler(self._handle_message)
+            # Always stamp the active profile as well as secondary multiplexed
+            # profiles.  Without this, a single-profile gateway persisted
+            # ``profile_name=NULL``: profile-scoped plugins then fail closed and
+            # see an apparently unverified Telegram actor.
+            adapter.set_message_handler(self._active_profile_message_handler())
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -10469,6 +10488,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         # Reconnect is scoped to the profile's own config and secret mapping;
         # never rebuild a secondary adapter with the default profile's credentials.
+
+    def _active_profile_message_handler(self):
+        """Return the primary adapter handler with the active profile stamped."""
+        return self._make_profile_message_handler(self._active_profile_name())
 
     def _make_profile_message_handler(self, profile_name: str):
         """Return a message handler that stamps source.profile then delegates.
@@ -14002,7 +14025,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        if (
+            _home_channel_prompt_enabled(_load_gateway_config())
+            and not history
+            and source.platform
+            and source.platform != Platform.LOCAL
+            and source.platform != Platform.WEBHOOK
+        ):
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             # Multiplex: home channel may live only in the profile secret

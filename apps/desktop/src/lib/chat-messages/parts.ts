@@ -1,4 +1,4 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { isPlausibleMediaPath, mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -10,19 +10,23 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+// MEDIA tags embed a filesystem path. Quoted forms (backtick / double /
+// single) are explicit and may contain any character. Bare paths capture the
+// REST OF THE LINE — not `\S+` — because real paths contain spaces (project
+// folders like "2026-08-29 - Not Today/audio/NotToday.wav"). The bare capture
+// is only accepted when the remainder is plausibly path-shaped; otherwise the
+// line match is left untouched so the inline parser below extracts the path
+// and preserves same-line prose (e.g. "MEDIA:/a/b.mp4 and here's more").
+const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\n]+)[`"']?[\t ]*(\n|$)/g
 
+// Inline form stays conservative: a bare inline path with spaces is
+// ambiguous in prose, so only quoted forms accept spaces there.
 const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 
-function unquoteMediaPath(value: string): string {
-  const trimmed = value.trim()
-  const quote = trimmed[0]
-
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
-}
-
 function mediaLink(value: string): string {
-  const path = unquoteMediaPath(value)
+  const trimmed = value.trim()
+  const quoted = trimmed.length > 1 && ['"', "'", '`'].includes(trimmed[0]) && trimmed[0] === trimmed.at(-1)
+  const path = quoted ? trimmed.slice(1, -1) : trimmed.replace(/[.,;:]+$/, '')
 
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
@@ -31,7 +35,8 @@ export function renderMediaTags(text: string): string {
   return text
     .replace(
       MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
+      (match, lead: string, value: string, trailer: string) =>
+        isPlausibleMediaPath(value) ? `${lead}${mediaLink(value)}${trailer}` : match
     )
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
     .replace(/[ \t]+\n/g, '\n')

@@ -477,6 +477,45 @@ describe('renderMediaTags', () => {
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
   })
+
+  it('keeps bare paths intact when they contain spaces', () => {
+    expect(
+      renderMediaTags(
+        'MEDIA:/Users/richardtang/MusicProduction/Ricktai/2026-08-29 - Not Today/audio/NotToday.wav'
+      )
+    ).toBe(
+      '[Audio: NotToday.wav](#media:%2FUsers%2Frichardtang%2FMusicProduction%2FRicktai%2F2026-08-29%20-%20Not%20Today%2Faudio%2FNotToday.wav)'
+    )
+    // spaces + non-media extension → file card path survives too
+    expect(renderMediaTags('MEDIA:/tmp/my folder/notes.lrc')).toBe(
+      '[File: notes.lrc](#media:%2Ftmp%2Fmy%20folder%2Fnotes.lrc)'
+    )
+  })
+
+  it('strips trailing sentence punctuation only from bare paths', () => {
+    expect(renderMediaTags('MEDIA:/tmp/voice.mp3.')).toBe('[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+    expect(renderMediaTags('MEDIA:/tmp/voice.mp3,')).toBe('[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+    // a quoted path is explicit: punctuation inside quotes is preserved
+    expect(renderMediaTags('MEDIA:"/tmp/file (1).mp4"')).toBe(
+      '[Video: file (1).mp4](#media:%2Ftmp%2Ffile%20(1).mp4)'
+    )
+    // a bare path ending in ")" is untouched — only [.,;:] is stripped
+    expect(renderMediaTags('MEDIA:/tmp/file (1).mp4')).toBe(
+      '[Video: file (1).mp4](#media:%2Ftmp%2Ffile%20(1).mp4)'
+    )
+  })
+
+  it('does not swallow same-line prose after a bare MEDIA tag', () => {
+    expect(renderMediaTags('MEDIA:/a/b.mp4 and here is the rest')).toBe(
+      '[Video: b.mp4](#media:%2Fa%2Fb.mp4) and here is the rest'
+    )
+    expect(renderMediaTags('MEDIA:/tmp/voice.mp3 — see below')).toBe(
+      '[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3) — see below'
+    )
+    expect(renderMediaTags('MEDIA:"/tmp/file (1).mp4" and prose')).toBe(
+      '[Video: file (1).mp4](#media:%2Ftmp%2Ffile%20(1).mp4) and prose'
+    )
+  })
 })
 
 describe('interleaved reasoning/text boundaries', () => {

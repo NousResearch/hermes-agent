@@ -65,6 +65,40 @@ export function mediaName(path: string): string {
   }
 }
 
+// True when a bare MEDIA path capture is plausibly a filesystem path rather
+// than a path followed by same-line prose. Quoted values are explicit and
+// always plausible. Bare values must look rooted (absolute-ish) and, when they
+// contain multiple whitespace tokens, their LAST token must still be
+// filename-shaped — that rejects trailing prose like "and here's more" while
+// accepting "2026-08-29 - Not Today/audio/NotToday.wav".
+export function isPlausibleMediaPath(value: string): boolean {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return false
+  }
+
+  const quoted = trimmed.length > 1 && ['"', "'", '`'].includes(trimmed[0]) && trimmed[0] === trimmed.at(-1)
+
+  if (quoted) {
+    return true
+  }
+
+  if (!/^(?:\/|~\/|\.\/|\.\.\/|file:|[a-zA-Z]:[\\/]|\\\\)/.test(trimmed)) {
+    return false
+  }
+
+  const tokens = trimmed.split(/\s+/)
+
+  if (tokens.length === 1) {
+    return true
+  }
+
+  const last = tokens[tokens.length - 1]
+
+  return /[\\/]/.test(last) || /\.[a-zA-Z0-9]{1,8}$/.test(last) || /^\./.test(last)
+}
+
 export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }

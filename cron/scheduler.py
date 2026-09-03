@@ -4759,6 +4759,26 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
+def _declared_job_prompt(job: dict, *, extra_prompt: Optional[str] = None) -> str:
+    """Return the prompt declared on the job itself, without injected context."""
+    user_prompt = str(job.get("prompt") or "")
+    if extra_prompt:
+        user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
+    return user_prompt
+
+
+def _extract_context_from_output_doc(raw_output: str) -> str:
+    """Return the previous response body from a cron output doc when present."""
+    text = str(raw_output or "").strip()
+    if not text:
+        return ""
+    parts = re.split(r"^## Response\s*$", text, maxsplit=1, flags=re.MULTILINE)
+    if len(parts) != 2:
+        return text
+    response = parts[1].strip()
+    return response or text
+
+
 def _build_job_prompt(
     job: dict,
     prerun_script: Optional[tuple] = None,
@@ -4778,9 +4798,7 @@ def _build_job_prompt(
             stored prompt under a ``## Run Context`` header for this single
             fire only — never persisted to the job definition.
     """
-    user_prompt = str(job.get("prompt") or "")
-    if extra_prompt:
-        user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
+    user_prompt = _declared_job_prompt(job, extra_prompt=extra_prompt)
     prompt = user_prompt
     skills = job.get("skills")
     # True when runtime-collected DATA (script stdout, upstream-job output)
@@ -4858,7 +4876,9 @@ def _build_job_prompt(
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                latest_output = _extract_context_from_output_doc(
+                    output_files[0].read_text(encoding="utf-8")
+                ).strip()
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
@@ -6024,6 +6044,7 @@ def run_job(
             )
             return True, silent_doc, SILENT_MARKER, None
 
+    declared_prompt = _declared_job_prompt(job, extra_prompt=extra_prompt)
     try:
         prompt = _build_job_prompt(
             job, prerun_script=prerun_script, extra_prompt=extra_prompt
@@ -7002,7 +7023,7 @@ def run_job(
 
 ## Prompt
 
-{prompt}
+{declared_prompt}
 
 ## Response
 
@@ -7059,7 +7080,7 @@ def run_job(
 
 ## Prompt
 
-{prompt}
+{declared_prompt}
 
 ## Error
 

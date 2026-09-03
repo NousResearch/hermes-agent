@@ -13,6 +13,14 @@ from typing import Any
 # Canonical model-emitted control token for intentional silence.
 SILENT_REPLY_TOKEN = "NO_REPLY"
 
+# Discord can surface attachment/unsupported/deleted-message shells through the
+# gateway as a literal placeholder string instead of an empty body.  Treat this
+# as empty at the dispatch boundary; otherwise it starts a full agent turn and
+# can keep shutdown/restart drains alive with meaningless work.
+EMPTY_INBOUND_TEXT_SENTINELS = frozenset({
+    "(The user sent a message with no text content)",
+})
+
 # Exact whole-response markers that mean "the agent intentionally chose not to
 # reply".  Keep this list small and explicit; arbitrary empty output remains an
 # error/empty-response path, not silence.
@@ -51,6 +59,48 @@ def _canonical_silence_candidates(text: str) -> tuple[str, ...]:
         return (exact,)
     fallback = _canonical_silence_candidate(stripped)
     return (exact, fallback)
+
+
+def should_drop_empty_inbound_event(event: Any) -> bool:
+    """Return True for user-originated empty events that should not start a turn.
+
+    Some platforms can emit text updates with no body (for example topic/router
+    artifacts or deleted/unsupported payload shells). Letting those through to
+    the agent creates useless "blank message" replies and can loop across
+    mirrored chats. Keep the predicate conservative: internal synthetic events,
+    media/file payloads, and reply-context events still flow.  A blank trigger
+    with ``channel_context`` also flows: the Discord adapter deliberately lets
+    a bare mention through when history backfill produced context — the context
+    IS the message ("catch me up"), and run.py prepends it ahead of the trigger.
+    """
+    if bool(getattr(event, "internal", False)):
+        return False
+    text = getattr(event, "text", "")
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if stripped and stripped not in EMPTY_INBOUND_TEXT_SENTINELS:
+        return False
+
+    if getattr(event, "media_urls", None):
+        return False
+    if getattr(event, "media_types", None):
+        return False
+    if any(
+        getattr(event, field, None)
+        for field in (
+            "reply_to_message_id",
+            "reply_to_text",
+            "reply_to_author_id",
+            "reply_to_author_name",
+            "reply_to_is_own_message",
+        )
+    ):
+        return False
+    if getattr(event, "channel_context", None):
+        return False
+
+    return True
 
 
 def is_intentional_silence_response(response: Any) -> bool:

@@ -4551,6 +4551,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
         except Exception:
             pass
+    if normalized == "azure-foundry":
+        # Azure has no useful /models: the OpenAI route lists Microsoft's
+        # whole catalog and the Anthropic route has none. List the resource's
+        # own deployments instead so the picker mirrors the Azure portal.
+        try:
+            return _azure_foundry_provider_model_ids()
+        except Exception as exc:
+            logger.debug("Azure Foundry deployment discovery failed: %s", exc)
+            return []
     if normalized == "anthropic":
         model_cfg = _get_model_config_dict()
         cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
@@ -4908,6 +4917,14 @@ def _credential_fingerprint(provider: str) -> str:
             parts.append(f"effective_base={_openai_discovery_base_url(provider)}")
         except Exception:
             pass
+    if provider == "azure-foundry":
+        # Deployment discovery is scoped to the configured resource; switching
+        # resources in config.yaml must not serve the previous one's list.
+        model_cfg = _get_model_config_dict()
+        parts.append(
+            "model.provider="
+            f"{model_cfg.get('provider', '')}|model.base_url={model_cfg.get('base_url', '')}"
+        )
 
     if provider == "ollama":
         parts.append(f"OLLAMA_HOST={_os.environ.get('OLLAMA_HOST', '')}")
@@ -5973,14 +5990,18 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
 
     Returns ``"codex_responses"`` when the model name matches a family that
     only accepts the Responses API on Azure Foundry (GPT-5.x, codex, o1/o3/o4
-    reasoning models).  Returns ``None`` otherwise — the caller should fall
-    back to the configured/default api_mode (typically ``chat_completions``)
-    so GPT-4o, GPT-4 Turbo, Llama, Mistral, etc. keep working.
+    reasoning models).  Returns ``"anthropic_messages"`` for Claude
+    deployments: Azure serves Claude only through the native Anthropic
+    Messages route (``/anthropic/v1/messages``) and rejects
+    ``/openai/v1/chat/completions`` for them with ``api_not_supported``.
+    Returns ``None`` otherwise — the caller should fall back to the
+    configured/default api_mode (typically ``chat_completions``) so GPT-4o,
+    GPT-4 Turbo, Llama, Mistral, etc. keep working.
 
-    Intentionally does NOT return ``anthropic_messages``; Anthropic-style
-    Azure endpoints are disambiguated by URL (``/anthropic`` suffix) in
-    ``runtime_provider._detect_api_mode_for_url`` and by the user setting
-    ``model.api_mode: anthropic_messages`` explicitly.
+    A single Azure Foundry resource can host Claude and GPT deployments side
+    by side; :func:`azure_foundry_base_url_for_mode` rewrites the configured
+    base URL onto the matching route so one ``azure-foundry`` provider entry
+    can serve every deployment the discovery probe returns.
     """
     raw = str(model_name or "").strip().lower()
     if not raw:
@@ -5988,6 +6009,8 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     # Strip any vendor/ prefix a user may have copied from OpenRouter / Copilot.
     if "/" in raw:
         raw = raw.rsplit("/", 1)[-1]
+    if raw.startswith("claude"):
+        return "anthropic_messages"
     # gpt-5-mini speaks chat completions on Copilot but Azure Foundry deploys
     # the full gpt-5 family uniformly on Responses API — don't carve an
     # exception here.
@@ -5995,6 +6018,137 @@ def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
         if raw.startswith(prefix):
             return "codex_responses"
     return None
+
+
+# Azure Foundry exposes several API surfaces under one resource host:
+#   <host>/openai/v1      OpenAI-compatible (chat/completions, responses, models)
+#   <host>/anthropic      Anthropic Messages (Claude deployments only)
+#   <host>/openai/deployments?api-version=...   the resource's own deployments
+# Both ``<resource>.openai.azure.com`` and ``<resource>.services.ai.azure.com``
+# serve all three routes. The regex strips whichever route suffix the user
+# configured so we can re-attach the right one for the selected model.
+_AZURE_FOUNDRY_ROUTE_SUFFIX_RE = re.compile(
+    r"/(?:openai(?:/v1)?|anthropic(?:/v1)?|models(?:/v1)?|v1)/?$",
+    re.IGNORECASE,
+)
+_AZURE_FOUNDRY_DEPLOYMENTS_API_VERSION = "2023-03-15-preview"
+
+
+def azure_foundry_resource_root(base_url: Optional[str]) -> str:
+    """Return the Azure Foundry resource host root for a configured base URL.
+
+    ``https://r.services.ai.azure.com/anthropic`` and
+    ``https://r.openai.azure.com/openai/v1`` both collapse to
+    ``https://<host>``. Unknown paths are left untouched (minus the trailing
+    slash) so private gateways that mount Azure under a prefix still work.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    return _AZURE_FOUNDRY_ROUTE_SUFFIX_RE.sub("", url).rstrip("/")
+
+
+def azure_foundry_base_url_for_mode(base_url: Optional[str], api_mode: Optional[str]) -> str:
+    """Rewrite an Azure Foundry base URL onto the route matching *api_mode*.
+
+    The user configures ONE endpoint for the ``azure-foundry`` provider, but
+    Claude deployments only answer on ``/anthropic`` while GPT deployments
+    only answer on ``/openai/v1``. Picking a Claude model while the config
+    points at ``/openai/v1`` (or vice-versa) must not 404 — swap the route.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if not _is_azure_foundry_host(url):
+        # Custom gateways: trust the configured path as-is.
+        return url
+    root = azure_foundry_resource_root(url)
+    if api_mode == "anthropic_messages":
+        return root + "/anthropic"
+    return root + "/openai/v1"
+
+
+def _is_azure_foundry_host(url: str) -> bool:
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    return host.endswith(".openai.azure.com") or host.endswith(".services.ai.azure.com")
+
+
+def fetch_azure_foundry_deployments(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """List the deployments of the Azure Foundry resource behind *base_url*.
+
+    Azure's OpenAI-compatible ``/openai/v1/models`` returns Microsoft's whole
+    catalog (hundreds of embeddings / TTS / image models the user never
+    deployed), and the Anthropic route has no ``/v1/models`` at all. The
+    resource-scoped ``/openai/deployments`` endpoint is the only listing that
+    reflects what the user actually deployed — and it updates the moment a
+    deployment is created or deleted in the Azure portal.
+
+    Returns deployment names in Azure's order (succeeded first, then any
+    still-provisioning entries), or ``None`` when the probe fails so callers
+    fall back to the configured default model.
+    """
+    key = str(api_key or "").strip()
+    root = azure_foundry_resource_root(base_url)
+    if not key or not root:
+        return None
+    url = (
+        f"{root}/openai/deployments?api-version="
+        f"{_AZURE_FOUNDRY_DEPLOYMENTS_API_VERSION}"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={"api-key": key, "User-Agent": _HERMES_USER_AGENT},
+    )
+    try:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        logger.debug("Azure Foundry deployments probe failed (%s): %s", url, exc)
+        return None
+    rows = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    ready: list[str] = []
+    pending: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("id") or "").strip()
+        if not name:
+            continue
+        status = str(row.get("status") or "").strip().lower()
+        (ready if status in {"", "succeeded"} else pending).append(name)
+    return list(dict.fromkeys([*ready, *pending]))
+
+
+def _azure_foundry_provider_model_ids() -> list[str]:
+    """Live picker catalog for the built-in ``azure-foundry`` provider.
+
+    Reads the endpoint from ``model.base_url`` (when the main model is Azure)
+    or ``AZURE_FOUNDRY_BASE_URL``, the key from ``AZURE_FOUNDRY_API_KEY``, and
+    lists the resource's deployments. Always includes the configured default
+    model so the current selection never disappears from the picker.
+    """
+    from hermes_cli.config import get_env_value
+
+    model_cfg = _get_model_config_dict()
+    cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+    base_url = ""
+    default_model = ""
+    if cfg_provider == "azure-foundry":
+        base_url = str(model_cfg.get("base_url") or "").strip()
+        default_model = str(model_cfg.get("default") or "").strip()
+    if not base_url:
+        base_url = str(get_env_value("AZURE_FOUNDRY_BASE_URL") or "").strip()
+    api_key = str(get_env_value("AZURE_FOUNDRY_API_KEY") or "").strip()
+    live = fetch_azure_foundry_deployments(api_key, base_url) or []
+    if default_model and default_model not in live:
+        live = [default_model, *live]
+    return live
 
 
 def opencode_provider_family(provider_id: Optional[str]) -> Optional[str]:

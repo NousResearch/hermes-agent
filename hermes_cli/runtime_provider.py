@@ -567,11 +567,11 @@ def _resolve_runtime_from_pool_entry(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
-        # Model-family inference for GPT-5.x / codex / o1-o4: Azure rejects
-        # /chat/completions on these with 400 "operation unsupported" — see
-        # azure_foundry_model_api_mode() for rationale.  Skip when the user
-        # explicitly picked anthropic_messages (Anthropic-style endpoint).
-        if effective_model and api_mode != "anthropic_messages":
+        # Model-family inference for GPT-5.x / codex / o1-o4 (Responses-only)
+        # and Claude (Anthropic-Messages-only) — see
+        # azure_foundry_model_api_mode() for rationale.  Then move the base
+        # URL onto the route the inferred mode needs.
+        if effective_model:
             try:
                 from hermes_cli.models import azure_foundry_model_api_mode
 
@@ -580,6 +580,12 @@ def _resolve_runtime_from_pool_entry(
                 inferred = None
             if inferred:
                 api_mode = inferred
+        try:
+            from hermes_cli.models import azure_foundry_base_url_for_mode
+
+            base_url = azure_foundry_base_url_for_mode(base_url, api_mode) or base_url
+        except Exception:
+            pass
         # For Anthropic-style endpoints, strip /v1 suffix
         if api_mode == "anthropic_messages":
             base_url = re.sub(r"/v1/?$", "", base_url)
@@ -1653,12 +1659,13 @@ def _resolve_azure_foundry_runtime(
             cfg_entra = _entra
 
     # Model-family inference: Azure Foundry deploys GPT-5.x / codex / o1-o4
-    # reasoning models as Responses-API-only.  Calling /chat/completions
-    # against them returns 400 "The requested operation is unsupported."
-    # Upgrade api_mode when the model name matches, unless the user has
-    # explicitly chosen anthropic_messages (Anthropic-style endpoint).
+    # reasoning models as Responses-API-only (calling /chat/completions
+    # returns 400 "The requested operation is unsupported") and Claude
+    # deployments as Anthropic-Messages-only.  Infer api_mode from the model
+    # name and move the base URL onto the matching route so one configured
+    # endpoint serves every deployment of the resource.
     effective_model = str(target_model or model_cfg.get("default") or "").strip()
-    if effective_model and cfg_api_mode != "anthropic_messages":
+    if effective_model:
         try:
             from hermes_cli.models import azure_foundry_model_api_mode
 
@@ -1675,6 +1682,13 @@ def _resolve_azure_foundry_runtime(
             "Azure Foundry requires a base URL. Set it via 'hermes model' or "
             "the AZURE_FOUNDRY_BASE_URL environment variable."
         )
+    if not explicit_base_url_clean:
+        try:
+            from hermes_cli.models import azure_foundry_base_url_for_mode
+
+            base_url = azure_foundry_base_url_for_mode(base_url, cfg_api_mode) or base_url
+        except Exception:
+            pass
 
     # Anthropic SDK appends /v1/messages itself, so strip any trailing /v1
     # we inherited from the configured base_url to avoid double-/v1 paths.

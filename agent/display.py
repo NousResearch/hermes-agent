@@ -1370,6 +1370,15 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
 
+    # Result parsed cleanly as structured JSON with no recognized error —
+    # treat as success. The serialized-text scan below exists for non-JSON
+    # tool output; running it over parsed JSON only yields false positives:
+    # success shapes routinely embed "error": null / "failed" tokens (e.g.
+    # web_extract's {"results": [{..., "error": null}]}, where per-result
+    # "error" keys are part of the SUCCESS shape).
+    if data is not None:
+        return False, ""
+
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.

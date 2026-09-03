@@ -541,6 +541,84 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _prompt_caching_section(issues: list[str]) -> None:
+    """Report whether this route will actually get cache_control breakpoints.
+
+    Whether a route gets them is decided per request by
+    ``anthropic_prompt_cache_policy``, and until this section existed there was
+    no way to ask. The only signal was an ENABLED banner in ``agent_init`` — it
+    has no DISABLED counterpart and is suppressed under ``quiet_mode``, which
+    the ACP adapter forces on. A Claude model on an Anthropic-compatible
+    gateway whose ``model.api_mode`` was never set resolves to
+    ``(False, False)`` and re-bills the whole prompt as uncached input on every
+    API call, silently. #11970 (Bedrock cachePoint) and #17332 (MiniMax on the
+    native wire) were both instances of that class, each found after the fact.
+
+    Offline by construction: resolve the same destination the agent will use and
+    ask the real policy. No HTTP, so this stays out of the threaded
+    connectivity probes.
+
+    Scope: this resolves the *persisted* configuration, so it answers "what
+    will this config do on a clean run" — the right question for a pre-flight
+    check. It is not a statement about a session already running under an
+    exported override. ``ANTHROPIC_BASE_URL`` is the practical case: its mere
+    presence flips the resolved wire, so a live agent can be on a different
+    route than the one reported here.
+    """
+    _section("Prompt Caching")
+    try:
+        from agent.agent_runtime_helpers import (
+            anthropic_prompt_cache_policy,
+            blank_cache_policy_stub,
+            configured_cache_ttl,
+            prompt_cache_status_summary,
+        )
+        from hermes_cli.config import load_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        model_cfg = (load_config() or {}).get("model")
+        if isinstance(model_cfg, dict):
+            model = str(model_cfg.get("default") or "")
+        else:
+            model = str(model_cfg or "")
+
+        rt = resolve_runtime_provider()
+        # blank_cache_policy_stub is the sanctioned constructor: it carries
+        # _cache_disabled from config, so an operator disable is honored here
+        # without doctor re-reading that key itself (#76085).
+        route = blank_cache_policy_stub()
+        route.provider = str(rt.get("provider") or "")
+        route.base_url = str(rt.get("base_url") or "")
+        route.api_mode = str(rt.get("api_mode") or "")
+        route.model = model
+        route._use_prompt_caching, route._use_native_cache_layout = (
+            anthropic_prompt_cache_policy(route)
+        )
+        route._cache_ttl = (
+            None if route._cache_disabled else (configured_cache_ttl() or "5m")
+        )
+
+        summary = prompt_cache_status_summary(route)
+        if route._use_prompt_caching:
+            check_ok("Prompt caching", f"({summary})")
+            return
+
+        check_warn("Prompt caching", f"({summary})")
+        # An explicit `prompt_caching.cache_ttl` opt-out is a choice, not a
+        # fault: report it, but keep it out of the issues list so it does not
+        # read as something to fix.
+        if not route._cache_disabled:
+            check_info(
+                "the full prompt is re-billed as uncached input on every API call"
+            )
+            issues.append(
+                f"Prompt caching is off for provider='{route.provider}' "
+                f"model='{route.model}': {summary}"
+            )
+    except Exception as e:
+        check_warn("Could not resolve prompt caching status", f"({e})")
+
+
 # Deprecated / legacy config keys still read for back-compat. Doctor surfaces
 # them as non-failing warnings with the modern replacement — it does not
 # auto-migrate or delete (migrations live in config.py version steps).
@@ -3193,6 +3271,8 @@ def run_doctor(args):
             _issues_to_add = []
         for _issue in _issues_to_add:
             issues.append(_issue)
+
+    _prompt_caching_section(issues)
 
     _section("Tool Availability")
     try:

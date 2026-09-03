@@ -1670,15 +1670,23 @@ def init_agent(
         prompt_preview = agent.ephemeral_system_prompt[:60] + "..." if len(agent.ephemeral_system_prompt) > 60 else agent.ephemeral_system_prompt
         print(f"🔒 Ephemeral system prompt: '{prompt_preview}' (not saved to trajectories)")
     
-    # Show prompt caching status
-    if agent._use_prompt_caching and not agent.quiet_mode:
-        if agent._use_native_cache_layout and agent.provider == "anthropic":
-            source = "native Anthropic"
-        elif agent._use_native_cache_layout:
-            source = "Anthropic-compatible endpoint"
-        else:
-            source = "Claude via OpenRouter"
-        print(f"💾 Prompt caching: ENABLED ({source}, {agent._cache_ttl} TTL)")
+    # Report prompt caching status. Logged always, printed only when the agent
+    # is not quiet.
+    #
+    # The log line is the point. Until now this block had no DISABLED branch,
+    # so a route that resolved to (False, False) re-billed the whole prompt on
+    # every API call and said nothing about it, anywhere. The ACP adapter also
+    # forces quiet_mode=True (acp_adapter/session.py) and routes logging to
+    # stderr (acp_adapter/entry.py), so editor/harness sessions had no signal
+    # in either direction. Logging at INFO keeps stdout clean for the ACP
+    # JSON-RPC transport while making the state discoverable.
+    from agent.agent_runtime_helpers import prompt_cache_status_summary
+
+    cache_status = prompt_cache_status_summary(agent)
+    logger.info("Prompt caching: %s", cache_status)
+    if not agent.quiet_mode:
+        icon = "💾" if agent._use_prompt_caching else "⚠️"
+        print(f"{icon} Prompt caching: {cache_status}")
     
     # Session logging setup - auto-save conversation trajectories for debugging
     agent.session_start = datetime.now()

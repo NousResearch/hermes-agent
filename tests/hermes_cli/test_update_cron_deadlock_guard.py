@@ -167,16 +167,127 @@ class TestDrainOrSignalTriage:
         assert calls["self_restart"] == []
         assert calls["escalate"] == []
 
-    def test_no_drain_skips_all_graceful_paths(self, monkeypatch, capsys):
-        """The explicit escape hatch reaches the caller's immediate-kill path."""
+    def test_no_drain_skips_graceful_paths_out_of_tree(self, monkeypatch, capsys):
+        """The explicit escape hatch remains immediate for an out-of-tree gateway."""
         from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
 
-        calls = self._patched(monkeypatch, ancestor=True, wedged=False)
+        calls = self._patched(monkeypatch, ancestor=False, wedged=True)
         assert _drain_or_signal_gateway_for_update(
             1234, 900.0, "svc", no_drain=True
         ) is False
         assert calls == {"self_restart": [], "escalate": [], "drain": []}
         assert "--no-drain" in capsys.readouterr().out
+
+    def test_no_drain_keeps_ancestor_safety_guard(self, monkeypatch, capsys):
+        """An in-tree gateway may not bypass the self-termination guard."""
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=True, wedged=False)
+        assert _drain_or_signal_gateway_for_update(
+            1234, 900.0, "svc", no_drain=True
+        ) is True
+        assert calls["self_restart"] == [1234]
+        assert calls["escalate"] == []
+        assert calls["drain"] == []
+        assert "unavailable" in capsys.readouterr().out
+
+
+def test_embedded_update_drain_waits_for_running_workers(monkeypatch, capsys):
+    """An active worker drains before the update is allowed to proceed."""
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(
+        update_cmd, "_update_embedded_kanban_dispatcher_enabled", lambda: True
+    )
+    monkeypatch.setattr(update_cmd, "_update_kanban_drain_timeout", lambda: 30.0)
+    running_counts = iter([1, 0])
+    monkeypatch.setattr(
+        update_cmd,
+        "_count_running_kanban_tasks_for_update",
+        lambda: next(running_counts),
+    )
+    engaged = []
+    engagement_checks = iter([False, True])
+    monkeypatch.setattr(estop, "is_engaged", lambda: next(engagement_checks))
+    monkeypatch.setattr(
+        estop,
+        "engage",
+        lambda **kwargs: engaged.append(kwargs) or None,
+    )
+    monkeypatch.setattr(
+        estop,
+        "get_state",
+        lambda: {"engaged_at": "owned-by-test", "reason": "drain"},
+    )
+
+    state = update_cmd._prepare_kanban_drain_for_update()
+
+    assert state == {
+        "engaged": True,
+        "ready": True,
+        "keep_paused": False,
+        "exit_code": update_cmd._UPDATE_DRAIN_TIMEOUT_EXIT,
+        "engaged_at": "owned-by-test",
+    }
+    assert engaged == [{
+        "reason": "hermes update: drain embedded kanban workers",
+        "global_scope": True,
+    }]
+    output = capsys.readouterr().out
+    assert "waiting for 1 kanban worker" in output
+    assert "running=0" in output
+
+
+def test_embedded_update_drain_refuses_foreign_estop(monkeypatch, capsys):
+    """An existing pause is never adopted or cleared by an update."""
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(
+        update_cmd, "_update_embedded_kanban_dispatcher_enabled", lambda: True
+    )
+    monkeypatch.setattr(estop, "is_engaged", lambda: True)
+    monkeypatch.setattr(
+        estop, "engage", lambda **kwargs: pytest.fail("foreign ESTOP was adopted")
+    )
+
+    state = update_cmd._prepare_kanban_drain_for_update()
+
+    assert state["exit_code"] == update_cmd._UPDATE_DRAIN_FOREIGN_ESTOP_EXIT
+    assert state["engaged"] is False
+    assert "already paused" in capsys.readouterr().out
+
+
+def test_embedded_update_drain_refuses_after_timeout(monkeypatch, capsys):
+    """A worker that never drains leaves ESTOP engaged and refuses the update."""
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(
+        update_cmd, "_update_embedded_kanban_dispatcher_enabled", lambda: True
+    )
+    monkeypatch.setattr(update_cmd, "_update_kanban_drain_timeout", lambda: 0.0)
+    monkeypatch.setattr(update_cmd, "_count_running_kanban_tasks_for_update", lambda: 1)
+    monkeypatch.setattr(update_cmd._time, "monotonic", iter([0.0, 1.0]).__next__)
+    monkeypatch.setattr(estop, "is_engaged", iter([False, True]).__next__)
+    monkeypatch.setattr(estop, "engage", lambda **_: None)
+    monkeypatch.setattr(
+        estop,
+        "get_state",
+        lambda: {"engaged_at": "owned-by-test", "reason": "drain"},
+    )
+
+    state = update_cmd._prepare_kanban_drain_for_update()
+
+    assert state == {
+        "engaged": True,
+        "ready": False,
+        "keep_paused": True,
+        "exit_code": update_cmd._UPDATE_DRAIN_TIMEOUT_EXIT,
+        "engaged_at": "owned-by-test",
+    }
+    assert "no update was attempted" in capsys.readouterr().out
 
 
 def test_update_parser_defaults_and_accepts_no_drain():
@@ -189,3 +300,67 @@ def test_update_parser_defaults_and_accepts_no_drain():
 
     assert parser.parse_args(["update"]).no_drain is False
     assert parser.parse_args(["update", "--no-drain"]).no_drain is True
+
+
+def test_finish_does_not_clear_replaced_estop(monkeypatch, caplog):
+    """An operator pause created during update remains engaged."""
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    disengaged = []
+    monkeypatch.setattr(
+        estop,
+        "get_state",
+        lambda: {"engaged_at": "operator-owned", "reason": "manual pause"},
+    )
+    monkeypatch.setattr(estop, "disengage", lambda: disengaged.append(True))
+
+    update_cmd._finish_kanban_drain_for_update(
+        {
+            "engaged": True,
+            "ready": True,
+            "keep_paused": False,
+            "engaged_at": "update-owned",
+        }
+    )
+
+    assert disengaged == []
+    assert "ownership changed" in caplog.text
+
+
+def test_cmd_update_refuses_before_update_impl_when_drain_not_ready(monkeypatch):
+    """The command boundary refuses without entering source mutation."""
+    from hermes_cli import main
+
+    state = {
+        "engaged": True,
+        "ready": False,
+        "keep_paused": True,
+        "exit_code": 76,
+        "engaged_at": "owned-by-test",
+    }
+    finished = []
+    monkeypatch.setattr(main, "_prepare_kanban_drain_for_update", lambda **_: state)
+    monkeypatch.setattr(main, "_finish_kanban_drain_for_update", finished.append)
+    monkeypatch.setattr(
+        main,
+        "_cmd_update_impl",
+        lambda *_args, **_kwargs: pytest.fail("update implementation must not run"),
+    )
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **_: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda _state: None)
+
+    args = argparse.Namespace(
+        plan=False,
+        check=False,
+        gateway=False,
+        no_drain=False,
+    )
+    with patch("hermes_cli.config.is_managed", return_value=False), patch(
+        "hermes_cli.update_contract.evaluate_update_admission", return_value=None
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main.cmd_update(args)
+
+    assert exc_info.value.code == 76
+    assert finished == [state]

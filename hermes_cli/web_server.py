@@ -1463,6 +1463,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "updates.drain_timeout_seconds": {
+        "type": "number",
+        "description": (
+            "Maximum seconds hermes update waits for running embedded Kanban "
+            "workers to finish before refusing without restarting."
+        ),
+    },
     "updates.refresh_cua_driver": {
         "type": "boolean",
         "description": (

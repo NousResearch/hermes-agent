@@ -8135,6 +8135,195 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     sys.exit(1)
 
 
+_UPDATE_DRAIN_DEFAULT_TIMEOUT = 1800.0
+_UPDATE_DRAIN_TIMEOUT_EXIT = 76
+_UPDATE_DRAIN_FOREIGN_ESTOP_EXIT = 75
+
+
+def _update_embedded_kanban_dispatcher_enabled() -> bool:
+    """Return whether this install uses the gateway-hosted dispatcher."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        return bool(kanban_cfg.get("dispatch_in_gateway", True))
+    except Exception as exc:
+        # The dispatcher defaults on; an unreadable config must not silently
+        # turn off the update safety gate.
+        logger.warning("Could not read kanban dispatcher setting: %s", exc)
+        return True
+
+
+def _update_kanban_drain_timeout() -> float:
+    """Read the bounded update drain budget from the active config."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
+        raw = updates_cfg.get(
+            "drain_timeout_seconds", _UPDATE_DRAIN_DEFAULT_TIMEOUT
+        ) if isinstance(updates_cfg, dict) else _UPDATE_DRAIN_DEFAULT_TIMEOUT
+        value = float(raw)
+        if value != value or value < 0 or value == float("inf"):
+            raise ValueError("timeout must be finite and non-negative")
+        return value
+    except (TypeError, ValueError, OverflowError) as exc:
+        logger.warning(
+            "Invalid updates.drain_timeout_seconds; using %.0fs: %s",
+            _UPDATE_DRAIN_DEFAULT_TIMEOUT,
+            exc,
+        )
+        return _UPDATE_DRAIN_DEFAULT_TIMEOUT
+    except Exception as exc:
+        logger.warning(
+            "Could not read updates.drain_timeout_seconds; using %.0fs: %s",
+            _UPDATE_DRAIN_DEFAULT_TIMEOUT,
+            exc,
+        )
+        return _UPDATE_DRAIN_DEFAULT_TIMEOUT
+
+
+def _count_running_kanban_tasks_for_update() -> int | None:
+    """Count running board tasks without mutating any board.
+
+    ``None`` is an unreadable-board result. Update must refuse rather than
+    treating a failed safety query as an empty board and killing a worker.
+    """
+    import sqlite3
+
+    try:
+        root = Path(get_default_hermes_root()).expanduser()
+        override = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        paths = [root / "kanban.db"]
+        paths.extend((root / "kanban" / "boards").glob("*/kanban.db"))
+        if override:
+            # The worker environment may pin one board; keep it in the global
+            # scan rather than dropping every other board from the safety check.
+            paths.append(Path(override).expanduser())
+        unique_paths: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            resolved = str(path.resolve())
+            if resolved not in seen and path.is_file():
+                seen.add(resolved)
+                unique_paths.append(path)
+
+        total = 0
+        for path in unique_paths:
+            uri = f"{path.resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()
+                total += int(row[0])
+            finally:
+                conn.close()
+        return total
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        logger.warning("Kanban drain query failed; refusing update: %s", exc)
+        return None
+
+
+def _prepare_kanban_drain_for_update(*, no_drain: bool = False) -> dict | None:
+    """Pause new board work and wait for all running tasks to finish.
+
+    The returned state is consumed by ``cmd_update``'s ``finally`` block. A
+    timeout or unreadable board deliberately leaves ESTOP engaged and returns
+    a refusal code; only a successful zero-task drain is resumed automatically.
+    """
+    if no_drain or not _update_embedded_kanban_dispatcher_enabled():
+        return None
+
+    from agent import estop
+
+    if estop.is_engaged():
+        print(
+            "✗ Update refused: Hermes is already paused by another operator or "
+            "update; run `hermes resume` after that operation completes."
+        )
+        return {
+            "engaged": False,
+            "ready": False,
+            "keep_paused": False,
+            "exit_code": _UPDATE_DRAIN_FOREIGN_ESTOP_EXIT,
+        }
+
+    estop.engage(
+        reason="hermes update: drain embedded kanban workers",
+        global_scope=True,
+    )
+    state = {
+        "engaged": True,
+        "ready": False,
+        "keep_paused": True,
+        "exit_code": _UPDATE_DRAIN_TIMEOUT_EXIT,
+    }
+    if not estop.is_engaged():
+        print(
+            "✗ Update refused: could not engage ESTOP; no update was attempted."
+        )
+        return state
+    # Capture the sentinel identity so cleanup cannot remove an operator pause
+    # that arrives while the update is running. A missing/corrupt identity is
+    # fail-closed: leave ESTOP engaged and refuse to continue.
+    engagement = estop.get_state()
+    if not engagement or not engagement.get("engaged_at"):
+        print(
+            "✗ Update refused: could not verify ESTOP ownership; no update was "
+            "attempted and ESTOP remains engaged."
+        )
+        return state
+    state["engaged_at"] = engagement["engaged_at"]
+    timeout = _update_kanban_drain_timeout()
+    deadline = _time.monotonic() + timeout
+    print(f"→ Paused new work; draining kanban workers (up to {int(timeout)}s)...")
+    while True:
+        running = _count_running_kanban_tasks_for_update()
+        if running is None:
+            print(
+                "✗ Update refused: could not verify kanban running-task state; "
+                "ESTOP remains engaged and no update was attempted."
+            )
+            return state
+        if running == 0:
+            state["ready"] = True
+            state["keep_paused"] = False
+            print("✓ Kanban drain complete (running=0); continuing with one update.")
+            return state
+        if _time.monotonic() >= deadline:
+            print(
+                f"✗ Update refused: {running} kanban worker(s) still running after "
+                f"{int(timeout)}s; ESTOP remains engaged and no update was attempted."
+            )
+            return state
+        print(f"  … waiting for {running} kanban worker(s) to finish")
+        _time.sleep(min(1.0, max(0.05, deadline - _time.monotonic())))
+
+
+def _finish_kanban_drain_for_update(state: dict | None) -> None:
+    """Lift only an ESTOP that this update successfully acquired."""
+    if not state or not state.get("engaged") or state.get("keep_paused"):
+        return
+    try:
+        from agent import estop
+
+        current = estop.get_state()
+        expected = state.get("engaged_at")
+        if not expected or not current or current.get("engaged_at") != expected:
+            logger.warning(
+                "Hermes update left ESTOP engaged because ownership changed "
+                "during the update"
+            )
+            return
+        estop.disengage()
+        print("▶️ Kanban dispatch resumed after Hermes update.")
+    except Exception as exc:
+        logger.error("Hermes update could not resume ESTOP: %s", exc)
+
+
 def _drain_or_signal_gateway_for_update(
     pid: int,
     drain_budget: float,
@@ -8180,6 +8369,20 @@ def _drain_or_signal_gateway_for_update(
         probe_gateway_loop_liveness,
     )
 
+    if _is_pid_ancestor_of_current_process(pid):
+        if no_drain:
+            print(
+                f"  ⚠ {label}: --no-drain is unavailable for an in-tree "
+                "gateway; using the safe fire-and-forget restart request"
+            )
+        else:
+            print(
+                f"  → {label}: update is running inside this gateway's "
+                "process tree — signalling restart and letting the gateway "
+                "drain itself (avoids the cron-update deadlock, #100179)"
+            )
+        return _request_gateway_self_restart(pid)
+
     if no_drain:
         print(
             f"  ⚠ {label}: --no-drain requested — skipping graceful drain; "
@@ -8187,13 +8390,6 @@ def _drain_or_signal_gateway_for_update(
         )
         return False
 
-    if _is_pid_ancestor_of_current_process(pid):
-        print(
-            f"  → {label}: update is running inside this gateway's "
-            "process tree — signalling restart and letting the gateway "
-            "drain itself (avoids the cron-update deadlock, #100179)"
-        )
-        return _request_gateway_self_restart(pid)
     if probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
         print(
             f"  ⚠ {label}: gateway event loop is unresponsive — "

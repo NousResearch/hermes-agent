@@ -5202,6 +5202,8 @@ _LAZY_COMMAND_EXPORTS = {
         "_orphaned_desktop_backend_pids",
         "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
+        "_prepare_kanban_drain_for_update",
+        "_finish_kanban_drain_for_update",
         "_print_curator_first_run_notice",
         "_prune_orphan_rescue_refs",
         "_print_curator_recent_run_notice",
@@ -11111,7 +11113,13 @@ def cmd_update(args):
     # None = not a SystemExit-shaped outcome; real exceptions keep the
     # normal raise path so their traceback still prints.
     _update_handoff_exit_code: int | None = None
+    _update_kanban_drain_state = None
     try:
+        _update_kanban_drain_state = _self()._prepare_kanban_drain_for_update(
+            no_drain=bool(getattr(args, "no_drain", False))
+        )
+        if _update_kanban_drain_state and not _update_kanban_drain_state["ready"]:
+            sys.exit(_update_kanban_drain_state["exit_code"])
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
         # Receipt boundary (#91283 review): the impl has many early
@@ -11150,6 +11158,7 @@ def cmd_update(args):
             pass
         _update_handoff_exit_code = 0
     finally:
+        _self()._finish_kanban_drain_for_update(_update_kanban_drain_state)
         _update_lock.release()
         _finalize_update_output(_update_io_state)
         # Windows hand-off child (#93581): the re-exec'd venv child cannot

@@ -733,6 +733,9 @@ def _copy_table_salvage(
         try:
             destination.execute(insert_sql, value)
             destination.execute("COMMIT")
+        except sqlite3.IntegrityError:
+            destination.execute("ROLLBACK")
+            return False
         except BaseException:
             destination.execute("ROLLBACK")
             raise

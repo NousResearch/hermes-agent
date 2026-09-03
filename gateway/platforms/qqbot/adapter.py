@@ -1133,7 +1133,13 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        # QQ C2C messages surface as chat_type="dm" in session keys (build_source
+        # uses "dm" for private chats) even though the platform API calls them
+        # c2c. Treat both identically: the chat_id is the user's openid, so an
+        # authorized operator must equal it. (2026-09-04: without "dm" here,
+        # every private-chat clarify button click was rejected as unauthorized
+        # after the authorize-by-session change landed.)
+        if chat_type in {"c2c", "dm"}:
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

@@ -137,3 +137,41 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
         monkeypatch.undo()
         importlib.reload(photon_adapter)
         importlib.reload(photon_cli)
+
+
+def test_mirror_lists_every_sidecar_module() -> None:
+    """The read-only mirror must ship every runtime .mjs module (#85046).
+
+    index.mjs statically imports send-format.mjs and stream-staleness.mjs;
+    a mirror without them starts a sidecar that dies at import. Guards
+    against adding a sidecar module without extending _MIRROR_FILES.
+    """
+    modules = {
+        p.name for p in sidecar_paths.SOURCE_SIDECAR_DIR.glob("*.mjs")
+    }
+    assert modules, "expected sidecar .mjs modules beside sidecar_paths.py"
+    assert modules <= set(sidecar_paths._MIRROR_FILES), (
+        f"mirror misses sidecar modules: {sorted(modules - set(sidecar_paths._MIRROR_FILES))}"
+    )
+
+
+def test_mirror_copies_static_imports(tmp_path, monkeypatch) -> None:
+    """End-to-end: the mirror contains index.mjs's static .mjs imports."""
+    import re
+
+    monkeypatch.delenv("PHOTON_SIDECAR_DIR", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    source = tmp_path / "src"
+    _seed_source(source)
+    monkeypatch.setattr(sidecar_paths, "_dir_writable", lambda _p: False)
+
+    mirror = sidecar_paths.resolve_sidecar_dir(source)
+
+    index_src = (sidecar_paths.SOURCE_SIDECAR_DIR / "index.mjs").read_text(
+        encoding="utf-8"
+    )
+    imported = set(re.findall(r'from\s+"./([^"]+\.mjs)"', index_src))
+    assert imported, "expected static .mjs imports in index.mjs"
+    for name in imported:
+        assert (mirror / name).exists(), f"mirror misses {name}"

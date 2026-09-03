@@ -48,11 +48,16 @@ SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # The files that define the sidecar. Mirrored into the writable runtime dir
 # when the install tree is read-only. node_modules is deliberately absent —
 # it is either baked (managed image) or installed by npm in the mirror.
+# Every runtime .mjs module must be listed: index.mjs statically imports
+# send-format.mjs and stream-staleness.mjs, so a mirror without them fails
+# at import (#85046).
 _MIRROR_FILES = (
     "index.mjs",
     "package.json",
     "package-lock.json",
     "patch-spectrum-mixed-attachments.mjs",
+    "send-format.mjs",
+    "stream-staleness.mjs",
 )
 
 

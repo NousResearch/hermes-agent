@@ -585,6 +585,17 @@ _POLLING_PROGRESS_TIMEOUT = 60.0
 # can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
+# Ingress delivery gap (#102260). Every probe above measures the *transport*:
+# a getUpdates round-trip that returns 200 proves bytes are moving, nothing
+# more. An update that arrives and is then dropped downstream — a wedged
+# dispatcher, a filter that never matches, a missing gateway handler — leaves
+# every transport probe healthy and produces no log line at all, so the gateway
+# reports "connected" while being permanently deaf. This is the window after
+# which received-but-never-delivered updates are reported. Generous on purpose:
+# updates legitimately reach no gateway turn (the bot's own messages, reactions,
+# unmentioned group chatter), so this reports a diagnosis and never triggers
+# recovery on its own.
+_INGRESS_DELIVERY_GAP_TIMEOUT = 300.0
 # Telegram transcodes an uploaded video before it answers sendVideo, so the
 # wait for the response is unrelated to how fast the bytes went out and can
 # outlast the 20s read timeout the rest of the Bot API is tuned for. Only
@@ -792,6 +803,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # getUpdates round-trip completed. None = unknown / not yet observed.
         self._polling_generation_started_monotonic: Optional[float] = None
         self._polling_last_progress_monotonic: Optional[float] = None
+        # Ingress accounting (#102260). ``received`` counts updates Telegram
+        # handed this process on the getUpdates wire; ``dispatched`` counts
+        # updates PTB's dispatcher actually carried through the handler chain.
+        # Together with the base adapter's delivered counter they split a deaf
+        # gateway into its three distinguishable causes: nothing arriving, the
+        # dispatcher stalled, or Hermes dropping what arrives.
+        self._updates_received_total: int = 0
+        self._updates_dispatched_total: int = 0
+        self._last_update_received_monotonic: Optional[float] = None
+        self._ingress_gap_reported_at_received: Optional[int] = None
         # Live @username, refreshed whenever Telegram tells us what it is.
         # PTB caches getMe() in Bot._bot_user at initialize() and only rewrites
         # it inside get_me(), so a BotFather rename leaves self._bot.username
@@ -2733,6 +2754,22 @@ class TelegramAdapter(BasePlatformAdapter):
             and "result" in envelope
         ):
             self._record_polling_progress(generation)
+            self._record_updates_received(envelope.get("result"))
+
+    def _record_updates_received(self, result) -> None:
+        """Count updates Telegram handed us on the getUpdates wire (#102260).
+
+        ``_record_polling_progress`` above proves the transport works; it says
+        nothing about whether anything arrived. Only a non-empty ``result``
+        means real updates entered this process, and that is the number the
+        delivered counter has to be compared against.
+        """
+        if not isinstance(result, list) or not result:
+            return
+        self._updates_received_total = (
+            getattr(self, "_updates_received_total", 0) + len(result)
+        )
+        self._last_update_received_monotonic = time.monotonic()
 
     def _instrument_polling_request(self, request):
         """Instrument one dedicated PTB getUpdates request with progress tracking.
@@ -3358,6 +3395,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # successful round-trip past the stall threshold is dead
                 # (#92991). Pure local-state check — no Bot API call needed.
                 await self._check_polling_stall()
+                # Transport health is not delivery health: updates can arrive
+                # and then die downstream with every probe above still green
+                # (#102260). Pure local-state check — no Bot API call.
+                self._check_ingress_delivery_gap()
             except asyncio.CancelledError:
                 return
             except (asyncio.TimeoutError, OSError) as probe_err:
@@ -3477,6 +3518,74 @@ class TelegramAdapter(BasePlatformAdapter):
                     RuntimeError("getUpdates consumer wedged: pending updates not draining")
                 )
             )
+
+    def _check_ingress_delivery_gap(self) -> None:
+        """Report updates that arrived on the wire but reached no gateway turn.
+
+        Every other probe in this adapter measures the transport. When the
+        transport is healthy and updates are still not being acted on, the
+        gateway publishes ``connected``, logs nothing, and looks exactly like
+        an idle bot — the failure mode of #102260, which stayed undiagnosed for
+        three weeks because no counter existed on the delivered side.
+
+        Three counters split the failure into its distinguishable causes:
+
+        * ``received``   — updates Telegram handed this process (getUpdates).
+        * ``dispatched`` — updates PTB's dispatcher carried through the whole
+          handler chain. ``received > dispatched`` means the dispatcher is not
+          draining; the transport is innocent.
+        * ``delivered``  — inbound events that reached the gateway's message
+          handler. ``dispatched > delivered`` means Hermes itself is dropping
+          what arrives (authorization, mention/topic gating, a missing handler).
+
+        Deliberately diagnostic only. A received update legitimately reaches no
+        gateway turn (the bot's own messages, reactions, unmentioned group
+        chatter), so this must never drive recovery on its own — reconnecting a
+        healthy transport would not fix a dropped update anyway. It reports
+        once per received-count so a persistent gap does not spam the log.
+        """
+        if self._webhook_mode:
+            return
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if self.has_fatal_error:
+            return
+        received = getattr(self, "_updates_received_total", 0)
+        if not received:
+            return
+        last_received = getattr(self, "_last_update_received_monotonic", None)
+        if last_received is None:
+            return
+        delivered = getattr(self, "_inbound_delivered_total", 0)
+        last_delivered = getattr(self, "_last_inbound_delivered_monotonic", None)
+        # Something was delivered after the last update arrived: the chain is
+        # working end to end. Re-arm so a later gap is reported again.
+        if last_delivered is not None and last_delivered >= last_received:
+            self._ingress_gap_reported_at_received = None
+            return
+        if time.monotonic() - last_received <= _INGRESS_DELIVERY_GAP_TIMEOUT:
+            return
+        if self._ingress_gap_reported_at_received == received:
+            return
+        self._ingress_gap_reported_at_received = received
+        dispatched = getattr(self, "_updates_dispatched_total", 0)
+        if dispatched < received:
+            where = (
+                "PTB's dispatcher is not draining them (received > dispatched)"
+            )
+        else:
+            where = (
+                "they are being dropped inside Hermes before the gateway "
+                "handler (dispatched > delivered) — check authorization, "
+                "mention/topic gating, and the held-inbound queue"
+            )
+        logger.error(
+            "[%s] Telegram ingress is healthy but deaf: %d update(s) received "
+            "on the getUpdates wire, %d dispatched, %d delivered to the "
+            "gateway, none delivered in the last %.0fs. Polling is fine — %s.",
+            self.name, received, dispatched, delivered,
+            time.monotonic() - last_received, where,
+        )
 
     async def _check_polling_stall(self) -> None:
         """Watchdog the last successful getUpdates round-trip (#92991).
@@ -4327,7 +4436,15 @@ class TelegramAdapter(BasePlatformAdapter):
         post-auth boundary. Registered in a dedicated high group so it observes
         alongside, never displaces, the core handlers. Malformed updates and
         dispatch errors cannot raise into PTB's update loop.
+
+        Being the last handler group PTB runs also makes this the one place
+        that proves the dispatcher carried an update all the way through the
+        handler chain, so the ingress counter is stamped here before any early
+        return (#102260).
         """
+        self._updates_dispatched_total = (
+            getattr(self, "_updates_dispatched_total", 0) + 1
+        )
         handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]] = getattr(
             self, "_platform_event_handler", None
         )

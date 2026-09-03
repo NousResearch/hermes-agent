@@ -447,6 +447,29 @@ def stamp_db_persisted_markers(messages: List[Dict[str, Any]]) -> None:
             msg[_DB_PERSISTED_MARKER] = True
 
 
+def _newest_checkpoint_carrier(messages: List[Dict[str, Any]], key: str) -> int:
+    """Index of the last assistant message carrying a native-compaction
+    checkpoint under *key*, or ``-1`` when the transcript has none.
+
+    This is the transcript-side mirror of
+    ``native_compaction.prune_pre_checkpoint_items``' "newest run wins" rule:
+    that function scans the converted Responses items for the last
+    ``type: "compaction"`` entry and drops everything before it, so this is
+    the only carrier whose checkpoints can still reach a request.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        items = msg.get(key)
+        if isinstance(items, list) and any(
+            isinstance(item, dict) and item.get("type") == "compaction"
+            for item in items
+        ):
+            return i
+    return -1
+
+
 def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
     """Strip stale per-turn replay items (``codex_reasoning_items``) from
     assistant messages that belong to turns older than the active one.
@@ -473,11 +496,21 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
       the last assistant message and would have stripped reasoning mid-chain
       from the in-flight turn.)
 
-    * **Native compaction checkpoints are exempt.** ``type: "compaction"``
-      items in the same sidecar are the server-side stand-in for already
-      pruned history (see ``agent/native_compaction.py``) — cumulative
-      context carriers, not per-turn reasoning.  They must survive on every
-      retained message, so pruning filters items instead of popping the key.
+    * **Only the newest native-compaction checkpoint is exempt.**
+      ``type: "compaction"`` items in the same sidecar are the server-side
+      stand-in for already pruned history (see ``agent/native_compaction.py``)
+      — cumulative context carriers, not per-turn reasoning — so pruning
+      filters items instead of popping the key.  But
+      ``native_compaction.prune_pre_checkpoint_items`` rebuilds every request
+      around the NEWEST checkpoint run and discards each earlier one, and the
+      replay gate drops checkpoints wholesale once native compaction is no
+      longer eligible.  A checkpoint shadowed by a newer carrier therefore has
+      no reader on any wire, while still being charged in full by
+      ``_ALWAYS_REPLAYED_BUDGET_KEYS`` (~120 KB of ciphertext each), replayed
+      into the child session, and persisted to
+      ``messages.codex_reasoning_items`` for the life of the DB.  Keep the
+      newest carrier — the same item the wire builder would have picked — and
+      drop the shadowed ones.
     """
     # Find the last real user message — everything after it is the active
     # turn.  Synthetic continuation rows and tool results never mark a turn
@@ -493,6 +526,11 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
         # prune nothing (fail open toward correctness, not size).
         return 0
 
+    newest_carrier = {
+        key: _newest_checkpoint_carrier(messages, key)
+        for key in _STALE_REPLAY_PRUNE_KEYS
+    }
+
     pruned = 0
     for i in range(last_user_idx):
         msg = messages[i]
@@ -502,11 +540,15 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
             items = msg.get(key)
             if not isinstance(items, list) or not items:
                 continue
-            kept = [
-                item
-                for item in items
-                if isinstance(item, dict) and item.get("type") == "compaction"
-            ]
+            kept = (
+                [
+                    item
+                    for item in items
+                    if isinstance(item, dict) and item.get("type") == "compaction"
+                ]
+                if i == newest_carrier[key]
+                else []
+            )
             if len(kept) == len(items):
                 continue  # nothing stale in this sidecar
             if kept:

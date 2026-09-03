@@ -3242,6 +3242,16 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        # Ingress delivery counter (#102260). Incremented every time an inbound
+        # event actually reaches the gateway's message handler. Adapters whose
+        # transport reports healthy can still discard 100% of inbound (no
+        # handler installed, a wedged dispatcher, a filter that never matches);
+        # without a delivered-side counter a deaf gateway is indistinguishable
+        # from an idle one, which is exactly what made #102260 undiagnosable
+        # for three weeks.
+        self._inbound_delivered_total: int = 0
+        self._last_inbound_delivered_monotonic: Optional[float] = None
+        self._no_message_handler_logged: bool = False
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
         self._reaction_handler: Optional[
@@ -3933,6 +3943,21 @@ class BasePlatformAdapter(ABC):
     def is_connected(self) -> bool:
         """Check if adapter is currently connected."""
         return self._running
+
+    def note_inbound_delivered(self) -> None:
+        """Record that one inbound event reached the gateway message handler.
+
+        The delivered side of the ingress accounting introduced for #102260.
+        Adapters that observe their own wire traffic (Telegram's getUpdates
+        instrumentation) compare their received counter against this one to
+        tell "nothing is arriving" apart from "everything arriving is being
+        dropped downstream" — two failures that look identical from every
+        transport-level health probe.
+        """
+        self._inbound_delivered_total = (
+            getattr(self, "_inbound_delivered_total", 0) + 1
+        )
+        self._last_inbound_delivered_monotonic = time.monotonic()
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
@@ -6386,7 +6411,21 @@ class BasePlatformAdapter(ABC):
         enabling interruption support.
         """
         if not self._message_handler:
+            # A connected adapter with no message handler is silently deaf: it
+            # polls, publishes "connected", and can still send — while every
+            # inbound message is discarded here with no log at all. Say so once
+            # per adapter so the failure is diagnosable (#102260).
+            if not getattr(self, "_no_message_handler_logged", False):
+                self._no_message_handler_logged = True
+                logger.error(
+                    "[%s] Dropping inbound message: no gateway message handler "
+                    "is installed on this adapter. The adapter is connected and "
+                    "can send, but every inbound message is discarded.",
+                    self.name,
+                )
             return
+
+        self.note_inbound_delivered()
 
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)

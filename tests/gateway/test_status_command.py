@@ -287,6 +287,11 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
     )
 
     monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
+    # #95705: the /sethome nudge is operator-gated — it must never land in an
+    # arbitrary inbound DM. This test pins the Slack parent-command form of
+    # the nudge, so the sender must be operator-authorized for the nudge to
+    # be delivered at all (SLACK_OPERATOR_USERS allowlist gate).
+    monkeypatch.setenv("SLACK_OPERATOR_USERS", "u1")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",

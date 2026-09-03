@@ -185,6 +185,17 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    # Sender-authority signal set by adapters when the inbound message came from
+    # a known-owner endpoint (e.g. WhatsApp's ``fromOwner`` bridge flag when the
+    # operator's linked phone sends to the bot's own chat). Distinct from
+    # ``role_authorized``/``is_bot`` because it names a real ownership class
+    # independent of allowlists — operators can use the bot while customers are
+    # allowlisted, and the difference matters when a path needs to speak
+    # operational messages (e.g. /sethome nudge) that must never leak to a
+    # customer DM (#95705). Wire-serialized (different from
+    # ``delivered_via_upstream_relay`` which is intentionally transport-local)
+    # so async/deferred delivery paths can preserve the operator signal.
+    sender_is_owner: bool = False
     # Profile this inbound message is routed to in a multiplexing gateway
     # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
     # None => the gateway's active/default profile. Drives both session-key
@@ -293,6 +304,13 @@ class SessionSource:
             d["auto_thread_initial_name"] = self.auto_thread_initial_name
         if self.prospective_thread_id:
             d["prospective_thread_id"] = self.prospective_thread_id
+        # ``sender_is_owner`` is wire-serialized: a deferred-delivery path
+        # (e.g. cron pickup, compressed-thread replay) restores the owner signal
+        # so the /sethome nudge gate in run.py can still tell operator DMs from
+        # arbitrary inbound. Persist only when true to keep the dict byte-stable
+        # for the pre-fix default-False history.
+        if self.sender_is_owner:
+            d["sender_is_owner"] = True
         return d
 
     @classmethod
@@ -317,6 +335,10 @@ class SessionSource:
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
             prospective_thread_id=data.get("prospective_thread_id"),
+            # Restore operator signal so downstream gates (e.g. /sethome nudge,
+            # operator-only notice delivery in run.py) keep working across
+            # async/deferred hops (#95705). Absent key defaults to False.
+            sender_is_owner=bool(data.get("sender_is_owner", False)),
         )
     
 

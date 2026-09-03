@@ -1522,13 +1522,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             is_group = data.get("isGroup", False)
             chat_type = "group" if is_group else "dm"
             
-            # Build source
+            # Build source. The bridge sets ``fromOwner: true`` on inbound
+            # ``fromMe`` messages that look owner-typed (linked-device send,
+            # not echoed from /send) when the operator opts into
+            # ``WHATSAPP_FORWARD_OWNER_MESSAGES``. We lift that flag onto the
+            # source's ``sender_is_owner`` so the /sethome nudge gate and any
+            # other operator-only paths in ``gateway.run`` can distinguish the
+            # operator's own chat from arbitrary customer inbound (#95705).
             source = self.build_source(
                 chat_id=data.get("chatId", ""),
                 chat_name=data.get("chatName"),
                 chat_type=chat_type,
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
+                sender_is_owner=bool(data.get("fromOwner")),
             )
             
             # Download media URLs to the local cache so agent tools

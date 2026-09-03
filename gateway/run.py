@@ -157,6 +157,179 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
 )
 
 
+# Tool-call rendering lines (status chrome like "🔍 Searching past sessions
+# (×2)", "⚙️ Running <cmd>", "✏️ Editing <file>", etc.) belong to the TUI/
+# desktop status stream, not the chat surface.  When they leak into
+# ``final_response`` and the chat-surface sanitizer passes them through, the
+# client-facing chat ends up with the agent's working transcript interleaved
+# with its actual reply (#95705).  Strip them from the final response on
+# every gateway platform except the raw-text surfaces that explicitly want
+# the full transcript (CLI/TUI ``local`` diagnostics, API JSON, webhook
+# payloads — gated by ``_gateway_surface_passes_raw_text``).
+#
+# Anchored to ``(emoji)(known-verb)`` so a normal assistant sentence that
+# mentions "🔍 research" inline is preserved (no match — "research" is not
+# a known verb), while a tool-render header line is dropped. The
+# ``(×\d+)`` tail covers the per-tool-call N-run suffix that the WhatsApp
+# side already emits on repeat calls.  Verb list is the curated set from
+# ``agent.display._TOOL_VERBS``; widening it here without matching the
+# upstream list risks stripping assistant prose.
+_GATEWAY_TOOL_RENDER_LINE_RE = re.compile(
+    r"""^[🔍⚙️✏️📊🛠⚡🔧🧠💾📝📂🔎🎙🎬🪄🧪][\uFE0F]*\s*"""
+    r"""(?:"""
+    r"""Searching|Reading|Writing|Editing|Running|"""
+    r"""Browsing|Clicking|Typing|Listing|Updating|"""
+    r"""Scheduling|Asking|Delegating|Generating|Looking|Skill"""
+    r""")\b"""
+    r"""[^\n]*?"""
+    r"""(?:\(\s*×\s*\d+\s*\))?[^\n]*$""",
+    re.UNICODE,
+)
+
+
+# Detect tool-call rendering chrome lines that must never reach a chat surface
+# (CLI keeps them; the chat sanitizer strips them — #95705).
+
+
+
+def _strip_gateway_tool_render_lines(text: str) -> str:
+    """Drop standalone tool-call render header lines from ``final_response``.
+
+    A "tool render line" is one whose leading token matches ``_GATEWAY_TOOL_RENDER_LINE_RE`` —
+    i.e. starts with a chrome emoji (🔍/⚙️/✏️/…) followed by a known tool verb
+    (Searching/Editing/Running/Reading/…). Lines that do not match the whole-line
+    pattern are kept verbatim, so a normal assistant sentence that mentions an
+    emoji mid-paragraph is unaffected.
+
+    The pattern is anchored to the LINE START and END so an emoji that appears
+    inline within otherwise-valid assistant prose does not get caught by the
+    regex (no full-line match).  Blank-line runs are collapsed to a single
+    blank so the stripped output still reads as one paragraph.
+    """
+    if not text or "\n" not in text:
+        # Single-line: match can still trigger if the line fits the pattern
+        # (e.g. "🔍 Searching past sessions (×2)"), but only when the WHOLE
+        # text fits the pattern, so an assistant reply of "🔍 research ..."
+        # does NOT match (missing known verb).
+        if _GATEWAY_TOOL_RENDER_LINE_RE.match(text.strip()):
+            return ""
+        return text
+    kept_lines: List[str] = []
+    for line in text.split("\n"):
+        if _GATEWAY_TOOL_RENDER_LINE_RE.match(line.strip()):
+            continue
+        kept_lines.append(line)
+    cleaned = "\n".join(kept_lines)
+    # Collapse 3+ consecutive newlines to a single blank line so the
+    # stripped surface stays readable.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+# Operator-target gates for one-time operational notices that must NEVER leak
+# to arbitrary inbound DMs (#95705).  The /sethome nudge is the canonical
+# example: it tells the operator "configure your home channel" and the chat
+# that receives it must be the operator's own channel, not a customer's DM.
+
+# Inline allow-all check by env var — mirrors the per-platform env map in
+# ``gateway.authz_mixin._is_user_authorized`` (line ~540).  Kept local so the
+# notice gate does not depend on a private authz symbol; the map is small
+# enough that duplication is cheaper than coupling (#95705).
+_SETHOME_PLATFORM_ALLOW_ALL_ENV: Dict[str, str] = {
+    "telegram": "TELEGRAM_ALLOW_ALL_USERS",
+    "discord": "DISCORD_ALLOW_ALL_USERS",
+    "whatsapp": "WHATSAPP_ALLOW_ALL_USERS",
+    "whatsapp_cloud": "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+    "slack": "SLACK_ALLOW_ALL_USERS",
+    "signal": "SIGNAL_ALLOW_ALL_USERS",
+    "email": "EMAIL_ALLOW_ALL_USERS",
+    "sms": "SMS_ALLOW_ALL_USERS",
+    "mattermost": "MATTERMOST_ALLOW_ALL_USERS",
+    "matrix": "MATRIX_ALLOW_ALL_USERS",
+    "dingtalk": "DINGTALK_ALLOW_ALL_USERS",
+    "feishu": "FEISHU_ALLOW_ALL_USERS",
+    "wecom": "WECOM_ALLOW_ALL_USERS",
+    "wecom_callback": "WECOM_CALLBACK_ALLOW_ALL_USERS",
+    "weixin": "WEIXIN_ALLOW_ALL_USERS",
+    "bluebubbles": "BLUEBUBBLES_ALLOW_ALL_USERS",
+    "qqbot": "QQ_ALLOW_ALL_USERS",
+    "yuanbao": "YUANBAO_ALLOW_ALL_USERS",
+    "homeassistant": "HOMEASSISTANT_ALLOW_ALL_USERS",
+    "relay": "RELAY_ALLOW_ALL_USERS",
+}
+
+
+def _sethome_target_is_authorized(runner: Any, source: Any, platform: Any) -> bool:
+    """Return True when a /sethome nudge may safely target ``source.chat_id``.
+
+    Pass conditions, in priority order:
+
+      1. ``source.sender_is_owner`` — the adapter marked the inbound as
+         owner-typed (e.g. WhatsApp's ``fromOwner`` linked-phone flag).
+      2. The platform's allow-all flag is set (``<PLATFORM>_ALLOW_ALL_USERS=true``
+         or the equivalent config path) — every inbound is operator-acceptable
+         by configuration, so the nudge is acceptable too.
+      3. ``source.user_id`` resolves into the platform's operator allowlist
+         (``<PLATFORM>_OPERATOR_USERS`` env-mirrored list) — the
+         explicit operator-of-record gate.
+      4. The platform has a configured home channel AND the origin chat IS
+         that home channel — the platform admin already trusts this chat as
+         the operator surface.
+
+    Failures log a warning the operator can grep for (``#95705 sethome
+    nudge suppressed``); no chat-side delivery happens on a miss.
+    """
+    if getattr(source, "sender_is_owner", False) is True:
+        return True
+
+    # Allow-all on the platform ⇒ every inbound is operator-acceptable by config.
+    try:
+        platform_value = str(getattr(platform, "value", platform) or "")
+        allow_all_env = _SETHOME_PLATFORM_ALLOW_ALL_ENV.get(platform_value, "")
+        if allow_all_env:
+            raw = (os.getenv(allow_all_env) or "").strip().lower()
+            if raw in {"true", "1", "yes", "on"}:
+                return True
+        # Global allow-all is shared across platforms.
+        global_raw = (os.getenv("GATEWAY_ALLOW_ALL_USERS") or "").strip().lower()
+        if global_raw in {"true", "1", "yes", "on"}:
+            return True
+    except Exception:
+        # Fail closed on a broken probe so a misconfigured path can't
+        # default-deny-by-side-effect.
+        pass
+
+    # Explicit per-platform operator allowlist (NEW env-mirrored list).
+    try:
+        platform_value = str(getattr(platform, "value", platform) or "")
+        operators_env = (os.getenv(f"{platform_value.upper()}_OPERATOR_USERS") or "").strip()
+        operator_users = {
+            str(u).strip() for u in operators_env.split(",") if str(u).strip()
+        }
+        src_user = str(getattr(source, "user_id", None) or "").strip()
+        if operator_users and src_user and src_user in operator_users:
+            return True
+    except Exception:
+        pass
+
+    # The platform has a home channel AND the inbound IS that home channel —
+    # the operator of record is whoever runs the home channel, so nudging
+    # that exact chat is safe.
+    try:
+        config = getattr(runner, "config", None)
+        home = config.get_home_channel(platform) if config is not None else None
+        if (
+            home
+            and str(getattr(source, "chat_id", None) or "").strip()
+            == str(home.chat_id or "").strip()
+        ):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 _HYGIENE_COOLDOWN_LADDER_MULTIPLIERS = (1, 3, 9)
 # Absolute ceiling on an escalated hygiene cooldown, mirroring
 # _RECONNECT_BACKOFF_CAP above: with an operator-raised base the multiplier
@@ -1037,7 +1210,15 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
-    return redacted
+    # Defense-in-depth strip of tool-call rendering lines (#95705). When the
+    # agent's working transcript (status chrome like "🔍 Searching past
+    # sessions (×2)") makes it into ``final_response`` — e.g. an interim
+    # tool commentary got included on the way to the persisted message —
+    # the gateway chat surface must NOT carry it to the client-facing
+    # chat.  Raw-text/programmatic surfaces above (``_GATEWAY_RAW_TEXT_PLATFORMS``)
+    # keep the full transcript; chat surfaces get only the assistant prose.
+    stripped = _strip_gateway_tool_render_lines(redacted)
+    return stripped
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -23077,7 +23258,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"Type {sethome_cmd} to make this chat your home channel, "
                     f"or ignore to skip."
                 )
-                await self._deliver_platform_notice(source, notice)
+                # SECURITY (#95705): the /sethome nudge is an operator-side
+                # configuration message — it must NEVER land in an arbitrary
+                # inbound DM from a customer.  Gate delivery on the operator
+                # target checks (``_sethome_target_is_authorized``); on a miss
+                # the nudge is logged and the inbound chat is left alone.
+                # Operators see the guidance in the gateway log instead of in
+                # the customer's chat.
+                if not _sethome_target_is_authorized(self, source, source.platform):
+                    logger.warning(
+                        "#95705 sethome nudge suppressed for non-operator "
+                        "inbound on %s chat=%s user=%s; configure %s "
+                        "(or platforms.%s.home_channel, or %s_OPERATOR_USERS) "
+                        "to enable operator-targeted delivery.",
+                        platform_name,
+                        getattr(source, "chat_id", None),
+                        getattr(source, "user_id", None),
+                        env_key, platform_name,
+                        (platform_name or "").upper(),
+                    )
+                else:
+                    await self._deliver_platform_notice(source, notice)
         
         # -----------------------------------------------------------------
         # Voice channel awareness — deliver current voice channel state so

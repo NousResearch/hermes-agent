@@ -7495,6 +7495,7 @@ class BasePlatformAdapter(ABC):
         role_authorized: bool = False,
         auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None,
+        sender_is_owner: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform.
 
@@ -7503,6 +7504,13 @@ class BasePlatformAdapter(ABC):
         ``source.profile``. Downstream code (``_resolve_profile_home_for_source``
         in run.py) reads that field to enter ``_profile_runtime_scope`` for
         per-profile HERMES_HOME isolation.
+
+        ``sender_is_owner`` is the adapter's operator-authority signal — set
+        True when the inbound came from a known owner endpoint (e.g. WhatsApp's
+        ``fromOwner`` linked-phone flag). Distinct from ``role_authorized``:
+        a customer can be allowlisted without being an operator, but only
+        an operator should ever receive operator-side notices like the
+        /sethome nudge (#95705).
         """
         # Normalize empty topic to None
         if chat_topic is not None and not chat_topic.strip():
@@ -7563,6 +7571,7 @@ class BasePlatformAdapter(ABC):
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,
+            sender_is_owner=bool(sender_is_owner),
         )
         # In-process transport provenance is deliberately not serialized by
         # SessionSource.to_dict(). The live receiving adapter is authoritative

@@ -2448,6 +2448,103 @@ class TestStaleBaseUrlWarning:
 
 
 class TestAuxiliaryTaskExtraBody:
+    def test_task_reasoning_effort_uses_custom_provider_profile(self):
+        """The generic task knob reaches custom OpenAI-compatible wires."""
+        client = MagicMock()
+        client.base_url = "http://127.0.0.1:8000/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        config = {
+            "auxiliary": {
+                "compression": {
+                    "provider": "custom",
+                    "model": "local-reasoning-model",
+                    "reasoning_effort": "low",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "local-reasoning-model"),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_async_task_reasoning_effort_uses_custom_provider_profile(self):
+        client = MagicMock()
+        client.base_url = "http://127.0.0.1:8000/v1"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+        config = {
+            "auxiliary": {
+                "web_extract": {
+                    "provider": "custom",
+                    "model": "local-reasoning-model",
+                    "reasoning_effort": "none",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "local-reasoning-model"),
+        ):
+            result = await async_call_llm(
+                task="web_extract",
+                messages=[{"role": "user", "content": "extract"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "none"
+        assert kwargs["extra_body"]["think"] is False
+
+    def test_explicit_reasoning_extra_body_suppresses_profile_projection(self):
+        """A task's explicit wire control still wins over the shorthand."""
+        client = MagicMock()
+        client.base_url = "http://127.0.0.1:8000/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+        explicit_reasoning = {"enabled": False, "vendor": "custom"}
+        config = {
+            "auxiliary": {
+                "compression": {
+                    "provider": "custom",
+                    "model": "local-reasoning-model",
+                    "reasoning_effort": "low",
+                    "extra_body": {"reasoning": explicit_reasoning},
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "hermes_cli.config.load_config_readonly", return_value=config
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "local-reasoning-model"),
+        ):
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["extra_body"]["reasoning"] == explicit_reasoning
+
     def test_sync_call_merges_task_extra_body_from_config(self):
         client = MagicMock()
         client.base_url = "https://api.example.com/v1"

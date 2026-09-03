@@ -5027,6 +5027,7 @@ class TestRunConversation:
 
         assert result["completed"] is False
         assert result.get("compression_exhausted") is True
+        assert result.get("output_cap_recovery_exhausted") is True
         # Terminated in a bounded number of API calls (default max attempts=3
         # => ~4 create calls), NOT an unbounded retry loop.
         assert agent.client.chat.completions.create.call_count <= 6

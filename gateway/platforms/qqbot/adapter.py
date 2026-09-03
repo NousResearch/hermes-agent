@@ -1328,7 +1328,7 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="dm",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(image_urls, image_media_types, has_voice=bool(voice_transcripts)),
             raw_message=d,
             message_id=msg_id,
             media_urls=image_urls,
@@ -1393,7 +1393,7 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="group",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(image_urls, image_media_types, has_voice=bool(voice_transcripts)),
             raw_message=d,
             message_id=msg_id,
             media_urls=image_urls,
@@ -1468,7 +1468,7 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="group",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(image_urls, image_media_types, has_voice=bool(voice_transcripts)),
             raw_message=d,
             message_id=msg_id,
             media_urls=image_urls,
@@ -1538,7 +1538,7 @@ class QQAdapter(BasePlatformAdapter):
                 chat_type="dm",
             ),
             text=text,
-            message_type=self._detect_message_type(image_urls, image_media_types),
+            message_type=self._detect_message_type(image_urls, image_media_types, has_voice=bool(voice_transcripts)),
             raw_message=d,
             message_id=msg_id,
             media_urls=image_urls,
@@ -1659,8 +1659,16 @@ class QQAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _detect_message_type(media_urls: list, media_types: list):
-        """Determine MessageType from attachment content types."""
+    def _detect_message_type(media_urls: list, media_types: list, has_voice: bool = False):
+        """Determine MessageType from attachment content types.
+
+        ``has_voice`` marks voice attachments explicitly — voice transcripts
+        are folded into the text body, so without it a pure-voice message
+        would be misclassified as TEXT and voice-reply modes
+        (voice_only/all) would never trigger.
+        """
+        if has_voice:
+            return MessageType.VOICE
         if not media_urls:
             return MessageType.TEXT
         if not media_types:

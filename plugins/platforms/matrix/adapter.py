@@ -1338,6 +1338,11 @@ class MatrixAdapter(BasePlatformAdapter):
         # if that changes, add a config.yaml entry rather than an env var.
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: Set[asyncio.Task] = set()
+        # Agent-facing reactions (send_message action="react"): the most
+        # recent inbound event per room (the default reaction target), and
+        # the annotation events we posted so unreact can redact them.
+        self._last_inbound_by_room: dict[str, str] = {}
+        self._agent_reactions: dict[tuple[str, str], str] = {}
 
         # Proxy support — resolve once at init, reuse for all HTTP traffic.
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
@@ -3960,6 +3965,72 @@ class MatrixAdapter(BasePlatformAdapter):
         """Remove a reaction by redacting its event."""
         return await self.redact_message(room_id, reaction_event_id, reason)
 
+    # -- Agent-facing reactions (send_message action="react") ---------------
+    #
+    # Unlike the lifecycle hooks below, these are deliberate agent intents,
+    # so they are NOT gated by MATRIX_REACTIONS (that env var exists to mute
+    # the automatic per-message tapback noise, not explicit requests).
+    # Mirrors the photon adapter's pair; ``send_message`` discovers them via
+    # ``getattr(adapter, "add_reaction")``.
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """React ``emoji`` onto a message in room ``chat_id``.
+
+        Without ``message_id``, targets the room's most recent inbound
+        message (typically the one the agent is responding to). Posts a
+        native ``m.reaction`` annotation, so any Matrix client renders it.
+        """
+        target = message_id or self._last_inbound_by_room.get(str(chat_id))
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id (no "
+                "inbound message seen in this room since the gateway "
+                "started)",
+            }
+        reaction_event_id = await self._send_reaction(
+            str(chat_id), str(target), emoji
+        )
+        if not reaction_event_id:
+            return {
+                "success": False,
+                "error": "reaction send failed (see gateway debug log)",
+            }
+        self._agent_reactions[(str(chat_id), str(target))] = reaction_event_id
+        return {"success": True, "message_id": str(target)}
+
+    async def remove_reaction(
+        self, chat_id: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Retract our reaction from a message (best-effort).
+
+        Only reactions placed through :meth:`add_reaction` in this process
+        are tracked; the lifecycle tapbacks manage their own redaction.
+        """
+        target = message_id or self._last_inbound_by_room.get(str(chat_id))
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to unreact — pass message_id",
+            }
+        reaction_event_id = self._agent_reactions.pop(
+            (str(chat_id), str(target)), None
+        )
+        if not reaction_event_id:
+            return {
+                "success": False,
+                "error": "no reaction of ours recorded on that message",
+            }
+        ok = await self._redact_reaction(
+            str(chat_id), reaction_event_id, "reaction retracted"
+        )
+        return {"success": bool(ok), "message_id": str(target)}
+
     def _schedule_reaction_redaction(
         self,
         room_id: str,
@@ -3991,14 +4062,20 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add eyes reaction when the agent starts processing a message."""
-        if not self._reactions_enabled:
-            return
         msg_id = event.message_id
         room_id = event.source.chat_id
-        if msg_id and room_id:
-            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
-            if reaction_event_id:
-                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+        if not msg_id or not room_id:
+            return
+        # Remember the triggering message so add_reaction() can default to
+        # "the message being answered" (photon's _last_inbound_by_chat
+        # precedent). Recorded before the MATRIX_REACTIONS gate — muting the
+        # lifecycle tapbacks must not blind deliberate agent reactions.
+        self._last_inbound_by_room[str(room_id)] = str(msg_id)
+        if not self._reactions_enabled:
+            return
+        reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+        if reaction_event_id:
+            self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(
         self,

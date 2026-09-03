@@ -521,7 +521,18 @@ class HermesTokenStorage:
         try:
             return OAuthToken.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
-            logger.warning("Corrupt tokens at %s -- ignoring: %s", self._tokens_path(), exc)
+            # Pydantic ValidationError includes raw input in its string repr.
+            # Use errors(include_input=False) to avoid logging token material.
+            err_detail = exc
+            if hasattr(exc, "errors"):
+                try:
+                    errs = exc.errors(include_input=False)
+                    if errs:
+                        fields = ", ".join(str(e.get("loc")) for e in errs)
+                        err_detail = f"validation failed for fields: {fields}"
+                except Exception:
+                    pass
+            logger.warning("Corrupt tokens at %s -- ignoring: %s", self._tokens_path(), err_detail)
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:

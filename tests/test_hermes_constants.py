@@ -361,6 +361,52 @@ class TestIsContainer:
         monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
         assert is_container() is True
 
+    def test_ignores_containerd_mounts_below_host_root(self, monkeypatch):
+        """A Docker host's child overlay mounts do not make the host a container."""
+        import builtins
+        import io
+
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/1/cgroup":
+                return io.StringIO("0::/init.scope\n")
+            if path == "/proc/self/mountinfo":
+                return io.StringIO(
+                    "24 1 0:22 / / rw - ext4 /dev/root rw\n"
+                    "90 24 0:81 / /var/lib/docker/rootfs/overlayfs/abc rw "
+                    "- overlay containerd-overlay rw\n"
+                )
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        assert is_container() is False
+
+    def test_detects_containerd_root_mount(self, monkeypatch):
+        """A runtime marker on the process root mount remains a positive signal."""
+        import builtins
+        import io
+
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/1/cgroup":
+                return io.StringIO("0::/\n")
+            if path == "/proc/self/mountinfo":
+                return io.StringIO(
+                    "24 1 0:81 / / rw - overlay containerd-overlay rw\n"
+                )
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+        assert is_container() is True
+
 
 
     def test_caches_result(self, monkeypatch):

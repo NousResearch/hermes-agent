@@ -1,6 +1,7 @@
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { filePathFromMediaPath } from '@/lib/media'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -70,7 +71,7 @@ function pathToFileUrl(path: string) {
 
   const encoded = normalized
     .split('/')
-    .map(part => encodeURIComponent(part))
+    .map(part => (/^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)))
     .join('/')
 
   if (isWindowsUnc) {
@@ -189,15 +190,10 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     return { kind: 'url', label: basename(raw), source: raw, url: raw }
   }
 
-  let path = raw
+  let path = filePathFromMediaPath(raw)
+  const absoluteWindowsPath = /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
 
-  if (/^file:\/\//i.test(raw)) {
-    try {
-      path = decodeURIComponent(new URL(raw).pathname)
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
-  } else if (!raw.startsWith('/') && cwd) {
+  if (!path.startsWith('/') && !absoluteWindowsPath && cwd) {
     path = joinPath(cwd, raw)
   }
 

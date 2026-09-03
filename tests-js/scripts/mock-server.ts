@@ -37,6 +37,8 @@ export interface MockServerOptions {
   /** Extra ids listed by GET /v1/models beside `mock-model` (a pickable second model). */
   extraModels?: string[]
 
+  /** Override the ordinary final reply for a focused renderer E2E scenario. */
+  reply?: string
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 /** Pause the first completion whose request JSON contains this text. */
@@ -441,6 +443,7 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
  */
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
+    const defaultReply = options.reply ?? MOCK_REPLY
     const receivedPrompts: string[] = []
     const receivedModels: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
@@ -700,14 +703,13 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
-          const reply = options.replyForPrompt?.(userText) ?? MOCK_REPLY
+          const reply = options.replyForPrompt?.(userText) ?? defaultReply
 
           if (stream) {
             const holdThisStream = Boolean(
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
-
             streamTextResponse(res, model, reply, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++

@@ -620,7 +620,8 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 _MEDIA_NATIVE = (
-    "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
+    "You can send files natively: put each MEDIA:/absolute/path/to/file "
+    "directive on its own line, with no prose after the path. "
 )
 
 _LOCAL_CRON_DELIVERY_NOTE = (
@@ -704,8 +705,9 @@ PLATFORM_HINTS = {
         # recipe-first: HOW (an inline widget IS a ::preview'd HTML file) and WHY (the frame injects the theme
         # prelude first; width adopts the first measured span). setup_mcp is taught by its own tool schema.
         "You are chatting inside the Hermes desktop app, a graphical chat surface. Markdown renders with full GitHub "
-        "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by writing "
-        "MEDIA:/absolute/path/to/file — any file type: images/audio/video render inline, everything else becomes a "
+        "flavor (tables, syntax-highlighted code, math via $...$, task lists, callouts). Deliver files by putting each "
+        "MEDIA:/absolute/path/to/file directive on its own line with no prose after the path — any file type: "
+        "images/audio/video render inline, everything else becomes a "
         "card with Download and preview buttons. Remote image URLs render via ![alt](url); local files ONLY via MEDIA: "
         "(local markdown images are blocked). Inline widget/chart (living IN the chat): write an HTML file, then put "
         "::preview{file=\"path.html\"} alone on its own line (plugins can register more ::name{...} directives). The "

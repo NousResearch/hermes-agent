@@ -133,6 +133,27 @@ describe('remote HTML previews', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
   })
 
+  it('does not join native Windows drive and UNC paths to the session cwd', () => {
+    expect(localPreviewTarget('C:\\Users\\demo\\Hermes Projects\\report.md', 'C:\\workspace')).toMatchObject({
+      path: 'C:\\Users\\demo\\Hermes Projects\\report.md',
+      url: 'file:///C:/Users/demo/Hermes%20Projects/report.md'
+    })
+    expect(localPreviewTarget('\\\\server\\Hermes Projects\\report.md', 'C:\\workspace')).toMatchObject({
+      path: '\\\\server\\Hermes Projects\\report.md',
+      url: 'file://server/Hermes%20Projects/report.md'
+    })
+  })
+
+  it('decodes Windows drive and UNC file URLs for remote preview reads', () => {
+    expect(localPreviewTarget('file:///C:/Users/demo/Hermes%20Projects/report.md')).toMatchObject({
+      path: 'C:/Users/demo/Hermes Projects/report.md'
+    })
+    expect(localPreviewTarget('file://server/Hermes%20Projects/report.md')).toMatchObject({
+      path: '\\\\server\\Hermes Projects\\report.md',
+      url: 'file://server/Hermes%20Projects/report.md'
+    })
+  })
+
   it('opens ordinary targets without staging them', async () => {
     const openPreviewInBrowser = vi.fn(async () => undefined)
     const saveImageBuffer = vi.fn()

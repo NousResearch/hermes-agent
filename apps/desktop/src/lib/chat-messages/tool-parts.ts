@@ -302,17 +302,16 @@ function toolResultMetadata(
 }
 
 function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
-  const next = parts.slice()
+  return parts.map(part => {
+    const settled =
+      part.provisionalMediaSource === undefined
+        ? part
+        : (({ provisionalMediaSource: _source, ...rest }) => rest as ChatMessagePart)(part)
 
-  for (let index = 0; index < next.length; index += 1) {
-    const part = next[index]
-
-    if ((part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined) {
-      next[index] = { ...part, completedAt } as ChatMessagePart
-    }
-  }
-
-  return next
+    return (settled.type === 'text' || settled.type === 'reasoning') && settled.completedAt === undefined
+      ? ({ ...settled, completedAt } as ChatMessagePart)
+      : settled
+  })
 }
 
 export function upsertToolPart(

@@ -10,6 +10,7 @@ import {
   isRemoteGateway,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
+  mediaName,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
@@ -43,6 +44,28 @@ describe('filePathFromMediaPath', () => {
   it('decodes a file:// URL with encoded characters', () => {
     expect(filePathFromMediaPath('file:///tmp/a%20b.png')).toBe('/tmp/a b.png')
   })
+
+  it('decodes Windows drive and UNC file URLs without losing their roots', () => {
+    expect(filePathFromMediaPath('file:///C:/Users/demo/Hermes%20Projects/report.md')).toBe(
+      'C:/Users/demo/Hermes Projects/report.md'
+    )
+    expect(filePathFromMediaPath('file://server/Hermes%20Projects/report.md')).toBe(
+      '\\\\server\\Hermes Projects\\report.md'
+    )
+  })
+
+  it('normalizes an already-decoded WHATWG Windows drive pathname', () => {
+    expect(filePathFromMediaPath('/C:/Users/demo/Hermes Projects/report.md')).toBe(
+      'C:/Users/demo/Hermes Projects/report.md'
+    )
+  })
+})
+
+describe('mediaName', () => {
+  it('extracts the basename from Windows drive and UNC paths', () => {
+    expect(mediaName('C:\\Users\\ADMIN\\My Files\\report.pdf')).toBe('report.pdf')
+    expect(mediaName('\\\\server\\Shared Files\\report.pdf')).toBe('report.pdf')
+  })
 })
 
 describe('mediaExternalUrl', () => {
@@ -59,6 +82,14 @@ describe('mediaExternalUrl', () => {
     $connection.set({ mode: 'local' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
+  })
+
+  it('creates standards-compliant Windows drive and UNC file URLs', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('C:\\Program Files\\final report.pdf')).toBe(
+      'file:///C:/Program%20Files/final%20report.pdf'
+    )
+    expect(mediaExternalUrl('\\\\server\\Shared Files\\report.pdf')).toBe('file://server/Shared%20Files/report.pdf')
   })
 
   it('rewrites gateway-local paths to an authenticated download URL', () => {

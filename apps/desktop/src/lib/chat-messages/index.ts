@@ -7,6 +7,7 @@ export {
   collectUnspokenTurnSpeech,
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
+  mediaPathsFromText,
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,

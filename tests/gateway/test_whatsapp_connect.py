@@ -251,6 +251,39 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
+    async def test_send_marks_non_retryable_fatal_when_bridge_reports_logout(self):
+        """Bridge exit code 86 (Baileys loggedOut / 401) is terminal (#80088).
+
+        Reconnecting can never recover a logged-out session — without the
+        non-retryable classification the gateway watcher re-spawns the bridge
+        on its backoff forever with no visible re-pair signal.
+        """
+        from plugins.platforms.whatsapp.adapter import BRIDGE_EXIT_LOGGED_OUT
+
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._http_session = MagicMock()  # Persistent session active
+        mock_fh = MagicMock()
+        adapter._bridge_log_fh = mock_fh
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = BRIDGE_EXIT_LOGGED_OUT
+        adapter._bridge_process = mock_proc
+
+        result = await adapter.send("chat-123", "hello")
+
+        assert result.success is False
+        assert "logged out" in result.error
+        assert adapter.fatal_error_code == "whatsapp_logged_out"
+        assert adapter.fatal_error_retryable is False
+        assert "hermes whatsapp" in (adapter.fatal_error_message or "")
+        fatal_handler.assert_awaited_once()
+        mock_fh.close.assert_called_once()
+        assert adapter._bridge_log_fh is None
+
+    @pytest.mark.asyncio
     async def test_send_normalizes_bare_phone_numbers_to_jid(self):
         """A bare phone target (with or without +) becomes a full JID.
 

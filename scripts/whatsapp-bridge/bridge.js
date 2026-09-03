@@ -125,6 +125,14 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 
+// Terminal-logout exit code. Baileys' loggedOut (HTTP 401, incl. the device
+// being unlinked) cannot be recovered by reconnecting — a re-pair is required.
+// Exit with a distinct code so the adapter can tell a logout apart from an
+// ordinary crash exit(1) and stop the reconnect watcher instead of re-spawning
+// forever (#80088). Must match BRIDGE_EXIT_LOGGED_OUT in
+// plugins/platforms/whatsapp/adapter.py.
+const LOGGED_OUT_EXIT_CODE = 86;
+
 // --- Send queue: serialise all sock.sendMessage() calls across concurrent
 //     HTTP handlers so a single Baileys socket never has overlapping sends.
 //     Overlapping sends are the root cause of cross-chat contamination
@@ -443,7 +451,7 @@ async function startSocket() {
         if (!PAIR_JSON) {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         }
-        process.exit(1);
+        process.exit(LOGGED_OUT_EXIT_CODE);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
         emitPairEvent({ event: 'disconnected', reason });

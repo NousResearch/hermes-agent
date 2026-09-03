@@ -61,6 +61,13 @@ logger = logging.getLogger(__name__)
 # transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
 _OWNER_REPLY_PREFIX = "[owner reply] "
 
+# Exit code the Node bridge uses for a terminal logout (Baileys loggedOut /
+# HTTP 401, incl. the device being unlinked). Reconnecting cannot recover from
+# it — a re-pair is required — so the adapter treats it as non-retryable and
+# the gateway reconnect watcher stops re-spawning the bridge (#80088).
+# Must match LOGGED_OUT_EXIT_CODE in scripts/whatsapp-bridge/bridge.js.
+BRIDGE_EXIT_LOGGED_OUT = 86
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
@@ -907,6 +914,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 returncode,
             )
             return None
+
+        # Terminal logout: the bridge exits with BRIDGE_EXIT_LOGGED_OUT when
+        # Baileys reports loggedOut (HTTP 401, incl. the device being unlinked).
+        # That state never clears by restarting the process, so mark it
+        # non-retryable — the gateway watcher stops re-spawning the bridge and
+        # the user gets a re-pair instruction instead of a silent loop (#80088).
+        if returncode == BRIDGE_EXIT_LOGGED_OUT:
+            message = (
+                "WhatsApp session was logged out (device unlinked the bridge). "
+                "Re-pair required: run `hermes whatsapp` or pair from the dashboard."
+            )
+            if not self.has_fatal_error:
+                logger.error("[%s] %s", self.name, message)
+                self._set_fatal_error("whatsapp_logged_out", message, retryable=False)
+                self._close_bridge_log()
+                await self._notify_fatal_error()
+            return self.fatal_error_message or message
 
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:

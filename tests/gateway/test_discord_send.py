@@ -269,6 +269,30 @@ async def test_typing_restartable_after_error():
         "Should restart typing after previous failure"
 
 
+@pytest.mark.asyncio
+async def test_stale_typing_task_does_not_forget_replacement():
+    """A cancelled loop must not unregister a newer loop for the same chat."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock(request=AsyncMock())
+
+    await adapter.send_typing("12345")
+    await asyncio.sleep(0)
+    stale_task = adapter._typing_tasks.pop("12345")
+    stale_task.cancel()
+
+    # Reproduce the base refresh race: stop_typing has removed the stale task,
+    # but its cancellation cleanup has not run before the next refresh arrives.
+    await adapter.send_typing("12345")
+    replacement_task = adapter._typing_tasks["12345"]
+    try:
+        await asyncio.sleep(0)
+        assert adapter._typing_tasks.get("12345") is replacement_task
+    finally:
+        replacement_task.cancel()
+        await asyncio.gather(stale_task, replacement_task, return_exceptions=True)
+
+
 # ---------------------------------------------------------------------------
 # #66797 — outbound MEDIA video must reach channel.send as a real attachment
 # ---------------------------------------------------------------------------

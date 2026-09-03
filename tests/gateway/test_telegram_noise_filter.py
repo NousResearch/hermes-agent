@@ -9,6 +9,7 @@ from agent.conversation_compression import (
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
+    _redact_gateway_user_facing_secrets,
     _sanitize_gateway_final_response,
 )
 
@@ -229,6 +230,64 @@ def test_chat_gateways_redact_secret_in_non_error_body(platform):
     # Non-secret prose is preserved — redaction is surgical, not a wholesale
     # rewrite, on bodies that are not provider-error envelopes.
     assert "here is the example request you asked for" in sanitized
+
+
+@pytest.mark.parametrize("glue", ["中", "１"])
+@pytest.mark.parametrize(
+    ("template", "expected_prefix", "expected_suffix"),
+    [
+        ("before{glue}{secret} after", "before{glue}", " after"),
+        ("before {secret}{glue}after", "before ", "{glue}after"),
+    ],
+    ids=["unicode-prefix", "unicode-suffix"],
+)
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-" + "a" * 20,
+        "ghp_" + "b" * 24,
+        "xapp-1-" + "c" * 24,
+        "xoxb-" + "d" * 24,
+        "hf_" + "e" * 24,
+        "glpat-" + "f" * 24,
+        "Bearer " + "g" * 24,
+    ],
+)
+def test_gateway_fallback_redacts_unicode_glued_secrets(
+    monkeypatch, glue, template, expected_prefix, expected_suffix, secret
+):
+    """The fail-soft local pass must not depend on Unicode word boundaries."""
+
+    def fail_authoritative_redaction(*_args, **_kwargs):
+        raise RuntimeError("force gateway fallback")
+
+    monkeypatch.setattr(
+        "agent.redact.redact_sensitive_text", fail_authoritative_redaction
+    )
+    raw = template.format(glue=glue, secret=secret)
+
+    redacted = _redact_gateway_user_facing_secrets(raw)
+
+    assert secret not in redacted
+    assert redacted.startswith(expected_prefix.format(glue=glue))
+    assert redacted.endswith(expected_suffix.format(glue=glue))
+    assert "[REDACTED]" in redacted
+
+
+def test_gateway_fallback_preserves_ascii_embedded_secret_shape(monkeypatch):
+    """Replacing Unicode boundaries must not widen matches inside ASCII words."""
+
+    def fail_authoritative_redaction(*_args, **_kwargs):
+        raise RuntimeError("force gateway fallback")
+
+    monkeypatch.setattr(
+        "agent.redact.redact_sensitive_text", fail_authoritative_redaction
+    )
+    # The embedded `sk-` starts inside the ASCII word `prefixask`, so the
+    # explicit ASCII lookbehind must preserve it rather than over-redact.
+    text = "prefixask-aaaaaaaaaaaaaaaaaaaa suffix"
+
+    assert _redact_gateway_user_facing_secrets(text) == text
 
 
 def test_plugin_platform_string_suppresses_noise():

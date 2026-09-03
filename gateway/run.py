@@ -648,13 +648,15 @@ _GATEWAY_CONNECTION_ERROR_RE = re.compile(
 )
 
 _GATEWAY_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bxapp-\d+-[A-Za-z0-9\-]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"),
-    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
-    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
+    # Use ASCII word edges rather than Unicode-aware ``\b`` so CJK/fullwidth
+    # neighbors cannot hide a credential without widening ASCII matches.
+    re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])xapp-\d+-[A-Za-z0-9\-]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])xox[baprs]-[A-Za-z0-9\-]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])hf_[A-Za-z0-9]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])glpat-[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_])"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_])(Bearer\s+)[A-Za-z0-9._\-]{20,}(?![A-Za-z0-9_])"),
 )
 
 

@@ -78,3 +78,28 @@ def test_meta_wrapper_shape(db):
     assert set(meta.keys()) == {"hermes"}
     assert "sessionProvenance" in meta["hermes"]
     assert meta["hermes"]["sessionProvenance"]["currentHermesSessionId"] == "root1"
+
+
+@pytest.mark.parametrize(
+    ("end_reason", "expected_reason"),
+    [
+        ("turn_boundary_rollover", "turn_boundary_rollover"),
+        ("turn_boundary_rollover_recovered", "turn_boundary_rollover_recovered"),
+    ],
+)
+def test_rollover_continuation_is_not_compression_provenance(
+    db, end_reason, expected_reason,
+):
+    _mk(db, "old")
+    db.end_session("old", end_reason)
+    time.sleep(0.001)
+    _mk(db, "new", parent="old")
+
+    prov = build_session_provenance(
+        db, "acp-1", "new", previous_hermes_session_id="old"
+    )
+
+    assert prov["sessionKind"] == "continuation"
+    assert prov["compressionDepth"] == 0
+    assert prov["reason"] == expected_reason
+    assert prov["creatorKind"] == "rollover"

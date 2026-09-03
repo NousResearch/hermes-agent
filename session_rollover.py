@@ -210,7 +210,7 @@ class TurnBoundaryRollover:
         one successful replacement because the pending parent is consumed in
         the same SQLite write transaction that inserts the child.
         """
-        if active_work or not session_id:
+        if not session_id:
             return None
         try:
             if not _current_policy().enabled:
@@ -218,6 +218,8 @@ class TurnBoundaryRollover:
                 return None
         except Exception:
             # Config failure cannot authorize an opt-in parent-ending action.
+            return None
+        if active_work:
             return None
         child_id = uuid.uuid4().hex
 

@@ -784,3 +784,84 @@ def test_handoff_note_is_visible_once_without_transcript_message(tmp_path: Path)
     row = db.get_session(child)
     assert row is not None
     assert "turn_boundary_handoff" not in json.loads(row["model_config"] or "{}")
+
+
+def test_disabled_adoption_cleans_an_active_parent_without_ending_it(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """In-flight work delays adoption, never authoritative disabled cleanup."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "live", source="cli", model_config={
+            "provider": "openrouter",
+            "unrelated": {"keep": 1},
+        },
+    )
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.mark_pending(
+        "live", threshold_tokens=10, lifecycle={"state": "draining"},
+    )
+    agent = type("Agent", (), {"session_id": "live", "_session_db": db})()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": False}},
+    )
+
+    assert rollover.adopt_at_turn_boundary("live", active_work=True) is None
+
+    row = db.get_session("live")
+    assert row is not None
+    assert row["ended_at"] is None
+    assert row["end_reason"] is None
+    config = json.loads(row["model_config"] or "{}")
+    assert config["provider"] == "openrouter"
+    assert config["unrelated"] == {"keep": 1}
+    assert config["_turn_boundary_rollover_policy"] == {"enabled": False}
+    assert "_turn_boundary_rollover_pending" not in config
+    assert "turn_boundary_lifecycle" not in config
+    assert allows_new_work(agent) is True
+    assert allows_new_delegation(agent) is True
+
+
+def test_disabled_active_cleanup_preserves_concurrent_config_and_parent_lease(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Disabled cleanup cannot clobber a concurrent write or move an active lease."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "live", source="cli", model_config={
+            "provider": "openrouter",
+            "_turn_boundary_rollover_pending": {"threshold_tokens": 10},
+            "turn_boundary_lifecycle": {"state": "draining"},
+        },
+    )
+    holder = "pid=test:turn=active"
+    assert db.try_acquire_session_turn_lease("live", holder, ttl_seconds=5)
+    start = threading.Barrier(2)
+
+    def mutate_runtime_config() -> None:
+        start.wait()
+        db.patch_session_model_config("live", {"reasoning_effort": "xhigh", "yolo": True})
+
+    writer = threading.Thread(target=mutate_runtime_config)
+    writer.start()
+    start.wait()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": False}},
+    )
+    assert TurnBoundaryRollover(db).adopt_at_turn_boundary("live", active_work=True) is None
+    writer.join()
+
+    row = db.get_session("live")
+    assert row is not None
+    assert row["ended_at"] is None
+    config = json.loads(row["model_config"] or "{}")
+    assert config["provider"] == "openrouter"
+    assert config["reasoning_effort"] == "xhigh"
+    assert config["yolo"] is True
+    assert "_turn_boundary_rollover_pending" not in config
+    assert "turn_boundary_lifecycle" not in config
+    assert db.refresh_session_turn_lease("live", holder, ttl_seconds=5)
+    db.release_session_turn_lease("live", holder)

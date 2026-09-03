@@ -52,10 +52,9 @@ def build_session_provenance(
     parent_id = row.get("parent_session_id")
     end_reason = row.get("end_reason")
 
-    # Walk parents to the lineage root and count compression depth. Only
-    # compression-split parents (parent.end_reason == 'compression') count
-    # toward depth — delegate/branch children share the parent_session_id
-    # column but are not compaction boundaries.
+    # Walk parents to the lineage root and count actual compression depth.
+    # Turn-boundary rollover is a continuation, but not a compaction boundary.
+    # Delegate/branch children also share parent_session_id without being either.
     root_id = current_hermes_session_id
     compression_depth = 0
     cursor_parent = parent_id
@@ -71,13 +70,14 @@ def build_session_provenance(
         if not prow:
             break
         root_id = cursor_parent
-        if is_continuation_end_reason(prow.get("end_reason")):
+        if prow.get("end_reason") == "compression":
             compression_depth += 1
         cursor_parent = prow.get("parent_session_id")
 
-    # A session is a compression continuation when its parent was ended with
-    # end_reason='compression'. Determine that from the immediate parent.
+    # A session continues when its parent was ended by any continuation reason.
+    # Keep that lineage classification separate from compression provenance.
     is_continuation = False
+    immediate_end_reason = None
     if parent_id:
         try:
             immediate_parent = db.get_session(parent_id)
@@ -85,6 +85,7 @@ def build_session_provenance(
             immediate_parent = None
         if immediate_parent and is_continuation_end_reason(immediate_parent.get("end_reason")):
             is_continuation = True
+            immediate_end_reason = immediate_parent.get("end_reason")
 
     rotated = bool(
         previous_hermes_session_id
@@ -102,10 +103,17 @@ def build_session_provenance(
     if previous_hermes_session_id:
         provenance["previousHermesSessionId"] = previous_hermes_session_id
     if rotated:
-        # The head moved during the last turn. The only mechanism that rotates
-        # the internal id mid-turn is compression-driven session splitting.
-        provenance["reason"] = "compression"
-        provenance["creatorKind"] = "compression"
+        # Tell clients which continuation mechanism moved the internal head.
+        # Preserve the established compression payload exactly while exposing
+        # rollover as its own truthful non-compression creator kind.
+        if immediate_end_reason == "compression":
+            provenance["reason"] = "compression"
+            provenance["creatorKind"] = "compression"
+        elif immediate_end_reason in {
+            "turn_boundary_rollover", "turn_boundary_rollover_recovered",
+        }:
+            provenance["reason"] = immediate_end_reason
+            provenance["creatorKind"] = "rollover"
 
     return provenance
 

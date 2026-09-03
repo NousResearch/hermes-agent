@@ -7511,11 +7511,15 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             create = getattr(parent, "create_thread", None)
             if create is not None:
-                thread = await create(
-                    name=thread_name,
-                    auto_archive_duration=1440,
-                    reason=reason,
-                )
+                thread_kwargs: dict = {
+                    "name": thread_name,
+                    "auto_archive_duration": 1440,
+                    "reason": reason,
+                }
+                channel_type = getattr(discord, "ChannelType", None)
+                if channel_type is not None and hasattr(channel_type, "public_thread"):
+                    thread_kwargs["type"] = channel_type.public_thread
+                thread = await create(**thread_kwargs)
                 return str(thread.id)
         except Exception as direct_error:
             logger.debug(

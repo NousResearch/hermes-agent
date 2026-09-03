@@ -21,6 +21,7 @@ def _ensure_discord_mock():
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.ChannelType = SimpleNamespace(public_thread="public_thread", private_thread="private_thread")
     discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
     discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
     discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
@@ -416,5 +417,28 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     thread_kwargs = forum_channel.create_thread.await_args.kwargs
     assert thread_kwargs.get("file") is None
     assert isinstance(thread_kwargs.get("files"), list) and len(thread_kwargs["files"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_handoff_direct_create_requests_public_thread():
+    """Direct channel thread creation for handoff explicitly specifies public_thread."""
+    import plugins.platforms.discord.adapter as discord_platform
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    create_thread = AsyncMock(return_value=SimpleNamespace(id=9001))
+    parent = SimpleNamespace(create_thread=create_thread)
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: parent,
+        fetch_channel=AsyncMock(),
+    )
+
+    thread_id = await adapter.create_handoff_thread("555", "Hermes — report")
+
+    assert thread_id == "9001"
+    create_thread.assert_awaited_once()
+    assert create_thread.await_args.kwargs.get("type") == discord_platform.discord.ChannelType.public_thread
+    assert create_thread.await_args.kwargs.get("name") == "Hermes — report"
+    assert create_thread.await_args.kwargs.get("auto_archive_duration") == 1440
+
 
 

@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
+from tools.path_case import check_case_conflicts, rewrite_target_path
 
 logger = logging.getLogger(__name__)
 
@@ -2876,6 +2877,7 @@ def terminal_tool(
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
     _host_local: bool = False,
+    case_resolution: Optional[str] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2891,6 +2893,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row — or after a small lifetime cap of delivered matches, however cleanly spaced — watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        case_resolution: Resolution for a case-only write-target conflict reported on a case-sensitive filesystem. Omit to return a user prompt; use_existing rewrites the target to the existing spelling; create_variant intentionally keeps the requested spelling.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -3115,6 +3118,46 @@ def terminal_tool(
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
         assert env is not None  # all creation failure paths return above
+
+        # Avoid parsing commands that the security parser will reject for size.
+        # This preserves the existing fail-closed oversized-command behavior.
+        from tools.approval import _command_parser_limit_exceeded
+        parser_budget_exceeded = _command_parser_limit_exceeded(command)
+
+        if case_resolution not in (None, "use_existing", "create_variant"):
+            return tool_error(
+                "case_resolution must be 'use_existing' or 'create_variant'."
+            )
+
+        # The actual environment is required: its filesystem semantics may
+        # differ from the host running Hermes (SSH/container/mounted volume).
+        if not parser_budget_exceeded and (
+            case_resolution is None or case_resolution == "use_existing"
+        ):
+            conflicts = check_case_conflicts(env, command, cwd)
+            if conflicts:
+                conflict = conflicts[0]
+                if case_resolution is None:
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "status": "case_conflict",
+                        "case_conflict": True,
+                        "requested_path": conflict["requested_path"],
+                        "existing_path": conflict["existing_path"],
+                        "choices": ["use_existing", "create_variant"],
+                        "error": (
+                            f"The requested path {conflict['requested_path']} differs "
+                            f"only by case from existing path {conflict['existing_path']}. "
+                            "Choose use_existing or create_variant."
+                        ),
+                    }, ensure_ascii=False)
+                command = rewrite_target_path(
+                    command,
+                    Path(conflict["requested_path"]),
+                    Path(conflict["existing_path"]),
+                    cwd,
+                )
 
         # The session key that drives cwd records: get_current_session_key()'s
         # contextvar doesn't cross tool-worker threads, so fall back to the raw
@@ -4207,6 +4250,11 @@ TERMINAL_SCHEMA = {
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}
                 ]
+            },
+            "case_resolution": {
+                "type": "string",
+                "enum": ["use_existing", "create_variant"],
+                "description": "When a case-only path conflict is reported on a case-sensitive filesystem, choose the existing spelling or explicitly create the requested case variant. Omit to ask the user."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -4273,6 +4321,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
+        case_resolution=args.get("case_resolution"),
     )
 
 

@@ -38,6 +38,7 @@ def _ensure_feishu_mocks():
 _ensure_feishu_mocks()
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base import _reply_anchor_for_event
 import plugins.platforms.feishu.adapter as feishu_module
 from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -59,12 +60,16 @@ def _make_card_action_data(
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
     token: str = "tok_abc",
+    open_message_id: str = "om_card_message_001",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
-            context=SimpleNamespace(open_chat_id=chat_id),
+            context=SimpleNamespace(
+                open_chat_id=chat_id,
+                open_message_id=open_message_id,
+            ),
             operator=SimpleNamespace(open_id=open_id),
             action=SimpleNamespace(
                 tag="button",
@@ -266,6 +271,73 @@ class TestNonApprovalCardAction:
         mock_handle.assert_called_once()
         event = mock_handle.call_args[0][0]
         assert "/card button" in event.text
+
+    @pytest.mark.asyncio
+    async def test_synthetic_event_uses_open_message_id(self):
+        """Synthetic card-action events must carry the original card message ID.
+
+        The card callback token is a short-lived card-update credential, not
+        an IM message ID. Using the token as ``event.message_id`` makes the
+        processing-status reaction (``on_processing_start`` → ``_add_reaction``)
+        and the reply anchor (``_reply_anchor_for_event``) fail with Feishu
+        error 99992354. The callback payload provides the real card message ID
+        in ``event.context.open_message_id`` — use it. (Issue #7200)
+        """
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"custom_action": "something_else"},
+            token="c-card-update-credential",
+            open_message_id="om_original_card_msg",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        assert event.message_id == "om_original_card_msg"
+
+        # Downstream lock (issue #7200 symptom): the reply anchor and the
+        # processing-status reaction must both resolve from the real card
+        # message ID, not the callback token.
+        assert _reply_anchor_for_event(event) == "om_original_card_msg"
+        with patch.object(adapter, "_add_reaction", new_callable=AsyncMock, return_value="reaction_1") as mock_add_reaction:
+            await adapter.on_processing_start(event)
+        mock_add_reaction.assert_awaited_once_with("om_original_card_msg", feishu_module._FEISHU_REACTION_IN_PROGRESS)
+
+    @pytest.mark.asyncio
+    async def test_synthetic_event_falls_back_to_token_without_open_message_id(self):
+        """Fall back to the token when the payload omits open_message_id."""
+        adapter = _make_adapter()
+
+        data = _make_card_action_data(
+            action_value={"custom_action": "something_else"},
+            token="tok_fallback_123",
+            open_message_id="",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        assert event.message_id == "tok_fallback_123"
+        assert _reply_anchor_for_event(event) == "tok_fallback_123"
 
 
 # ===========================================================================

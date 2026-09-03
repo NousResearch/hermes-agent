@@ -283,6 +283,8 @@ class SessionMaintenanceMixin:
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
             if not session_ids:
                 return 0
+            roots_before = self._capture_display_ancestor_roots(conn, session_ids)
+            surviving_child_ids = self._surviving_children_for_deleted_sessions(conn, session_ids)
             # Batched: a cron-heavy store prunes tens of thousands of ids in one call.
             for chunk in _id_chunks(session_ids):
                 ph = _placeholders(chunk)
@@ -291,6 +293,7 @@ class SessionMaintenanceMixin:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
+            self._invalidate_display_topology(conn, roots_before, surviving_child_ids)
             return len(session_ids)
         count = self._execute_write(_do)
         for sid in removed_ids:

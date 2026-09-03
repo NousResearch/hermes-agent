@@ -3,22 +3,42 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
-  capabilityScoped: vi.fn(),
+  ambientOwnerConnectionId: vi.fn(() => undefined),
+  capabilityScoped: vi.fn((scope?: unknown) =>
+    typeof scope === 'string' ? { profile: scope } : scope && typeof scope === 'object' ? scope : {}
+  ),
+  connectionScoped: vi.fn(() => ({})),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
+  getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
   profileScoped: vi.fn(() => ({}))
 }))
 
 const client = await import('./client')
-
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const transcriptTail = await import('@/store/transcript-tail')
+const {
+  deleteSession,
+  getLatestSessionMessages,
+  getSessionMessages,
+  listSidebarSessions,
+  recordLatestSessionMessagesPage,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
+const recordTranscriptTail = vi.mocked(transcriptTail.recordTranscriptTail)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(client.ambientOwnerConnectionId).mockReturnValue(undefined)
+  vi.mocked(client.capabilityScoped).mockImplementation((scope?: unknown) =>
+    typeof scope === 'string' ? { profile: scope } : scope && typeof scope === 'object' ? scope : {}
+  )
+  vi.mocked(client.connectionScoped).mockReturnValue({})
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
+  vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
 })
 
 describe('deleteSession profile scoping', () => {
@@ -172,5 +192,105 @@ describe('listSidebarSessions remote ownership', () => {
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+})
+
+describe('session transcript display revision requests', () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, 1.5, '7'])(
+    'omits invalid known display revision %s',
+    async invalid => {
+      hermesApi.mockResolvedValue({ messages: [], session_id: 'root-1' } as never)
+
+      await getSessionMessages('root-1', undefined, { knownDisplayRevision: invalid as never })
+
+      expect(hermesApi).toHaveBeenCalledWith({ path: '/api/sessions/root-1/messages' })
+    }
+  )
+
+  it('serializes a finite nonnegative integer known display revision', async () => {
+    hermesApi.mockResolvedValue({ messages: [], session_id: 'root-1' } as never)
+
+    await getSessionMessages('root-1', undefined, { knownDisplayRevision: 7 })
+
+    expect(hermesApi).toHaveBeenCalledWith({ path: '/api/sessions/root-1/messages?known_display_revision=7' })
+  })
+
+  it('forwards the revision through latest-page options and skips bookkeeping when unchanged', async () => {
+    const unchanged = {
+      display_revision: 7,
+      lineage_root_id: 'root-1',
+      messages: [],
+      resolved_tip_id: 'tip-2',
+      session_id: 'tip-2',
+      unchanged: true
+    }
+
+    hermesApi.mockResolvedValue(unchanged as never)
+
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'coder' })
+
+    const result = await getLatestSessionMessages('root-1', { profile: 'coder' }, { knownDisplayRevision: 7 })
+
+    expect(result).toBe(unchanged)
+    expect(hermesApi).toHaveBeenCalledWith({
+      path: '/api/sessions/root-1/messages?profile=coder&limit=120&order=latest&include_compacted=true&known_display_revision=7',
+      profile: 'coder'
+    })
+    expect(recordTranscriptTail).not.toHaveBeenCalled()
+  })
+
+  it('can defer latest-page bookkeeping until the caller accepts display authority', async () => {
+    const scope = { connectionId: 'remote-1', profile: 'coder' }
+    const page = {
+      display_revision: 8,
+      lineage_root_id: 'root-1',
+      messages: [{ content: 'accepted tip B', role: 'assistant' }],
+      pagination: { limit: 1, offset: 0, order: 'latest', returned: 1 },
+      resolved_tip_id: 'tip-b',
+      session_id: 'tip-b'
+    }
+    hermesApi.mockResolvedValue(page as never)
+
+    const result = await getLatestSessionMessages('tip-b', scope, { deferTailBookkeeping: true })
+
+    expect(result).toBe(page)
+    expect(recordTranscriptTail).not.toHaveBeenCalled()
+
+    recordLatestSessionMessagesPage('root-1', page as never, scope)
+
+    expect(recordTranscriptTail).toHaveBeenNthCalledWith(1, 'root-1', page, scope, scope)
+    expect(recordTranscriptTail).toHaveBeenNthCalledWith(2, 'tip-b', page, scope, scope)
+  })
+
+  it('records a changed page under both requested and distinct resolved ids', async () => {
+    const page = {
+      display_revision: 8,
+      lineage_root_id: 'root-1',
+      messages: [{ content: 'changed', role: 'assistant' }],
+      resolved_tip_id: 'tip-2',
+      session_id: 'tip-2'
+    }
+    hermesApi.mockResolvedValue(page as never)
+    const scope = { connectionId: 'conn-1', profile: 'coder' }
+
+    await getLatestSessionMessages('root-1', scope, { knownDisplayRevision: 7 })
+
+    expect(recordTranscriptTail).toHaveBeenNthCalledWith(1, 'root-1', page, scope, scope)
+    expect(recordTranscriptTail).toHaveBeenNthCalledWith(2, 'tip-2', page, scope, scope)
+  })
+
+  it('keeps old backend responses working and records their changed messages', async () => {
+    const legacyPage = { messages: [{ content: 'legacy', role: 'assistant' }], session_id: 'root-1' }
+    hermesApi.mockResolvedValue(legacyPage as never)
+
+    const result = await getLatestSessionMessages('root-1')
+
+    expect(result).toBe(legacyPage)
+    expect(recordTranscriptTail).toHaveBeenCalledWith(
+      'root-1',
+      legacyPage,
+      {},
+      { connectionId: undefined, profile: 'default' }
+    )
   })
 })

@@ -21,6 +21,8 @@ import {
   textPart
 } from '@/lib/chat-messages'
 
+import { invalidatePersistedDisplayTranscriptAuthority } from '../use-session-actions/transcript-provenance'
+
 import {
   appendText,
   isFailedUserTurn,
@@ -510,7 +512,7 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
   const nextUserIndex = state.messages.findIndex((m, i) => i > plan.userIndex && m.role === 'user')
   const end = nextUserIndex < 0 ? state.messages.length : nextUserIndex
 
-  return {
+  return invalidatePersistedDisplayTranscriptAuthority({
     ...state,
     awaitingResponse: true,
     busy: true,
@@ -529,7 +531,7 @@ export function applyReloadOptimistic(state: ClientSessionState, plan: ReloadPla
     // regenerate racing a heartbeat would lose its spinner mid-flight.
     turnLive: false,
     turnStartedAt: Date.now()
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -648,7 +650,7 @@ export function applyRewindOptimistic(
   sourceIndex: number,
   editedMessage?: ChatMessage
 ): ClientSessionState {
-  return {
+  return invalidatePersistedDisplayTranscriptAuthority({
     ...state,
     awaitingResponse: true,
     busy: true,
@@ -662,7 +664,7 @@ export function applyRewindOptimistic(
     // gate holds through the submit round trip but never latches (#86795).
     turnLive: false,
     turnStartedAt: Date.now()
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------

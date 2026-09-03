@@ -405,7 +405,13 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {},
+  page: {
+    limit?: number
+    offset?: number
+    order?: 'latest' | 'oldest'
+    includeCompacted?: boolean
+    knownDisplayRevision?: number
+  } = {},
   options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
@@ -432,6 +438,15 @@ export function getSessionMessages(
     query.set('include_compacted', String(page.includeCompacted))
   }
 
+  if (
+    typeof page.knownDisplayRevision === 'number' &&
+    Number.isFinite(page.knownDisplayRevision) &&
+    Number.isInteger(page.knownDisplayRevision) &&
+    page.knownDisplayRevision >= 0
+  ) {
+    query.set('known_display_revision', String(page.knownDisplayRevision))
+  }
+
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return hermesApi<SessionMessagesResponse>({
@@ -450,17 +465,51 @@ export function getSessionMessages(
  */
 export const LATEST_SESSION_MESSAGES_LIMIT = 120
 
-export function getLatestSessionMessages(
+function recordLatestSessionMessagesPageForRoute(
   id: string,
-  profile?: ProfileScope,
-  options: { passive?: boolean } = {}
-): Promise<SessionMessagesResponse> {
+  page: SessionMessagesResponse,
+  route: ReturnType<typeof connectionScoped> & ReturnType<typeof sessionScoped>,
+  owner: ReturnType<typeof connectionScoped> & ReturnType<typeof sessionScoped>
+): void {
+  recordTranscriptTail(id, page, route, owner)
+
+  if (page.session_id && page.session_id !== id) {
+    recordTranscriptTail(page.session_id, page, route, owner)
+  }
+}
+
+export function recordLatestSessionMessagesPage(
+  id: string,
+  page: SessionMessagesResponse,
+  profile?: ProfileScope
+): void {
+  if (page.unchanged === true) {
+    return
+  }
+
   // Key pagination by the effective request owner, not the caller's spelling
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
-  // Capture before awaiting: the active gateway may change during the read.
   const route = { ...connectionScoped(), ...sessionScoped(profile) }
   // Only the lookup key is normalized — backfill replays `route` verbatim.
+  const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
+  const ambientProfile = getApiRequestProfile() || 'default'
+  const owner = {
+    ...route,
+    connectionId: ambientConnectionId,
+    profile: route.profile || page.profile || ambientProfile
+  }
+
+  recordLatestSessionMessagesPageForRoute(id, page, route, owner)
+}
+
+export function getLatestSessionMessages(
+  id: string,
+  profile?: ProfileScope,
+  options: { deferTailBookkeeping?: boolean; knownDisplayRevision?: number; passive?: boolean } = {}
+): Promise<SessionMessagesResponse> {
+  // Capture before awaiting: the active gateway may change during the read.
+  const route = { ...connectionScoped(), ...sessionScoped(profile) }
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'
 
@@ -473,26 +522,26 @@ export function getLatestSessionMessages(
     {
       limit: LATEST_SESSION_MESSAGES_LIMIT,
       order: 'latest',
-      includeCompacted: true
+      includeCompacted: true,
+      knownDisplayRevision: options.knownDisplayRevision
     },
-    options
+    { passive: options.passive }
   ).then(page => {
-    // Record whether the tail was truncated (page came back full) and where
-    // the next older page starts, so "Show earlier" can backfill over REST
-    // (app/chat/transcript-backfill). Keyed under both the requested id and
-    // the resolved id — callers hold either.
-    // A backend that predates the `profile` field cannot name itself; its
-    // untagged read landed on the ambient profile.
-    const owner = {
-      ...route,
-      connectionId: ambientConnectionId,
-      profile: route.profile || page.profile || ambientProfile
+    if (page.unchanged === true) {
+      return page
     }
 
-    recordTranscriptTail(id, page, route, owner)
+    // Session-open callers defer this side effect until their route/tip/epoch
+    // authority gate accepts the response. Ordinary callers retain the
+    // historical eager bookkeeping behavior.
+    if (!options.deferTailBookkeeping) {
+      const owner = {
+        ...route,
+        connectionId: ambientConnectionId,
+        profile: route.profile || page.profile || ambientProfile
+      }
 
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, route, owner)
+      recordLatestSessionMessagesPageForRoute(id, page, route, owner)
     }
 
     return page

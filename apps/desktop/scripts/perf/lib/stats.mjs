@@ -8,7 +8,7 @@ export function percentile(values, p) {
   }
 
   const sorted = [...values].sort((a, b) => a - b)
-  const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p))
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1))
 
   return sorted[idx]
 }

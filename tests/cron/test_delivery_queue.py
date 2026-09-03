@@ -35,10 +35,21 @@ def test_terminal_delivery_retention_is_bounded(tmp_path, monkeypatch):
         assert queue.claim_next()["execution_id"] == execution_id
         assert queue._finish(execution_id, error=None)
 
-    assert queue.get_status("exec-0") is None
-    assert queue.get_status("exec-1") is None
+    # Pruning may discard verbose outcome rows, but never the durable
+    # idempotency tombstone for an execution that could be replayed later.
+    pruned = queue.get_status("exec-0")
+    assert pruned is not None
+    assert pruned["status"] == "delivered"
+    assert queue.get_status("exec-1")["status"] == "delivered"
     assert queue.get_status("exec-2")["status"] == "delivered"
     assert queue.get_status("exec-3")["status"] == "delivered"
+
+    # Pruning may discard verbose outcome rows, but never the durable
+    # idempotency tombstone for an execution that could be replayed later.
+    queue.enqueue("exec-0", {"id": "job-replayed"}, "duplicate brief")
+    send = Mock(return_value=None)
+    assert queue.drain(send) == 0
+    send.assert_not_called()
 
 
 def test_failure_delivery_lane_survives_durable_handoff(tmp_path, monkeypatch):
@@ -92,6 +103,29 @@ def test_legacy_queue_schema_adds_failure_lane_before_enqueue(tmp_path, monkeypa
     assert queue.get_status("exec-migrated")["for_failure"] == 1
 
 
+def test_wait_timeout_marks_inflight_delivery_unknown_without_retry(
+    tmp_path, monkeypatch
+):
+    import cron.delivery_queue as queue
+
+    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    queue.enqueue("exec-inflight", {"id": "job-inflight"}, "result")
+    assert queue.claim_next() is not None
+
+    error = queue.enqueue_and_wait(
+        "exec-inflight", {"id": "job-inflight"}, "result", timeout=0
+    )
+
+    assert error is not None
+    assert "outcome is unknown" in error
+    status = queue.get_status("exec-inflight")
+    assert status is not None
+    assert status["status"] == "unknown"
+    send = Mock(return_value=None)
+    assert queue.drain(send) == 0
+    send.assert_not_called()
+
+
 def test_dead_delivery_owner_becomes_unknown_and_is_not_retried(
     tmp_path, monkeypatch
 ):
@@ -110,19 +144,23 @@ def test_dead_delivery_owner_becomes_unknown_and_is_not_retried(
     assert queue.get_status("exec-1")["status"] == "unknown"
 
 
-def test_delivery_failure_is_terminal_and_not_retried(tmp_path, monkeypatch):
+def test_delivery_failure_is_terminal_not_retried_and_redacted(
+    tmp_path, monkeypatch
+):
     import cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue("exec-1", {"id": "job-1"}, "brief")
-    send = Mock(return_value="transport failed")
+    send = Mock(return_value="request failed: https://example.test/?token=TOKEN123")
 
     assert queue.drain(send) == 1
     assert queue.drain(send) == 0
     assert send.call_count == 1
     status = queue.get_status("exec-1")
+    assert status is not None
     assert status["status"] == "failed"
-    assert status["error"] == "transport failed"
+    assert "TOKEN123" not in status["error"]
+    assert "token=***" in status["error"]
 
 
 def test_wait_timeout_cancels_unclaimed_delivery(tmp_path, monkeypatch):
@@ -134,10 +172,12 @@ def test_wait_timeout_cancels_unclaimed_delivery(tmp_path, monkeypatch):
     error = queue.enqueue_and_wait("exec-3", job, "result", timeout=0)
 
     assert "timed out" in error
-    assert queue.get_status("exec-3")["status"] == "pending"
+    status = queue.get_status("exec-3")
+    assert status is not None
+    assert status["status"] == "failed"
     send = Mock(return_value=None)
-    assert queue.drain(send) == 1
-    send.assert_called_once()
+    assert queue.drain(send) == 0
+    send.assert_not_called()
 
 
 def test_same_gateway_recovers_terminalization_failure_without_resending(

@@ -55,7 +55,7 @@ def test_gateway_housekeeping_drains_cron_delivery_without_connected_adapters(mo
     assert calls == [(adapters, loop)]
 
 
-def test_multiplex_housekeeping_drains_each_profile_with_its_adapters(
+def test_multiplex_housekeeping_scopes_primary_and_drains_each_profile(
     tmp_path, monkeypatch
 ):
     root_adapters = {}
@@ -65,8 +65,11 @@ def test_multiplex_housekeeping_drains_each_profile_with_its_adapters(
         adapters=root_adapters,
         _profile_adapters={"secondary": secondary_adapters},
     )
+    root_home = tmp_path / "root"
     secondary_home = tmp_path / "secondary"
     calls = []
+
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: root_home)
 
     monkeypatch.setattr(
         gateway_run,
@@ -95,7 +98,60 @@ def test_multiplex_housekeeping_drains_each_profile_with_its_adapters(
     )
 
     assert calls == [
+        ("scope", root_home),
         ("drain", root_adapters),
         ("scope", secondary_home),
         ("drain", secondary_adapters),
+    ]
+
+
+def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite(
+    tmp_path, monkeypatch
+):
+    root_adapters = {"slack": object()}
+    secondary_home = tmp_path / "secondary"
+    runner = SimpleNamespace(
+        config=SimpleNamespace(multiplex_profiles=True),
+        adapters=root_adapters,
+        _profile_adapters={"secondary": {}},
+    )
+    calls = []
+    routed = object()
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_handoff_watch_scopes",
+        lambda _runner: [(None, None), ("secondary", secondary_home)],
+    )
+
+    @contextmanager
+    def fake_scope(_home):
+        yield
+
+    class FakeSharedRouteAdapters:
+        def __new__(cls, adapters, routes):
+            calls.append(("routed", adapters, routes))
+            return routed
+
+    monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
+    monkeypatch.setattr(scheduler, "SharedRouteAdapters", FakeSharedRouteAdapters)
+    monkeypatch.setattr(
+        scheduler,
+        "_primary_profile_routes_for_current_home",
+        lambda: ["route-to-secondary"],
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "drain_delivery_queue",
+        lambda adapters, _loop: calls.append(("drain", adapters)),
+    )
+
+    gateway_run._drain_restart_safe_cron_deliveries(
+        root_adapters, object(), runner
+    )
+
+    assert calls == [
+        ("drain", root_adapters),
+        ("routed", root_adapters, ["route-to-secondary"]),
+        ("drain", routed),
     ]

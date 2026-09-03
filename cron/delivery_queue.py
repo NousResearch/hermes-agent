@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -28,6 +29,7 @@ _lock = threading.RLock()
 _ACTIVE_DELIVERIES: set[str] = set()
 _TERMINAL = ("delivered", "failed", "unknown")
 MAX_TERMINAL_DELIVERIES = 1000
+DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS = 300.0
 
 
 def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
@@ -46,6 +48,15 @@ def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
     )
     excess = terminal_count - keep
     if excess > 0:
+        conn.execute(
+            """INSERT OR IGNORE INTO delivery_tombstones
+               (execution_id, terminal_status, finished_at)
+               SELECT execution_id, status, finished_at FROM deliveries
+               WHERE status IN ('delivered','failed','unknown')
+               ORDER BY finished_at, created_at, execution_id
+               LIMIT ?""",
+            (excess,),
+        )
         conn.execute(
             """DELETE FROM deliveries WHERE execution_id IN (
                  SELECT execution_id FROM deliveries
@@ -90,6 +101,14 @@ def _transaction() -> Iterator[sqlite3.Connection]:
                      created_at TEXT NOT NULL,
                      finished_at TEXT,
                      error TEXT
+                   )"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS delivery_tombstones (
+                     execution_id TEXT PRIMARY KEY,
+                     terminal_status TEXT NOT NULL CHECK(terminal_status IN
+                       ('delivered','failed','unknown')),
+                     finished_at TEXT
                    )"""
             )
             columns = {
@@ -138,6 +157,17 @@ def enqueue(
 ) -> dict:
     """Persist one idempotent delivery request before the worker waits."""
     with _transaction() as conn:
+        tombstone = conn.execute(
+            "SELECT terminal_status, finished_at FROM delivery_tombstones "
+            "WHERE execution_id=?",
+            (str(execution_id),),
+        ).fetchone()
+        if tombstone is not None:
+            return {
+                "execution_id": str(execution_id),
+                "status": tombstone["terminal_status"],
+                "finished_at": tombstone["finished_at"],
+            }
         conn.execute(
             """INSERT OR IGNORE INTO deliveries
                (execution_id, job_json, content, for_failure, status, created_at)
@@ -161,7 +191,21 @@ def get_status(execution_id: str) -> Optional[dict]:
         row = conn.execute(
             "SELECT * FROM deliveries WHERE execution_id=?", (str(execution_id),)
         ).fetchone()
-    return dict(row) if row is not None else None
+        if row is not None:
+            return dict(row)
+        tombstone = conn.execute(
+            "SELECT execution_id, terminal_status, finished_at "
+            "FROM delivery_tombstones WHERE execution_id=?",
+            (str(execution_id),),
+        ).fetchone()
+    if tombstone is None:
+        return None
+    return {
+        "execution_id": tombstone["execution_id"],
+        "status": tombstone["terminal_status"],
+        "finished_at": tombstone["finished_at"],
+        "error": None,
+    }
 
 
 def claim_next() -> Optional[dict]:
@@ -194,6 +238,11 @@ def claim_next() -> Optional[dict]:
 
 def _finish(execution_id: str, *, error: Optional[str]) -> bool:
     status = "failed" if error else "delivered"
+    safe_error = (
+        redact_sensitive_text(str(error), force=True, redact_url_credentials=True)
+        if error
+        else None
+    )
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE deliveries SET status=?, finished_at=?, error=?
@@ -202,7 +251,7 @@ def _finish(execution_id: str, *, error: Optional[str]) -> bool:
             (
                 status,
                 _hermes_now().isoformat(),
-                error,
+                safe_error,
                 execution_id,
                 _PROCESS_ID,
                 os.getpid(),
@@ -275,6 +324,40 @@ def drain(
     return processed
 
 
+def _terminalize_wait_timeout(execution_id: str) -> str:
+    """Fence a delivery whose worker can no longer wait for confirmation."""
+    now = _hermes_now().isoformat()
+    pending_error = "timed out waiting for a live gateway; delivery was not attempted"
+    uncertain_error = (
+        "timed out while gateway delivery was in progress; outcome is unknown and "
+        "was not retried"
+    )
+    with _transaction() as conn:
+        cur = conn.execute(
+            """UPDATE deliveries SET status='failed', finished_at=?, error=?
+               WHERE execution_id=? AND status='pending'""",
+            (now, pending_error, str(execution_id)),
+        )
+        if cur.rowcount:
+            _prune_terminal_unlocked(conn)
+            return pending_error
+        conn.execute(
+            """UPDATE deliveries SET status='unknown', finished_at=?, error=?
+               WHERE execution_id=? AND status='delivering'""",
+            (now, uncertain_error, str(execution_id)),
+        )
+        row = conn.execute(
+            "SELECT status, error FROM deliveries WHERE execution_id=?",
+            (str(execution_id),),
+        ).fetchone()
+        _prune_terminal_unlocked(conn)
+    if row is None:
+        return "timed out waiting for live gateway delivery"
+    if row["status"] == "delivered":
+        return ""
+    return str(row["error"] or f"delivery {row['status']}")
+
+
 def enqueue_and_wait(
     execution_id: str,
     job: dict,
@@ -284,13 +367,20 @@ def enqueue_and_wait(
     timeout: Optional[float] = None,
 ) -> Optional[str]:
     """Queue delivery and wait for a gateway's terminal at-most-once outcome."""
-    enqueue(execution_id, job, content, for_failure=for_failure)
-    deadline = None if timeout is None else time.monotonic() + timeout
-    while deadline is None or time.monotonic() < deadline:
+    queued = enqueue(execution_id, job, content, for_failure=for_failure)
+    if queued["status"] in _TERMINAL:
+        return None if queued["status"] == "delivered" else str(
+            queued.get("error") or f"delivery {queued['status']}"
+        )
+    wait_timeout = (
+        DEFAULT_DELIVERY_WAIT_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
+    )
+    deadline = time.monotonic() + wait_timeout
+    while time.monotonic() < deadline:
         row = get_status(execution_id)
         if row and row["status"] in _TERMINAL:
             return None if row["status"] == "delivered" else str(
                 row.get("error") or f"delivery {row['status']}"
             )
         time.sleep(0.25)
-    return "timed out waiting for live gateway delivery; request remains pending"
+    return _terminalize_wait_timeout(execution_id) or None

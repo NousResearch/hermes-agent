@@ -4520,6 +4520,42 @@ def _windows_cron_bootstrap_argv(
     return [python_exe, "-c", bootstrap, script_path]
 
 
+def _to_msys_form(arg: str) -> str:
+    """Rewrite a drive-qualified Windows path (``C:/Users/x``) to the MSYS
+    ``/c/Users/x`` form Git Bash resolves natively, reusing the conversion
+    the local shell environment already uses
+    (``tools/environments/local.py::_windows_to_msys_path``).
+
+    ``Path.as_posix()`` alone is not enough: it yields ``C:/...``, which
+    MSYS argument conversion still treats as a Windows path (teknium1's
+    review on #23405 — the exact ``/c/...`` result is required).
+    """
+    from tools.environments.local import _windows_to_msys_path
+
+    return _windows_to_msys_path(arg)
+
+
+def _bash_script_argument(path: Path) -> str:
+    """Render a script path as the argument handed to bash.
+
+    MSYS2/Git Bash re-parses the Windows command line with POSIX shell
+    quoting rules, where an unquoted backslash is an escape character:
+    a native ``str(path)`` like ``C:\\Users\\...\\watch.sh`` arrives at
+    bash with every separator stripped (``C:UsersUser...watch.sh``) and
+    fails with exit 127 (#99303). Python's ``list2cmdline`` only quotes
+    arguments containing spaces, so the path cannot rely on quoting
+    either. On Windows the POSIX-form path is additionally rewritten to
+    MSYS ``/c/...`` form (``_to_msys_form``), since ``C:/...`` alone is
+    still a Windows path as far as MSYS argument conversion is concerned.
+    On POSIX hosts ``str(path)`` is already a valid POSIX path and is a
+    pass-through.
+    """
+    arg = path.as_posix()
+    if os.name == "nt":
+        arg = _to_msys_form(arg)
+    return arg
+
+
 def _run_job_script(
     script_path: str,
     workdir: Optional[str] = None,
@@ -4629,7 +4665,7 @@ def _run_job_script(
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
         )
-        argv = [_bash, str(path)]
+        argv = [_bash, _bash_script_argument(path)]
         env_overlay: dict[str, str] = {}
     else:
         python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)

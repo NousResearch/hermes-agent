@@ -65,6 +65,45 @@ export function createBoundedMessageStore(limit = 512) {
   return { remember, get };
 }
 
+/**
+ * Bounded cache of the already-downloaded media (and plain text) for
+ * recently seen inbound messages, keyed by "chatId:messageId".
+ *
+ * When a user replies to an earlier message, Baileys' contextInfo.quotedMessage
+ * only carries a thumbnail-sized stub for media (or nothing at all for an
+ * uncaptioned attachment) — never a way to re-fetch the full original file.
+ * Without this cache, replying to a photo/video/document/voice note with no
+ * caption gives the agent no text and no media reference: it looks like the
+ * message never had an attachment. Since extractBridgeEvent already downloads
+ * and caches the media for every inbound message as it arrives, remembering
+ * that outcome here lets a later reply resolve the original file path.
+ */
+export function createQuotedMediaCache(limit = 512) {
+  const byKey = new Map();
+
+  function key(chatId, messageId) {
+    return `${chatId || ''}:${messageId || ''}`;
+  }
+
+  function remember(chatId, messageId, payload) {
+    if (!messageId) return;
+    const k = key(chatId, messageId);
+    byKey.delete(k);
+    byKey.set(k, payload);
+    while (byKey.size > limit) {
+      const oldest = byKey.keys().next().value;
+      byKey.delete(oldest);
+    }
+  }
+
+  function get(chatId, messageId) {
+    if (!messageId) return null;
+    return byKey.get(key(chatId, messageId)) || null;
+  }
+
+  return { remember, get };
+}
+
 export function pollCreationMessageSecret(pollCreation) {
   return pollCreation?.message?.messageContextInfo?.messageSecret
     || pollCreation?.messageContextInfo?.messageSecret
@@ -306,6 +345,7 @@ export async function extractBridgeEvent({
   downloadMedia,
   writeMediaFile,
   cacheDirs = {},
+  lookupQuotedMedia,
 }) {
   const messageContent = getMessageContent(msg);
   const contextInfo = getContextInfo(messageContent);
@@ -314,7 +354,38 @@ export async function extractBridgeEvent({
   const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
   const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
   const hasQuotedMessage = !!contextInfo?.quotedMessage;
-  const quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  let quotedText = textFromQuotedMessage(contextInfo?.quotedMessage);
+  let quotedMediaUrls = [];
+  let quotedMediaType = '';
+
+  // contextInfo.quotedMessage only ever carries a thumbnail-sized stub for
+  // media (or nothing for an uncaptioned attachment) — never a way to
+  // re-fetch the original file. Resolve the quoted message's already-cached
+  // media (downloaded when it first arrived) via lookupQuotedMedia so a
+  // reply to an uncaptioned photo/video/document/voice note still gives the
+  // agent the original file, not just silence.
+  if (quotedMessageId && typeof lookupQuotedMedia === 'function') {
+    const original = lookupQuotedMedia(quotedRemoteJid || chatId, quotedMessageId);
+    if (original) {
+      if (original.hasMedia && original.mediaUrls?.length) {
+        quotedMediaUrls = original.mediaUrls;
+        quotedMediaType = original.mediaType || '';
+        if (!quotedText) {
+          quotedText = {
+            image: 'sent an image',
+            video: 'sent a video',
+            gif: 'sent a GIF',
+            audio: 'sent an audio message',
+            ptt: 'sent a voice message',
+            document: 'sent a document',
+            sticker: 'sent a sticker',
+          }[original.mediaType] || 'sent media';
+        }
+      } else if (original.body && !quotedText) {
+        quotedText = original.body;
+      }
+    }
+  }
 
   let body = '';
   let hasMedia = false;
@@ -481,6 +552,8 @@ export async function extractBridgeEvent({
     quotedParticipant,
     quotedRemoteJid,
     quotedText,
+    quotedMediaUrls,
+    quotedMediaType,
     hasQuotedMessage,
     botIds,
     readReceiptKey: {

@@ -5695,6 +5695,73 @@ def _handle_stdio_child_exited_and_retry(
     )
 
 
+async def _run_mcp_rpc_with_stdio_watch(
+    server: Any, server_name: str, rpc_coro_factory, op_description: str,
+):
+    """Await an MCP RPC, guarded against a dead/dying stdio child (#81995).
+
+    Mirrors the fast-fail-before-call + watch-race-during-call protection
+    ``_make_tool_handler`` applies to ``tools/call``: a stdio subprocess
+    killed by a gateway restart must fail the call immediately (or as soon
+    as the death is observed mid-call) instead of riding out the full tool
+    timeout on a transport nobody will ever answer. Raises
+    ``_StdioChildExited`` on either detection path so the caller's
+    ``_handle_stdio_child_exited_and_retry`` can respawn and retry once.
+
+    ``rpc_coro_factory`` is called (not awaited) here so a fresh coroutine
+    is created only after the pre-call dead-child check passes.
+    """
+    _stdio_dead = getattr(server, "_stdio_children_dead", None)
+    # callable() + real-bool result: MagicMock attributes return truthy
+    # Mocks, which would spuriously trip the fast-fail.
+    if (
+        callable(_stdio_dead)
+        and isinstance(_stdio_dead_result := _stdio_dead(), bool)
+        and _stdio_dead_result
+    ):
+        raise _StdioChildExited(
+            f"MCP stdio subprocess for '{server_name}' had already exited "
+            f"when the {op_description} call was dispatched"
+        )
+
+    _call_coro = rpc_coro_factory()
+    _watch_children = getattr(server, "_watch_stdio_children", None)
+    _watch_ok = (
+        _watch_children is not None
+        and inspect.iscoroutinefunction(_watch_children)
+        and asyncio.iscoroutine(_call_coro)
+    )
+    if not _watch_ok:
+        # Stubbed sessions (MagicMock in tests) return a non-awaitable, or
+        # there is no child-watcher to race against: plain await is exactly
+        # the pre-#81995 semantics.
+        return await _call_coro if asyncio.iscoroutine(_call_coro) else _call_coro
+
+    rpc_task = asyncio.ensure_future(_call_coro)
+    watch_task = asyncio.ensure_future(_watch_children())
+    try:
+        done, _pending = await asyncio.wait(
+            {rpc_task, watch_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        if watch_task in done and not rpc_task.done():
+            rpc_task.cancel()
+            # Same stale-session problem as the pre-call gate above: the
+            # subprocess died mid-call but nothing clears server.session, so
+            # without a reconnect the server would stay dead until the idle
+            # keepalive probe notices. The handler's respawn-and-retry path
+            # owns the reconnect signal.
+            raise _StdioChildExited(
+                f"MCP stdio subprocess for '{server_name}' exited "
+                f"mid-{op_description} call"
+            )
+        return await rpc_task
+    finally:
+        watch_task.cancel()
+        if not rpc_task.done():
+            rpc_task.cancel()
+        await asyncio.gather(rpc_task, watch_task, return_exceptions=True)
+
+
 # Exact raw server names whose ``supports_parallel_tool_calls`` config is True.
 # Raw identity matters: distinct names such as ``foo-bar`` and ``foo_bar`` both
 # sanitize to ``foo_bar`` but must not share policy.
@@ -6966,8 +7033,12 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                all_resources = await _paginate_full_list(
-                    server.session.list_resources, "resources", server_name
+                all_resources = await _run_mcp_rpc_with_stdio_watch(
+                    server, server_name,
+                    lambda: _paginate_full_list(
+                        server.session.list_resources, "resources", server_name
+                    ),
+                    "resources/list",
                 )
             resources = []
             for r in all_resources:
@@ -6994,6 +7065,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_stdio_child_exited_and_retry(
+                server_name, exc, _call_once, "resources/list",
+            )
+            if recovered is not None:
+                return recovered
             recovered = _handle_auth_error_and_retry(
                 server_name, exc, _call_once, "resources/list",
             )
@@ -7029,7 +7105,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.read_resource(uri)
+                result = await _run_mcp_rpc_with_stdio_watch(
+                    server, server_name,
+                    lambda: server.session.read_resource(uri),
+                    "resources/read",
+                )
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
             contents = result.contents if hasattr(result, "contents") else []
@@ -7055,6 +7135,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_stdio_child_exited_and_retry(
+                server_name, exc, _call_once, "resources/read",
+            )
+            if recovered is not None:
+                return recovered
             recovered = _handle_auth_error_and_retry(
                 server_name, exc, _call_once, "resources/read",
             )
@@ -7086,8 +7171,12 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                all_prompts = await _paginate_full_list(
-                    server.session.list_prompts, "prompts", server_name
+                all_prompts = await _run_mcp_rpc_with_stdio_watch(
+                    server, server_name,
+                    lambda: _paginate_full_list(
+                        server.session.list_prompts, "prompts", server_name
+                    ),
+                    "prompts/list",
                 )
             prompts = []
             for p in all_prompts:
@@ -7116,6 +7205,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_stdio_child_exited_and_retry(
+                server_name, exc, _call_once, "prompts/list",
+            )
+            if recovered is not None:
+                return recovered
             recovered = _handle_auth_error_and_retry(
                 server_name, exc, _call_once, "prompts/list",
             )
@@ -7152,7 +7246,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
-                result = await server.session.get_prompt(name, arguments=arguments)
+                result = await _run_mcp_rpc_with_stdio_watch(
+                    server, server_name,
+                    lambda: server.session.get_prompt(name, arguments=arguments),
+                    "prompts/get",
+                )
             # GetPromptResult has .messages list
             messages = []
             for msg in (result.messages if hasattr(result, "messages") else []):
@@ -7181,6 +7279,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            recovered = _handle_stdio_child_exited_and_retry(
+                server_name, exc, _call_once, "prompts/get",
+            )
+            if recovered is not None:
+                return recovered
             recovered = _handle_auth_error_and_retry(
                 server_name, exc, _call_once, "prompts/get",
             )

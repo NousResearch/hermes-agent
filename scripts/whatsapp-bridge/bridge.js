@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -31,6 +31,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { useAtomicMultiFileAuthState } from './auth_state.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -399,7 +400,22 @@ const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
 
 async function startSocket() {
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  let state;
+  let saveCreds;
+  try {
+    ({ state, saveCreds } = await useAtomicMultiFileAuthState(SESSION_DIR));
+  } catch (err) {
+    // Damaged (not missing) credentials. Baileys' default would quietly mint a
+    // new identity here and sit on a QR screen — that is exactly how the
+    // 2026-08-09 disk-full outage stayed invisible for 17 hours. Say what is
+    // wrong, in the operator's face, and stop.
+    console.error('\n❌ WhatsApp auth state is unusable — refusing to start.\n');
+    console.error(`   ${err.message}\n`);
+    console.error('   The paired session was NOT discarded. Restore the file');
+    console.error('   from a backup, or delete it deliberately to re-pair.\n');
+    emitPairEvent({ event: 'auth_state_corrupt', session: SESSION_DIR, error: err.message });
+    process.exit(1);
+  }
   const version = await getWAVersion();
 
   sock = makeWASocket({
@@ -419,7 +435,18 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  // saveCreds() is fire-and-forget from Baileys' event handlers. The atomic
+  // writer REJECTS on a failed write where the old one silently truncated, so
+  // an unhandled rejection here would tear the socket down mid-connection.
+  // Catch and log: a failed save means the on-disk creds are stale but intact,
+  // which is survivable — losing the process is not.
+  sock.ev.on('creds.update', () => {
+    saveCreds().catch((err) => {
+      console.error(`⚠️  WhatsApp creds save failed: ${err?.message || err}`);
+      console.error('   On-disk credentials are unchanged (previous state preserved).');
+    });
+    lidToPhone = buildLidMap();
+  });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;

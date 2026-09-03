@@ -2487,8 +2487,8 @@ _served_profile_homes: set[Path] = set()
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s HERMES_HOME around a handler.
 
-    Pets (config + sprites) and projects (projects.db, discovery policy) both
-    resolve via ``get_hermes_home``. The desktop sends ``profile`` so a single
+    Pets and discovery policy resolve via the selected profile; the shared
+    Projects catalog resolves via the Hermes installation root. The desktop sends ``profile`` so a single
     backend serving every profile in app-global remote mode still hits the
     focused profile's home. No-op for the launch profile.
     """
@@ -7689,7 +7689,7 @@ def _session_usage_snapshot(session: dict | None) -> dict:
 def _project_info_for_cwd(cwd: str) -> dict | None:
     """Return the first-class Project owning ``cwd`` for UI status surfaces.
 
-    Backed by the per-profile projects.db (the same store the desktop's project
+    Backed by the shared projects.db (the same store the desktop's project
     tree caches), so the TUI status label, the desktop status bar, and ``/status``
     all name the session's workspace identically. Only explicit, named projects
     resolve here — an auto-discovered repo root has no projects.db row, so it
@@ -15386,20 +15386,28 @@ class _NoProject(Exception):
     """Raised inside a projects handler when ``params['id']`` resolves to None."""
 
 
-def _projects_payload(conn) -> dict:
+def _project_profile_key(params: dict | None) -> str | None:
+    """Return a valid requested profile, or None for the launch profile."""
+    requested = (params or {}).get("profile") if isinstance(params, dict) else None
+    requested = str(requested or "").strip()
+    return requested if requested and _profile_home(requested) is not None else None
+
+
+def _projects_payload(conn, profile: str | None = None) -> dict:
     from hermes_cli import projects_db as pdb
 
     return {
         "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
-        "active_id": pdb.get_active_id(conn),
+        "active_id": pdb.get_active_id(conn, profile=profile),
     }
 
 
 def _projects_method(name: str):
     """Register a projects RPC, injecting (pdb, conn) and unifying error mapping.
 
-    Binds ``params['profile']`` (via ``@_profile_scoped``) so app-global remote
-    mode reads that profile's ``projects.db``. Missing id maps to 5062, bad args
+    Binds ``params['profile']`` (via ``@_profile_scoped``) for compatibility with
+    profile-routed requests; the shared catalog is independent of that scope.
+    Missing id maps to 5062, bad args
     to 5063, everything else to 5061.
     """
 
@@ -15434,7 +15442,7 @@ def _require_project(pdb, conn, params: dict):
 
 @_projects_method("projects.list")
 def _(rid, params, pdb, conn) -> dict:
-    return _ok(rid, _projects_payload(conn))
+    return _ok(rid, _projects_payload(conn, _project_profile_key(params)))
 
 
 @_projects_method("projects.get")
@@ -15456,7 +15464,7 @@ def _(rid, params, pdb, conn) -> dict:
         board_slug=params.get("board_slug"),
     )
     if params.get("use"):
-        pdb.set_active(conn, pid)
+        pdb.set_active(conn, pid, profile=_project_profile_key(params))
     proj = pdb.get_project(conn, pid)
     return _ok(rid, {"project": proj.to_dict() if proj else None})
 
@@ -15507,20 +15515,24 @@ def _(rid, params, pdb, conn) -> dict:
 def _(rid, params, pdb, conn) -> dict:
     proj = _require_project(pdb, conn, params)
     (pdb.restore_project if params.get("restore") else pdb.archive_project)(conn, proj.id)
-    return _ok(rid, _projects_payload(conn))
+    return _ok(rid, _projects_payload(conn, _project_profile_key(params)))
 
 
 @_projects_method("projects.delete")
 def _(rid, params, pdb, conn) -> dict:
     proj = _require_project(pdb, conn, params)
     pdb.delete_project(conn, proj.id)
-    return _ok(rid, _projects_payload(conn))
+    return _ok(rid, _projects_payload(conn, _project_profile_key(params)))
 
 
 @_projects_method("projects.set_active")
 def _(rid, params, pdb, conn) -> dict:
-    pdb.set_active(conn, _require_project(pdb, conn, params).id if params.get("id") else None)
-    return _ok(rid, {"active_id": pdb.get_active_id(conn)})
+    pdb.set_active(
+        conn,
+        _require_project(pdb, conn, params).id if params.get("id") else None,
+        profile=_project_profile_key(params),
+    )
+    return _ok(rid, {"active_id": pdb.get_active_id(conn, profile=_project_profile_key(params))})
 
 
 @_projects_method("projects.for_cwd")
@@ -15864,7 +15876,7 @@ def _project_tree_row(r: dict) -> dict:
 
 
 def _project_tree_inputs(
-    db, session_limit: int, *, include_discovered: bool
+    db, session_limit: int, *, include_discovered: bool, profile: str | None = None
 ) -> tuple[list[dict], list[dict], list[dict], str | None]:
     """Gather (sessions, projects, discovered_repos, active_id) for build_tree.
 
@@ -15904,7 +15916,7 @@ def _project_tree_inputs(
                 preserve_unversioned=_repo_discovery_policy_is_default(policy),
             )
         projects = [p.to_dict() for p in pdb.list_projects(conn)]
-        active_id = pdb.get_active_id(conn)
+        active_id = pdb.get_active_id(conn, profile=profile)
         # backfill stays off the hot tree path — grouping uses the live resolver.
         discovered = (
             _discover_repos_payload(
@@ -15942,14 +15954,18 @@ def _dir_exists_cached(path: str) -> bool:
 
 
 def _build_project_tree(
-    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool
+    db, *, preview_limit: int, hydrate: bool, session_limit: int, include_discovered: bool,
+    profile: str | None = None,
 ) -> tuple[dict, str | None]:
     """Gather inputs and run the one authoritative builder. Returns (tree, active_id)."""
     from tui_gateway import project_tree
 
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
-        db, session_limit, include_discovered=include_discovered
+        db,
+        session_limit,
+        include_discovered=include_discovered,
+        profile=_response_profile_name(profile),
     )
     # build_tree resolves every declared project folder and every discovered
     # repo root too, and those paths are not session cwds — without this they

@@ -125,8 +125,9 @@ def test_find_by_primary_path(conn):
 
 
 
-def test_per_profile_isolation(tmp_path):
-    # Two distinct DB paths stand in for two profiles' HERMES_HOME.
+def test_explicit_db_paths_remain_isolated(tmp_path):
+    # Explicit paths are still useful for tests and isolated callers. The
+    # production default is the shared catalog tested below.
     a = pdb.connect(db_path=tmp_path / "a" / "projects.db")
     b = pdb.connect(db_path=tmp_path / "b" / "projects.db")
     try:
@@ -142,5 +143,47 @@ def test_per_profile_isolation(tmp_path):
     finally:
         a.close()
         b.close()
+
+
+def test_default_catalog_is_shared_and_imports_legacy_catalogs(tmp_path, monkeypatch):
+    monkeypatch.setattr(pdb, "get_default_hermes_root", lambda: tmp_path)
+
+    legacy = pdb.connect(db_path=tmp_path / "projects.db")
+    try:
+        pdb.create_project(legacy, name="Winston Project", primary_path="/workspace/winston")
+    finally:
+        legacy.close()
+
+    profile = tmp_path / "profiles" / "engineering"
+    profile.mkdir(parents=True)
+    legacy_profile = pdb.connect(db_path=profile / "projects.db")
+    try:
+        pdb.create_project(legacy_profile, name="Forge Project", primary_path="/workspace/forge")
+    finally:
+        legacy_profile.close()
+
+    shared_path = tmp_path / "shared" / "projects.db"
+    with pdb.connect_closing() as shared:
+        assert pdb.projects_db_path() == shared_path
+        assert [p.name for p in pdb.list_projects(shared)] == [
+            "Winston Project",
+            "Forge Project",
+        ]
+
+    # Legacy stores are preserved for rollback/recovery.
+    assert (tmp_path / "projects.db").exists()
+    assert (profile / "projects.db").exists()
+
+
+def test_active_project_selection_is_profile_specific(conn):
+    first = pdb.create_project(conn, name="First", folders=["/first"])
+    second = pdb.create_project(conn, name="Second", folders=["/second"])
+
+    pdb.set_active(conn, first, profile="winston")
+    pdb.set_active(conn, second, profile="forge")
+
+    assert pdb.get_active_id(conn, profile="winston") == first
+    assert pdb.get_active_id(conn, profile="forge") == second
+    assert pdb.get_active_id(conn, profile="ledger") is None
 
 

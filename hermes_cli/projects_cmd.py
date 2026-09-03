@@ -3,7 +3,7 @@
 A Project is a human-named workspace spanning one or more folders, with one
 designated primary repo. Projects anchor desktop session grouping and (when
 bound to a kanban board) give kanban tasks a deterministic worktree + branch
-convention. State lives in the per-profile ``$HERMES_HOME/projects.db`` store
+convention. State lives in the shared ``<Hermes root>/shared/projects.db`` store
 (see :mod:`hermes_cli.projects_db`).
 
 This is a footprint-ladder rung-2 capability: a CLI command + gateway RPC,

@@ -679,9 +679,10 @@ def _create_project(home: Path, name: str, folder: Path, *, use: bool = False) -
     """Create a project in ``home``'s projects.db via the real RPC."""
     token = set_hermes_home_override(home)
     try:
-        return _call(
-            "projects.create", {"name": name, "folders": [str(folder)], "use": use}
-        )["project"]
+        params = {"name": name, "folders": [str(folder)], "use": use}
+        if home.name != "launch":
+            params["profile"] = home.name
+        return _call("projects.create", params)["project"]
     finally:
         reset_hermes_home_override(token)
 
@@ -724,7 +725,7 @@ def _cached_repo_labels(home: Path) -> list[str]:
 
 
 def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_path):
-    """A ``profile`` param reads that profile's projects.db AND its state.db."""
+    """A ``profile`` param selects that profile's sessions; Projects are shared."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     launch_repo = tmp_path / "repos" / "launch-repo"
@@ -750,20 +751,20 @@ def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_pat
         # The override must not leak: the very next unscoped read is launch again.
         launch_again = _call("projects.list")
 
-    assert [p["name"] for p in launch_listing["projects"]] == ["Launch"]
-    assert [p["name"] for p in coder_listing["projects"]] == ["Coder"]
-    assert launch_listing["active_id"] == launch_project["id"]
+    assert [p["name"] for p in launch_listing["projects"]] == ["Launch", "Coder"]
+    assert [p["name"] for p in coder_listing["projects"]] == ["Launch", "Coder"]
     assert coder_listing["active_id"] == coder_project["id"]
     assert launch_again == launch_listing
 
-    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
-    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch", "Coder"]
+    assert [p["label"] for p in coder_tree["projects"]] == ["Launch", "Coder"]
     # Session counts prove the SESSION db was swapped too, not just projects.db.
-    assert launch_tree["projects"][0]["sessionCount"] == 1
-    assert coder_tree["projects"][0]["sessionCount"] == 1
+    assert sum(p["sessionCount"] for p in launch_tree["projects"]) == 1
+    assert sum(p["sessionCount"] for p in coder_tree["projects"]) == 1
     assert launch_tree["scoped_session_ids"] == ["launch-session"]
     assert coder_tree["scoped_session_ids"] == ["coder-session"]
-    assert [s["profile"] for s in coder_tree["projects"][0]["previewSessions"]] == ["coder"]
+    coder_tree_project = next(p for p in coder_tree["projects"] if p["label"] == "Coder")
+    assert [s["profile"] for s in coder_tree_project["previewSessions"]] == ["coder"]
 
     assert coder_sessions["project"]["id"] == coder_project["id"]
     assert coder_sessions["project"]["sessionCount"] == 1
@@ -773,7 +774,7 @@ def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_pat
 
 
 def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):
-    """``projects.tree`` on its own reads the requested profile's stores."""
+    """``projects.tree`` shares Projects while selecting requested sessions."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     launch_repo = tmp_path / "repos" / "tree-launch"
@@ -791,9 +792,9 @@ def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path)
         coder_tree = _call("projects.tree", {"profile": "coder"})
         launch_tree = _call("projects.tree")
 
-    assert [p["label"] for p in coder_tree["projects"]] == ["Coder"]
+    assert [p["label"] for p in coder_tree["projects"]] == ["Launch", "Coder"]
     assert coder_tree["scoped_session_ids"] == ["tree-coder-session"]
-    assert [p["label"] for p in launch_tree["projects"]] == ["Launch"]
+    assert [p["label"] for p in launch_tree["projects"]] == ["Launch", "Coder"]
     assert launch_tree["scoped_session_ids"] == ["tree-launch-session"]
 
 
@@ -832,7 +833,7 @@ def test_project_sessions_is_scoped_to_the_requested_profile(monkeypatch, tmp_pa
 
 
 def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, tmp_path):
-    """The scan cache is per-profile: a scoped write must not land on launch."""
+    """The discovery cache follows the shared Projects catalog."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     launch_repo = tmp_path / "repos" / "launch-scan"
@@ -851,14 +852,15 @@ def test_record_repos_writes_to_the_requested_profiles_projects_db(monkeypatch, 
         launch_repos = _call("projects.discover_repos")["repos"]
         coder_repos = _call("projects.discover_repos", {"profile": "coder"})["repos"]
 
-    assert [repo["label"] for repo in launch_repos] == ["launch"]
+    # The second authoritative scan replaces the shared cache for both profiles.
+    assert [repo["label"] for repo in launch_repos] == ["coder"]
     assert [repo["label"] for repo in coder_repos] == ["coder"]
-    assert _cached_repo_labels(launch_home) == ["launch"]
-    assert _cached_repo_labels(coder_home) == ["coder"]
+    assert _cached_repo_labels(launch_home) == []
+    assert _cached_repo_labels(coder_home) == []
 
 
 def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_path):
-    """Omitted/blank/unknown profile is a no-op — the pre-scoping behavior."""
+    """Omitted/blank/unknown profile keeps session scope on the launch home."""
     launch_home = _profile_dir(tmp_path, "launch")
     coder_home = _profile_dir(tmp_path, "coder")
     repo = tmp_path / "repos" / "launch-only"
@@ -880,7 +882,7 @@ def test_projects_without_a_profile_stay_on_the_launch_home(monkeypatch, tmp_pat
     assert unknown == omitted
     assert omitted["active_id"] == created["id"]
 
-    assert _cached_repo_labels(launch_home) == ["only"]
+    assert _cached_repo_labels(launch_home) == []
     assert not (coder_home / "projects.db").exists()
     assert not (Path(os.environ["HERMES_HOME"]) / "projects.db").exists()
 

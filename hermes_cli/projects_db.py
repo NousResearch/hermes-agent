@@ -1,4 +1,4 @@
-"""Per-profile first-class Project store.
+"""Shared first-class Project store.
 
 A **Project** is a human-named, multi-folder workspace. Unlike the desktop's
 old inferred "workspaces" (derived from each session's ``cwd`` + a git probe)
@@ -11,11 +11,12 @@ persisted entity the user creates and names. It anchors:
   under the project's primary repo with a deterministic branch name, instead
   of the random ``wt/<task-id>`` fallback.
 
-Scope: **per-profile**, stored at ``$HERMES_HOME/projects.db`` (resolved via
-``get_hermes_home()``), mirroring sessions / config / cron. This deliberately
-differs from kanban, whose board DB is root-anchored and shared across
-profiles. A Project may *bind* a kanban board (``board_slug``) so the two
-systems agree on the repo + branch convention without merging their stores.
+Scope: **machine-wide across profiles**, stored at
+``<Hermes root>/shared/projects.db``. Sessions, config, cron, and agent identity
+remain per-profile; only the named Project catalog is shared. This deliberately
+matches kanban's root-anchored storage while keeping the Project record separate.
+A Project may *bind* a kanban board (``board_slug``) so the two systems agree on
+the repo + branch convention without merging their stores.
 
 The schema is intentionally small and additive: column additions go through
 :func:`_add_column_if_missing` so opening an old DB is always safe.
@@ -34,7 +35,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, write_txn
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -42,12 +43,13 @@ from hermes_constants import get_hermes_home
 
 
 def projects_db_path() -> Path:
-    """The per-profile projects DB path (``$HERMES_HOME/projects.db``).
+    """The shared Projects DB path for the current Hermes installation.
 
-    Profile-aware: ``get_hermes_home()`` already points at the active profile's
-    home. Tests pass an explicit ``db_path`` to :func:`connect`.
+    The catalog lives outside named profile homes so every profile on the same
+    Hermes installation sees the same Projects. Tests pass an explicit
+    ``db_path`` to :func:`connect`.
     """
-    return get_hermes_home() / "projects.db"
+    return get_default_hermes_root() / "shared" / "projects.db"
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,13 @@ CREATE INDEX IF NOT EXISTS idx_project_folders_path
 CREATE TABLE IF NOT EXISTS project_meta (
     key    TEXT PRIMARY KEY,
     value  TEXT
+);
+
+-- The catalog is shared, but each profile keeps its own active selection.
+CREATE TABLE IF NOT EXISTS project_active_profiles (
+    profile_key TEXT PRIMARY KEY,
+    project_id  TEXT,
+    updated_at  INTEGER NOT NULL
 );
 
 -- Git repos found by scanning the filesystem (desktop "repo-first" discovery).
@@ -153,13 +162,16 @@ _INITIALIZED_PATHS: set[str] = set()
 
 
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Open (and initialize if needed) the per-profile projects DB.
+    """Open (and initialize if needed) the shared Projects DB.
 
     WAL with DELETE fallback for network filesystems (shared helper from
     ``hermes_state``). Schema init is idempotent (``CREATE TABLE IF NOT
-    EXISTS`` + additive migrations) and cached per-path per-process.
+    EXISTS`` + additive migrations) and cached per-path per-process. On the
+    first shared-catalog open, legacy default/profile catalogs are imported
+    without deleting or modifying them.
     """
     path = db_path if db_path is not None else projects_db_path()
+    was_missing = not path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     conn = sqlite3.connect(str(path))
@@ -172,6 +184,8 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
         if resolved not in _INITIALIZED_PATHS:
             conn.executescript(SCHEMA_SQL)
             _migrate_add_optional_columns(conn)
+            if db_path is None and was_missing:
+                _migrate_legacy_profile_catalogs(conn)
             _INITIALIZED_PATHS.add(resolved)
     except Exception:
         conn.close()
@@ -179,9 +193,89 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+def _migrate_legacy_profile_catalogs(conn: sqlite3.Connection) -> None:
+    """Import old per-profile catalogs into the shared catalog once.
+
+    This is intentionally additive: source databases are read-only, existing
+    files are never removed, and projects sharing a primary path are merged.
+    The migration is kept here so a normal Hermes update can recreate/open the
+    shared catalog without requiring a separate operator script.
+    """
+    root = get_default_hermes_root()
+    candidates = [root / "projects.db"]
+    candidates.extend(sorted((root / "profiles").glob("*/projects.db")))
+    for source in candidates:
+        if source.resolve() == projects_db_path().resolve() or not source.exists():
+            continue
+        try:
+            source_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+            source_conn.row_factory = sqlite3.Row
+        except (OSError, sqlite3.Error):
+            continue
+        try:
+            tables = {
+                row[0]
+                for row in source_conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not {"projects", "project_folders"}.issubset(tables):
+                continue
+            for row in source_conn.execute("SELECT * FROM projects ORDER BY created_at ASC"):
+                source_project = _project_from_row(row)
+                primary = source_project.primary_path or next(
+                    (folder["path"] for folder in source_conn.execute(
+                        "SELECT path FROM project_folders WHERE project_id = ? AND is_primary = 1 LIMIT 1",
+                        (source_project.id,),
+                    )),
+                    None,
+                )
+                existing = find_by_primary_path(conn, primary) if primary else None
+                if existing is None:
+                    slug = source_project.slug
+                    existing_slug = conn.execute(
+                        "SELECT 1 FROM projects WHERE slug = ?", (slug,)
+                    ).fetchone()
+                    if existing_slug is not None:
+                        slug = _unique_slug(conn, slug)
+                    project_id = source_project.id
+                    if conn.execute(
+                        "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+                    ).fetchone() is not None:
+                        project_id = _new_project_id()
+                    with write_txn(conn):
+                        conn.execute(
+                            "INSERT INTO projects (id, slug, name, description, icon, color, "
+                            "board_slug, primary_path, created_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (project_id, slug, source_project.name, source_project.description,
+                             source_project.icon, source_project.color, source_project.board_slug,
+                             source_project.primary_path, source_project.created_at,
+                             1 if source_project.archived else 0),
+                        )
+                    existing = Project(
+                        id=project_id, slug=slug, name=source_project.name,
+                        created_at=source_project.created_at, description=source_project.description,
+                        icon=source_project.icon, color=source_project.color,
+                        board_slug=source_project.board_slug, primary_path=source_project.primary_path,
+                        archived=source_project.archived,
+                    )
+                for folder in source_conn.execute(
+                    "SELECT path, label, is_primary, added_at FROM project_folders WHERE project_id = ?",
+                    (source_project.id,),
+                ):
+                    add_folder(conn, existing.id, folder["path"], label=folder["label"],
+                               is_primary=bool(folder["is_primary"]))
+        except (OSError, sqlite3.Error, ValueError):
+            # A malformed legacy profile must not prevent the shared catalog
+            # from opening. It remains intact for a later manual recovery.
+            continue
+        finally:
+            source_conn.close()
+
+
 @contextlib.contextmanager
 def connect_closing(db_path: Optional[Path] = None):
-    """Open a projects DB connection and guarantee it is closed on exit.
+    """Open the shared Projects DB and guarantee it is closed on exit.
 
     sqlite3's connection context manager only commits/rollbacks; it does NOT
     close the file descriptor. Long-lived processes (gateway, dashboard) route
@@ -640,24 +734,55 @@ _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
 
-def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
-    """Set (or clear, when ``None``) the active project pointer."""
+def _active_profile_key(profile: Optional[str] = None) -> str:
+    """Return the stable profile key for an active-project preference."""
+    if profile and str(profile).strip():
+        return str(profile).strip().lower()
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home().resolve()
+    root = get_default_hermes_root().resolve()
+    if home.parent.name == "profiles" and home.parent.parent == root:
+        return home.name.lower()
+    return "default"
+
+
+def set_active(
+    conn: sqlite3.Connection, project_id: Optional[str], *, profile: Optional[str] = None
+) -> None:
+    """Set (or clear) the active project for one profile."""
+    key = _active_profile_key(profile)
     with write_txn(conn):
         if project_id is None:
-            conn.execute("DELETE FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,))
+            conn.execute(
+                "DELETE FROM project_active_profiles WHERE profile_key = ?", (key,)
+            )
         else:
             conn.execute(
-                "INSERT INTO project_meta (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (_ACTIVE_META_KEY, project_id),
+                "INSERT INTO project_active_profiles (profile_key, project_id, updated_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(profile_key) DO UPDATE SET "
+                "project_id = excluded.project_id, updated_at = excluded.updated_at",
+                (key, project_id, _now()),
             )
 
 
-def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
+def get_active_id(
+    conn: sqlite3.Connection, *, profile: Optional[str] = None
+) -> Optional[str]:
+    """Return the active project for one profile."""
+    key = _active_profile_key(profile)
     row = conn.execute(
-        "SELECT value FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,)
+        "SELECT project_id FROM project_active_profiles WHERE profile_key = ?", (key,)
     ).fetchone()
-    return row["value"] if row else None
+    if row:
+        return row["project_id"]
+    # Keep the legacy shared pointer readable for the default profile.
+    if key == "default":
+        row = conn.execute(
+            "SELECT value FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,)
+        ).fetchone()
+        return row["value"] if row else None
+    return None
 
 
 def get_discovery_policy_key(conn: sqlite3.Connection) -> Optional[str]:

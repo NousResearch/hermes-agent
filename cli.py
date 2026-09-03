@@ -58,19 +58,27 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 
 # prompt_toolkit for fixed input area TUI
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style as PTStyle
-from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer, WindowAlign
-from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
-from prompt_toolkit.filters import Condition
-from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.widgets import TextArea
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit import print_formatted_text as _pt_print
-from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+try:
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.styles import Style as PTStyle
+    from prompt_toolkit.patch_stdout import patch_stdout
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer, WindowAlign
+    from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
+    from prompt_toolkit.filters import Condition
+    from prompt_toolkit.layout.dimension import Dimension
+    from prompt_toolkit.layout.menus import CompletionsMenu
+    from prompt_toolkit.widgets import TextArea
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit import print_formatted_text as _pt_print
+    from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+except ImportError:
+    from contextlib import nullcontext as patch_stdout
+    FileHistory = PTStyle = Application = None
+    Layout = HSplit = Window = FormattedTextControl = ConditionalContainer = WindowAlign = None
+    Processor = Transformation = PasswordProcessor = ConditionalProcessor = None
+    Condition = Dimension = CompletionsMenu = TextArea = KeyBindings = None
+    _pt_print = _PT_ANSI = None
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor

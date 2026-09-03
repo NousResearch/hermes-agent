@@ -215,6 +215,33 @@ wake_word:
 The small English KWS model (~13 MB) downloads once on first use. Each
 profile can set its own phrase — "hey \<profile\>" for every profile you run.
 
+#### Chinese wake phrases (pinyin model)
+
+The sherpa engine also supports Chinese phrases via the wenetspeech KWS
+model, which is pinyin-modeled (声母/韵母 phonemes) rather than BPE. Download
+it once, point `wake_word.sherpa.model_dir` at the unpacked directory, and
+type any Chinese phrase — it is romanized to phonemes at runtime:
+
+```yaml
+wake_word:
+  enabled: true
+  provider: sherpa
+  phrase: "你好妮妮"           # any Chinese phrase, zero training
+  sherpa:
+    model_dir: /path/to/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
+```
+
+The model (~13 MB) is available from the
+[sherpa-onnx kws-models releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/kws-models)
+(`sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2`). The engine
+detects which model family a directory holds by the presence of `bpe.model`:
+BPE models (GigaSpeech) cover Latin-script phrases, pinyin models
+(wenetspeech) cover Chinese. Phrases a model cannot express are skipped at
+startup with a warning rather than failing the listener — so a Chinese phrase
+on the English model (or vice versa) degrades gracefully. Latin phrases are
+skipped on the pinyin model; keep all enrolled profiles' phrases in the same
+language as the model for best results.
+
 ### Waking a specific profile (desktop)
 
 With the sherpa engine, ONE listener can wake ANY profile. Every profile

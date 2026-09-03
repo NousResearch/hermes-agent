@@ -473,11 +473,13 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
       the last assistant message and would have stripped reasoning mid-chain
       from the in-flight turn.)
 
-    * **Native compaction checkpoints are exempt.** ``type: "compaction"``
-      items in the same sidecar are the server-side stand-in for already
-      pruned history (see ``agent/native_compaction.py``) — cumulative
-      context carriers, not per-turn reasoning.  They must survive on every
-      retained message, so pruning filters items instead of popping the key.
+    * **Native compaction checkpoints are pruned to match the wire builder.**
+      ``type: "compaction"`` items in the sidecar are the server-side stand-in
+      for already pruned history (see ``agent/native_compaction.py``).  The
+      wire builder keeps only the newest contiguous checkpoint run
+      (``prune_pre_checkpoint_items``).  Stale checkpoints shadowed by a newer
+      carrier are never sent on the wire but still inflate the tail budget and
+      state.db.  Keep only the newest contiguous run to match the wire builder.
     """
     # Find the last real user message — everything after it is the active
     # turn.  Synthetic continuation rows and tool results never mark a turn
@@ -502,11 +504,31 @@ def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
             items = msg.get(key)
             if not isinstance(items, list) or not items:
                 continue
-            kept = [
-                item
-                for item in items
-                if isinstance(item, dict) and item.get("type") == "compaction"
-            ]
+            # Find the newest contiguous run of compaction items
+            # (matching prune_pre_checkpoint_items logic)
+            last_cp = None
+            for idx, item in enumerate(items):
+                if isinstance(item, dict) and item.get("type") == "compaction":
+                    last_cp = idx
+            if last_cp is not None:
+                first_cp = last_cp
+                while (
+                    first_cp > 0
+                    and isinstance(items[first_cp - 1], dict)
+                    and items[first_cp - 1].get("type") == "compaction"
+                ):
+                    first_cp -= 1
+                # Keep only the newest contiguous checkpoint run + all non-compaction items
+                kept = [
+                    item
+                    for idx, item in enumerate(items)
+                    if not (isinstance(item, dict) and item.get("type") == "compaction")
+                    or (first_cp <= idx <= last_cp)
+                ]
+            else:
+                # No compaction items — keep all (reasoning, etc.)
+                kept = items
+
             if len(kept) == len(items):
                 continue  # nothing stale in this sidecar
             if kept:

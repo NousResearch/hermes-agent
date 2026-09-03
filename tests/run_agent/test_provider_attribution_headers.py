@@ -281,3 +281,41 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     assert "X-OpenRouter-Cache-TTL" not in headers
 
 
+
+
+@patch("run_agent.OpenAI")
+def test_infersia_base_url_applies_attribution_headers(mock_openai):
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.infersia.com/v1",
+        model="deepseek/deepseek-v4-flash-0731",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://api.infersia.com/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+    assert headers["X-Title"] == "Hermes Agent"
+    assert headers["User-Agent"].startswith("HermesAgent/")
+
+
+@patch("run_agent.OpenAI")
+def test_unknown_base_url_sends_no_attribution_headers(mock_openai):
+    """A host with no policy must not inherit another provider's attribution."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.infersia.com/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    agent._apply_client_headers_for_base_url("https://unknown.example/v1")
+
+    assert "default_headers" not in agent._client_kwargs

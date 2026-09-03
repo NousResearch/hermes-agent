@@ -68,6 +68,7 @@ except ModuleNotFoundError:
 # kanban worker).  No-op on POSIX; never raises.
 from hermes_cli._subprocess_compat import suppress_platform_ver_console
 from hermes_cli.cli_output import line_input
+from hermes_cli.npm_winstaller import _is_electron_winstaller_unix_failure
 
 suppress_platform_ver_console()
 
@@ -6492,10 +6493,23 @@ def _run_npm_install_deterministic(
             ci_result = _run([npm_exe, "ci", "--include=dev", *extra_args])
             if ci_result.returncode == 0:
                 return ci_result
+            if "--ignore-scripts" not in extra_args and _is_electron_winstaller_unix_failure(ci_result):
+                ci_retry = _run([npm_exe, "ci", "--include=dev", "--ignore-scripts", *extra_args])
+                if ci_retry.returncode == 0:
+                    return ci_retry
             # Fall through to `npm install` — lockfile may be out of sync on a
             # WIP fork/branch, or `npm ci` may not be available on very old npm.
-        return _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
 
+        install_result = _run([npm_exe, "install", "--no-save", "--include=dev", *extra_args])
+        if (
+            install_result.returncode != 0
+            and "--ignore-scripts" not in extra_args
+            and _is_electron_winstaller_unix_failure(install_result)
+        ):
+            return _run(
+                [npm_exe, "install", "--no-save", "--include=dev", "--ignore-scripts", *extra_args]
+            )
+        return install_result
     result = _attempt(npm)
     if result.returncode == 0:
         return result
@@ -8639,6 +8653,8 @@ def cmd_gui(args: argparse.Namespace):
             # ahead of a bare PATH (same idiom as the `hermes update` path).
             nixos_env = with_hermes_node_path(_nixos_build_env())
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            if install_result.returncode == 0 and _electron_pkg_staged_missing_dist(PROJECT_ROOT):
+                _try_redownload_electron_dist(PROJECT_ROOT, env)
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")

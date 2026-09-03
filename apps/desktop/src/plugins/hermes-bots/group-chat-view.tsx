@@ -784,7 +784,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     .sort((a, b) => (a.at || 0) - (b.at || 0))
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
-  const availabilityLabel = `${availableMembers} of ${members.length} available`
+  const directlyDriven = !groupChatHostedGateway(room)
+  const someUnavailable = directlyDriven && members.length > 0 && availableMembers < members.length
+
+  const availabilityLabel = directlyDriven
+    ? `${availableMembers} of ${members.length} available`
+    : b.group.memberCount(members.length)
 
   const memberNames =
     members.map(b => displayName(b, botRosterMeta(b, allMeta))).join(', ') || 'No bots in this group chat'
@@ -812,12 +817,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           aria-label={availabilityLabel}
           className={cn(
             'shrink-0 text-[0.65rem] text-(--ui-text-quaternary)',
-            members.length > 0 && availableMembers < members.length && 'text-amber-600 dark:text-amber-300'
+            someUnavailable && 'text-amber-600 dark:text-amber-300'
           )}
         >
-          {members.length > 0 && availableMembers < members.length
-            ? availabilityLabel
-            : b.group.memberCount(members.length)}
+          {someUnavailable ? availabilityLabel : b.group.memberCount(members.length)}
         </span>
       </Tip>
       <Tip label={b.group.settingsHint(group)}>

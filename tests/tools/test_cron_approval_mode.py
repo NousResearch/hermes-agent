@@ -241,6 +241,40 @@ class TestCronApproveMode:
 class TestCronDenyModeAllGuards:
     """The combined guard function also respects cron_mode."""
 
+    def test_cron_deny_precedes_inherited_exec_ask(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
+
+        tokens = set_session_vars(cron_session="1")
+        try:
+            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+        finally:
+            clear_session_vars(tokens)
+
+        assert result["approved"] is False
+        assert result.get("status") != "pending_approval"
+        assert "cron jobs run without a user present" in result["message"]
+
+    def test_cron_approve_precedes_inherited_exec_ask(self, monkeypatch):
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "approve")
+
+        tokens = set_session_vars(cron_session="1")
+        try:
+            result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+        finally:
+            clear_session_vars(tokens)
+
+        assert result == {"approved": True, "message": None}
+
     def test_dangerous_command_blocked_in_combined_guard(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -309,14 +343,14 @@ class TestCronDenyModeAllGuards:
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
 
-    def test_tirith_import_error_fail_closed_blocks_in_cron_deny(self, monkeypatch):
+    def test_tirith_fail_closed_precedes_inherited_exec_ask(self, monkeypatch):
         """When tirith is unavailable and security.tirith_fail_open is false,
         cron-deny mode blocks rather than silently allowing (a cron session has
         no user to approve). Mirrors the fail-closed handling in the main flow."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch

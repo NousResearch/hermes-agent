@@ -4800,6 +4800,14 @@ def check_all_command_guards(command: str, env_type: str,
         # either here) — ignore it so single_query_mode actually takes effect.
         is_ask = False
 
+    # Cron jobs are unattended even when their host gateway exports
+    # interactive approval flags. Ignore those flags so cron_mode takes
+    # precedence and no request is left waiting without an approval listener.
+    if _is_cron_approval_context():
+        is_cli = False
+        is_gateway = False
+        is_ask = False
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:

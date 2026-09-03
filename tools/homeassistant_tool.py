@@ -185,18 +185,36 @@ async def _async_call_service(
     import aiohttp
 
     hass_url, hass_token = _get_config()
-    url = f"{hass_url}/api/services/{domain}/{service}"
+    base_url = f"{hass_url}/api/services/{domain}/{service}"
     payload = _build_service_payload(entity_id, data)
+    headers = _get_headers(hass_token)
+    timeout = aiohttp.ClientTimeout(total=15)
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            headers=_get_headers(hass_token),
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            resp.raise_for_status()
-            result = await resp.json()
+        # Try with ?return_response first (needed for query-style services
+        # like todo.get_items). If HA rejects it (service doesn't support
+        # responses), fall back to the plain URL for fire-and-forget calls.
+        try:
+            async with session.post(
+                f"{base_url}?return_response",
+                headers=headers,
+                json=payload,
+                timeout=timeout,
+            ) as resp:
+                resp.raise_for_status()
+                result = await resp.json()
+        except aiohttp.ClientResponseError as e:
+            if e.status == 400 and "does not support responses" in str(e.message):
+                async with session.post(
+                    base_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                ) as resp:
+                    resp.raise_for_status()
+                    result = await resp.json()
+            else:
+                raise
 
     return _parse_service_response(domain, service, result)
 
@@ -482,8 +500,7 @@ registry.register(
     toolset="homeassistant",
     schema=HA_LIST_ENTITIES_SCHEMA,
     handler=_handle_list_entities,
-    check_fn=_check_ha_available,
-    emoji="🏠",
+    check_available=_check_ha_available,
 )
 
 registry.register(
@@ -491,8 +508,7 @@ registry.register(
     toolset="homeassistant",
     schema=HA_GET_STATE_SCHEMA,
     handler=_handle_get_state,
-    check_fn=_check_ha_available,
-    emoji="🏠",
+    check_available=_check_ha_available,
 )
 
 registry.register(
@@ -500,8 +516,7 @@ registry.register(
     toolset="homeassistant",
     schema=HA_LIST_SERVICES_SCHEMA,
     handler=_handle_list_services,
-    check_fn=_check_ha_available,
-    emoji="🏠",
+    check_available=_check_ha_available,
 )
 
 registry.register(
@@ -509,6 +524,5 @@ registry.register(
     toolset="homeassistant",
     schema=HA_CALL_SERVICE_SCHEMA,
     handler=_handle_call_service,
-    check_fn=_check_ha_available,
-    emoji="🏠",
+    check_available=_check_ha_available,
 )

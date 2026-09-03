@@ -165,7 +165,10 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"Deleted stale:   {result['deleted_stale']}")
     print(f"Errors:          {result['errors']}")
     print(f"Bytes reclaimed: {_fmt_bytes(result['bytes_freed'])}")
-    return 0
+    if result.get("lock_error"):
+        print(f"Could not prune checkpoint store: {result['lock_error']}")
+        return 2
+    return 2 if result["errors"] else 0
 
 
 def _confirm(prompt: str) -> bool:
@@ -225,6 +228,9 @@ def cmd_clear_legacy(args: argparse.Namespace) -> int:
         return 1
 
     result = clear_legacy()
+    if result.get("lock_error"):
+        print(f"Could not clear legacy checkpoint archives: {result['lock_error']}")
+        return 2
     print(f"Deleted {result['deleted']} archive(s), reclaimed {_fmt_bytes(result['bytes_freed'])}.")
     return 0
 

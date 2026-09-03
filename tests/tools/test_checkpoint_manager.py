@@ -3,10 +3,13 @@
 import argparse
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import subprocess
+import sys
 import time
+import types
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +31,41 @@ from tools.checkpoint_manager import (
     clear_all,
     clear_legacy,
 )
+
+
+def _snapshot_process_paused_before_ref(base, workdir, entered, release, results):
+    """Spawn-safe worker that pauses after commit creation, before ref publish."""
+    import tools.checkpoint_manager as cpm
+
+    cpm.CHECKPOINT_BASE = Path(base)
+    real_validate = cpm._commit_root_tree_readable
+
+    def validate_then_pause(store, working_dir, commit_sha):
+        entered.set()
+        if not release.wait(10):
+            return False
+        return real_validate(store, working_dir, commit_sha)
+
+    cpm._commit_root_tree_readable = validate_then_pause
+    manager = cpm.CheckpointManager(enabled=True, max_snapshots=50)
+    results.put(manager.ensure_checkpoint(workdir, "paused snapshot"))
+
+
+def _prune_process_with_short_lease(base, results):
+    import tools.checkpoint_manager as cpm
+
+    cpm._MAINTENANCE_LOCK_TIMEOUT = 0.25
+    results.put(cpm.prune_checkpoints(
+        retention_days=0, delete_orphans=False, checkpoint_base=Path(base),
+    ))
+
+
+def _hold_checkpoint_writer_lease(base, entered, release):
+    import tools.checkpoint_manager as cpm
+
+    with cpm._CheckpointTransaction(Path(base), 5, "test holder"):
+        entered.set()
+        release.wait(10)
 
 
 # =========================================================================
@@ -168,6 +206,139 @@ class TestTakeCheckpoint:
         mgr.new_turn()
         (work_dir / "main.py").write_text("print('modified')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
+
+    def test_unreadable_root_tree_is_never_published(
+        self, mgr, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "tools.checkpoint_manager._commit_root_tree_readable",
+            lambda *_args, **_kwargs: False,
+        )
+
+        assert mgr.ensure_checkpoint(str(work_dir), "invalid tree") is False
+
+        store = _store_path(checkpoint_base)
+        ref = _ref_name(_project_hash(str(work_dir)))
+        ok, _, _ = _run_git(
+            ["rev-parse", "--verify", ref], store, str(work_dir),
+            allowed_returncodes={128},
+        )
+        assert ok is False, "a ref exposed a commit whose tree validation failed"
+
+
+class TestCheckpointTransactionLock:
+    def test_windows_backend_locks_existing_byte_zero(self, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cpm
+
+        calls = []
+
+        def locking(fd, mode, length):
+            calls.append((mode, length, os.lseek(fd, 0, os.SEEK_CUR)))
+
+        fake_msvcrt = types.SimpleNamespace(
+            LK_NBLCK=1, LK_UNLCK=2, locking=locking,
+        )
+        monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+        monkeypatch.setattr(cpm, "_IS_WINDOWS", True)
+        lock_file = tmp_path / "lease"
+        lock_file.write_bytes(b"\0")
+        with open(lock_file, "r+b") as handle:
+            assert cpm._try_lock_file(handle) is True
+            cpm._unlock_file(handle)
+
+        assert calls == [(1, 1, 0), (2, 1, 0)]
+
+    def test_snapshot_and_prune_are_mutually_exclusive_across_processes(
+        self, tmp_path,
+    ):
+        """A prune cannot enter while a new commit is still unpublished."""
+        ctx = multiprocessing.get_context("spawn")
+        base = tmp_path / "checkpoints"
+        work = tmp_path / "project"
+        work.mkdir()
+        (work / "main.py").write_text("content\n")
+        entered = ctx.Event()
+        release = ctx.Event()
+        snapshot_results = ctx.Queue()
+        prune_results = ctx.Queue()
+
+        snapshot = ctx.Process(
+            target=_snapshot_process_paused_before_ref,
+            args=(str(base), str(work), entered, release, snapshot_results),
+        )
+        snapshot.start()
+        assert entered.wait(10), "snapshot did not reach the pre-publication window"
+
+        prune = ctx.Process(
+            target=_prune_process_with_short_lease,
+            args=(str(base), prune_results),
+        )
+        prune.start()
+        prune.join(10)
+        assert prune.exitcode == 0
+        blocked = prune_results.get(timeout=2)
+        assert blocked["errors"] == 1
+        assert "lock_error" in blocked
+        assert snapshot.is_alive(), "prune disturbed the paused snapshot"
+
+        release.set()
+        snapshot.join(10)
+        assert snapshot.exitcode == 0
+        assert snapshot_results.get(timeout=2) is True
+
+        completed = prune_checkpoints(
+            retention_days=0, delete_orphans=False, checkpoint_base=base,
+        )
+        assert "lock_error" not in completed
+        fsck = subprocess.run(
+            ["git", "--git-dir", str(_store_path(base)), "fsck", "--no-dangling"],
+            capture_output=True, text=True,
+        )
+        assert fsck.returncode == 0, fsck.stderr
+
+    def test_nested_writer_lease_is_reentrant(self, tmp_path):
+        import tools.checkpoint_manager as cpm
+
+        base = tmp_path / "checkpoints"
+        with cpm._CheckpointTransaction(base, 1, "outer"):
+            with cpm._CheckpointTransaction(base, 1, "inner"):
+                assert cpm._transaction_lock_path(base).exists()
+
+    def test_interactive_snapshot_contention_is_bounded_and_nonfatal(
+        self, tmp_path, monkeypatch,
+    ):
+        import tools.checkpoint_manager as cpm
+
+        ctx = multiprocessing.get_context("spawn")
+        base = tmp_path / "checkpoints"
+        work = tmp_path / "project"
+        work.mkdir()
+        (work / "main.py").write_text("content\n")
+        entered = ctx.Event()
+        release = ctx.Event()
+        holder = ctx.Process(
+            target=_hold_checkpoint_writer_lease,
+            args=(str(base), entered, release),
+        )
+        holder.start()
+        assert entered.wait(10)
+
+        monkeypatch.setattr(cpm, "CHECKPOINT_BASE", base)
+        monkeypatch.setattr(cpm, "_INTERACTIVE_LOCK_TIMEOUT", 0.2)
+        started = time.monotonic()
+        assert cpm.CheckpointManager(enabled=True).ensure_checkpoint(str(work)) is False
+        assert time.monotonic() - started < 2
+        assert not _store_path(base).exists()
+
+        started = time.monotonic()
+        auto = cpm.maybe_auto_prune_checkpoints(checkpoint_base=base)
+        assert auto["skipped"] is True
+        assert "error" in auto
+        assert time.monotonic() - started < 2
+
+        release.set()
+        holder.join(10)
+        assert holder.exitcode == 0
 
 
 # =========================================================================
@@ -573,6 +744,32 @@ class TestSafeRestore:
         m = CheckpointManager(enabled=False)
         m.record_agent_write(str(work_dir / "main.py"))  # must not raise
         assert not (checkpoint_base / "store").exists()
+
+    def test_record_agent_write_hashes_before_acquiring_writer_lease(
+        self, checkpoint_base, work_dir, monkeypatch,
+    ):
+        import tools.checkpoint_manager as cpm
+
+        monkeypatch.setattr(cpm, "CHECKPOINT_BASE", checkpoint_base)
+        (work_dir / "pyproject.toml").write_text("[project]\n")
+        real_hash_file = cpm._hash_file
+        observed_depths = []
+
+        def observe_hash(path):
+            state = cpm._transaction_lock_state(
+                cpm._transaction_lock_path(checkpoint_base)
+            )
+            observed_depths.append(state.depth)
+            return real_hash_file(path)
+
+        monkeypatch.setattr(cpm, "_hash_file", observe_hash)
+        CheckpointManager(enabled=True).record_agent_write(str(work_dir / "main.py"))
+
+        assert observed_depths == [0]
+        ledger = cpm._ledger_path(
+            cpm._store_path(checkpoint_base), cpm._project_hash(str(work_dir))
+        )
+        assert ledger.exists()
 
 
 # =========================================================================

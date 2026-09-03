@@ -23,6 +23,9 @@ Storage layout (single shared store, git objects deduplicated across projects)
         .last_prune                     — auto-prune idempotency marker
         legacy-<timestamp>/             — archived pre-v2 per-project shadow
                                           repos (auto-migrated on first init)
+    ~/.hermes/.checkpoints.transaction.lock
+                                        — cross-process writer lease (kept
+                                          outside the clearable store)
 
 Why a single store?
 -------------------
@@ -55,11 +58,12 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
-from typing import Dict, List, Optional, Set, Tuple
+from typing import BinaryIO, Dict, List, Optional, Set, Tuple
 
 from utils import env_int
 
@@ -153,6 +157,163 @@ _MAX_FILES = 50_000
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
+
+# The shared object database, refs, indexes, metadata, and ledgers form one
+# transaction domain.  Git protects individual files, but it cannot protect a
+# just-created, not-yet-referenced object graph from another process running
+# ``gc --prune=now``.  Interactive checkpoints must not stall a tool call for
+# long; explicit maintenance may wait for an in-flight checkpoint to finish.
+_INTERACTIVE_LOCK_TIMEOUT = 2.0
+_MAINTENANCE_LOCK_TIMEOUT = float(_GIT_TIMEOUT * 3)
+_LOCK_POLL_INTERVAL = 0.05
+_IS_WINDOWS = os.name == "nt"
+
+
+class CheckpointStoreBusy(RuntimeError):
+    """The checkpoint-store writer lease could not be acquired in time."""
+
+
+class _TransactionLockState:
+    def __init__(self) -> None:
+        self.gate = threading.RLock()
+        self.depth = 0
+        self.handle: Optional[BinaryIO] = None
+
+
+_transaction_lock_pid = os.getpid()
+_transaction_lock_guard = threading.Lock()
+_transaction_lock_states: Dict[str, _TransactionLockState] = {}
+
+
+def _transaction_lock_path(base: Path) -> Path:
+    """Keep the lease outside ``base`` so ``clear_all`` cannot unlink it."""
+    base = base.expanduser().resolve()
+    return base.parent / f".{base.name}.transaction.lock"
+
+
+def _transaction_lock_state(lock_path: Path) -> _TransactionLockState:
+    """Return process-local reentrant state, resetting inherited fork state."""
+    global _transaction_lock_pid, _transaction_lock_guard, _transaction_lock_states
+    pid = os.getpid()
+    if pid != _transaction_lock_pid:
+        # A child must never reuse an inherited descriptor or an RLock whose
+        # owning thread existed only in the parent.
+        for inherited in _transaction_lock_states.values():
+            if inherited.handle is not None:
+                # Close, but do not unlock: flock state belongs to the shared
+                # open-file description and an unlock here would release the
+                # parent's still-live lease.
+                try:
+                    inherited.handle.close()
+                except OSError:
+                    pass
+        _transaction_lock_pid = pid
+        _transaction_lock_guard = threading.Lock()
+        _transaction_lock_states = {}
+    key = os.path.normcase(str(lock_path))
+    with _transaction_lock_guard:
+        return _transaction_lock_states.setdefault(key, _TransactionLockState())
+
+
+def _try_lock_file(handle) -> bool:
+    handle.seek(0)
+    if _IS_WINDOWS:
+        import msvcrt
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    import fcntl
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except (BlockingIOError, OSError):
+        return False
+
+
+def _unlock_file(handle) -> None:
+    handle.seek(0)
+    if _IS_WINDOWS:
+        import msvcrt
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+class _CheckpointTransaction:
+    """Cross-process exclusive, process/thread-reentrant writer lease."""
+
+    def __init__(self, base: Path, timeout: float, operation: str) -> None:
+        self.lock_path = _transaction_lock_path(base)
+        self.timeout = max(0.0, float(timeout))
+        self.operation = operation
+        self.state = _transaction_lock_state(self.lock_path)
+        self.entered = False
+
+    def __enter__(self):
+        deadline = time.monotonic() + self.timeout
+        candidate_handle = None
+        if not self.state.gate.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise CheckpointStoreBusy(
+                f"checkpoint store busy during {self.operation} "
+                f"(waited {self.timeout:g}s)"
+            )
+        try:
+            if self.state.depth == 0:
+                self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+                handle = open(self.lock_path, "a+b")
+                candidate_handle = handle
+                # Windows byte-range locking requires the byte to exist.
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                while not _try_lock_file(handle):
+                    if time.monotonic() >= deadline:
+                        handle.close()
+                        raise CheckpointStoreBusy(
+                            f"checkpoint store busy during {self.operation} "
+                            f"(waited {self.timeout:g}s)"
+                        )
+                    time.sleep(min(_LOCK_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
+                self.state.handle = handle
+            self.state.depth += 1
+            self.entered = True
+            return self
+        except OSError as exc:
+            if candidate_handle is not None and not candidate_handle.closed:
+                candidate_handle.close()
+            self.state.gate.release()
+            raise CheckpointStoreBusy(
+                f"cannot acquire checkpoint store lease during {self.operation}: {exc}"
+            ) from exc
+        except Exception:
+            self.state.gate.release()
+            raise
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if not self.entered:
+            return
+        try:
+            self.state.depth -= 1
+            if self.state.depth == 0:
+                handle = self.state.handle
+                self.state.handle = None
+                if handle is not None:
+                    try:
+                        _unlock_file(handle)
+                    except OSError as unlock_error:
+                        logger.warning(
+                            "Could not release checkpoint store lease %s: %s",
+                            self.lock_path, unlock_error,
+                        )
+                    finally:
+                        handle.close()
+        finally:
+            self.entered = False
+            self.state.gate.release()
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +579,21 @@ def _run_git(
     except Exception as exc:
         logger.error("Unexpected git error running %s: %s", " ".join(cmd), exc, exc_info=True)
         return False, "", str(exc)
+
+
+def _commit_root_tree_readable(
+    store: Path, working_dir: str, commit_sha: str,
+) -> bool:
+    """Force Git to resolve and parse a commit's root tree before ref publish."""
+    ok, _, err = _run_git(
+        ["ls-tree", f"{commit_sha}^{{tree}}"], store, working_dir,
+    )
+    if not ok:
+        logger.error(
+            "Checkpoint commit %s has an unreadable root tree; ref not published: %s",
+            commit_sha, err,
+        )
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -820,13 +996,28 @@ class CheckpointManager:
             working_dir = self.get_working_dir_for_path(str(path))
             store = _store_path(CHECKPOINT_BASE)
             dir_hash = _project_hash(working_dir)
-            ledger = _load_ledger(store, dir_hash)
-            ledger[str(path)] = {"sha256": digest, "ts": time.time()}
-            _save_ledger(store, dir_hash, ledger)
+            # Hashing may read a large file. Keep that outside the global
+            # writer lease, then serialize only the ledger read-modify-replace.
+            with _CheckpointTransaction(
+                CHECKPOINT_BASE, _INTERACTIVE_LOCK_TIMEOUT, "agent-write ledger update",
+            ):
+                ledger = _load_ledger(store, dir_hash)
+                ledger[str(path)] = {"sha256": digest, "ts": time.time()}
+                _save_ledger(store, dir_hash, ledger)
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
 
     def safe_restore_plan(self, working_dir: str, commit_hash: str) -> Dict:
+        """Build a restore plan while holding the shared index writer lease."""
+        try:
+            with _CheckpointTransaction(
+                CHECKPOINT_BASE, _MAINTENANCE_LOCK_TIMEOUT, "safe restore planning",
+            ):
+                return self._safe_restore_plan_locked(working_dir, commit_hash)
+        except CheckpointStoreBusy as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _safe_restore_plan_locked(self, working_dir: str, commit_hash: str) -> Dict:
         """Classify files changed since ``commit_hash`` for a safe restore.
 
         Returns ``{"success", "restore": [rel...], "skipped": [rel...],
@@ -1005,6 +1196,16 @@ class CheckpointManager:
             entry["deletions"] = int(m.group(1))
 
     def diff(self, working_dir: str, commit_hash: str) -> Dict:
+        """Show a diff while serializing the per-project index mutation."""
+        try:
+            with _CheckpointTransaction(
+                CHECKPOINT_BASE, _MAINTENANCE_LOCK_TIMEOUT, "checkpoint diff",
+            ):
+                return self._diff_locked(working_dir, commit_hash)
+        except CheckpointStoreBusy as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _diff_locked(self, working_dir: str, commit_hash: str) -> Dict:
         """Show diff between a checkpoint and the current working tree."""
         hash_err = _validate_commit_hash(commit_hash)
         if hash_err:
@@ -1087,6 +1288,24 @@ class CheckpointManager:
         return result
 
     def restore(
+        self,
+        working_dir: str,
+        commit_hash: str,
+        file_path: str = None,
+        safe: bool = False,
+    ) -> Dict:
+        """Restore under one writer lease, including nested snapshot/planning."""
+        try:
+            with _CheckpointTransaction(
+                CHECKPOINT_BASE, _MAINTENANCE_LOCK_TIMEOUT, "checkpoint restore",
+            ):
+                return self._restore_locked(
+                    working_dir, commit_hash, file_path=file_path, safe=safe,
+                )
+        except CheckpointStoreBusy as exc:
+            return {"success": False, "error": str(exc)}
+
+    def _restore_locked(
         self,
         working_dir: str,
         commit_hash: str,
@@ -1263,6 +1482,17 @@ class CheckpointManager:
     # ------------------------------------------------------------------
 
     def _take(self, working_dir: str, reason: str) -> bool:
+        """Take a bounded, non-fatal writer lease for an interactive snapshot."""
+        try:
+            with _CheckpointTransaction(
+                CHECKPOINT_BASE, _INTERACTIVE_LOCK_TIMEOUT, "checkpoint snapshot",
+            ):
+                return self._take_locked(working_dir, reason)
+        except CheckpointStoreBusy as exc:
+            logger.info("Checkpoint skipped: %s", exc)
+            return False
+
+    def _take_locked(self, working_dir: str, reason: str) -> bool:
         """Take a snapshot.  Returns True on success."""
         store = _store_path(CHECKPOINT_BASE)
 
@@ -1373,6 +1603,9 @@ class CheckpointManager:
         )
         if not ok_commit or not new_sha:
             logger.debug("Checkpoint commit-tree failed: %s", err)
+            return False
+
+        if not _commit_root_tree_readable(store, working_dir, new_sha):
             return False
 
         # Update the per-project ref.
@@ -1506,6 +1739,8 @@ class CheckpointManager:
             ok_commit, new_sha, _ = _run_git(args, store, working_dir)
             if not ok_commit or not new_sha:
                 return
+            if not _commit_root_tree_readable(store, working_dir, new_sha):
+                return
             new_parent = new_sha
 
         if new_parent is None:
@@ -1591,6 +1826,9 @@ class CheckpointManager:
                                 "-m", commit_msg, "--no-gpg-sign"]
                     ok_commit, new_sha, _ = _run_git(args, store, str(store.parent))
                     if not ok_commit or not new_sha:
+                        fail = True
+                        break
+                    if not _commit_root_tree_readable(store, str(store.parent), new_sha):
                         fail = True
                         break
                     new_parent = new_sha
@@ -1771,6 +2009,34 @@ def _dir_has_any_entry(directory: Path) -> bool:
 
 
 def prune_checkpoints(
+    retention_days: int = 7,
+    delete_orphans: bool = True,
+    checkpoint_base: Optional[Path] = None,
+    max_total_size_mb: int = 0,
+    orphan_allowlist: Optional[set] = None,
+) -> Dict:
+    """Run explicit maintenance under the shared checkpoint writer lease."""
+    base = checkpoint_base or CHECKPOINT_BASE
+    try:
+        with _CheckpointTransaction(
+            base, _MAINTENANCE_LOCK_TIMEOUT, "checkpoint pruning",
+        ):
+            return _prune_checkpoints_locked(
+                retention_days=retention_days,
+                delete_orphans=delete_orphans,
+                checkpoint_base=base,
+                max_total_size_mb=max_total_size_mb,
+                orphan_allowlist=orphan_allowlist,
+            )
+    except CheckpointStoreBusy as exc:
+        logger.warning("Checkpoint maintenance did not run: %s", exc)
+        return {
+            "scanned": 0, "deleted_orphan": 0, "deleted_stale": 0,
+            "errors": 1, "bytes_freed": 0, "lock_error": str(exc),
+        }
+
+
+def _prune_checkpoints_locked(
     retention_days: int = 7,
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
@@ -2023,6 +2289,9 @@ def prune_checkpoints(
                         if not ok_cm or not new_sha:
                             fail = True
                             break
+                        if not _commit_root_tree_readable(store, str(base), new_sha):
+                            fail = True
+                            break
                         new_parent = new_sha
                     if fail or new_parent is None:
                         continue
@@ -2053,7 +2322,34 @@ def maybe_auto_prune_checkpoints(
     delete_orphans: bool = True,
     checkpoint_base: Optional[Path] = None,
     max_total_size_mb: int = 0,
-) -> Dict[str, object]:
+) -> Dict:
+    """Serialize marker inspection, maintenance, and marker publication."""
+    base = checkpoint_base or CHECKPOINT_BASE
+    try:
+        with _CheckpointTransaction(
+            # Startup maintenance is opportunistic like snapshots: never hold
+            # interactive startup behind a long explicit-maintenance wait.
+            base, _INTERACTIVE_LOCK_TIMEOUT, "automatic checkpoint pruning",
+        ):
+            return _maybe_auto_prune_checkpoints_locked(
+                retention_days=retention_days,
+                min_interval_hours=min_interval_hours,
+                delete_orphans=delete_orphans,
+                checkpoint_base=base,
+                max_total_size_mb=max_total_size_mb,
+            )
+    except CheckpointStoreBusy as exc:
+        logger.warning("checkpoint auto-maintenance skipped: %s", exc)
+        return {"skipped": True, "error": str(exc)}
+
+
+def _maybe_auto_prune_checkpoints_locked(
+    retention_days: int = 7,
+    min_interval_hours: int = 24,
+    delete_orphans: bool = True,
+    checkpoint_base: Optional[Path] = None,
+    max_total_size_mb: int = 0,
+) -> Dict:
     """Idempotent wrapper around ``prune_checkpoints`` for startup hooks.
 
     Writes ``CHECKPOINT_BASE/.last_prune`` on completion so subsequent
@@ -2202,7 +2498,19 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     return out
 
 
-def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_all(checkpoint_base: Optional[Path] = None) -> Dict:
+    """Clear all checkpoint data under an explicit shared writer lease."""
+    base = checkpoint_base or CHECKPOINT_BASE
+    try:
+        with _CheckpointTransaction(
+            base, _MAINTENANCE_LOCK_TIMEOUT, "clearing checkpoint store",
+        ):
+            return _clear_all_locked(base)
+    except CheckpointStoreBusy as exc:
+        return {"bytes_freed": 0, "deleted": False, "lock_error": str(exc)}
+
+
+def _clear_all_locked(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Nuke the entire checkpoint base (store + legacy).  Irreversible.
 
     Returns ``{"bytes_freed": N, "deleted": bool}``.
@@ -2221,7 +2529,19 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     return out
 
 
-def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
+def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict:
+    """Clear legacy archives under an explicit shared writer lease."""
+    base = checkpoint_base or CHECKPOINT_BASE
+    try:
+        with _CheckpointTransaction(
+            base, _MAINTENANCE_LOCK_TIMEOUT, "clearing legacy checkpoints",
+        ):
+            return _clear_legacy_locked(base)
+    except CheckpointStoreBusy as exc:
+        return {"bytes_freed": 0, "deleted": 0, "lock_error": str(exc)}
+
+
+def _clear_legacy_locked(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
     """Delete all ``legacy-*`` archive directories.
 
     Returns ``{"bytes_freed": N, "deleted": count}``.

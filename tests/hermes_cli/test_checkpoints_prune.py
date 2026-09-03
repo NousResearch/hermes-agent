@@ -121,5 +121,48 @@ def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
     assert prune_calls[0]["orphan_allowlist"] == set()
 
 
+def test_prune_lock_contention_returns_nonzero(monkeypatch, capsys):
+    import hermes_cli.checkpoints as checkpoints_cli
+    import tools.checkpoint_manager as ckpt_mgr
+
+    monkeypatch.setattr(ckpt_mgr, "store_status", lambda: _V2_ORPHAN_ONLY_STATUS)
+    monkeypatch.setattr(
+        ckpt_mgr,
+        "prune_checkpoints",
+        lambda **_kwargs: _prune_result(
+            errors=1,
+            lock_error="checkpoint store busy during checkpoint pruning",
+        ),
+    )
+
+    assert checkpoints_cli.cmd_prune(_ns(force=True)) == 2
+    assert "checkpoint store busy" in capsys.readouterr().out
+
+
+def test_clear_legacy_lock_contention_returns_nonzero(monkeypatch, capsys):
+    import hermes_cli.checkpoints as checkpoints_cli
+    import tools.checkpoint_manager as ckpt_mgr
+
+    monkeypatch.setattr(
+        ckpt_mgr,
+        "store_status",
+        lambda: {
+            "legacy_archives": [
+                {"name": "legacy-1", "size_bytes": 1, "mtime": 0},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        ckpt_mgr,
+        "clear_legacy",
+        lambda: {
+            "deleted": 0,
+            "bytes_freed": 0,
+            "lock_error": "checkpoint store busy during clearing legacy checkpoints",
+        },
+    )
+
+    assert checkpoints_cli.cmd_clear_legacy(argparse.Namespace(force=True)) == 2
+    assert "checkpoint store busy" in capsys.readouterr().out
 
 

@@ -206,6 +206,22 @@ class TestStreamingConfig:
         assert restored.buffer_threshold == 24
         assert restored.fresh_final_after_seconds == 0.0
 
+    @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+    def test_from_dict_non_finite_numeric_values_fall_back_to_defaults(self, bad_value):
+        """float() parses nan/inf without raising, so a bare TypeError/ValueError
+        guard lets them through -- and nan then compares False against every
+        threshold check downstream (e.g. `elapsed >= edit_interval`), silently
+        defeating the edit-interval throttle instead of falling back like any
+        other malformed value."""
+        restored = StreamingConfig.from_dict(
+            {
+                "edit_interval": bad_value,
+                "fresh_final_after_seconds": bad_value,
+            }
+        )
+        assert restored.edit_interval == 0.8
+        assert restored.fresh_final_after_seconds == 0.0
+
 
 class TestGatewayConfigRoundtrip:
 

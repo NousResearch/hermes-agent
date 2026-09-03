@@ -21,6 +21,7 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+OUTBOUND_MESSAGE_MIDDLEWARE = "outbound_message"
 
 # Back-compat aliases for older PoC branches that used API terminology.
 API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE
@@ -31,6 +32,7 @@ VALID_MIDDLEWARE: set[str] = {
     TOOL_EXECUTION_MIDDLEWARE,
     LLM_REQUEST_MIDDLEWARE,
     LLM_EXECUTION_MIDDLEWARE,
+    OUTBOUND_MESSAGE_MIDDLEWARE,
 }
 
 
@@ -172,6 +174,91 @@ def apply_tool_request_middleware(
         payload=current_args,
         original_payload=original_args,
         changed=bool(trace),
+        trace=trace,
+    )
+
+
+@dataclass
+class OutboundMessageResult:
+    """Result of applying ``outbound_message`` middleware to a message body."""
+
+    text: str
+    original_text: str
+    changed: bool = False
+    blocked: bool = False
+    block_reason: str = ""
+    trace: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def apply_outbound_message_middleware(
+    text: str,
+    **context: Any,
+) -> OutboundMessageResult:
+    """Apply registered ``outbound_message`` middleware to an egress body.
+
+    This is the plugin-extensible half of the egress boundary; the built-in
+    fail-closed secret redaction lives in ``hermes_durability.egress`` and
+    runs before plugin middleware is consulted. Callbacks receive the current
+    ``text``, the ``original_text``, and the delivery ``context`` (platform,
+    session_key, category) and may return:
+
+      * ``{"text": "..."}`` — replace the outgoing body, or
+      * ``{"action": "block", "reason": "..."}`` — veto the send entirely.
+
+    Per the existing middleware contract, a *raising* callback is logged and
+    skipped (fail-open); only an explicit block verdict stops delivery.
+
+    Callbacks run as a sequential chain: each one receives the previous
+    callback's rewritten ``text`` (unlike the eager fan-out of
+    ``invoke_middleware``, where every callback would see the original body
+    and the last writer would silently win — unacceptable at a boundary
+    documented as a security choke point).
+    """
+    if not _has_middleware(OUTBOUND_MESSAGE_MIDDLEWARE):
+        return OutboundMessageResult(text=text, original_text=text)
+
+    original_text = text
+    current_text = text
+    trace: List[Dict[str, Any]] = []
+
+    for callback in _get_middleware_callbacks(OUTBOUND_MESSAGE_MIDDLEWARE):
+        try:
+            result = callback(**middleware_payload(
+                text=current_text,
+                original_text=original_text,
+                **context,
+            ))
+        except Exception as exc:
+            logger.warning(
+                "Middleware '%s' callback %s raised: %s",
+                OUTBOUND_MESSAGE_MIDDLEWARE,
+                getattr(callback, "__name__", repr(callback)),
+                exc,
+            )
+            continue
+        if not isinstance(result, dict):
+            continue
+        if result.get("action") == "block":
+            reason = str(result.get("reason") or "blocked by outbound_message middleware")
+            trace.append(_trace_entry(result))
+            return OutboundMessageResult(
+                text=current_text,
+                original_text=original_text,
+                changed=current_text != original_text,
+                blocked=True,
+                block_reason=reason,
+                trace=trace,
+            )
+        next_text = result.get("text")
+        if not isinstance(next_text, str):
+            continue
+        current_text = next_text
+        trace.append(_trace_entry(result))
+
+    return OutboundMessageResult(
+        text=current_text,
+        original_text=original_text,
+        changed=current_text != original_text,
         trace=trace,
     )
 

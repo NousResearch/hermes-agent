@@ -48,6 +48,16 @@ Supported middleware kinds:
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `outbound_message` | `text`, `original_text`, `platform`, `session_key`, `category` | `{"text": "..."}` or `{"action": "block", "reason": "..."}` | Rewrite or veto an outbound message body at the egress boundary, after the built-in secret redaction pass. |
+
+`outbound_message` runs at the three outbound choke points (gateway replies,
+cron/DeliveryRouter sends, and the `send_message` tool) immediately before the
+platform adapter is invoked. The built-in egress redaction in
+`hermes_durability.egress` runs first and is fail-closed (a redaction failure
+blocks the send); plugin `outbound_message` middleware keeps the standard
+fail-open contract — only an explicit `{"action": "block"}` verdict stops
+delivery. `category` identifies the choke point (`gateway_reply`,
+`delivery_router`, `send_message_tool`).
 
 Request middleware can return optional trace fields:
 

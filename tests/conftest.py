@@ -264,6 +264,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # into the next test. See ``_audio_playback_guard`` for the second layer.
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
+    # Egress/durability knobs: a developer shell exporting
+    # HERMES_EGRESS_GUARDRAIL=false (or a weakened HERMES_DB_SYNCHRONOUS)
+    # must not silently disable the boundary the egress tests assert on.
+    "HERMES_EGRESS_GUARDRAIL",
+    "HERMES_DB_SYNCHRONOUS",
     "HERMES_YOLO_MODE",
     # Injected into subprocess envs by the terminal tool (_make_run_env), so
     # any test run launched FROM a Hermes agent session inherits them and

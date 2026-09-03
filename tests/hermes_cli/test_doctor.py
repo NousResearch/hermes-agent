@@ -1272,6 +1272,7 @@ class TestDoctorXaiOAuthStatus:
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_qwen_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", xai_auth_fn)
 
         buf = io.StringIO()
@@ -1314,6 +1315,7 @@ class TestDoctorXaiOAuthStatus:
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_qwen_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.delattr(_auth_mod, "get_xai_oauth_auth_status", raising=False)
 
         buf = io.StringIO()
@@ -1331,6 +1333,105 @@ class TestDoctorXaiOAuthStatus:
         out = self._run(monkeypatch, tmp_path, xai_auth_fn=_raise)
         assert "Auth Providers" in out
 
+
+
+def test_run_doctor_accepts_keyless_oauth_without_runtime_nous_refresh(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("# keyless OAuth setup\n", encoding="utf-8")
+    (home / "config.yaml").write_text("model:\n  provider: nous\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for key in (
+        "OPENROUTER_API_KEY",
+        "NOUS_API_KEY",
+        "OPENAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "XAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    def forbidden_runtime_nous_status():
+        raise AssertionError("doctor must use the local Nous snapshot, not the runtime resolver")
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", forbidden_runtime_nous_status)
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_qwen_auth_status_local", lambda: {"logged_in": False})
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "API key or OAuth auth configured" in out
+    assert "No API key found" not in out
+    assert "Run 'hermes setup' to configure API keys" not in out
+
+
+def test_run_doctor_accepts_qwen_only_oauth_keyless_env(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("# keyless Qwen OAuth setup\n", encoding="utf-8")
+    (home / "config.yaml").write_text("model:\n  provider: qwen-oauth\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for key in (
+        "OPENROUTER_API_KEY",
+        "NOUS_API_KEY",
+        "OPENAI_API_KEY",
+        "MINIMAX_API_KEY",
+        "XAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(_auth_mod, "get_qwen_auth_status_local", lambda: {"logged_in": True})
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "API key or OAuth auth configured" in out
+    assert "Qwen OAuth" in out
+    assert "No API key found" not in out
+    assert "Run 'hermes setup' to configure API keys" not in out
 
 # ---------------------------------------------------------------------------
 # ◆ Auth Providers — codex CLI import hint placement (issue #27975)
@@ -1367,6 +1468,7 @@ class TestDoctorCodexCliHintPlacement:
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": codex_logged_in})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
+        monkeypatch.setattr(_auth_mod, "get_qwen_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
 
         real_which = doctor_mod.shutil.which

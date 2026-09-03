@@ -61,6 +61,31 @@ def _redact_terminal_error_text(value: Any) -> str:
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
 
+def _is_timeout_error(exc: BaseException) -> bool:
+    """Return True if *exc* is a timeout from any terminal backend.
+
+    Python's timeout exception texts vary across backends:
+    - concurrent.futures.TimeoutError / asyncio.TimeoutError / builtins.TimeoutError: str() is empty
+    - subprocess.TimeoutExpired: "Command ... timed out after N seconds"
+    Some third-party backends include "timeout" or "timed out" in their message.
+    """
+    # Check the exception type first: built-in, asyncio, and concurrent.futures
+    # timeout exceptions commonly stringify to an empty message.
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+        return True
+    error_str = str(exc).lower()
+    return bool(
+        re.search(
+            r"\btimed out\b|"
+            r"\b(?:connection|command|execution|operation|process|read|request|"
+            r"rpc|socket|ssh|sandbox|session|subprocess|wait)\s+timeout\b|"
+            r"\btimeout\s+(?:occurred|expired|while|during|after|waiting)\b|"
+            r"\btimeout\s*[:=]\s*\d",
+            error_str,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
 # The terminal tool polls this during command execution so it can kill
@@ -3655,14 +3680,13 @@ def terminal_tool(
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
-                    error_str = str(e).lower()
-                    if "timeout" in error_str:
+                    if _is_timeout_error(e):
                         return json.dumps({
                             "output": "",
                             "exit_code": 124,
                             "error": f"Command timed out after {effective_timeout} seconds"
                         }, ensure_ascii=False)
-                    
+
                     # Retry on transient errors
                     if retry_count < max_retries:
                         retry_count += 1
@@ -3671,7 +3695,7 @@ def terminal_tool(
                                        wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                         time.sleep(wait_time)
                         continue
-                    
+
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
                                  max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                     return json.dumps({

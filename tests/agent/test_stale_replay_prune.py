@@ -106,6 +106,59 @@ def test_no_user_boundary_prunes_nothing():
     assert messages[1]["codex_reasoning_items"]
 
 
+def test_retry_nudge_does_not_split_the_active_turn():
+    """The retry loop appends role="user" scaffolding *inside* a turn.
+
+    Anchoring the boundary on one of those rows makes the earlier half of the
+    in-flight turn look stale, so the reasoning bridging its function calls is
+    stripped — the mid-chain loss the user boundary exists to prevent.
+    """
+    from agent.context_compressor import ContextCompressor
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+
+    nudge = {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE}
+    assert ContextCompressor._is_synthetic_compression_user_turn(nudge)
+
+    messages = [
+        {"role": "user", "content": "audit the config"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "read_file"}}],
+            "codex_reasoning_items": [_reasoning("rs_a")],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "file body"},
+        {"role": "assistant", "content": "", "codex_reasoning_items": [_reasoning("rs_b")]},
+        nudge,
+        {"role": "assistant", "content": "done", "codex_reasoning_items": [_reasoning("rs_c")]},
+    ]
+
+    assert _prune_stale_reasoning_replay(messages) == 0
+    assert messages[1]["codex_reasoning_items"]
+    assert messages[3]["codex_reasoning_items"]
+    assert messages[5]["codex_reasoning_items"]
+
+
+def test_real_user_turn_before_a_retry_nudge_is_still_the_boundary():
+    """Skipping scaffolding must not disable pruning — it relocates it."""
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+
+    messages = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "a1", "codex_reasoning_items": [_reasoning("rs_a")]},
+        {"role": "user", "content": "turn 2"},
+        {"role": "assistant", "content": "a2", "codex_reasoning_items": [_reasoning("rs_b")]},
+        {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE},
+        {"role": "assistant", "content": "a3", "codex_reasoning_items": [_reasoning("rs_c")]},
+    ]
+
+    # "turn 2" is the boundary, so only turn 1's reasoning is stale.
+    assert _prune_stale_reasoning_replay(messages) == 1
+    assert "codex_reasoning_items" not in messages[1]
+    assert messages[3]["codex_reasoning_items"]
+    assert messages[5]["codex_reasoning_items"]
+
+
 def test_non_codex_messages_untouched():
     messages = [
         {"role": "user", "content": "u1"},

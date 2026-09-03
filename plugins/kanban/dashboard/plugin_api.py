@@ -839,6 +839,7 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    review_override_reason: Optional[str] = None
     # Per-task model/provider override (the board's model dropdown).
     # ``model_override=""`` clears both. ``clear_model_override=True`` is
     # the explicit clear signal — needed because Optional[str]=None means
@@ -898,12 +899,17 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             s = payload.status
             ok = True
             if s == "done":
-                ok = kanban_db.complete_task(
-                    conn, task_id,
-                    result=payload.result,
-                    summary=payload.summary,
-                    metadata=payload.metadata,
-                )
+                try:
+                    ok = kanban_db.complete_task(
+                        conn, task_id,
+                        result=payload.result,
+                        summary=payload.summary,
+                        metadata=payload.metadata,
+                        review_override_reason=payload.review_override_reason,
+                        board=board,
+                    )
+                except kanban_db.ReviewCompletionRejected as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
             elif s == "blocked":
                 ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
             elif s == "scheduled":
@@ -1347,6 +1353,7 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             result=payload.result,
                             summary=payload.summary,
                             metadata=payload.metadata,
+                            board=board,
                         )
                     elif s == "blocked":
                         ok = kanban_db.block_task(conn, tid)

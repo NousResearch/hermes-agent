@@ -273,6 +273,33 @@ def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
         )
 
 
+def test_patch_done_returns_conflict_for_invalid_protected_review(client):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "protected review", "assignee": "builder"},
+    ).json()["task"]
+    requested = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "status": "review",
+            "assignee": "reviewer",
+            "metadata": {
+                "review_contract": {"schema": 1, "required_criteria": ["tests"]}
+            },
+        },
+    )
+    assert requested.status_code == 200, requested.text
+
+    rejected = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "done", "summary": "approved without evidence"},
+    )
+    assert rejected.status_code == 409
+    assert "structured review completion rejected" in rejected.json()["detail"]
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task["id"]).status == "review"
+
+
 def test_reopening_parent_demotes_ready_child(client):
     """Reopening a completed parent must invalidate ready children immediately.
 

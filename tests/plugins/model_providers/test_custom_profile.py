@@ -180,3 +180,87 @@ class TestCustomReasoningWithNumCtx:
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
 
+
+class TestCustomVllmLoopbackGuard:
+    """vLLM hang guard (#100841): loopback endpoints without a declared
+    reasoning capability must NOT receive top-level reasoning_effort.
+
+    vLLM launched with enable_thinking=false ACCEPTS reasoning_effort but
+    then never completes the request — a silent hang to the API timeout
+    instead of Ollama's clean 400. ``supports_reasoning=False`` means the
+    endpoint never declared a thinking capability, so the omission applies
+    to loopback (probe-less) hosts only: hosted reasoning APIs such as
+    GLM-5.2 on Volcengine ARK keep the field, and Ollama endpoints stay on
+    their own /api/show capability gate (#95854).
+    """
+
+    def test_local_vllm_omits_reasoning_effort_without_support(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="qwen3",
+            base_url="http://127.0.0.1:8000/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_localhost_vllm_omits_reasoning_effort_without_support(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="qwen3",
+            base_url="http://localhost:8000/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    def test_ark_remote_keeps_reasoning_effort(self, custom_profile):
+        """GLM-5.2 on Volcengine ARK is remote — must stay un-gated."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model="glm-5.2",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+        )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "high"}
+
+    def test_loopback_declared_reasoning_keeps_effort(self, custom_profile):
+        """supports_reasoning=True (capability declared) → keep the field."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="qwen3",
+            base_url="http://127.0.0.1:8000/v1",
+            supports_reasoning=True,
+        )
+        assert tl == {"reasoning_effort": "medium"}
+
+    def test_loopback_disable_still_sends_none(self, custom_profile):
+        """Disabled reasoning on loopback vLLM stays reasoning_effort='none' —
+        consistent with thinking off (no hang) and no Ollama-only think flag."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3",
+            base_url="http://127.0.0.1:8000/v1",
+        )
+        assert "think" not in eb
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_ollama_default_port_keeps_ungated_path(self, custom_profile):
+        """Ollama on its default port is NOT loopback-gated — the sibling
+        /api/show capability gate (#95854) owns that decision."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="qwen3",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+        assert tl == {"reasoning_effort": "medium"}
+
+    def test_ollama_identified_by_num_ctx_keeps_ungated_path(self, custom_profile):
+        """Local Ollama on a non-standard port is identified via
+        ollama_num_ctx — not treated as a probe-less vLLM."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="qwen3",
+            base_url="http://127.0.0.1:9999/v1",
+            ollama_num_ctx=8192,
+        )
+        assert tl == {"reasoning_effort": "medium"}
+

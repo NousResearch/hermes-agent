@@ -9,7 +9,10 @@ Volcengine ARK, vLLM, llama.cpp). Key quirks:
     + extra_body.think = False only on Ollama URLs (/api/chat and proxies)
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
-    so the endpoint's server default applies)
+    so the endpoint's server default applies). Omits the field entirely
+    for local loopback endpoints (vLLM/llama.cpp/LM Studio) that never
+    declared a reasoning capability — vLLM with enable_thinking=false
+    accepts reasoning_effort but then hangs until the API timeout (#100841).
 """
 
 from typing import Any
@@ -47,6 +50,28 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
     if host == "ollama.com" or host.endswith(".ollama.com"):
         return True
     return "ollama" in host.split(".")
+
+
+def _is_loopback_endpoint(base_url: str | None) -> bool:
+    """True when ``base_url`` targets a loopback host (localhost / 127.0.0.1).
+
+    Local self-hosted OpenAI-compatible servers (vLLM, llama.cpp, LM Studio)
+    can't be capability-probed the way Ollama's /api/show can. A vLLM
+    instance started with ``enable_thinking=false`` accepts a top-level
+    ``reasoning_effort`` but then never emits a completion — a silent hang
+    until the API timeout (#100841), where Ollama fails fast with a clean
+    400 instead. Only loopback hosts are special-cased: hosted reasoning
+    endpoints (GLM-5.2 on Volcengine ARK, …) legitimately need the
+    un-gated top-level field.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
 
 
 class CustomProfile(ProviderProfile):
@@ -99,6 +124,26 @@ class CustomProfile(ProviderProfile):
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
             elif _effort:
+                # vLLM hang guard (#100841): a local loopback server that
+                # never declared a reasoning capability must not receive
+                # reasoning_effort — vLLM started with enable_thinking=false
+                # ACCEPTS the field but then never completes (silent hang to
+                # the API timeout; Ollama instead fails fast with a 400).
+                # supports_reasoning stays False for every custom endpoint
+                # main can't probe (everything except ollama.com / OpenRouter
+                # / LM Studio — see AgentRunner._supports_reasoning_extra_body),
+                # so gate on loopback + not-Ollama: hosted reasoning APIs
+                # (GLM-5.2 on Volcengine ARK, …) are remote and keep the
+                # un-gated emission below, and Ollama (identified by its
+                # default port, hostname or a resolved ollama_num_ctx) is
+                # handled by its own /api/show capability gate (#95854).
+                if (
+                    not ctx.get("supports_reasoning")
+                    and _is_loopback_endpoint(ctx.get("base_url"))
+                    and not ollama_num_ctx
+                    and not _looks_like_ollama_endpoint(ctx.get("base_url"))
+                ):
+                    return extra_body, top_level
                 # Clamp the internal ladder onto the widest OpenAI-compatible
                 # wire vocabulary (shared policy in agent.reasoning_effort) —
                 # GLM/ARK, vLLM and SGLang all top out at "max"; forwarding

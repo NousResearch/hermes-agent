@@ -358,6 +358,55 @@ class TestChatCompletionsBuildKwargs:
         assert kw.get("extra_body", {}).get("think") is None
         assert kw.get("reasoning_effort") == "none"
 
+    def test_custom_local_vllm_omits_reasoning_effort_when_unsupported(self, transport):
+        """vLLM hang guard (#100841): local loopback + no declared reasoning
+        capability → omit reasoning_effort instead of hanging to the timeout.
+
+        vLLM started with enable_thinking=false accepts the field but never
+        completes the request; Ollama fails fast with a 400 instead, and
+        hosted reasoning APIs (GLM on ARK) are remote and keep the field.
+        """
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="qwen3", messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="http://127.0.0.1:8000/v1",
+        )
+        assert "reasoning_effort" not in kw
+        assert kw.get("extra_body", {}) == {}
+
+    def test_custom_remote_ark_keeps_reasoning_effort(self, transport):
+        """Remote custom reasoning API (GLM-5.2 on Volcengine ARK) is not
+        loopback — reasoning_effort must still reach the wire."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="glm-5.2", messages=msgs,
+            provider_profile=profile,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+        )
+        assert kw.get("reasoning_effort") == "high"
+
+    def test_custom_local_vllm_keeps_effort_when_reasoning_declared(self, transport):
+        """supports_reasoning=True (capability declared) → keep the field even
+        on a loopback endpoint."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="qwen3", messages=msgs,
+            provider_profile=profile,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="http://127.0.0.1:8000/v1",
+        )
+        assert kw.get("reasoning_effort") == "medium"
+
 
 
     def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):

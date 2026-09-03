@@ -210,6 +210,16 @@ The agent **knows** it was interrupted: the next message carries a short note te
 
 Whisper sometimes generates phantom text from silence or background noise ("Thank you for watching", "Subscribe", etc.). The agent filters these out using a set of 26 known hallucination phrases across multiple languages, plus a regex pattern that catches repetitive variations.
 
+### Optional LLM transcript cleanup
+
+`stt.cleanup` can run one LLM cleanup pass after STT and its provider fallback have produced a transcript. It is disabled by default (`enabled: false`) and makes no cleanup-provider call while disabled. When cleanup succeeds, the same retained text is sent to the agent and used for the transcript echo. On an error, empty or invalid output, or confidence below `minimum_confidence`, Hermes fails open and retains the raw transcript. Channel or topic context is truncated to `max_topic_context_chars`, and cleanup logs record operational metadata without transcript or context content.
+
+Configure `stt.cleanup.provider` and `stt.cleanup.model` explicitly; cleanup uses only that provider and does not enter the main agent's provider fallback chain. The built-in conservative English system prompt is used by default. Set `stt.cleanup.prompt_file` to a UTF-8 text file to replace it with a custom system prompt. Relative paths are resolved under the active `HERMES_HOME`. The file is read for each cleanup call; if it is missing, unreadable, or blank, cleanup fails open before contacting the provider and retains the raw transcript.
+
+:::warning Privacy
+When cleanup is enabled, the system prompt (including custom `prompt_file` content), transcript, and up to `max_topic_context_chars` characters of channel or topic context are sent to the configured provider. Leave `stt.cleanup.enabled: false` (the default) to make no cleanup-provider calls.
+:::
+
 ---
 
 ## Gateway Voice Reply (Telegram & Discord)

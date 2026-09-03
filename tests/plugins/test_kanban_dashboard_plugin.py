@@ -116,6 +116,15 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_passes_unattended_safe_to_db(client):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "safe dashboard task", "assignee": "researcher", "unattended_safe": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["unattended_safe"] is True
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")
@@ -1228,5 +1237,4 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
 

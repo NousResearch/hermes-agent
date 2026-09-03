@@ -89,6 +89,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from agent import afk
+
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
@@ -343,6 +345,7 @@ def _fire_dispatch_tick_hook(
             result.respawn_guarded,
             result.skipped_per_profile_capped,
             result.skipped_unassigned,
+            result.skipped_unattended,
             result.skipped_nonspawnable,
         )):
             outcome = "idle"
@@ -1141,6 +1144,8 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Explicit opt-in for dispatch while machine-global AFK is engaged.
+    unattended_safe: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1234,6 +1239,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            unattended_safe=(
+                bool(row["unattended_safe"])
+                if "unattended_safe" in keys and row["unattended_safe"] is not None
+                else False
             ),
         )
 
@@ -1422,7 +1432,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Explicit scheduling opt-in while machine-global AFK is engaged.
+    unattended_safe      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2690,6 +2702,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "unattended_safe" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "unattended_safe",
+            "unattended_safe INTEGER NOT NULL DEFAULT 0",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -3194,6 +3214,7 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    unattended_safe: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3508,8 +3529,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, unattended_safe
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3535,6 +3556,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        1 if unattended_safe else 0,
                     ),
                 )
                 for pid in parents:
@@ -4836,6 +4858,37 @@ def claim_review_task(
             run_id=run_id,
         )
         return get_task(conn, task_id)
+
+
+def _rollback_unspawned_claim(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return a just-claimed task to its source lane before any worker exists."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT current_run_id, status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row or row["status"] != "running" or not row["current_run_id"]:
+            return False
+        run_id = int(row["current_run_id"])
+        source = _retry_status_for_run(conn, task_id, run_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, current_run_id = NULL WHERE id = ? AND status = 'running'",
+            (source, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE task_runs SET status = 'reclaimed', outcome = 'reclaimed', "
+            "ended_at = ?, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND ended_at IS NULL",
+            (int(time.time()), run_id),
+        )
+        _append_event(conn, task_id, "claim_rejected", {
+            "reason": "afk_engaged_before_spawn", "run_id": run_id,
+            "source_status": source,
+        }, run_id=run_id)
+        return True
 
 
 def _retry_status_for_run(
@@ -8039,6 +8092,8 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
+    skipped_unattended: list[str] = field(default_factory=list)
+    """Task ids deferred because AFK is engaged or could not be verified."""
     auto_assigned_default: list[str] = field(default_factory=list)
     """Task ids that were unassigned in the DB and had
     ``kanban.default_assignee`` applied this tick before spawning (#27145).
@@ -9816,6 +9871,43 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _afk_dispatch_state(state: Optional[dict]) -> str:
+    """Classify one validated AFK snapshot for dispatch policy."""
+    if state is None:
+        return "off"
+    if isinstance(state, dict) and not state.get("unverifiable"):
+        return "engaged"
+    return "unavailable"
+
+
+def _afk_allows_new_start(state: str, task_safe: bool) -> bool:
+    return state == "off" or (state == "engaged" and task_safe)
+
+
+def _claim_under_afk_lock(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    task_safe: bool,
+    review: bool = False,
+    ttl_seconds: Optional[int] = None,
+) -> tuple[Optional[Task], str]:
+    """Claim only while the AFK snapshot and durable claim share a boundary."""
+    claimed = None
+    try:
+        with afk.locked_state() as state:
+            afk_state = _afk_dispatch_state(state)
+            if not _afk_allows_new_start(afk_state, task_safe):
+                return None, afk_state
+            claim = claim_review_task if review else claim_task
+            claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    except afk.AfkStateError:
+        if claimed is not None:
+            _rollback_unspawned_claim(conn, claimed.id)
+        return None, "unavailable"
+    return claimed, "eligible"
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -9953,6 +10045,11 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    try:
+        with afk.locked_state() as state:
+            dispatch_afk_state = _afk_dispatch_state(state)
+    except afk.AfkStateError:
+        dispatch_afk_state = "unavailable"
     result.reclaimed = release_stale_claims(conn)
     if reconcile_orphans:
         # Orphaned-card reconciliation: requeue 'running' cards whose claim
@@ -10045,7 +10142,7 @@ def _dispatch_once_locked(
             spawn_budget = 1
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, unattended_safe FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -10054,7 +10151,7 @@ def _dispatch_once_locked(
     review_rows = []
     if review_dispatch_enabled():
         review_rows = conn.execute(
-            "SELECT id, assignee FROM tasks "
+            "SELECT id, assignee, unattended_safe FROM tasks "
             "WHERE status = 'review' AND claim_lock IS NULL "
             "ORDER BY priority DESC, created_at ASC"
         ).fetchall()
@@ -10072,20 +10169,34 @@ def _dispatch_once_locked(
     def _any_spawnable_review() -> bool:
         if not review_rows:
             return False
+        def _eligible(row: sqlite3.Row) -> bool:
+            if not row["assignee"]:
+                return False
+            if not _afk_allows_new_start(
+                dispatch_afk_state, bool(row["unattended_safe"])
+            ):
+                return False
+            return True
+
         try:
             from hermes_cli.profiles import profile_exists as _rpe
         except Exception:
             # Profiles module unavailable (test stubs, exotic envs) —
             # assume spawnable, matching the review loop's own fallback.
-            return any(row["assignee"] for row in review_rows)
+            return any(_eligible(row) for row in review_rows)
         return any(
-            row["assignee"] and _rpe(row["assignee"]) for row in review_rows
+            _eligible(row)
+            and _rpe(row["assignee"])
+            for row in review_rows
         )
 
     ready_budget = spawn_budget
     if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review():
         ready_budget = max(spawn_budget - 1, 0)
     spawned = 0
+    def _skip_unattended(task_id: str) -> None:
+        if task_id not in result.skipped_unattended:
+            result.skipped_unattended.append(task_id)
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
     # when this would push that assignee past the cap. Prevents
@@ -10125,6 +10236,9 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        if dispatch_afk_state != "off" and not bool(row["unattended_safe"]):
+            _skip_unattended(row["id"])
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -10238,7 +10352,13 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
-        claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed, claim_state = _claim_under_afk_lock(
+            conn, row["id"], task_safe=bool(row["unattended_safe"]),
+            ttl_seconds=ttl_seconds,
+        )
+        if claim_state != "eligible":
+            _skip_unattended(row["id"])
+            continue
         if claimed is None:
             continue
         try:
@@ -10330,6 +10450,9 @@ def _dispatch_once_locked(
     for row in review_rows:
         if spawn_budget is not None and spawned >= spawn_budget:
             break
+        if dispatch_afk_state != "off" and not bool(row["unattended_safe"]):
+            _skip_unattended(row["id"])
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
@@ -10365,7 +10488,13 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row["assignee"], 0) + 1
                 )
             continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
+        claimed, claim_state = _claim_under_afk_lock(
+            conn, row["id"], task_safe=bool(row["unattended_safe"]),
+            review=True, ttl_seconds=ttl_seconds,
+        )
+        if claim_state != "eligible":
+            _skip_unattended(row["id"])
+            continue
         if claimed is None:
             continue
         try:

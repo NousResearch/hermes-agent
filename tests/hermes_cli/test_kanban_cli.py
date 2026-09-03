@@ -57,6 +57,64 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_create_unattended_safe_round_trips_in_json(kanban_home, capsys):
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args([
+        "kanban", "create", "safe task", "--assignee", "alice",
+        "--unattended-safe", "--json",
+    ])
+
+    assert kc.kanban_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unattended_safe"] is True
+
+
+def test_kanban_create_defaults_unattended_safe_false(kanban_home, capsys):
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "create", "ordinary", "--json"])
+
+    assert kc.kanban_command(args) == 0
+    assert json.loads(capsys.readouterr().out)["unattended_safe"] is False
+
+
+def test_kanban_dispatch_json_exposes_skipped_unattended(kanban_home, monkeypatch, capsys):
+    monkeypatch.setattr(
+        kb,
+        "dispatch_once",
+        lambda conn, **kwargs: kb.DispatchResult(
+            skipped_unattended=["t_afk"]
+        ),
+    )
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "dispatch", "--json"])
+
+    assert kc.kanban_command(args) == 0
+    assert json.loads(capsys.readouterr().out)["skipped_unattended"] == ["t_afk"]
+
+
+def test_kanban_dispatch_text_exposes_skipped_unattended(kanban_home, monkeypatch, capsys):
+    monkeypatch.setattr(
+        kb,
+        "dispatch_once",
+        lambda conn, **kwargs: kb.DispatchResult(
+            skipped_unattended=["t_afk"]
+        ),
+    )
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+    args = parser.parse_args(["kanban", "dispatch"])
+
+    assert kc.kanban_command(args) == 0
+    assert "Deferred (AFK): t_afk" in capsys.readouterr().out
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kb.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")
@@ -177,5 +235,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

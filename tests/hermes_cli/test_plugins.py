@@ -18,6 +18,7 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     _dispatch_pre_tool_call_hooks,
+    final_pre_tool_call_authorization,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -33,6 +34,17 @@ from hermes_cli.middleware import (
     apply_tool_request_middleware,
     run_tool_execution_middleware,
 )
+
+
+class _locked_afk_state:
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        return self.value
+
+    def __exit__(self, *_args):
+        return False
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -1537,6 +1549,16 @@ class TestPreToolCallModify:
             "write_file", {"path": "/original"}
         )
         assert modified == {"path": "/real"}
+
+
+def test_final_plugin_authorization_blocks_only_approved_directive(monkeypatch):
+    monkeypatch.setattr("agent.afk.locked_state", lambda: _locked_afk_state({"engaged_at": "now"}))
+    assert final_pre_tool_call_authorization("write_file", approval_required=True) is not None
+
+
+def test_final_plugin_authorization_leaves_safe_tool_alone(monkeypatch):
+    monkeypatch.setattr("agent.afk.locked_state", lambda: _locked_afk_state({"engaged_at": "now"}))
+    assert final_pre_tool_call_authorization("read_file", approval_required=False) is None
 
 
 class TestGetPreVerifyContinueMessage:

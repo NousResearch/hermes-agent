@@ -1255,6 +1255,20 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
+def test_command_dispatch_afk_uses_shared_handler(server, monkeypatch):
+    from agent import afk
+
+    monkeypatch.setattr(afk, "handle_command", lambda arg: f"handled:{arg}")
+    resp = server.handle_request({
+        "id": "afk-1",
+        "method": "command.dispatch",
+        "params": {"name": "afk", "arg": "status", "session_id": ""},
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["output"] == "handled:status"
+
+
 def test_skills_manage_search_uses_tools_hub_sources(server):
     result = type("Result", (), {
         "description": "Build better terminal demos",

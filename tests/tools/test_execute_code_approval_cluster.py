@@ -419,6 +419,23 @@ def test_terminal_serializes_smart_deny_pending_capabilities(monkeypatch):
     assert payload["allow_permanent"] is False
 
 
+def test_terminal_public_safe_command_reaches_final_approval_note_path(monkeypatch):
+    """A successful public terminal call must not reference a missing detector result."""
+    from tools import terminal_tool as terminal_module
+
+    monkeypatch.setattr(
+        terminal_module,
+        "_check_all_guards",
+        lambda *_args, **_kwargs: {"approved": True},
+    )
+    monkeypatch.setattr(terminal_module, "_afk_blocks_combined_command", lambda *_: None)
+
+    payload = json.loads(terminal_module.terminal_tool(command="echo afk-regression"))
+
+    assert payload["exit_code"] == 0
+    assert "afk-regression" in payload["output"]
+
+
 def test_guard_session_yolo_bypasses(gw_session):
     A.enable_session_yolo(gw_session)
     try:

@@ -11,11 +11,21 @@ import time
 import types
 import unittest.mock
 from pathlib import Path
+from contextlib import contextmanager
 
 import pytest
 
 import hermes_state
+from agent import afk
 from hermes_cli import kanban_db as kb
+
+
+def _locked_afk_state(monkeypatch, state):
+    @contextmanager
+    def locked_state():
+        yield state
+
+    monkeypatch.setattr(afk, "locked_state", locked_state)
 
 
 @pytest.fixture
@@ -153,12 +163,16 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'index'"
             )
         }
+        legacy_unattended_safe = migrated.execute(
+            "SELECT unattended_safe FROM tasks WHERE id = 'legacy'"
+        ).fetchone()[0]
 
     # Additive columns added by migration:
     assert "session_id" in task_columns
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
     assert "run_id" in event_columns
+    assert legacy_unattended_safe == 0
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
@@ -169,6 +183,24 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------
+
+
+def test_task_unattended_safe_is_explicit_and_persisted(kanban_home):
+    with kb.connect_closing() as conn:
+        safe_id = kb.create_task(
+            conn,
+            title="safe",
+            assignee="worker",
+            unattended_safe=True,
+        )
+        default_id = kb.create_task(
+            conn,
+            title="default",
+            assignee="worker",
+        )
+
+        assert kb.get_task(conn, safe_id).unattended_safe is True
+        assert kb.get_task(conn, default_id).unattended_safe is False
 
 
 
@@ -1301,6 +1333,116 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert not spawns
     assert review_task is not None
     assert review_task.status == "review"
+
+
+def test_dispatch_in_afk_only_claims_unattended_safe_tasks(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    _locked_afk_state(monkeypatch, {"engaged_at": "now"})
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        unsafe = kb.create_task(conn, title="unsafe", assignee="alice")
+        safe = kb.create_task(
+            conn, title="safe", assignee="alice", unattended_safe=True
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert unsafe in result.skipped_unattended
+        assert safe in spawns
+        assert kb.get_task(conn, unsafe).status == "ready"
+        assert kb.get_task(conn, unsafe).claim_lock is None
+
+
+def test_dispatch_afk_off_reserves_spawnable_review_against_ready_backlog(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    _locked_afk_state(monkeypatch, None)
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        ready = kb.create_task(conn, title="ready", assignee="alice", unattended_safe=True)
+        review = kb.create_task(conn, title="review", assignee="alice")
+        _set_task_status(conn, review, "review")
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+
+    assert result.spawned == [(review, "alice", result.spawned[0][2])]
+    assert spawns == [review]
+    assert ready not in spawns
+
+
+def test_dispatch_afk_review_reservation_requires_unattended_safe(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    _locked_afk_state(monkeypatch, {"engaged_at": "now"})
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        ready = kb.create_task(conn, title="ready", assignee="alice", unattended_safe=True)
+        review = kb.create_task(conn, title="review", assignee="alice")
+        _set_task_status(conn, review, "review")
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=1)
+
+    assert ready in spawns
+    assert review not in spawns
+    with kb.connect() as conn:
+        assert kb.get_task(conn, review).status == "review"
+
+
+def test_dispatch_unreadable_afk_state_fails_closed(kanban_home, all_assignees_spawnable, monkeypatch):
+    @contextmanager
+    def unreadable_state():
+        raise afk.AfkStateError("unreadable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(afk, "locked_state", unreadable_state)
+    spawns = []
+
+    with kb.connect() as conn:
+        task = kb.create_task(conn, title="must wait", assignee="alice", unattended_safe=False)
+        result = kb.dispatch_once(conn, spawn_fn=lambda *args, **kwargs: spawns.append(task))
+        assert task in result.skipped_unattended
+        assert kb.get_task(conn, task).status == "ready"
+    assert spawns == []
+
+
+def test_dispatch_afk_transition_after_claim_rolls_back_without_spawn(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    calls = 0
+
+    @contextmanager
+    def cleanup_fails_after_claim():
+        nonlocal calls
+        calls += 1
+        yield None
+        if calls == 2:
+            raise afk.AfkStateError("AFK lock cleanup failed")
+
+    monkeypatch.setattr(afk, "locked_state", cleanup_fails_after_claim)
+    spawns = []
+
+    with kb.connect() as conn:
+        task = kb.create_task(conn, title="race", assignee="alice")
+        result = kb.dispatch_once(conn, spawn_fn=lambda *args, **kwargs: spawns.append(task))
+        stored = kb.get_task(conn, task)
+
+    assert task in result.skipped_unattended
+    assert stored.status == "ready"
+    assert stored.claim_lock is None
+    assert spawns == []
 
 # Review column dispatch
 # ---------------------------------------------------------------------------

@@ -582,7 +582,19 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            return _dispatch(backend, action, args)
+            approval_dependent = action in _DESTRUCTIVE_ACTIONS or args.get("bring_to_front") or (
+                action == "focus_app" and args.get("raise_window")
+            )
+            from tools.approval import run_with_afk_grant
+            granted, result = run_with_afk_grant(
+                lambda: _dispatch(backend, action, args),
+                approval_required=approval_dependent,
+            )
+            if not granted:
+                return json.dumps({
+                    "error": result, "code": "afk_approval_blocked",
+                })
+            return result
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -601,6 +613,10 @@ def _request_approval(action: str, args: Dict[str, Any],
     operation. State is keyed on session_id so concurrent runs don't leak
     unlocks into one another.
     """
+    from tools.approval import afk_approval_blocked
+    blocked = afk_approval_blocked()
+    if blocked:
+        return json.dumps({"error": blocked, "code": "afk_approval_blocked"})
     is_foreground = args.get("delivery_mode") == "foreground"
     scope_key = (action, "foreground" if is_foreground else "background")
     with _approval_lock:
@@ -620,12 +636,25 @@ def _request_approval(action: str, args: Dict[str, Any],
         logger.warning("approval callback failed: %s", e)
         verdict = "deny"
     if verdict == "approve_once":
+        blocked = afk_approval_blocked()
+        if blocked:
+            return json.dumps({"error": blocked, "code": "afk_approval_blocked"})
         return None
     if verdict == "approve_session" or verdict == "always_approve":
-        with _approval_lock:
-            _always_allow.setdefault(session_id, set()).add(scope_key)
-            if verdict == "always_approve":
-                _session_auto_approve[session_id] = True
+        blocked = afk_approval_blocked()
+        if blocked:
+            return json.dumps({"error": blocked, "code": "afk_approval_blocked"})
+        from tools.approval import afk_approval_mutation
+        with afk_approval_mutation() as allowed:
+            if not allowed:
+                return json.dumps({
+                    "error": "BLOCKED: machine-global AFK is engaged; human approval is unavailable.",
+                    "code": "afk_approval_blocked",
+                })
+            with _approval_lock:
+                _always_allow.setdefault(session_id, set()).add(scope_key)
+                if verdict == "always_approve":
+                    _session_auto_approve[session_id] = True
         return None
     if verdict == "timeout":
         return json.dumps({

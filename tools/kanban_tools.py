@@ -1428,6 +1428,11 @@ def _handle_create(args: dict, **kw) -> str:
     goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
     if goal_bool_error:
         return tool_error(goal_bool_error)
+    unattended_safe, unattended_bool_error = _parse_bool_arg(
+        args, "unattended_safe"
+    )
+    if unattended_bool_error:
+        return tool_error(unattended_bool_error)
     goal_max_turns = args.get("goal_max_turns")
     model_override = args.get("model")
     provider_override = args.get("provider")
@@ -1478,6 +1483,7 @@ def _handle_create(args: dict, **kw) -> str:
                 goal_max_turns=(
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
+                unattended_safe=unattended_safe,
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -2239,6 +2245,14 @@ KANBAN_CREATE_SCHEMA = {
                     "If true, task lands in 'triage' instead of 'todo' "
                     "— a specifier profile is expected to flesh out "
                     "the body before work starts."
+                ),
+            },
+            "unattended_safe": {
+                "type": "boolean",
+                "description": (
+                    "Explicitly permit new dispatch while machine-global AFK "
+                    "is engaged. This does not grant approval authority and "
+                    "is never inherited by child tasks. Defaults to false."
                 ),
             },
             "idempotency_key": {

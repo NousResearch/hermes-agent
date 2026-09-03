@@ -55,6 +55,10 @@ from functools import wraps
 from pathlib import Path
 from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple, Type, Union)
 
+_pre_tool_approval_required = contextvars.ContextVar(
+    "hermes_pre_tool_approval_required", default=False
+)
+
 from hermes_constants import (
     get_hermes_home,
     hermes_home_key,
@@ -349,7 +353,7 @@ VALID_HOOKS: Set[str] = {
     #     promoted, reconciled_orphans, crashed, stale, timed_out,
     #     auto_blocked, rate_limited, auto_assigned_default,
     #     respawn_guarded, skipped_per_profile_capped, skipped_unassigned,
-    #     skipped_nonspawnable, skipped_locked).
+    #     skipped_unattended, skipped_nonspawnable, skipped_locked).
     #   Privacy: result carries task ids, assignees, and workspace paths.
     "on_kanban_dispatch_tick",
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each
@@ -6797,8 +6801,10 @@ def _resolve_block_from_details(
     proceeds.
     """
     if details.action == "block":
+        _pre_tool_approval_required.set(False)
         return details.message
     if details.action == "approve":
+        _pre_tool_approval_required.set(True)
         try:
             from tools.approval import (
                 request_tool_approval,
@@ -6830,13 +6836,54 @@ def _resolve_block_from_details(
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than
             # silently execute an action a plugin flagged for approval.
+            _pre_tool_approval_required.set(False)
             return f"BLOCKED: plugin approval gate failed for {tool_name}"
         if not result.get("approved"):
+            _pre_tool_approval_required.set(False)
             return str(
                 result.get("message")
                 or f"BLOCKED: plugin approval required for {tool_name}"
             )
     return None
+
+
+def final_pre_tool_call_authorization(
+    tool_name: str, *, approval_required: Optional[bool] = None
+) -> Optional[str]:
+    """Perform the shared final AFK check immediately before tool execution.
+
+    The caller owns the immutable ``approval_required`` decision for this
+    invocation.  The ContextVar is only a hand-off for the current call; it
+    is never consumed by this final check, so middleware retries cannot turn a
+    previously approved operation into an unguarded retry.
+    """
+    required = (
+        _pre_tool_approval_required.get()
+        if approval_required is None
+        else bool(approval_required)
+    )
+    # Callers that may retry carry ``required`` in their invocation-local
+    # closure. Clear only the ambient hand-off so nested/future calls cannot
+    # inherit it; the explicit value is never consumed by a retry.
+    _pre_tool_approval_required.set(False)
+    if not required:
+        return None
+    try:
+        from tools.approval import afk_approval_blocked
+
+        return afk_approval_blocked()
+    except Exception:
+        return f"BLOCKED: AFK state could not be verified before {tool_name}"
+
+
+def current_pre_tool_approval_required() -> bool:
+    """Return the approval decision captured by the current hook invocation."""
+    return bool(_pre_tool_approval_required.get())
+
+
+def clear_pre_tool_approval_required() -> None:
+    """Clear the hand-off after the caller has captured its local decision."""
+    _pre_tool_approval_required.set(False)
 
 
 def _dispatch_pre_tool_call_hooks(
@@ -6867,6 +6914,7 @@ def _dispatch_pre_tool_call_hooks(
     Callers that also need input transformation should call this
     function and apply ``modified_args`` if not ``None``.
     """
+    _pre_tool_approval_required.set(False)
     details = _get_pre_tool_call_directive_details(
         tool_name, args, task_id=task_id, session_id=session_id,
         tool_call_id=tool_call_id, turn_id=turn_id,

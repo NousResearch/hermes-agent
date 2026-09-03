@@ -606,6 +606,7 @@ def _run_agent_tool_execution_middleware(
         "middleware_trace": trace,
         "blocked": False,
         "dispatched": False,
+        "approval_required": False,
     }
     dispatch_lock = threading.Lock()
 
@@ -657,6 +658,10 @@ def _run_agent_tool_execution_middleware(
                         or "",
                         middleware_trace=list(state["middleware_trace"]),
                     )
+                    from hermes_cli.plugins import current_pre_tool_approval_required
+                    state["approval_required"] = current_pre_tool_approval_required()
+                    from hermes_cli.plugins import clear_pre_tool_approval_required
+                    clear_pre_tool_approval_required()
                     if modified_args is not None:
                         final_args = modified_args
                         state["args"] = modified_args
@@ -702,6 +707,29 @@ def _run_agent_tool_execution_middleware(
                 status="blocked",
                 error_type=error_type,
                 error_message=error_message,
+                middleware_trace=list(state["middleware_trace"]),
+            )
+            return result
+
+        if scope_block is not None:
+            from hermes_cli.plugins import current_pre_tool_approval_required, clear_pre_tool_approval_required
+            state["approval_required"] = current_pre_tool_approval_required()
+            clear_pre_tool_approval_required()
+
+        from hermes_cli.plugins import final_pre_tool_call_authorization
+        final_block = final_pre_tool_call_authorization(
+            function_name,
+            approval_required=state["approval_required"],
+        )
+        if final_block:
+            _advance_start_order()
+            result = json.dumps({"error": final_block}, ensure_ascii=False)
+            state["blocked"] = True
+            _emit_terminal_post_tool_call(
+                agent, function_name=function_name, function_args=final_args,
+                result=result, effective_task_id=effective_task_id,
+                tool_call_id=tool_call_id, status="blocked",
+                error_type="plugin_afk_block", error_message=final_block,
                 middleware_trace=list(state["middleware_trace"]),
             )
             return result

@@ -191,6 +191,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
                gateway_only=True, args_hint="[reason | off]",
                busy_policy="dispatch"),
+    CommandDef("afk", "Mark the operator away or available", "Session",
+               args_hint="[on [reason] | off | status]", busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]", busy_policy="dispatch",
                desktop="messaging"),

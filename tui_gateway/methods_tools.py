@@ -475,6 +475,10 @@ def _(rid, params: dict) -> dict:
         name = resolved
     session = _sessions.get(params.get("session_id", ""))
 
+    if name == "afk":
+        from agent.afk import handle_command
+        return _ok(rid, {"output": handle_command(arg)})
+
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
         qc = qcmds[name]

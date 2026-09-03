@@ -1775,16 +1775,27 @@ def execute_code(
             child_python=_child_python,
         )
 
-        proc = subprocess.Popen(
-            [_child_python, _script_path],
-            cwd=_child_cwd,
-            env=child_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+        from tools.approval import run_with_afk_grant
+        granted, proc = run_with_afk_grant(
+            lambda: subprocess.Popen(
+                [_child_python, _script_path],
+                cwd=_child_cwd,
+                env=child_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            ),
+            approval_required=True,
         )
+        if not granted:
+            return json.dumps({
+                "status": "error",
+                "error": proc,
+                "tool_calls_made": 0,
+                "duration_seconds": 0,
+            }, ensure_ascii=False)
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout

@@ -10,6 +10,7 @@ from unittest.mock import patch as mock_patch
 import pytest
 
 import tools.approval as approval_module
+from agent import afk
 from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
@@ -35,10 +36,317 @@ class TestApprovalModeParsing:
         assert _normalize_approval_mode("") == "manual"
         assert _normalize_approval_mode("auto") == "manual"
 
-
     def test_config_bool_false_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"mode": False}}):
             assert _get_approval_mode() == "off"
+
+
+def test_afk_blocks_dangerous_command_even_when_yolo_is_enabled(monkeypatch):
+    monkeypatch.setattr(afk, "locked_state", lambda: _afk_snapshot({"engaged_at": "now"}))
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    result = approval_module.check_dangerous_command("rm -rf /tmp/stuff", "local")
+    assert result["approved"] is False
+    assert result["afk_blocked"] is True
+
+
+def test_afk_blocks_tirith_only_warning_even_when_yolo_is_enabled(monkeypatch):
+    monkeypatch.setattr(afk, "locked_state", lambda: _afk_snapshot({"engaged_at": "now"}))
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {
+            "action": "warn",
+            "findings": [{"rule_id": "homograph", "title": "lookalike URL"}],
+            "summary": "lookalike URL",
+        },
+    )
+    result = approval_module.check_all_command_guards("curl https://example.test", "local")
+    assert result["approved"] is False
+    assert result["afk_blocked"] is True
+
+
+def test_afk_off_preserves_yolo_for_combined_guard(monkeypatch):
+    monkeypatch.setattr(afk, "locked_state", lambda: _afk_snapshot(None))
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+    )
+
+    result = approval_module.check_all_command_guards("python -c 'print(1)'", "local")
+
+    assert result["approved"] is True
+
+
+def test_afk_approval_probe_reads_state_inside_locked_state(monkeypatch):
+    class LockedState:
+        def __enter__(self):
+            return {"engaged_at": "now"}
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(afk, "locked_state", lambda: LockedState())
+    monkeypatch.setattr(
+        afk,
+        "get_state",
+        lambda: pytest.fail("approval probe used an unlocked AFK snapshot"),
+    )
+
+    assert approval_module.afk_approval_blocked() is not None
+
+
+class _afk_snapshot:
+    def __init__(self, value):
+        self.value = value
+
+    def __enter__(self):
+        return self.value
+
+    def __exit__(self, *_args):
+        return False
+
+
+def test_final_terminal_guard_blocks_tirith_only_after_force_decision(monkeypatch):
+    monkeypatch.setattr(afk, "locked_state", lambda: _afk_snapshot({"engaged_at": "now"}))
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {"action": "warn", "findings": [], "summary": "warning"},
+    )
+    blocked = approval_module._afk_blocks_combined_command("curl https://example.test")
+    assert blocked is not None
+
+
+@pytest.mark.parametrize("value", [None, {"ok": True}])
+def test_run_with_afk_grant_preserves_successful_result_on_cleanup_failure(
+    monkeypatch, caplog, value
+):
+    calls = []
+
+    class CleanupFailure:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            raise RuntimeError("AFK cleanup failed")
+
+    monkeypatch.setattr(afk, "locked_state", lambda: CleanupFailure())
+
+    with caplog.at_level("WARNING"):
+        result = approval_module.run_with_afk_grant(
+            lambda: calls.append("invoked") or value,
+            command="printf safe",
+        )
+
+    assert result == (True, value)
+    assert calls == ["invoked"]
+    assert "AFK cleanup failed" in caplog.text
+
+
+def test_run_with_afk_grant_keeps_body_exception_authoritative(monkeypatch):
+    cleanup_args = []
+
+    class Context:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *args):
+            cleanup_args.append(args)
+            raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(afk, "locked_state", lambda: Context())
+    with pytest.raises(ValueError, match="body failed"):
+        approval_module.run_with_afk_grant(
+            lambda: (_ for _ in ()).throw(ValueError("body failed")),
+            command="printf safe",
+        )
+
+    assert cleanup_args[0][0] is ValueError
+
+
+def test_run_with_afk_grant_blocks_before_invocation_when_afk_read_fails(monkeypatch):
+    calls = []
+
+    class ReadFailure:
+        def __enter__(self):
+            raise OSError("AFK read failed")
+
+    monkeypatch.setattr(afk, "locked_state", lambda: ReadFailure())
+
+    assert approval_module.run_with_afk_grant(
+        lambda: calls.append("invoked"), approval_required=True
+    ) == (
+        False,
+        "BLOCKED: AFK state could not be verified; approval is unavailable.",
+    )
+    assert calls == []
+
+
+def test_afk_approval_mutation_yields_once_and_preserves_body_exception(monkeypatch):
+    cleanup_args = []
+
+    class Context:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *args):
+            cleanup_args.append(args)
+            return False
+
+    monkeypatch.setattr(afk, "locked_state", lambda: Context())
+
+    with pytest.raises(ValueError, match="body failed"):
+        with approval_module.afk_approval_mutation() as allowed:
+            assert allowed is True
+            raise ValueError("body failed")
+
+    assert cleanup_args[0][0] is ValueError
+
+
+def test_commit_approval_choices_does_not_mutate_caches_when_persist_fails(monkeypatch):
+    session = "transactional-session"
+    approval_module._session_approved.clear()
+    approval_module._permanent_approved.clear()
+    approval_module._session_approved[session] = {"existing-session"}
+    approval_module._permanent_approved.add("existing-permanent")
+    before_session = {key: set(value) for key, value in approval_module._session_approved.items()}
+    before_permanent = set(approval_module._permanent_approved)
+
+    monkeypatch.setattr(
+        approval_module,
+        "save_permanent_allowlist",
+        lambda _snapshot: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        approval_module.commit_approval_choices(
+            session, ["new-session"], ["new-permanent"]
+        )
+
+    assert approval_module._session_approved == before_session
+    assert approval_module._permanent_approved == before_permanent
+
+
+def test_commit_approval_choices_persists_before_cache_commit(monkeypatch):
+    session = "ordered-commit-session"
+    approval_module._session_approved.clear()
+    approval_module._permanent_approved.clear()
+    observed = []
+
+    def save(snapshot):
+        observed.append((set(snapshot), dict(approval_module._session_approved),
+                         set(approval_module._permanent_approved)))
+        return True
+
+    monkeypatch.setattr(approval_module, "save_permanent_allowlist", save)
+
+    assert approval_module.commit_approval_choices(
+        session, ["session-key"], ["permanent-key"]
+    ) is True
+    assert observed == [({"permanent-key"}, {}, set())]
+    assert approval_module._session_approved == {session: {"session-key"}}
+    assert approval_module._permanent_approved == {"permanent-key"}
+
+
+def test_cancel_gateway_approvals_denies_and_drops_entries_without_history():
+    session = "cancel-session"
+    approval_module._gateway_queues.clear()
+    entry = approval_module._ApprovalEntry({
+        "session_key": session,
+        "command": "sensitive payload",
+    })
+    approval_module._gateway_queues[session] = [entry]
+
+    assert approval_module.cancel_gateway_approvals_for_afk() == 1
+    assert approval_module._gateway_queues == {}
+    assert entry.result == "deny"
+    assert entry.event.is_set()
+    assert not hasattr(approval_module, "_gateway_history")
+
+
+def test_gateway_resolution_and_enqueue_are_afk_ordered_and_late_approval_denied(monkeypatch):
+    session = "lock-order-session"
+    approval_module._gateway_queues.clear()
+    approval_module._gateway_queues[session] = [
+        approval_module._ApprovalEntry({
+            "session_key": session,
+            "command": "rm -rf old",
+            "pattern_key": "dangerous",
+            "pattern_keys": ["dangerous"],
+        })
+    ]
+    afk_mutex = threading.Lock()
+    enqueue_entered = threading.Event()
+    release_enqueue = threading.Event()
+    resolver_called = threading.Event()
+    engaged = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    class Context:
+        def __enter__(self):
+            nonlocal calls
+            afk_mutex.acquire()
+            with calls_lock:
+                calls += 1
+                first = calls == 1
+            if first:
+                enqueue_entered.set()
+                release_enqueue.wait(timeout=2)
+            else:
+                resolver_called.set()
+            return {"engaged_at": "now"} if engaged.is_set() else None
+
+        def __exit__(self, *_args):
+            afk_mutex.release()
+            return False
+
+    monkeypatch.setattr(afk, "locked_state", lambda: Context())
+    monkeypatch.setattr(
+        approval_module,
+        "afk_approval_blocked",
+        lambda: "BLOCKED: machine-global AFK is engaged; human approval is unavailable.",
+    )
+    enqueue_result = {}
+    enqueue_thread = threading.Thread(
+        target=lambda: enqueue_result.update(
+            approval_module._await_gateway_decision(
+                session,
+                lambda _data: None,
+                {
+                    "command": "rm -rf new",
+                    "description": "desc",
+                    "pattern_key": "dangerous",
+                    "pattern_keys": ["dangerous"],
+                },
+            )
+        ),
+        daemon=True,
+    )
+    enqueue_thread.start()
+    assert enqueue_entered.wait(timeout=2)
+
+    resolve_result = {}
+    resolver_thread = threading.Thread(
+        target=lambda: resolve_result.update(
+            count=approval_module.resolve_gateway_approval(session, "once")
+        ),
+        daemon=True,
+    )
+    resolver_thread.start()
+    # The resolver must be attempting the same AFK boundary while the
+    # enqueuer owns it; this is the deterministic inversion setup.
+    time.sleep(0.02)
+    engaged.set()
+    release_enqueue.set()
+    enqueue_thread.join(timeout=2)
+    resolver_thread.join(timeout=2)
+
+    assert not enqueue_thread.is_alive()
+    assert not resolver_thread.is_alive()
+    assert resolve_result == {"count": 1}
+    assert enqueue_result["choice"] == "deny"
+    assert approval_module.resolve_gateway_approval(session, "once") == 0
 
 
 class TestSmartApproval:

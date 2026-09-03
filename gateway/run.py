@@ -18526,6 +18526,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "approve": self._handle_approve_command,
             "deny": self._handle_deny_command,
             "pause": self._handle_pause_command,
+            "afk": self._handle_afk_command,
             "agents": self._handle_agents_command,
             "bg": self._handle_background_command,
             "btw": self._handle_btw_command,
@@ -18628,6 +18629,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; "
             "in-flight work finishes normally. Use `/pause off` to resume."
         )
+
+    async def _handle_afk_command(self, event: MessageEvent):
+        from agent.afk import handle_command
+
+        return handle_command(event.get_command_args() or "")
 
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
         # Telegram sends /start for bot launches/deep-links. Treat it as a

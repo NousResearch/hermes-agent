@@ -2576,6 +2576,7 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_NOT_INVOKED = object()
 
 
 # =========================================================================
@@ -2837,6 +2838,150 @@ _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, 
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
 
 
+def cancel_gateway_approvals_for_afk() -> int:
+    """Terminally cancel pending human approvals when AFK engages."""
+    with _lock:
+        entries = [entry for queue in _gateway_queues.values() for entry in queue]
+        _gateway_queues.clear()
+        reason = (
+            "BLOCKED: machine-global AFK is engaged; human approval is unavailable."
+        )
+        for entry in entries:
+            entry.result = "deny"
+            entry.reason = reason
+    for entry in entries:
+        entry.event.set()
+    return len(entries)
+
+
+def afk_approval_blocked() -> str | None:
+    """Return a typed block reason when AFK forbids a human approval action."""
+    try:
+        from agent import afk
+        with afk.locked_state() as state:
+            if state is None:
+                return None
+            if isinstance(state, dict) and not state.get("unverifiable"):
+                return "BLOCKED: machine-global AFK is engaged; human approval is unavailable."
+            return "BLOCKED: AFK state could not be verified; approval is unavailable."
+    except Exception:
+        return "BLOCKED: AFK state could not be verified; approval is unavailable."
+
+
+def _afk_blocks_combined_command(command: str) -> str | None:
+    """Block only approval-dependent commands while AFK is engaged.
+
+    This probe deliberately runs before YOLO/off/cache shortcuts.  It does
+    not make safe commands depend on AFK, but it does include Tirith-only
+    findings in the same decision as dangerous-command detection.
+    """
+    try:
+        from agent import afk
+        with afk.locked_state() as state:
+            if state is None:
+                return None
+
+            dangerous, _pattern_key, _description = detect_dangerous_command(command)
+            tirith_warning = False
+            try:
+                from tools.tirith_security import check_command_security
+
+                tirith_warning = check_command_security(command).get("action") in {
+                    "block", "warn",
+                }
+            except ImportError:
+                # An explicitly fail-closed Tirith configuration is itself an
+                # approval-dependent warning. The normal combined flow owns the
+                # detailed message; this probe only decides whether AFK applies.
+                try:
+                    from hermes_cli.config import load_config_readonly
+
+                    security = (load_config_readonly() or {}).get("security") or {}
+                    tirith_warning = bool(
+                        security.get("tirith_enabled", True)
+                        and not security.get("tirith_fail_open", True)
+                    )
+                except Exception:
+                    tirith_warning = False
+            except Exception:
+                tirith_warning = True
+
+            if dangerous or tirith_warning:
+                if state.get("unverifiable"):
+                    return "BLOCKED: AFK state could not be verified; approval is unavailable."
+                return "BLOCKED: machine-global AFK is engaged; human approval is unavailable."
+            return None
+    except Exception:
+        return "BLOCKED: AFK state could not be verified; approval is unavailable."
+
+
+def run_with_afk_grant(invoke, *, command: str | None = None,
+                       approval_required: bool = False):
+    """Run one side-effect initiation under the AFK transaction lock.
+
+    The final approval grant is the start boundary: once granted while this
+    lock is held immediately before invocation, a later AFK transition sees
+    that invocation as existing work.  The lock covers only this initiation,
+    never the foreground command or network/tool wait that follows it.
+    """
+    blocked = "BLOCKED: AFK state could not be verified; approval is unavailable."
+    try:
+        from agent import afk
+        context = afk.locked_state()
+        state = context.__enter__()
+    except BaseException:
+        return False, blocked
+
+    result = _NOT_INVOKED
+    body_exc = None
+    try:
+        if state is not None and (
+            approval_required
+            or _command_has_approval_finding(command or "")
+        ):
+            blocked = (
+                "BLOCKED: AFK state could not be verified; approval is unavailable."
+                if state.get("unverifiable")
+                else "BLOCKED: machine-global AFK is engaged; human approval is unavailable."
+            )
+            return False, blocked
+        result = invoke()
+    except BaseException as exc:
+        body_exc = exc
+        raise
+    finally:
+        try:
+            context.__exit__(*sys.exc_info())
+        except BaseException as cleanup_exc:
+            if body_exc is not None:
+                logger.warning("AFK cleanup failed after invocation: %s", cleanup_exc)
+            elif result is not _NOT_INVOKED:
+                logger.warning("AFK cleanup failed after successful invocation: %s", cleanup_exc)
+            else:
+                logger.warning("AFK cleanup failed before invocation: %s", cleanup_exc)
+                # A return from the try block is already pending. Raising here
+                # would turn a fail-closed pre-invocation result into a caller
+                # error, so preserve the blocked outcome below.
+                result = _NOT_INVOKED
+
+    if result is _NOT_INVOKED:
+        return False, blocked
+    return True, result
+
+
+def _command_has_approval_finding(command: str) -> bool:
+    dangerous, _key, _description = detect_dangerous_command(command)
+    if dangerous:
+        return True
+    try:
+        from tools.tirith_security import check_command_security
+        return check_command_security(command).get("action") in {"block", "warn"}
+    except ImportError:
+        return False
+    except Exception:
+        return True
+
+
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
@@ -2879,27 +3024,62 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     Returns the number of approvals resolved (0 means nothing was pending).
     """
-    with _lock:
-        queue = _gateway_queues.get(session_key)
-        if not queue:
-            return 0
-        if request_id:
-            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
-                return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
-        elif resolve_all:
-            targets = list(queue)
-            queue.clear()
-        else:
-            targets = [queue.pop(0)]
-        if not queue:
-            _gateway_queues.pop(session_key, None)
+    targets = []
+    blocked = None
+
+    def _take_targets():
+        with _lock:
+            queue = _gateway_queues.get(session_key)
+            if not queue:
+                return []
+            if request_id:
+                selected = [
+                    entry for entry in queue
+                    if entry.data.get("request_id") == request_id
+                ]
+                if not selected:
+                    return []
+                queue[:] = [entry for entry in queue if entry not in selected]
+            elif resolve_all:
+                selected = list(queue)
+                queue.clear()
+            else:
+                selected = [queue.pop(0)]
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+            return selected
+
+    def _finish_targets(selected, block_reason):
+        with _lock:
+            for entry in selected:
+                entry.result = "deny" if block_reason else choice
+                if block_reason:
+                    entry.reason = block_reason
+                elif reason:
+                    entry.reason = reason
+
+    try:
+        from agent import afk
+        # This is the linearization boundary for a gateway approval.  The
+        # AFK lock must be acquired before _lock, matching enqueue/waiters.
+        with afk.locked_state() as state:
+            if state is not None:
+                blocked = (
+                    "BLOCKED: AFK state could not be verified; approval is unavailable."
+                    if state.get("unverifiable")
+                    else "BLOCKED: machine-global AFK is engaged; human approval is unavailable."
+                )
+            targets = _take_targets()
+            _finish_targets(targets, blocked)
+    except BaseException:
+        # A failed AFK read/lock or final root validation is fail-closed.  The
+        # queue still has to be drained, but no AFK lock is held here.
+        blocked = "BLOCKED: AFK state could not be verified; approval is unavailable."
+        if not targets:
+            targets = _take_targets()
+        _finish_targets(targets, blocked)
 
     for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
         entry.event.set()
     return len(targets)
 
@@ -2950,8 +3130,12 @@ def submit_pending(session_key: str, approval: dict):
 
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
-    with _lock:
-        _session_approved.setdefault(session_key, set()).add(pattern_key)
+    with afk_approval_mutation() as allowed:
+        if not allowed:
+            return False
+        with _lock:
+            _session_approved.setdefault(session_key, set()).add(pattern_key)
+    return True
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
@@ -3055,8 +3239,61 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
 
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
-    with _lock:
-        _permanent_approved.add(pattern_key)
+    with afk_approval_mutation() as allowed:
+        if not allowed:
+            return False
+        with _lock:
+            _permanent_approved.add(pattern_key)
+    return True
+
+
+@contextlib.contextmanager
+def afk_approval_mutation():
+    """Guard a short-lived approval/cache mutation with the AFK lock."""
+    context = None
+    try:
+        from agent import afk
+        context = afk.locked_state()
+        state = context.__enter__()
+    except Exception:
+        yield False
+        return
+
+    body_info = None
+    try:
+        yield state is None
+    finally:
+        body_info = sys.exc_info()
+        try:
+            context.__exit__(*body_info)
+        except BaseException:
+            if body_info[0] is None:
+                raise
+            logger.warning(
+                "AFK approval mutation cleanup failed after body exception",
+                exc_info=True,
+            )
+
+
+def commit_approval_choices(session_key: str, pattern_keys: list[str],
+                            permanent_keys: list[str] | None = None) -> bool:
+    """Atomically commit short-lived approval/cache mutations while AFK-off."""
+    permanent_keys = permanent_keys or []
+    with afk_approval_mutation() as allowed:
+        if not allowed:
+            return False
+        with _lock:
+            snapshot = set(_permanent_approved)
+            snapshot.update(permanent_keys)
+        if permanent_keys:
+            if save_permanent_allowlist(snapshot) is False:
+                return False
+        with _lock:
+            if pattern_keys:
+                _session_approved.setdefault(session_key, set()).update(pattern_keys)
+            if permanent_keys:
+                _permanent_approved.update(permanent_keys)
+        return True
 
 
 def load_permanent(patterns: set):
@@ -3194,15 +3431,17 @@ def load_permanent_allowlist() -> set:
         return set()
 
 
-def save_permanent_allowlist(patterns: set):
+def save_permanent_allowlist(patterns: set) -> bool:
     """Save permanently allowed command patterns to config."""
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
         config["command_allowlist"] = list(patterns)
         save_config(config)
+        return True
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
+        return False
 
 
 # =========================================================================
@@ -3812,6 +4051,9 @@ def _run_approval_gate(
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
         ``check_dangerous_command`` so all callers handle it uniformly.
     """
+    blocked = afk_approval_blocked()
+    if blocked:
+        return {"approved": False, "message": blocked, "afk_blocked": True}
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
@@ -3977,11 +4219,11 @@ def _run_approval_gate(
                 }
 
             if choice == "session":
-                approve_session(session_key, pattern_key)
+                if not commit_approval_choices(session_key, [pattern_key]):
+                    return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
             elif choice == "always":
-                approve_session(session_key, pattern_key)
-                approve_permanent(pattern_key)
-                save_permanent_allowlist(_permanent_approved)
+                if not commit_approval_choices(session_key, [pattern_key], [pattern_key]):
+                    return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
             return {"approved": True, "message": None}
 
         # No notify callback: interactive CLI with a panel callback should
@@ -4063,11 +4305,11 @@ def _run_approval_gate(
         }
 
     if choice == "session":
-        approve_session(session_key, pattern_key)
+        if not commit_approval_choices(session_key, [pattern_key]):
+            return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
     elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+        if not commit_approval_choices(session_key, [pattern_key], [pattern_key]):
+            return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
 
     return {"approved": True, "message": None}
 
@@ -4126,6 +4368,12 @@ def check_dangerous_command(command: str, env_type: str,
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
 
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous:
+        blocked = afk_approval_blocked()
+        if blocked:
+            return {"approved": False, "message": blocked, "afk_blocked": True}
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
@@ -4134,7 +4382,6 @@ def check_dangerous_command(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
 
@@ -4497,6 +4744,10 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
     resolved = False
     with human_wait_window(session_key):
         while True:
+            if afk_approval_blocked():
+                choice = "deny"
+                resolved = True
+                break
             if is_interrupted():
                 logger.info(
                     "Coalesced approval wait interrupted by user signal — "
@@ -4602,8 +4853,18 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         # Leader resolved "once" — fall through to a fresh prompt below.
 
     entry = _ApprovalEntry(approval_data)
-    with _lock:
-        _gateway_queues.setdefault(session_key, []).append(entry)
+    entry.data["session_key"] = session_key
+    try:
+        from agent import afk
+        with afk.locked_state() as state:
+            if state is not None:
+                return {"resolved": True, "choice": "deny",
+                        "reason": afk_approval_blocked()}
+            with _lock:
+                _gateway_queues.setdefault(session_key, []).append(entry)
+    except Exception:
+        return {"resolved": True, "choice": "deny",
+                "reason": "BLOCKED: AFK state could not be verified; approval is unavailable."}
 
     def _drop_entry() -> None:
         with _lock:
@@ -4665,6 +4926,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # excludes it (#79719).
     with human_wait_window(session_key):
         while True:
+            if afk_approval_blocked():
+                entry.result = "deny"
+                entry.reason = "BLOCKED: machine-global AFK is engaged; human approval is unavailable."
+                resolved = True
+                break
             # Respect interrupt signals (e.g. /stop, /new, or an inactivity
             # timeout from the gateway) so a pending approval doesn't keep the
             # session wedged on threading.Event.wait() until the 5-minute approval
@@ -4709,6 +4975,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     _drop_entry()
 
+    # Final check for the waiter: AFK may have engaged after the gateway
+    # resolver committed a positive choice but before this thread resumes.
+    blocked = afk_approval_blocked()
+    if blocked:
+        entry.result = "deny"
+        entry.reason = blocked
     choice = entry.result
     # Normalize outcome for the post hook. Unresolved (timeout) and None both
     # mean the user never responded; report that explicitly so plugins can
@@ -4774,6 +5046,10 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("User deny rule %r blocked command: %s",
                        deny_pattern, command[:200])
         return _user_deny_block_result(deny_pattern)
+
+    afk_block = _afk_blocks_combined_command(command)
+    if afk_block:
+        return {"approved": False, "message": afk_block, "afk_blocked": True}
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
@@ -5176,17 +5452,12 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                     "outcome": "denied",
                     "user_consent": False,
-                }
+            }
             if not smart_denied_for_owner:
-                for key, _, is_tirith in warnings:
-                    if transport_choice == "session" or (
-                        transport_choice == "always" and is_tirith
-                    ):
-                        approve_session(session_key, key)
-                    elif transport_choice == "always":
-                        approve_session(session_key, key)
-                        approve_permanent(key)
-                        save_permanent_allowlist(_permanent_approved)
+                session_keys = [key for key, _, is_tirith in warnings if transport_choice == "session" or (transport_choice == "always" and is_tirith)]
+                permanent_keys = [key for key, _, is_tirith in warnings if transport_choice == "always" and not is_tirith]
+                if not commit_approval_choices(session_key, session_keys, permanent_keys):
+                    return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
             _reset_denials(session_key)
             return {
                 "approved": True,
@@ -5294,13 +5565,10 @@ def check_all_command_guards(command: str, env_type: str,
             # older client returns "session" or "always". Manual and ESCALATE
             # choices retain their existing persistence semantics.
             if not smart_denied_for_owner:
-                for key, _, is_tirith in warnings:
-                    if choice == "session" or (choice == "always" and is_tirith):
-                        approve_session(session_key, key)
-                    elif choice == "always":
-                        approve_session(session_key, key)
-                        approve_permanent(key)
-                        save_permanent_allowlist(_permanent_approved)
+                session_keys = [key for key, _, is_tirith in warnings if choice == "session" or (choice == "always" and is_tirith)]
+                permanent_keys = [key for key, _, is_tirith in warnings if choice == "always" and not is_tirith]
+                if not commit_approval_choices(session_key, session_keys, permanent_keys):
+                    return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
 
             # A human approval (including an ESCALATE-then-approve or a
             # smart-DENY owner override) resets the consecutive-denial tally.
@@ -5421,15 +5689,10 @@ def check_all_command_guards(command: str, env_type: str,
     # Smart-DENY owner overrides are one-operation scoped. Preserve existing
     # persistence for manual mode and smart ESCALATE.
     if not smart_denied_for_owner:
-        for key, _, is_tirith in warnings:
-            if choice == "session" or (choice == "always" and is_tirith):
-                # tirith: session only (no permanent broad allowlisting)
-                approve_session(session_key, key)
-            elif choice == "always":
-                # dangerous patterns: permanent allowed
-                approve_session(session_key, key)
-                approve_permanent(key)
-                save_permanent_allowlist(_permanent_approved)
+        session_keys = [key for key, _, is_tirith in warnings if choice == "session" or (choice == "always" and is_tirith)]
+        permanent_keys = [key for key, _, is_tirith in warnings if choice == "always" and not is_tirith]
+        if not commit_approval_choices(session_key, session_keys, permanent_keys):
+            return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
 
     # A human approval resets the consecutive-denial tally.
     _reset_denials(session_key)
@@ -5462,6 +5725,10 @@ def check_execute_code_guard(code: str, env_type: str,
         "mutate files without passing through terminal command approval; "
         "approval is one-shot for this run."
     )
+
+    blocked = afk_approval_blocked()
+    if blocked:
+        return {"approved": False, "message": blocked, "afk_blocked": True}
 
     # Isolated backends already sandbox the child — matches the container skip
     # in check_all_command_guards / check_dangerous_command. Docker stops
@@ -5669,11 +5936,11 @@ def check_execute_code_guard(code: str, env_type: str,
                 }
             if not smart_denied_for_owner:
                 if choice == "session":
-                    approve_session(session_key, pattern_key)
+                    if not commit_approval_choices(session_key, [pattern_key]):
+                        return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
                 elif choice == "always":
-                    approve_session(session_key, pattern_key)
-                    approve_permanent(pattern_key)
-                    save_permanent_allowlist(_permanent_approved)
+                    if not commit_approval_choices(session_key, [pattern_key], [pattern_key]):
+                        return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
             _reset_denials(session_key)
             return {
                 "approved": True,
@@ -5764,11 +6031,11 @@ def check_execute_code_guard(code: str, env_type: str,
                 }
             if not smart_denied_for_owner:
                 if choice == "session":
-                    approve_session(session_key, pattern_key)
+                    if not commit_approval_choices(session_key, [pattern_key]):
+                        return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
                 elif choice == "always":
-                    approve_session(session_key, pattern_key)
-                    approve_permanent(pattern_key)
-                    save_permanent_allowlist(_permanent_approved)
+                    if not commit_approval_choices(session_key, [pattern_key], [pattern_key]):
+                        return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
             _reset_denials(session_key)
             return {
                 "approved": True,
@@ -5863,11 +6130,11 @@ def check_execute_code_guard(code: str, env_type: str,
     # decisions preserve their existing session/permanent behavior.
     if not smart_denied_for_owner:
         if choice == "session":
-            approve_session(session_key, pattern_key)
+            if not commit_approval_choices(session_key, [pattern_key]):
+                return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
         elif choice == "always":
-            approve_session(session_key, pattern_key)
-            approve_permanent(pattern_key)
-            save_permanent_allowlist(_permanent_approved)
+            if not commit_approval_choices(session_key, [pattern_key], [pattern_key]):
+                return {"approved": False, "message": "BLOCKED: approval unavailable", "afk_blocked": True}
     # choice == "once": no persistence — approval lasts this single call only.
 
     # A human approval resets the consecutive-denial tally.

@@ -357,6 +357,9 @@ def _reset_cached_sudo_passwords() -> None:
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    afk_approval_blocked as _afk_approval_blocked,
+    _afk_blocks_combined_command as _afk_blocks_combined_command,
+    run_with_afk_grant as _run_with_afk_grant,
 )
 
 
@@ -3297,6 +3300,7 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        approval = {}
         # True when the user explicitly approved this run (or pre-confirmed via
         # force).  Drives the clean-interrupt-slate clear before env.execute so
         # an approved command can't be SIGINT-killed by a bit that landed during
@@ -3334,14 +3338,20 @@ def terminal_tool(
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
+
+        # Final authorization boundary: AFK may engage after a prompt or
+        # force/yolo decision but before the shell side effect.
+        approval_dependent = bool(
+            approval.get("user_approved") or approval.get("smart_approved")
+        )
+        if not force and approval.get("user_approved"):
             # Track whether approval was explicitly granted by the user
-            if approval.get("user_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command required approval ({desc}) and was approved by the user."
-                _approved_run = True
-            elif approval.get("smart_approved"):
-                desc = approval.get("description", "flagged as dangerous")
-                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+            desc = approval.get("description", "flagged as dangerous")
+            approval_note = f"Command required approval ({desc}) and was approved by the user."
+            _approved_run = True
+        elif not force and approval.get("smart_approved"):
+            desc = approval.get("description", "flagged as dangerous")
+            approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
         # Prepare command for execution
         pty_disabled_reason = None
@@ -3370,24 +3380,37 @@ def terminal_tool(
             )
             try:
                 if env_type == "local":
-                    proc_session = process_registry.spawn_local(
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        owner_task_id=task_id or effective_task_id,
-                        session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=effective_pty,
-                    )
+                    def _spawn():
+                        return process_registry.spawn_local(
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_task_id,
+                            owner_task_id=task_id or effective_task_id,
+                            session_key=session_key,
+                            env_vars=env.env if hasattr(env, 'env') else None,
+                            use_pty=effective_pty,
+                        )
                 else:
-                    proc_session = process_registry.spawn_via_env(
-                        env=env,
-                        command=command,
-                        cwd=effective_cwd,
-                        task_id=effective_task_id,
-                        owner_task_id=task_id or effective_task_id,
-                        session_key=session_key,
-                    )
+                    def _spawn():
+                        return process_registry.spawn_via_env(
+                            env=env,
+                            command=command,
+                            cwd=effective_cwd,
+                            task_id=effective_task_id,
+                            owner_task_id=task_id or effective_task_id,
+                            session_key=session_key,
+                        )
+                granted, spawn_result = _run_with_afk_grant(
+                    _spawn,
+                    command=command,
+                    approval_required=approval_dependent,
+                )
+                if not granted:
+                    return json.dumps({
+                        "output": "", "exit_code": -1,
+                        "error": spawn_result, "status": "blocked",
+                    }, ensure_ascii=False)
+                proc_session = spawn_result
 
                 result_data = {
                     "output": "Background process started",
@@ -3653,6 +3676,14 @@ def terminal_tool(
                         # reads, RPC reads) intentionally stay unbounded.
                         "bounded_capture": True,
                     }
+                    if approval_dependent:
+                        # The environment owns the actual foreground spawn;
+                        # guard only that initiation, not its wait loop.
+                        execute_kwargs["spawn_guard"] = lambda spawn: _run_with_afk_grant(
+                            spawn,
+                            command=command,
+                            approval_required=True,
+                        )
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

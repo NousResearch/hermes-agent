@@ -1447,6 +1447,7 @@ def handle_function_call(
         # (for `modify` directives). Observer plugins see
         # the hook on that same pass. When skip=True, the caller already
         # fired it — do nothing here.
+        approval_required = False
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
@@ -1463,6 +1464,10 @@ def handle_function_call(
                 )
                 if modified_args is not None:
                     function_args = modified_args
+                from hermes_cli.plugins import current_pre_tool_approval_required
+                approval_required = current_pre_tool_approval_required()
+                from hermes_cli.plugins import clear_pre_tool_approval_required
+                clear_pre_tool_approval_required()
             except Exception as _hook_err:
                 logger.debug("pre_tool_call hook error: %s", _hook_err)
 
@@ -1483,6 +1488,10 @@ def handle_function_call(
                     middleware_trace=list(_tool_middleware_trace),
                 )
                 return result
+        else:
+            from hermes_cli.plugins import current_pre_tool_approval_required, clear_pre_tool_approval_required
+            approval_required = current_pre_tool_approval_required()
+            clear_pre_tool_approval_required()
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths
@@ -1561,6 +1570,12 @@ def handle_function_call(
                 # the parent's tool set via the process-global.
                 sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    from hermes_cli.plugins import final_pre_tool_call_authorization
+                    final_block = final_pre_tool_call_authorization(
+                        function_name, approval_required=approval_required
+                    )
+                    if final_block:
+                        return tool_error(final_block)
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,
@@ -1569,6 +1584,12 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    from hermes_cli.plugins import final_pre_tool_call_authorization
+                    final_block = final_pre_tool_call_authorization(
+                        function_name, approval_required=approval_required
+                    )
+                    if final_block:
+                        return tool_error(final_block)
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,

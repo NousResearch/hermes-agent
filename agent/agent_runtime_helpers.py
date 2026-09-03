@@ -3562,6 +3562,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
+    approval_required = False
     if not pre_tool_block_checked:
         try:
             from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
@@ -3575,8 +3576,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
             if modified_args is not None:
                 function_args = modified_args
+            from hermes_cli.plugins import current_pre_tool_approval_required
+            approval_required = current_pre_tool_approval_required()
+            from hermes_cli.plugins import clear_pre_tool_approval_required
+            clear_pre_tool_approval_required()
         except Exception:
             block_message = None
+    else:
+        from hermes_cli.plugins import current_pre_tool_approval_required, clear_pre_tool_approval_required
+        approval_required = current_pre_tool_approval_required()
+        clear_pre_tool_approval_required()
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         try:
@@ -3598,6 +3607,13 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         except Exception:
             pass
         return result
+
+    from hermes_cli.plugins import final_pre_tool_call_authorization
+    final_block = final_pre_tool_call_authorization(
+        function_name, approval_required=approval_required
+    )
+    if final_block:
+        return json.dumps({"error": final_block}, ensure_ascii=False)
 
     tool_start_time = time.monotonic()
 

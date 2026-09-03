@@ -81,6 +81,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "unattended_safe": t.unattended_safe,
     }
 
 
@@ -431,6 +432,10 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument(
+        "--unattended-safe", action="store_true",
+        help="Explicitly allow this task to be newly dispatched while AFK is engaged.",
+    )
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -1685,6 +1690,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            unattended_safe=bool(getattr(args, "unattended_safe", False)),
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -2804,6 +2810,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
+            "skipped_unattended": res.skipped_unattended,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
@@ -2837,6 +2844,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_unattended:
+        print(f"Deferred (AFK): {', '.join(res.skipped_unattended)}")
     if res.skipped_per_profile_capped:
         for tid, who, current in res.skipped_per_profile_capped:
             print(

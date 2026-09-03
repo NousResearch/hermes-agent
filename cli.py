@@ -13126,6 +13126,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_wake_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "afk":
+            from agent.afk import handle_command
+            parts = cmd_original.split(None, 1)
+            self._console_print(handle_command(parts[1] if len(parts) > 1 else ""))
         elif canonical == "indicator":
             self._handle_indicator_command(cmd_original)
         else:

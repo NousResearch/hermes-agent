@@ -1451,6 +1451,7 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        spawn_guard=None,
     ) -> dict:
         """Execute a command, return {"output": str, "returncode": int}.
 
@@ -1508,9 +1509,16 @@ class BaseEnvironment(ABC):
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
-            spawned = self._run_bash(
+            spawn = lambda: self._run_bash(
                 wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
             )
+            if spawn_guard is None:
+                spawned = spawn()
+            else:
+                granted, spawned = spawn_guard(spawn)
+                if not granted:
+                    return {"output": "", "returncode": -1,
+                            "error": spawned, "afk_blocked": True}
             proc_holder.append(spawned)
             return self._wait_for_process(
                 spawned,

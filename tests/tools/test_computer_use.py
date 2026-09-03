@@ -90,6 +90,20 @@ class TestRegistration:
 
 class TestDispatch:
 
+    def test_cua_rechecks_afk_before_backend_dispatch(self, monkeypatch, noop_backend):
+        from tools import computer_use as cu
+
+        monkeypatch.setattr(cu.tool, "_request_approval", lambda *a: None)
+        monkeypatch.setattr(
+            "tools.approval.run_with_afk_grant",
+            lambda *a, **k: (False, "blocked"),
+        )
+        called = []
+        monkeypatch.setattr(cu.tool, "_dispatch", lambda *a: called.append(a))
+        out = cu.tool.handle_computer_use({"action": "click", "element": 1})
+        assert json.loads(out)["code"] == "afk_approval_blocked"
+        assert called == []
+
     def test_unknown_action_returns_error(self):
         from tools.computer_use.tool import handle_computer_use
         out = handle_computer_use({"action": "nope"})

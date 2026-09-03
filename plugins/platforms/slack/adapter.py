@@ -1292,6 +1292,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        self._socket_stop_timeout_s = 10.0
         # Monotonic timestamp of the most recent Socket Mode handler (re)start,
         # used to grant a grace window for the first ping/pong after connect.
         self._socket_handler_started_monotonic: Optional[float] = None
@@ -1551,10 +1552,31 @@ class SlackAdapter(BasePlatformAdapter):
                 return
 
             logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
-            await self._stop_socket_mode_handler()
+            stale_task = self._socket_mode_task
+            try:
+                await asyncio.wait_for(
+                    self._stop_socket_mode_handler(),
+                    timeout=self._socket_stop_timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[Slack] Timed out closing stale Socket Mode handler after %.1fs; "
+                    "starting a replacement",
+                    self._socket_stop_timeout_s,
+                )
+                if stale_task is not None and not stale_task.done():
+                    stale_task.cancel()
+            except Exception as exc:  # pragma: no cover - defensive recovery
+                logger.warning(
+                    "[Slack] Error closing stale Socket Mode handler: %s; "
+                    "starting a replacement",
+                    exc,
+                    exc_info=True,
+                )
 
             try:
                 self._start_socket_mode_handler()
+                logger.info("[Slack] Socket Mode replacement started")
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
                     "[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True

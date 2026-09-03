@@ -295,3 +295,82 @@ class TestSocketModeRestart:
         await adapter._socket_watchdog_loop()
 
         assert reasons == ["transport disconnected"]
+
+    @pytest.mark.asyncio
+    async def test_restart_starts_replacement_when_old_handler_close_hangs(self, adapter):
+        """A wedged close_async must not wedge the reconnect lock forever."""
+        never = asyncio.Event()
+
+        async def _hang_forever():
+            await never.wait()
+
+        adapter._stop_socket_mode_handler = AsyncMock(side_effect=_hang_forever)
+        adapter._start_socket_mode_handler = MagicMock()
+        adapter._socket_stop_timeout_s = 0.01
+
+        await asyncio.wait_for(
+            adapter._restart_socket_mode("transport disconnected"), timeout=0.2
+        )
+
+        adapter._start_socket_mode_handler.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_restart_cancels_stale_task_on_teardown_timeout(self, adapter):
+        """Stale socket task must be cancelled if teardown times out."""
+        stale_task = asyncio.create_task(asyncio.sleep(float("inf")))
+        adapter._socket_mode_task = stale_task
+
+        never = asyncio.Event()
+
+        async def _hang_forever():
+            await never.wait()
+
+        adapter._stop_socket_mode_handler = AsyncMock(side_effect=_hang_forever)
+        adapter._start_socket_mode_handler = MagicMock()
+        adapter._socket_stop_timeout_s = 0.01
+
+        await asyncio.wait_for(
+            adapter._restart_socket_mode("transport disconnected"), timeout=0.2
+        )
+        await asyncio.sleep(0.01)  # allow cancellation to propagate
+
+        assert stale_task.cancelled(), "stale socket task should be cancelled after teardown timeout"
+
+    @pytest.mark.asyncio
+    async def test_restart_starts_replacement_when_stop_raises(self, adapter):
+        """An error in _stop_socket_mode_handler must not prevent starting a replacement."""
+        adapter._stop_socket_mode_handler = AsyncMock(
+            side_effect=RuntimeError("session exploded")
+        )
+        adapter._start_socket_mode_handler = MagicMock()
+        adapter._socket_stop_timeout_s = 0.1
+
+        await asyncio.wait_for(
+            adapter._restart_socket_mode("transport disconnected"), timeout=0.5
+        )
+
+        adapter._start_socket_mode_handler.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_lock_released_after_timeout_so_second_restart_runs(self, adapter):
+        """Reconnect lock must be released after a teardown timeout."""
+        call_count = 0
+
+        async def _hang_once():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                await asyncio.sleep(float("inf"))
+
+        adapter._stop_socket_mode_handler = AsyncMock(side_effect=_hang_once)
+        adapter._start_socket_mode_handler = MagicMock()
+        adapter._socket_stop_timeout_s = 0.01
+
+        await asyncio.wait_for(
+            adapter._restart_socket_mode("transport disconnected"), timeout=0.2
+        )
+        await asyncio.wait_for(
+            adapter._restart_socket_mode("second reason"), timeout=0.2
+        )
+
+        assert adapter._start_socket_mode_handler.call_count == 2

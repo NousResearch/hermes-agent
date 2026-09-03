@@ -204,10 +204,12 @@ function sidebarCrossBgCommand(releasePath?: string): string {
   if (!releasePath) {
     return 'echo "long bg output" && sleep 5 && echo "finished"'
   }
+
   // Bounded wait (60s): if a test forgets to release (or crashes mid-way),
   // the process still exits instead of hanging the worker until the suite
   // times out.
   const quoted = JSON.stringify(releasePath)
+
   return [
     'echo "long bg output"',
     `for _ in $(seq 1 600); do [ -e ${quoted} ] && break; sleep 0.1; done`,
@@ -298,6 +300,8 @@ export const VERIFICATION_STOP_TEXT = 'I cannot provide fresh verification evide
  */
 export const BLOCKING_CLARIFY_TRIGGER = 'E2E_BLOCKING_CLARIFY_TRIGGER'
 export const BLOCKING_CLARIFY_QUESTION = 'Keep this test turn running?'
+/** Unique post-tool assistant reply; must not appear in seeded history. */
+export const BLOCKING_CLARIFY_CONTINUATION = 'E2E_CLARIFY_TURN_CONTINUED_9f3c1a'
 
 /**
  * A long live response with a five-row todo card, held open by a foreground tool.
@@ -337,6 +341,10 @@ const TASK_PANEL_RESUME_SCRIPT: ScriptedTurn[] = [
 const BLOCKING_CLARIFY_TURN: ScriptedTurn = {
   text: '',
   toolCalls: [{ name: 'clarify', args: { question: BLOCKING_CLARIFY_QUESTION, choices: ['Yes', 'No'] } }],
+}
+
+const BLOCKING_CLARIFY_CONTINUATION_TURN: ScriptedTurn = {
+  text: BLOCKING_CLARIFY_CONTINUATION,
 }
 
 /**
@@ -400,12 +408,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
+
     const heldStreamStarted = new Promise<void>(resolveHeld => {
       resolveHeldStreamStarted = resolveHeld
     })
+
     const heldStreamReleased = new Promise<void>(resolveRelease => {
       releaseHeldStream = resolveRelease
     })
+
     const server = http.createServer((req, res) => {
       // CORS headers — the Electron renderer doesn't need them, but they
       // don't hurt and make the server usable from a browser context too.
@@ -416,6 +427,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       if (req.method === 'OPTIONS') {
         res.writeHead(204)
         res.end()
+
         return
       }
 
@@ -435,6 +447,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             ],
           }),
         )
+
         return
       }
 
@@ -465,6 +478,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
             heldCompletionCount === 0 &&
@@ -480,17 +494,21 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           const messages: any[] = Array.isArray(parsed.messages) ? parsed.messages : []
           const lastUserMsg = [...messages].reverse().find(m => m?.role === 'user')
           const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : ''
+
           if (userText) {
             _receivedUserTexts.push(userText)
           }
+
           const isInterimTrigger = userText.includes('E2E_INTERIM_TRIGGER')
           const isSidebarTrigger = userText.includes('E2E_SIDEBAR_TRIGGER')
           const isSidebarCrossTrigger = userText.includes('E2E_SIDEBAR_CROSS')
           const isQueueStopTrigger = userText.includes('E2E_QUEUE_STOP_TRIGGER')
           const isTaskPanelResumeTrigger = userText.includes(TASK_PANEL_RESUME_TRIGGER)
+
           const isVerificationStopTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(VERIFICATION_STOP_TRIGGER),
           )
+
           const isCorrectionSwitchTrigger = messages.some(
             message => typeof message?.content === 'string' && message.content.includes(CORRECTION_SWITCH_TRIGGER),
           )
@@ -499,7 +517,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             const turn =
               TASK_PANEL_RESUME_SCRIPT[_taskPanelResumeIndex] ??
               TASK_PANEL_RESUME_SCRIPT[TASK_PANEL_RESUME_SCRIPT.length - 1]
+
             _taskPanelResumeIndex++
+
             const respond = () => {
               if (stream) {
                 streamScriptedTurn(res, model, turn)
@@ -515,6 +535,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               respond()
             }
+
             return
           }
 
@@ -532,27 +553,48 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               } else {
                 nonStreamingScriptedTurn(res, model, BATCH_CLARIFY_TURN)
               }
+
               return
             }
           }
 
           if (includesBlockingClarifyTrigger(parsed.messages)) {
-            if (stream) {
-              streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
-            } else {
-              nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+            // Same reason as the batch clarify branch above: the trigger text
+            // stays in message history, so once the answered tool result is
+            // present the turn falls through to the canned reply — otherwise
+            // the mock re-raises the blocking clarify on every later completion.
+            const hasToolResult = Array.isArray(parsed.messages)
+              && parsed.messages.some((message: { role?: string }) => message?.role === 'tool')
+
+            if (!hasToolResult) {
+              if (stream) {
+                streamScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+              } else {
+                nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_TURN)
+              }
+
+              return
             }
+
+            if (stream) {
+              streamScriptedTurn(res, model, BLOCKING_CLARIFY_CONTINUATION_TURN)
+            } else {
+              nonStreamingScriptedTurn(res, model, BLOCKING_CLARIFY_CONTINUATION_TURN)
+            }
+
             return
           }
 
           if (isQueueStopTrigger) {
             const turn = QUEUE_STOP_SCRIPT[_queueStopIndex] ?? QUEUE_STOP_SCRIPT[QUEUE_STOP_SCRIPT.length - 1]
             _queueStopIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -560,22 +602,26 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             const script = verificationStopScript(options.verificationWritePath ?? 'e2e-verification-target.py')
             const turn = script[_verificationStopIndex] ?? script[script.length - 1]
             _verificationStopIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
           if (isCorrectionSwitchTrigger) {
             const turn = CORRECTION_SWITCH_SCRIPT[_correctionSwitchIndex] ?? CORRECTION_SWITCH_SCRIPT[CORRECTION_SWITCH_SCRIPT.length - 1]
             _correctionSwitchIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -589,6 +635,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -601,17 +648,20 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
           if (isInterimTrigger) {
             const turn = INTERIM_SCRIPT[_scriptIndex] ?? INTERIM_SCRIPT[INTERIM_SCRIPT.length - 1]
             _scriptIndex++
+
             if (stream) {
               streamScriptedTurn(res, model, turn)
             } else {
               nonStreamingScriptedTurn(res, model, turn)
             }
+
             return
           }
 
@@ -620,11 +670,14 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
+
             streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
+
               resolveHeldStreamStarted?.()
+
               return heldStreamReleased
             } : undefined)
           } else {
@@ -642,6 +695,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           res.writeHead(400)
           res.end('Bad request')
         })
+
         return
       }
 
@@ -654,8 +708,10 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
     server.listen(0, '127.0.0.1', () => {
       const addr = server.address()
+
       if (addr === null || typeof addr === 'string') {
         reject(new Error('Failed to get server address'))
+
         return
       }
 
@@ -722,16 +778,20 @@ function streamTextResponse(
       res.write(sseChunk(model, {}, 'stop'))
       res.write('data: [DONE]\n\n')
       res.end()
+
       return
     }
 
     const word = i === 0 ? words[i] : ' ' + words[i]
     res.write(sseChunk(model, { content: word }))
     i++
+
     if (waitForRelease && i === 1) {
       waitForRelease().then(() => setTimeout(sendChunk, 20))
+
       return
     }
+
     setTimeout(sendChunk, 20)
   }
 
@@ -798,8 +858,10 @@ function streamScriptedTurn(
     } else {
       res.write(sseChunk(model, {}, finishReason))
     }
+
     res.write('data: [DONE]\n\n')
     res.end()
+
     return
   }
 
@@ -824,8 +886,10 @@ function streamScriptedTurn(
       } else {
         res.write(sseChunk(model, {}, finishReason))
       }
+
       res.write('data: [DONE]\n\n')
       res.end()
+
       return
     }
 
@@ -848,9 +912,11 @@ function nonStreamingScriptedTurn(
   const finishReason = hasToolCalls ? 'tool_calls' : 'stop'
 
   const message: Record<string, unknown> = { role: 'assistant' }
+
   if (turn.text) {
     message.content = turn.text
   }
+
   if (hasToolCalls) {
     message.tool_calls = turn.toolCalls!.map((tc, idx) => ({
       id: `call_e2e_${_scriptIndex}_${idx}`,
@@ -919,6 +985,7 @@ export function createBackgroundReleaseHandle(): BackgroundReleaseHandle {
     os.tmpdir(),
     `hermes-e2e-bg-release-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   )
+
   return {
     path,
     release: () => {

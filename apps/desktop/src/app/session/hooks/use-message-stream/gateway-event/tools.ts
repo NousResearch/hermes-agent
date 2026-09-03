@@ -1,4 +1,5 @@
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
+import { hasClarifyRequest, noteClarifyToolCall, settleClarifyRequest } from '@/store/clarify'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
@@ -57,6 +58,13 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
+    // The model's tool_call_id, held for the `clarify.request` that follows it.
+    // `tool.progress` is not a new tool call and must not re-arm a slot the
+    // request already consumed.
+    if (event.type === 'tool.start' && payload?.name === 'clarify') {
+      noteClarifyToolCall(sessionId, { args: payload.args, toolCallId: payload.tool_id })
+    }
+
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
     }
@@ -80,11 +88,28 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
         }
       }
 
-      // A pending clarify blocks the turn, so the first tool.complete after
-      // one is the clarify resolving — drop the "needs input" flag here so
-      // the sidebar indicator clears as soon as it's answered, not only at
-      // message.complete.
-      updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+      const settledClarify = settleClarifyRequest(sessionId, {
+        question:
+          typeof payload?.args === 'object' && payload.args !== null
+            ? typeof (payload.args as { question?: unknown }).question === 'string'
+              ? (payload.args as { question: string }).question
+              : undefined
+            : undefined,
+        questions:
+          typeof payload?.args === 'object' && payload.args !== null
+            ? (payload.args as { questions?: unknown }).questions
+            : undefined,
+        requestId: typeof payload?.tool_id === 'string' ? payload.tool_id : undefined,
+        toolName: typeof payload?.name === 'string' ? payload.name : undefined
+      })
+
+      if (settledClarify || !hasClarifyRequest(sessionId)) {
+        updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+      }
+
+      if (payload?.name === 'clarify') {
+        noteClarifyToolCall(sessionId, null)
+      }
 
       // terminal/process tool calls are the only things that spawn or reap
       // background processes — sync the composer status stack right after.

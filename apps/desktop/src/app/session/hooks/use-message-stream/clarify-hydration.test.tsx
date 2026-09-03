@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequests, clearClarifyRequest, hasClarifyRequest } from '@/store/clarify'
 import { onScrollToBottomRequest } from '@/store/thread-scroll'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
@@ -313,5 +313,239 @@ describe('clarify.request stream hydration', () => {
 
     expect(clarifyParts()).toHaveLength(1)
     expect($clarifyRequests.get()[SID]?.questions).toHaveLength(2)
+  })
+})
+
+const REMOTE_SID = 'runtime-remote-1'
+const REMOTE_QUESTION = 'Authorize the exact sandbox credential-read boundary?'
+
+const remoteEvent = (type: string, payload: Record<string, unknown>) =>
+  act(() => stream.handleEvent({ payload, session_id: REMOTE_SID, type }))
+
+const startClarify = (toolId: string) =>
+  remoteEvent('tool.start', {
+    args: { choices: ['Allow', 'Deny'], question: REMOTE_QUESTION },
+    name: 'clarify',
+    tool_id: toolId
+  })
+
+const requestClarify = (requestId: string) =>
+  remoteEvent('clarify.request', { choices: ['Allow', 'Deny'], question: REMOTE_QUESTION, request_id: requestId })
+
+const completeClarify = (toolId: string) =>
+  remoteEvent('tool.complete', {
+    args: { question: REMOTE_QUESTION },
+    name: 'clarify',
+    result: JSON.stringify({ question: REMOTE_QUESTION, user_response: 'Allow' }),
+    tool_id: toolId
+  })
+
+describe('clarify answered by another renderer', () => {
+  beforeEach(() => {
+    clearClarifyRequest()
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearClarifyRequest()
+  })
+
+  it('settles the gateway request when the completion carries only the model tool-call id', () => {
+    const states = new Map()
+    stream = renderMessageStream(REMOTE_SID, { states })
+
+    startClarify('call-remote')
+    requestClarify('req-remote')
+
+    expect($clarifyRequests.get()[REMOTE_SID]?.requestId).toBe('req-remote')
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(true)
+
+    completeClarify('call-remote')
+
+    expect($clarifyRequests.get()[REMOTE_SID]).toBeUndefined()
+    expect(hasClarifyRequest(REMOTE_SID)).toBe(false)
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(false)
+
+    const unresolved = (stream.state(REMOTE_SID).messages ?? [])
+      .flatMap(message => message.parts)
+      .filter(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+
+    expect(unresolved).toHaveLength(0)
+  })
+
+  it('leaves the live request alone when an OLDER epoch’s clarify completes late', () => {
+    const states = new Map()
+    stream = renderMessageStream(REMOTE_SID, { states })
+
+    startClarify('call-epoch-1')
+    requestClarify('req-epoch-1')
+    startClarify('call-epoch-2')
+    requestClarify('req-epoch-2')
+
+    expect($clarifyRequests.get()[REMOTE_SID]?.requestId).toBe('req-epoch-2')
+
+    completeClarify('call-epoch-1')
+
+    expect($clarifyRequests.get()[REMOTE_SID]?.requestId).toBe('req-epoch-2')
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(true)
+  })
+
+  it('still settles when an unrelated tool completes in between', () => {
+    const states = new Map()
+    stream = renderMessageStream(REMOTE_SID, { states })
+
+    startClarify('call-mixed')
+    requestClarify('req-mixed')
+
+    remoteEvent('tool.start', { args: { path: 'notes.md' }, name: 'read_file', tool_id: 'call-read-9' })
+    remoteEvent('tool.complete', { name: 'read_file', result: 'ok', tool_id: 'call-read-9' })
+
+    expect($clarifyRequests.get()[REMOTE_SID]?.requestId).toBe('req-mixed')
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(true)
+
+    completeClarify('call-mixed')
+
+    expect(hasClarifyRequest(REMOTE_SID)).toBe(false)
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(false)
+  })
+
+  it('does not settle or clear attention on a clarify completion with no identity and no question', () => {
+    const states = new Map()
+    stream = renderMessageStream(REMOTE_SID, { states })
+
+    startClarify('call-malformed')
+    requestClarify('req-malformed')
+
+    expect($clarifyRequests.get()[REMOTE_SID]?.requestId).toBe('req-malformed')
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(true)
+
+    remoteEvent('tool.complete', { name: 'clarify', result: 'ok' })
+
+    expect($clarifyRequests.get()[REMOTE_SID]?.requestId).toBe('req-malformed')
+    expect(hasClarifyRequest(REMOTE_SID)).toBe(true)
+    expect(states.get(REMOTE_SID)?.needsInput).toBe(true)
+  })
+})
+
+const LONG_SID = 'runtime-long-1'
+const FIELD_QUESTION = 'Authorize the exact sandbox credential-read boundary?'
+
+function longPersistedHistory() {
+  const messages = []
+
+  for (let index = 0; index < 740; index += 1) {
+    messages.push({
+      id: `row-${index}`,
+      parts: [{ type: 'text' as const, text: `persisted turn ${index}` }],
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      rowId: index
+    })
+  }
+
+  messages.push({
+    id: 'inflight-assistant-segment-0-runtime-long-1',
+    interim: true,
+    parts: [{ type: 'text' as const, text: 'sealed interim boundary' }],
+    pending: false,
+    role: 'assistant' as const
+  })
+
+  return messages
+}
+
+function unresolvedClarifyRows() {
+  return (stream.state(LONG_SID).messages ?? [])
+    .flatMap(m => m.parts)
+    .filter(p => p.type === 'tool-call' && p.toolName === 'clarify' && p.result === undefined)
+}
+
+describe('durable clarify projection across a long session', () => {
+  beforeEach(() => {
+    clearClarifyRequest()
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearClarifyRequest()
+  })
+
+  it('keeps clarify attention when an unrelated tool completes while the request is unresolved', () => {
+    const states = new Map()
+    stream = renderMessageStream(LONG_SID, { states })
+
+    act(() =>
+      stream.handleEvent({
+        payload: { messages: longPersistedHistory() },
+        session_id: LONG_SID,
+        type: 'session.info'
+      })
+    )
+
+    act(() =>
+      stream.handleEvent({
+        payload: { args: { path: 'notes.md' }, name: 'read_file', tool_id: 'call-read-1' },
+        session_id: LONG_SID,
+        type: 'tool.start'
+      })
+    )
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          choices: ['Allow', 'Deny'],
+          question: FIELD_QUESTION,
+          request_id: 'req-field-1'
+        },
+        session_id: LONG_SID,
+        type: 'clarify.request'
+      })
+    )
+
+    expect($clarifyRequests.get()[LONG_SID]?.requestId).toBe('req-field-1')
+    expect(unresolvedClarifyRows()).toHaveLength(1)
+    expect(states.get(LONG_SID)?.needsInput).toBe(true)
+
+    act(() =>
+      stream.handleEvent({
+        payload: { name: 'read_file', result: 'ok', tool_id: 'call-read-1' },
+        session_id: LONG_SID,
+        type: 'tool.complete'
+      })
+    )
+
+    expect($clarifyRequests.get()[LONG_SID]?.requestId).toBe('req-field-1')
+    expect(unresolvedClarifyRows()).toHaveLength(1)
+    expect(states.get(LONG_SID)?.needsInput).toBe(true)
+  })
+
+  it('clears clarify attention exactly once on the matching clarify completion', () => {
+    const states = new Map()
+    stream = renderMessageStream(LONG_SID, { states })
+
+    act(() =>
+      stream.handleEvent({
+        payload: { choices: ['Allow', 'Deny'], question: FIELD_QUESTION, request_id: 'req-field-2' },
+        session_id: LONG_SID,
+        type: 'clarify.request'
+      })
+    )
+
+    expect(states.get(LONG_SID)?.needsInput).toBe(true)
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          args: { question: FIELD_QUESTION },
+          name: 'clarify',
+          result: JSON.stringify({ question: FIELD_QUESTION, user_response: 'Allow' }),
+          tool_id: 'req-field-2'
+        },
+        session_id: LONG_SID,
+        type: 'tool.complete'
+      })
+    )
+
+    expect(states.get(LONG_SID)?.needsInput).toBe(false)
+    expect($clarifyRequests.get()[LONG_SID]).toBeUndefined()
   })
 })

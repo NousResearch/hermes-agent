@@ -3,6 +3,8 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/lib/chat-messages'
 import {
   $clarifyRequests,
+  bindClarifyToolCallAlias,
+  clarifyToolCallAlias,
   clearClarifyRequest,
   normalizeChoices,
   normalizeQuestions,
@@ -16,6 +18,22 @@ import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/stor
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
+
+function bindClarifyAliasFromProjection(
+  sessionId: string,
+  requestId: string,
+  messages: Parameters<typeof restorePendingClarifyToolCall>[0]
+): void {
+  const unresolved = messages
+    .flatMap(message => message.parts)
+    .find(
+      part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined && part.toolCallId
+    )
+
+  if (unresolved && unresolved.type === 'tool-call' && unresolved.toolCallId && unresolved.toolCallId !== requestId) {
+    bindClarifyToolCallAlias(sessionId, requestId, unresolved.toolCallId)
+  }
+}
 
 /** The blocking-input family: clarify / MCP setup consent / approval / sudo /
  *  secret requests. The Python side is blocked on the matching *.respond, so
@@ -59,6 +77,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         : undefined
 
     if (requestId && questions.length > 0) {
+      const toolCallId = clarifyToolCallAlias(sessionId, requestId, { questions })
+
       const request = {
         choices: null,
         lockedAnswers,
@@ -67,7 +87,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         questions,
         receivedAt: Date.now() / 1000,
         requestId,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        ...(toolCallId ? { toolCallId } : {})
       }
 
       setClarifyRequest(request)
@@ -82,6 +103,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
             pendingClarifyToolPayload(request),
             occurredAt
           )
+
+          bindClarifyAliasFromProjection(sessionId, requestId, projection.messages)
 
           return {
             ...state,
@@ -109,13 +132,16 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         warnDroppedChoices('gateway', question, rawChoices)
       }
 
+      const toolCallId = clarifyToolCallAlias(sessionId, requestId, { question })
+
       const request = {
         requestId,
         question,
         choices: choices.length > 0 ? choices : null,
         multiSelect,
         receivedAt: Date.now() / 1000,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        ...(toolCallId ? { toolCallId } : {})
       }
 
       setClarifyRequest(request)
@@ -130,6 +156,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
             pendingClarifyToolPayload(request),
             occurredAt
           )
+
+          bindClarifyAliasFromProjection(sessionId, requestId, projection.messages)
 
           return {
             ...state,

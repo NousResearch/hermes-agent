@@ -25,7 +25,7 @@ import {
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { $clarifyRequests } from '@/store/clarify'
+import { $clarifyRequests, bindClarifyToolCallAlias, clearClarifyRequest, rebindClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import {
@@ -871,6 +871,7 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
+      let previousRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
 
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
@@ -930,6 +931,7 @@ export function useSessionActions({
         }
 
         if (state.storedSessionId !== storedSessionId) {
+          previousRuntimeId = runtimeId
           runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
           sessionStateByRuntimeIdRef.current.delete(runtimeId)
           dropSessionState(runtimeId)
@@ -1357,6 +1359,23 @@ export function useSessionActions({
                 ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
                 : null
 
+              if (pendingClarify && pendingClarifyProjection) {
+                const unresolved = pendingClarifyProjection.messages
+                  .flatMap(message => message.parts)
+                  .find(
+                    part =>
+                      part.type === 'tool-call' &&
+                      part.toolName === 'clarify' &&
+                      part.result === undefined &&
+                      part.toolCallId &&
+                      part.toolCallId !== pendingClarify.requestId
+                  )
+
+                if (unresolved && unresolved.type === 'tool-call' && unresolved.toolCallId) {
+                  bindClarifyToolCallAlias(cachedRuntimeId, pendingClarify.requestId, unresolved.toolCallId)
+                }
+              }
+
               const clearedClarifyProjection = clarifyAuthoritativelyAbsent
                 ? settlePendingClarifyToolCall(
                     activatedMessages,
@@ -1433,6 +1452,7 @@ export function useSessionActions({
             runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
             sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
             dropSessionState(cachedRuntimeId)
+            previousRuntimeId = cachedRuntimeId
           } finally {
             releaseTranscriptView()
           }
@@ -1733,7 +1753,24 @@ export function useSessionActions({
         clearStoredTranscriptReadOnly(storedSessionId)
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
-        const pendingClarify = pendingClarifyState.request
+
+        if (pendingClarifyState.authoritativeAbsent) {
+          // Backend said this runtime has no pending clarify. Drop the old
+          // identity's request instead of moving it onto the minted key.
+          if (previousRuntimeId && previousRuntimeId !== resumed.session_id) {
+            const stale = $clarifyRequests.get()[previousRuntimeId]
+
+            if (stale) {
+              clearClarifyRequest(stale.requestId, previousRuntimeId)
+            }
+          }
+        } else {
+          rebindClarifyRequest(previousRuntimeId, resumed.session_id)
+        }
+
+        const pendingClarify = pendingClarifyState.authoritativeAbsent
+          ? null
+          : (pendingClarifyState.request ?? $clarifyRequests.get()[resumed.session_id] ?? null)
 
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
@@ -1753,6 +1790,23 @@ export function useSessionActions({
         const pendingClarifyProjection = pendingClarify
           ? restorePendingClarifyToolCall(messagesForView, pendingClarifyToolPayload(pendingClarify))
           : null
+
+        if (pendingClarify && pendingClarifyProjection) {
+          const unresolved = pendingClarifyProjection.messages
+            .flatMap(message => message.parts)
+            .find(
+              part =>
+                part.type === 'tool-call' &&
+                part.toolName === 'clarify' &&
+                part.result === undefined &&
+                part.toolCallId &&
+                part.toolCallId !== pendingClarify.requestId
+            )
+
+          if (unresolved && unresolved.type === 'tool-call' && unresolved.toolCallId) {
+            bindClarifyToolCallAlias(resumed.session_id, pendingClarify.requestId, unresolved.toolCallId)
+          }
+        }
 
         const clearedClarifyProjection = clarifyAuthoritativelyAbsent
           ? settlePendingClarifyToolCall(

@@ -4,11 +4,15 @@ import {
   $clarifyRequest,
   $clarifyRequests,
   type ClarifyRequest,
+  clarifyToolCallAlias,
   clearClarifyRequest,
   hasClarifyRequest,
   normalizeChoices,
   normalizeQuestions,
+  noteClarifyToolCall,
+  rebindClarifyRequest,
   setClarifyRequest,
+  settleClarifyRequest,
   skipClarifyRequest
 } from './clarify'
 import { $gateway } from './gateway'
@@ -123,7 +127,29 @@ describe('skipClarifyRequest', () => {
     request.mockRejectedValueOnce(new Error('socket closed'))
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
-    expect(hasClarifyRequest('session-a')).toBe(false)
+    expect(hasClarifyRequest('session-a')).toBe(true)
+  })
+
+  it('does not resurrect a superseded request after a failed skip', async () => {
+    setClarifyRequest(clarify('session-race', 'req-old'))
+
+    let release = (): void => undefined
+
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+
+    request.mockImplementation(async () => {
+      await gate
+      throw new Error('socket closed')
+    })
+
+    const skipping = skipClarifyRequest('session-race')
+    setClarifyRequest(clarify('session-race', 'req-new'))
+    release()
+    await skipping
+
+    expect($clarifyRequests.get()['session-race']?.requestId).toBe('req-new')
   })
 })
 
@@ -211,5 +237,236 @@ describe('normalizeQuestions', () => {
 
     expect(result[0]?.multiSelect).toBe(true)
     expect(result[1]?.multiSelect).toBe(false)
+  })
+})
+
+describe('clarify same-epoch tool-call alias', () => {
+  beforeEach(() => {
+    $clarifyRequests.set({})
+    noteClarifyToolCall('session-alias', null)
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+    noteClarifyToolCall('session-alias', null)
+  })
+
+  const aliased = (sessionId: string, requestId: string, toolCallId: string): void => {
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: 'Proceed?',
+      requestId,
+      sessionId,
+      toolCallId
+    })
+  }
+
+  it('binds the started clarify tool-call id to the request that follows it', () => {
+    noteClarifyToolCall('session-alias', { args: { question: 'Proceed?' }, toolCallId: 'call-live' })
+
+    expect(clarifyToolCallAlias('session-alias', 'req-live', { question: 'Proceed?' })).toBe('call-live')
+  })
+
+  it('refuses to bind a started tool call whose question is a different one', () => {
+    noteClarifyToolCall('session-alias', { args: { question: 'Something else?' }, toolCallId: 'call-other' })
+
+    expect(clarifyToolCallAlias('session-alias', 'req-live', { question: 'Proceed?' })).toBeUndefined()
+  })
+
+  it('keeps the alias already bound to this request when the gateway replays it', () => {
+    aliased('session-alias', 'req-replay', 'call-replay')
+
+    expect(clarifyToolCallAlias('session-alias', 'req-replay', { question: 'Proceed?' })).toBe('call-replay')
+  })
+
+  it('settles the request when the completion carries the bound model tool-call id', () => {
+    aliased('session-alias', 'req-remote', 'call-remote')
+
+    expect(
+      settleClarifyRequest('session-alias', {
+        question: 'Proceed?',
+        requestId: 'call-remote',
+        toolName: 'clarify'
+      })
+    ).toBe(true)
+    expect(hasClarifyRequest('session-alias')).toBe(false)
+  })
+
+  it('does not settle an older epoch’s model tool-call id with identical wording', () => {
+    aliased('session-alias', 'req-new-epoch', 'call-new-epoch')
+
+    expect(
+      settleClarifyRequest('session-alias', {
+        question: 'Proceed?',
+        requestId: 'call-old-epoch',
+        toolName: 'clarify'
+      })
+    ).toBe(false)
+    expect($clarifyRequests.get()['session-alias']?.requestId).toBe('req-new-epoch')
+  })
+
+  it('does not settle from an unrelated tool call in the current epoch', () => {
+    aliased('session-alias', 'req-unrelated', 'call-clarify')
+
+    expect(settleClarifyRequest('session-alias', { requestId: 'call-read-1', toolName: 'read_file' })).toBe(false)
+    expect(
+      settleClarifyRequest('session-alias', { question: 'Proceed?', requestId: 'call-sibling', toolName: 'clarify' })
+    ).toBe(false)
+    expect(hasClarifyRequest('session-alias')).toBe(true)
+  })
+
+  it('never lets a non-clarify completion settle by the alias', () => {
+    aliased('session-alias', 'req-guard', 'call-guard')
+
+    expect(settleClarifyRequest('session-alias', { requestId: 'call-guard', toolName: 'read_file' })).toBe(false)
+    expect(hasClarifyRequest('session-alias')).toBe(true)
+  })
+
+  it('binds a BATCH clarify by its joined question list', () => {
+    noteClarifyToolCall('session-alias', {
+      args: { questions: [{ question: 'Drink?' }, { question: 'Productive when?' }] },
+      toolCallId: 'call-batch'
+    })
+
+    expect(
+      clarifyToolCallAlias('session-alias', 'req-batch', {
+        questions: [
+          { choices: null, multiSelect: false, qid: 'q0', question: 'Drink?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'Productive when?' }
+        ]
+      })
+    ).toBe('call-batch')
+  })
+
+  it('consumes the started tool call so one start can alias only one request', () => {
+    noteClarifyToolCall('session-alias', { args: { question: 'Proceed?' }, toolCallId: 'call-once' })
+
+    expect(clarifyToolCallAlias('session-alias', 'req-first', { question: 'Proceed?' })).toBe('call-once')
+    expect(clarifyToolCallAlias('session-alias', 'req-second', { question: 'Proceed?' })).toBeUndefined()
+  })
+
+  it('does not settle a malformed clarify completion with no request id and no usable question', () => {
+    aliased('session-alias', 'req-live', 'call-live')
+
+    expect(settleClarifyRequest('session-alias', { toolName: 'clarify' })).toBe(false)
+    expect($clarifyRequests.get()['session-alias']?.requestId).toBe('req-live')
+    expect(hasClarifyRequest('session-alias')).toBe(true)
+  })
+})
+
+describe('identity-absent matching-text batch fallback', () => {
+  beforeEach(() => {
+    $clarifyRequests.set({})
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+  })
+
+  const batch = (): ClarifyRequest => ({
+    choices: null,
+    multiSelect: false,
+    question: '',
+    questions: [
+      { choices: null, multiSelect: false, qid: 'q0', question: 'Drink?' },
+      { choices: null, multiSelect: false, qid: 'q1', question: 'Productive when?' }
+    ],
+    requestId: 'req-batch',
+    sessionId: 'session-batch'
+  })
+
+  it('settles an identity-absent clarify completion whose ordered question list matches', () => {
+    setClarifyRequest(batch())
+
+    expect(
+      settleClarifyRequest('session-batch', {
+        questions: [{ question: 'Drink?' }, { question: 'Productive when?' }],
+        toolName: 'clarify'
+      })
+    ).toBe(true)
+    expect(hasClarifyRequest('session-batch')).toBe(false)
+  })
+
+  it('does not settle a missing, empty, reordered, or changed question list', () => {
+    setClarifyRequest(batch())
+    expect(settleClarifyRequest('session-batch', { toolName: 'clarify' })).toBe(false)
+    expect(settleClarifyRequest('session-batch', { questions: [], toolName: 'clarify' })).toBe(false)
+    expect(
+      settleClarifyRequest('session-batch', {
+        questions: [{ question: 'Productive when?' }, { question: 'Drink?' }],
+        toolName: 'clarify'
+      })
+    ).toBe(false)
+    expect(
+      settleClarifyRequest('session-batch', {
+        questions: [{ question: 'Drink?' }, { question: 'Changed?' }],
+        toolName: 'clarify'
+      })
+    ).toBe(false)
+    expect(hasClarifyRequest('session-batch')).toBe(true)
+  })
+
+  it('does not settle an unbound present id, sibling alias, or non-clarify tool', () => {
+    setClarifyRequest({ ...batch(), toolCallId: 'call-batch' })
+    expect(settleClarifyRequest('session-batch', { requestId: 'unbound', toolName: 'clarify' })).toBe(false)
+    expect(settleClarifyRequest('session-batch', { requestId: 'call-other', toolName: 'clarify' })).toBe(false)
+    expect(
+      settleClarifyRequest('session-batch', {
+        questions: [{ question: 'Drink?' }, { question: 'Productive when?' }],
+        toolName: 'read_file'
+      })
+    ).toBe(false)
+    expect(hasClarifyRequest('session-batch')).toBe(true)
+  })
+})
+
+describe('rebind current-map and newer-target precedence', () => {
+  beforeEach(() => {
+    $clarifyRequests.set({})
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+  })
+
+  it('keeps the target request when it is a newer epoch and drops the old key', () => {
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: 'Old?',
+      requestId: 'req-old',
+      sessionId: 'rt-old',
+      toolCallId: 'call-old'
+    })
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: 'New?',
+      requestId: 'req-new',
+      sessionId: 'rt-new',
+      toolCallId: 'call-new'
+    })
+
+    expect(rebindClarifyRequest('rt-old', 'rt-new')).toBe(true)
+    expect($clarifyRequests.get()['rt-old']).toBeUndefined()
+    expect($clarifyRequests.get()['rt-new']?.requestId).toBe('req-new')
+    expect($clarifyRequests.get()['rt-new']?.toolCallId).toBe('call-new')
+  })
+
+  it('is idempotent after the old key is already gone', () => {
+    setClarifyRequest({
+      choices: null,
+      multiSelect: false,
+      question: 'Live?',
+      requestId: 'req-live',
+      sessionId: 'rt-new',
+      toolCallId: 'call-live'
+    })
+
+    expect(rebindClarifyRequest('rt-old', 'rt-new')).toBe(true)
+    expect(rebindClarifyRequest('rt-old', 'rt-new')).toBe(true)
+    expect($clarifyRequests.get()['rt-new']?.requestId).toBe('req-live')
+    expect(Object.keys($clarifyRequests.get())).toEqual(['rt-new'])
   })
 })

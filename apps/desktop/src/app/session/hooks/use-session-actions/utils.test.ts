@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
@@ -14,6 +14,16 @@ import {
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
 import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
+
+vi.mock('@/hermes', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>()
+
+  return {
+    ...actual,
+    getAllSessionMessages: vi.fn(),
+    getLatestSessionMessages: vi.fn()
+  }
+})
 
 import {
   appendLiveSessionProjection,
@@ -1715,5 +1725,233 @@ describe('overlayConcurrentMessageChanges', () => {
       { type: 'text', text: 'partial A' },
       { type: 'text', text: ' + delta B' }
     ])
+  })
+})
+
+import { render, waitFor } from '@testing-library/react'
+import type { MutableRefObject } from 'react'
+import { createElement, useEffect } from 'react'
+
+import { getLatestSessionMessages } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $clarifyRequests, setClarifyRequest } from '@/store/clarify'
+import { $sessions, setSessions } from '@/store/session'
+
+import type { ClientSessionState } from '../../../types'
+import { useSessionActions } from '../use-session-actions'
+
+function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
+  return {
+    ended_at: null,
+    id: 'stored-A',
+    input_tokens: 0,
+    is_active: false,
+    last_active: 1,
+    message_count: 2,
+    model: null,
+    output_tokens: 0,
+    preview: null,
+    source: 'desktop',
+    started_at: 1,
+    title: 'stored',
+    tool_call_count: 0,
+    ...overrides
+  }
+}
+
+function RuntimeMoveHarness({
+  onReady,
+  requestGateway,
+  runtimeIdByStoredSessionIdRef,
+  sessionStateByRuntimeIdRef
+}: {
+  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+}) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: null,
+    activeSessionIdRef: ref<string | null>(null),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => createClientSessionState(),
+    getRouteToken: () => 'token',
+    getRoutedStoredSessionId: () => null,
+    navigate: vi.fn() as never,
+    requestGateway,
+    resetViewSync: vi.fn(),
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef: ref<string | null>(null),
+    sessionStateByRuntimeIdRef,
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (sessionId, updater, storedSessionId) => {
+      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState(storedSessionId ?? null)
+      const next = updater(current)
+      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+
+      return next
+    }
+  })
+
+  useEffect(() => {
+    onReady(actions.resumeSession)
+  }, [actions.resumeSession, onReady])
+
+  return null
+}
+
+describe('cold resume runtime identity move', () => {
+  beforeEach(() => {
+    $clarifyRequests.set({})
+    $sessions.set([])
+    vi.mocked(getLatestSessionMessages).mockReset()
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+    $sessions.set([])
+  })
+
+  it('moves the unresolved request onto the minted runtime and drops the old key', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-old']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-old', createClientSessionState('stored-A')]])
+    }
+
+    setClarifyRequest({
+      choices: ['Allow', 'Deny'],
+      multiSelect: false,
+      question: 'Proceed?',
+      requestId: 'req-live',
+      sessionId: 'rt-old',
+      toolCallId: 'call-live'
+    })
+
+    setSessions([storedSession()])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        { content: 'choose a path', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          pending_clarify: {
+            choices: ['Allow', 'Deny'],
+            question: 'Proceed?',
+            request_id: 'req-live'
+          },
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-new',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      createElement(RuntimeMoveHarness, {
+        onReady: ready => {
+          resume = ready
+        },
+        requestGateway,
+        runtimeIdByStoredSessionIdRef,
+        sessionStateByRuntimeIdRef
+      })
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect($clarifyRequests.get()['rt-old']).toBeUndefined()
+    expect($clarifyRequests.get()['rt-new']?.requestId).toBe('req-live')
+    expect($clarifyRequests.get()['rt-new']?.toolCallId).toBe('call-live')
+    expect(Object.keys($clarifyRequests.get())).toEqual(['rt-new'])
+  })
+
+  it('does not resurrect an old request when the resumed backend reports no pending clarify', async () => {
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-old']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-old', createClientSessionState('stored-A')]])
+    }
+
+    setClarifyRequest({
+      choices: ['Allow', 'Deny'],
+      multiSelect: false,
+      question: 'Proceed?',
+      requestId: 'req-stale',
+      sessionId: 'rt-old',
+      toolCallId: 'call-stale'
+    })
+
+    setSessions([storedSession()])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: [
+        { content: 'help me choose', role: 'user', timestamp: 1 },
+        { content: 'choose a path', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-A'
+    } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 2,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-A',
+          running: false,
+          session_id: 'rt-new',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      createElement(RuntimeMoveHarness, {
+        onReady: ready => {
+          resume = ready
+        },
+        requestGateway,
+        runtimeIdByStoredSessionIdRef,
+        sessionStateByRuntimeIdRef
+      })
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    expect($clarifyRequests.get()['rt-old']).toBeUndefined()
+    expect($clarifyRequests.get()['rt-new']).toBeUndefined()
+    expect(Object.keys($clarifyRequests.get())).toEqual([])
+    expect(sessionStateByRuntimeIdRef.current.get('rt-new')?.needsInput).toBe(false)
+    const projected = sessionStateByRuntimeIdRef.current.get('rt-new')?.messages ?? []
+    expect(
+      projected.some(message =>
+        message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+      )
+    ).toBe(false)
   })
 })

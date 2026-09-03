@@ -67,14 +67,54 @@ def register_provider(profile: ProviderProfile) -> None:
     _PROVIDER_LIST_CACHE = None
 
 
-def get_provider_profile(name: str) -> ProviderProfile | None:
-    """Look up a provider profile by name or alias.
+def get_provider_profile(
+    name: str,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> ProviderProfile | None:
+    """Look up a provider profile by name or runtime endpoint identity.
 
     Returns None if the provider has no profile (falls back to generic).
+
+    Named custom providers resolve to the runtime billing class ``custom``.
+    When runtime endpoint context is available, recover the configured
+    ``custom:<name>`` identity before lookup so an exact named profile can
+    still apply. An explicit, unmatched base URL remains authoritative and
+    keeps the generic custom profile; model lookup is only a fallback when no
+    endpoint URL survived.
     """
     if not _discovered:
         _discover_providers()
-    canonical = _ALIASES.get(name, name)
+
+    original_name = name
+    lookup_name = name
+    if str(name or "").strip().lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import (
+                find_custom_provider_identity,
+                find_custom_provider_identity_by_model,
+            )
+
+            recovered = (
+                find_custom_provider_identity(base_url)
+                if base_url
+                else find_custom_provider_identity_by_model(model or "")
+            )
+            if recovered:
+                lookup_name = recovered
+        except Exception:
+            pass
+
+    canonical = _ALIASES.get(lookup_name, lookup_name)
+    profile = _REGISTRY.get(canonical)
+    if profile is not None or lookup_name == original_name:
+        return profile
+
+    # A configured named endpoint need not ship a specialized profile. Keep
+    # the generic custom behavior in that case rather than dropping to the
+    # legacy no-profile path.
+    canonical = _ALIASES.get(original_name, original_name)
     return _REGISTRY.get(canonical)
 
 

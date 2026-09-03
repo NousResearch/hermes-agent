@@ -16,13 +16,13 @@ Hermes Agent 以机器人形式与 Discord 集成，让你可以通过私信或�
 |---------|----------|
 | **私信（DM）** | Hermes 响应每条消息，无需 `@提及`。每个私信有独立的会话。 |
 | **服务器频道** | 默认情况下，Hermes 仅在被 `@提及` 时响应。如果你在频道中发帖但未提及它，Hermes 会忽略该消息。 |
-| **自由响应频道** | 你可以通过 `DISCORD_FREE_RESPONSE_CHANNELS` 将特定频道设为无需提及，或通过 `DISCORD_REQUIRE_MENTION=false` 全局禁用提及要求。这些频道中的消息会直接回复——自动创建线程功能会被跳过，使频道保持轻量级聊天状态。 |
+| **自由响应频道** | 你可以通过 `DISCORD_FREE_RESPONSE_CHANNELS` 将特定频道设为无需提及，或通过 `DISCORD_REQUIRE_MENTION=false` 全局禁用提及要求。此设置只控制 Hermes *何时* 回复，而不控制回复*发送到哪里*：自动创建线程仍然生效。如果你希望机器人直接回复、让频道保持轻量级聊天状态，请将该频道加入 `DISCORD_NO_THREAD_CHANNELS`。 |
 | **线程（Thread）** | Hermes 在同一线程中回复。提及规则仍然适用，除非该线程或其父频道被配置为自由响应。线程的会话历史与父频道相互隔离。 |
 | **多用户共享频道** | 默认情况下，Hermes 为安全和清晰起见，在频道内按用户隔离会话历史。在同一频道中交谈的两个人不会共享同一份对话记录，除非你明确禁用该功能。 |
 | **提及其他用户的消息** | 当 `DISCORD_IGNORE_NO_MENTION` 为 `true`（默认值）时，如果消息 @提及了其他用户但**未**提及机器人，Hermes 保持沉默。这可防止机器人介入针对其他人的对话。如果你希望机器人响应所有消息而不管提及了谁，请设置为 `false`。此设置仅适用于服务器频道，不适用于私信。 |
 
 :::tip
-如果你想要一个普通的机器人帮助频道，让用户无需每次都 @标记就能与 Hermes 对话，请将该频道添加到 `DISCORD_FREE_RESPONSE_CHANNELS`。
+如果你想要一个普通的机器人帮助频道，让用户无需每次都 @标记就能与 Hermes 对话，请将该频道添加到 `DISCORD_FREE_RESPONSE_CHANNELS`。如果你还希望回复直接发在频道里而不是线程中，请同时将它加入 `DISCORD_NO_THREAD_CHANNELS`。
 :::
 
 ### Discord Gateway（网关）模型
@@ -297,7 +297,7 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | `DISCORD_THREAD_REQUIRE_MENTION` | 否 | `false` | 为 `true` 时，禁用线程内的提及快捷方式——线程与频道的门控方式相同，即使机器人已经参与其中，也需要 `@提及`。当多个机器人共享一个线程且你希望每个机器人仅在明确 `@提及` 时触发时使用此设置。 |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | 否 | — | 机器人无需 `@提及` 即可响应的频道 ID，逗号分隔，即使 `DISCORD_REQUIRE_MENTION` 为 `true` 也适用。 |
 | `DISCORD_IGNORE_NO_MENTION` | 否 | `true` | 为 `true` 时，如果消息 `@提及` 了其他用户但**未**提及机器人，机器人保持沉默。防止机器人介入针对其他人的对话。仅适用于服务器频道，不适用于私信。 |
-| `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，自动为文本频道中的每次 `@提及` 创建新线程，使每个对话相互隔离（类似 Slack 行为）。已在线程或私信中的消息不受影响。 |
+| `DISCORD_AUTO_THREAD` | 否 | `true` | 为 `true` 时，为机器人处理的每条文本频道消息自动创建新线程，使每个对话相互隔离（类似 Slack 行为）。已在线程或私信中的消息不受影响。使用 `DISCORD_NO_THREAD_CHANNELS` 可豁免个别频道。 |
 | `DISCORD_ALLOW_BOTS` | 否 | `"none"` | 控制机器人如何处理来自其他 Discord 机器人的消息。`"none"` — 忽略所有其他机器人。`"mentions"` — 仅接受 `@提及` Hermes 的机器人消息。`"all"` — 接受所有机器人消息。 |
 | `DISCORD_REACTIONS` | 否 | `true` | 为 `true` 时，机器人在处理过程中为消息添加 emoji 反应（开始时 👀，成功时 ✅，出错时 ❌）。设置为 `false` 可完全禁用反应。 |
 | `DISCORD_IGNORED_CHANNELS` | 否 | — | 机器人**永不**响应的频道 ID，逗号分隔，即使被 `@提及` 也不响应。优先于所有其他频道设置。 |
@@ -326,7 +326,7 @@ discord:
   require_mention: true           # 在服务器频道中需要 @提及
   thread_require_mention: false   # 为 true 时，线程中也需要 @提及（多机器人线程）
   free_response_channels: ""      # 逗号分隔的频道 ID（或 YAML 列表）
-  auto_thread: true               # 在 @提及 时自动创建线程
+  auto_thread: true               # 为机器人处理的频道消息自动创建线程
   reactions: true                 # 处理过程中添加 emoji 反应
   ignored_channels: []            # 机器人永不响应的频道 ID
   no_thread_channels: []          # 机器人不创建线程直接响应的频道 ID
@@ -389,7 +389,11 @@ discord:
 
 如果线程的父频道在此列表中，该线程也变为无需提及。
 
-自由响应频道还会**跳过自动创建线程**——机器人直接回复而不是为每条消息创建新线程。这使频道可用作轻量级聊天界面。如果你想要线程行为，不要将频道列为自由响应（改用普通的 `@提及` 流程）。
+此设置**仅控制提及门控**，不会改变机器人在哪里回复。当 [`auto_thread`](#discordauto_thread) 为 `true`（默认值）时，自由响应频道仍会自动创建线程。若要让某个频道保持轻量级的直接聊天界面，请将它加入 [`no_thread_channels`](#discordno_thread_channels)——这是退出线程行为的唯一控制项。
+
+:::warning 行为变更
+自由响应频道以前会隐式跳过自动创建线程，现在不再如此。如果你依赖该行为，请将相同的频道 ID 加入 `no_thread_channels` 以恢复直接回复。
+:::
 
 #### `discord.auto_thread`
 
@@ -397,7 +401,7 @@ discord:
 
 启用后，普通文本频道中的每次 `@提及` 都会自动为对话创建新线程。这保持主频道整洁，并为每个对话提供独立的会话历史。一旦创建线程，该线程中的后续消息不需要 `@提及`——机器人知道它已经在参与其中。对于多机器人设置，将 [`thread_require_mention`](#discordthread_require_mention) 设置为 `true` 可禁用此线程内快捷方式。
 
-在现有线程或私信中发送的消息不受此设置影响。`discord.free_response_channels` 或 `discord.no_thread_channels` 中列出的频道也会绕过自动创建线程，改为直接回复。
+在现有线程或私信中发送的消息不受此设置影响。[`no_thread_channels`](#discordno_thread_channels) 中列出的频道会绕过自动创建线程，改为直接回复——在保持 `auto_thread` 开启的情况下，该列表是让频道退出线程行为的唯一方式。
 
 #### `discord.reactions`
 
@@ -435,6 +439,8 @@ discord:
 **类型：** 字符串或列表 — **默认值：** `[]`
 
 机器人直接在频道中响应而不自动创建线程的频道 ID。仅在 `auto_thread` 为 `true`（默认值）时有效。在这些频道中，机器人像普通消息一样直接回复，而不是创建新线程。
+
+这是退出线程行为的唯一控制项，且与提及门控相互独立——无论频道是否同时列在 [`free_response_channels`](#discordfree_response_channels) 中，都可以把它加到这里。
 
 ```yaml
 discord:

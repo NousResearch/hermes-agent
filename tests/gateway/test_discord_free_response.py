@@ -277,18 +277,44 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 
 @pytest.mark.asyncio
-async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypatch):
-    """Free-response channels should reply inline, never spawn a new thread.
+async def test_discord_free_response_channel_does_not_skip_auto_thread(adapter, monkeypatch):
+    """free_response_channels gates mentions only — it must not skip threading.
 
-    Without this, every message in a free-response channel would auto-create
-    a fresh thread (since the channel bypasses the @mention gate, every
-    message looks like a fresh trigger).  That turns a "lightweight chat"
-    channel into a thread-spawning machine — see the docs at
-    website/docs/user-guide/messaging/discord.md which already describe
-    this as the intended behavior.
+    Replaces the inverse assertion added in 93fe4b35, which folded
+    ``is_free_channel`` into ``skip_thread``.  That overloaded one setting with
+    two unrelated policies: when the bot answers, and where the answer goes.
+    Threading is now governed solely by ``auto_thread`` +
+    ``no_thread_channels``; see the companion coverage in
+    test_discord_channel_controls.py for the no-thread escape hatch.
     """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=790)
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="casual chat in free-response channel",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "casual chat in free-response channel"
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_response_with_no_thread_channel_replies_inline(adapter, monkeypatch):
+    """The documented migration path: pair the channel with no_thread_channels."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "789")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
 
     adapter._auto_create_thread = AsyncMock()

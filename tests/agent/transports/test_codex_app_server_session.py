@@ -125,6 +125,66 @@ def make_session(client: FakeClient, **kwargs) -> CodexAppServerSession:
         **kwargs,
     )
 
+import os
+from pathlib import Path
+
+
+class TestDynamicToolContainment:
+    def test_restricted_start_is_exact_and_default_home_is_unchanged(self, tmp_path):
+        source = tmp_path / "codex"
+        source.mkdir()
+        (source / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+        client = FakeClient()
+        session = make_session(
+            client, codex_home=str(source), restrict_native_tools=True,
+            dynamic_tools=[{"type": "function", "name": "list_email_obligations"}],
+        )
+        session.ensure_started()
+        _, params = next(request for request in client.requests if request[0] == "thread/start")
+        assert params["dynamicTools"] == [{"type": "function", "name": "list_email_obligations"}]
+        assert params["environments"] == []
+        config = Path(session._codex_home, "config.toml").read_text(encoding="utf-8")
+        assert config == 'web_search = "disabled"\n\n[features]\napps = false\nbrowser_use = false\ncode_mode_host = false\ncomputer_use = false\nimage_generation = false\nin_app_browser = false\nshell_snapshot = false\nshell_tool = false\nunified_exec = false\nview_image = false\n'
+        assert "mcp_servers" not in config
+        session.close()
+        default = make_session(FakeClient(), codex_home=str(source))
+        assert default._codex_home == str(source)
+
+    def test_restricted_auth_uses_codex_home_environment(self, tmp_path, monkeypatch):
+        source = tmp_path / "codex"
+        source.mkdir()
+        (source / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+        monkeypatch.setenv("CODEX_HOME", str(source))
+        session = make_session(FakeClient(), codex_home=None, restrict_native_tools=True)
+        assert Path(session._codex_home, "auth.json").read_text(encoding="utf-8") == '{"token":"test"}'
+        session.close()
+
+    def test_dynamic_calls_dispatch_only_once_and_fail_closed(self):
+        client = FakeClient()
+        calls = []
+        session = make_session(
+            client,
+            dynamic_tools=[{"type": "function", "name": "list_email_obligations"}],
+            dynamic_tool_handler=lambda *args: calls.append(args) or "ok",
+        )
+        session._client = client
+        session._thread_id = "thread-1"
+        session._active_turn_id = "turn-1"
+        valid = {"threadId": "thread-1", "turnId": "turn-1", "callId": "call-1", "tool": "list_email_obligations", "arguments": {}}
+        session._respond_dynamic_tool_call("valid", valid)
+        for request_id, params in enumerate((
+            {**valid, "callId": "call-1"},
+            {**valid, "callId": "call-2", "tool": "unknown"},
+            {**valid, "callId": "call-3", "arguments": []},
+            {**valid, "callId": "call-4", "threadId": "foreign"},
+        )):
+            session._respond_dynamic_tool_call(request_id, params)
+        assert calls == [("list_email_obligations", {}, "call-1")]
+        assert client.responses[0][1]["success"] is True
+        assert all(response[1]["success"] is False for response in client.responses[1:])
+
+
+
 
 # ---- choice mapping ----
 
@@ -895,4 +955,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

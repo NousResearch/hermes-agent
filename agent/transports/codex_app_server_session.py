@@ -24,8 +24,12 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import shutil
+import stat
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -277,6 +281,10 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        developer_instructions: Optional[str] = None,
+        dynamic_tools: Optional[list[dict[str, Any]]] = None,
+        dynamic_tool_handler: Optional[Callable[[str, dict[str, Any], str], Any]] = None,
+        restrict_native_tools: bool = False,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
@@ -285,7 +293,52 @@ class CodexAppServerSession:
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
+        self._owns_codex_home = restrict_native_tools
         self._codex_home = codex_home
+        if restrict_native_tools:
+            auth_home = (
+                codex_home
+                or os.environ.get("CODEX_HOME")
+                or os.path.expanduser("~/.codex")
+            )
+            self._codex_home = tempfile.mkdtemp(prefix="hermes-codex-")
+            try:
+                os.chmod(self._codex_home, 0o700)
+                auth_source = os.path.join(auth_home, "auth.json")
+                auth_target = os.path.join(self._codex_home, "auth.json")
+                if os.path.exists(auth_source):
+                    if os.path.islink(auth_source) or not stat.S_ISREG(os.stat(auth_source).st_mode):
+                        raise RuntimeError("Codex auth isolation could not be established")
+                    shutil.copyfile(auth_source, auth_target)
+                    os.chmod(auth_target, 0o600)
+                # This private home has no mcp_servers entries, so Codex
+                # cannot inherit global apps/connectors. Dynamic tools are
+                # the only allowed surface.
+                config_path = os.path.join(self._codex_home, "config.toml")
+                with open(config_path, "w", encoding="utf-8") as config_file:
+                    config_file.write(
+                        'web_search = "disabled"\n\n'
+                        "[features]\n"
+                        "apps = false\n"
+                        "browser_use = false\n"
+                        "code_mode_host = false\n"
+                        "computer_use = false\n"
+                        "image_generation = false\n"
+                        "in_app_browser = false\n"
+                        "shell_snapshot = false\n"
+                        "shell_tool = false\n"
+                        "unified_exec = false\n"
+                        "view_image = false\n"
+                    )
+                os.chmod(config_path, 0o600)
+            except Exception:
+                shutil.rmtree(self._codex_home, ignore_errors=True)
+                raise
+        self._developer_instructions = developer_instructions
+        self._dynamic_tools = list(dynamic_tools) if dynamic_tools is not None else None
+        self._dynamic_tool_handler = dynamic_tool_handler
+        self._restrict_native_tools = restrict_native_tools
+        self._dynamic_call_ids: set[str] = set()
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -326,16 +379,15 @@ class CodexAppServerSession:
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            capabilities=(
+                {"experimentalApi": True}
+                if self._dynamic_tools is not None
+                else {}
+            ),
         )
-        # Permission selection is intentionally NOT sent on thread/start.
-        # Two reasons (live-tested against codex 0.130.0):
-        #   1. `thread/start.permissions` is gated behind the experimentalApi
-        #      capability on this codex version — we'd have to opt in during
-        #      initialize and accept the unstable surface.
-        #   2. Even with experimentalApi declared and the correct shape
-        #      (`{"type": "profile", "id": "..."}`, not `{"profileId": ...}`),
-        #      codex requires a matching `[permissions]` table in
-        #      ~/.codex/config.toml or it fails the request with
+        # Explicit dynamicTools requires only experimentalApi (Codex 0.147).
+        # Permissions are intentionally omitted: Codex requires a matching
+        # `[permissions]` table in ~/.codex/config.toml or it fails with
         #      'default_permissions requires a [permissions] table'.
         # Letting codex pick its default (`:read-only` unless the user has
         # configured otherwise in their codex config.toml) is the standard
@@ -343,6 +395,14 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._developer_instructions:
+            params["developerInstructions"] = self._developer_instructions
+        if self._dynamic_tools is not None:
+            params["dynamicTools"] = self._dynamic_tools
+        if self._restrict_native_tools:
+            # Codex app-server derives shell/write tools from environments;
+            # an explicit MCP-only Hermes selection has none.
+            params["environments"] = []
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -364,6 +424,20 @@ class CodexAppServerSession:
                 ),
             )
         self._thread_id = thread_id
+        scope_receipt = {
+            "thread_id": thread_id,
+            "developer_instructions_present": bool(self._developer_instructions),
+            "dynamic_tools_explicit": self._dynamic_tools is not None,
+            "dynamic_tool_names": [
+                tool["name"]
+                for tool in self._dynamic_tools or ()
+                if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+            ],
+        }
+        logger.info(
+            "codex app-server thread/start scope receipt=%s",
+            json.dumps(scope_receipt, sort_keys=True),
+        )
         logger.info(
             "codex app-server thread started: id=%s profile=%s cwd=%s",
             self._thread_id[:8],
@@ -385,6 +459,8 @@ class CodexAppServerSession:
                 pass
             self._client = None
         self._thread_id = None
+        if self._owns_codex_home:
+            shutil.rmtree(self._codex_home, ignore_errors=True)
 
     def __enter__(self) -> "CodexAppServerSession":
         return self
@@ -1013,7 +1089,9 @@ class CodexAppServerSession:
         rid = req.get("id")
         params = req.get("params") or {}
 
-        if method == "item/commandExecution/requestApproval":
+        if method == "item/tool/call":
+            self._respond_dynamic_tool_call(rid, params)
+        elif method == "item/commandExecution/requestApproval":
             decision = self._decide_exec_approval(params)
             self._client.respond(rid, {"decision": decision})
         elif method == "item/fileChange/requestApproval":
@@ -1052,6 +1130,54 @@ class CodexAppServerSession:
             self._client.respond_error(
                 rid, code=-32601, message=f"Unsupported method: {method}"
             )
+
+    def _respond_dynamic_tool_call(self, request_id: Any, params: Any) -> None:
+        """Dispatch one registered dynamic tool call, otherwise fail closed."""
+        failure = {
+            "success": False,
+            "contentItems": [{"type": "inputText", "text": "Tool call unavailable."}],
+        }
+        if (
+            not isinstance(params, dict)
+            or params.get("threadId") != self._thread_id
+            or params.get("turnId") != self._active_turn_id
+        ):
+            self._client.respond(request_id, failure)
+            return
+        call_id = params.get("callId")
+        tool_name = params.get("tool")
+        arguments = params.get("arguments")
+        allowed = {
+            tool.get("name")
+            for tool in self._dynamic_tools or ()
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        }
+        if (
+            not isinstance(call_id, str)
+            or not call_id
+            or call_id in self._dynamic_call_ids
+            or not isinstance(tool_name, str)
+            or tool_name not in allowed
+            or not isinstance(arguments, dict)
+            or self._dynamic_tool_handler is None
+        ):
+            self._client.respond(request_id, failure)
+            return
+        self._dynamic_call_ids.add(call_id)
+        try:
+            output = self._dynamic_tool_handler(tool_name, arguments, call_id)
+            output_text = str(output)
+        except Exception:
+            logger.warning("Codex dynamic tool dispatch failed: %s", tool_name)
+            self._client.respond(request_id, failure)
+            return
+        self._client.respond(
+            request_id,
+            {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": output_text}],
+            },
+        )
 
     def _decide_exec_approval(self, params: dict) -> str:
         """Decide a Codex exec approval request.

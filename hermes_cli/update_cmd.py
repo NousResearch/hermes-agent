@@ -8180,14 +8180,27 @@ def _refuse_update_if_venv_foreign_owned(project_root) -> None:
     before the venv is even reached (#102193). No subprocess calls here:
     update tests mock ``subprocess.run`` with sequenced side effects.
     """
-    foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
-    foreign = list(foreign) + _repo_foreign_owned_paths(project_root)
-    if not foreign:
+    venv_foreign = _venv_foreign_owned_paths(Path(project_root) / "venv")
+    if venv_foreign:
+        print("\n✗ Update stopped: this install's venv contains files owned by another user.")
+        print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
+        print("  This usually happens after running hermes or pip with sudo. Offending paths:")
+        for p, uid in venv_foreign:
+            print(f"    - {p} (owner uid {uid})")
+        print("\n  Fix ownership, then re-run the update:")
+        print(f"    sudo chown -R $(id -un): {project_root}")
+        print("    hermes update")
+        print("\n  Nothing in the venv was modified.")
+        sys.exit(1)
+    # Repo tree itself (not just venv/): sudo-created files under
+    # .git/objects break autostash before the venv is even reached (#102193).
+    repo_foreign = _repo_foreign_owned_paths(project_root)
+    if not repo_foreign:
         return
-    print("\n✗ Update stopped: this install contains files owned by another user.")
+    print("\n✗ Update stopped: this install's repo tree contains files owned by another user.")
     print("  Updating now would fail midway (Permission denied) and leave Hermes broken.")
-    print("  This usually happens after running hermes or pip with sudo. Offending paths:")
-    for p, uid in foreign[:5]:
+    print("  This usually happens after running hermes or git with sudo. Offending paths:")
+    for p, uid in repo_foreign:
         print(f"    - {p} (owner uid {uid})")
     print("\n  Fix ownership, then re-run the update:")
     print(f"    sudo chown -R $(id -un): {project_root}")

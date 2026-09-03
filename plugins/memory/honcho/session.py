@@ -1344,12 +1344,21 @@ class HonchoSessionManager:
 
         return {"representation": representation, "card": card}
 
-    def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
+    def get_session_context(
+        self, session_key: str, peer: str = "user", raise_errors: bool = False,
+    ) -> dict[str, Any]:
         """Fetch full session context from Honcho including summary.
 
         Uses the session-level context() API which returns summary,
         peer_representation, peer_card, and messages.
         Raises HonchoAuthError so callers can tell rejected credentials from no context.
+
+        Args:
+            raise_errors: Re-raise backend failures instead of returning {}.
+                Explicit tool calls pass True so a timeout or server error
+                surfaces as an error, not as "no context yet" — same
+                collapsing-failures-to-empty issue dialectic_query's
+                raise_errors fixes (#36098 issue 4).
         """
         session = self._cache.get(session_key)
         if not session:
@@ -1398,6 +1407,8 @@ class HonchoSessionManager:
             raise
         except Exception as e:
             logger.debug("Session context fetch failed: %s", e)
+            if raise_errors:
+                raise
             return {}
 
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
@@ -1434,13 +1445,23 @@ class HonchoSessionManager:
 
         return target_peer_id, None
 
-    def get_peer_card(self, session_key: str, peer: str = "user") -> list[str]:
+    def get_peer_card(
+        self, session_key: str, peer: str = "user", raise_errors: bool = False,
+    ) -> list[str]:
         """
         Fetch a peer card — a curated list of key facts.
 
         Fast, no LLM reasoning. Returns raw structured facts Honcho has
         inferred about the target peer (name, role, preferences, patterns).
         Empty list if unavailable; raises HonchoAuthError on rejected credentials.
+
+        Args:
+            raise_errors: Re-raise backend failures instead of returning [].
+                Explicit tool calls pass True so a timeout or server error
+                surfaces as an error instead of the empty-card diagnostic
+                hint, which actively guesses benign causes ("observation
+                disabled", "not enough turns yet") that would mislead when
+                the real cause is a backend failure.
         """
         session = self._cache.get(session_key)
         if not session:
@@ -1460,6 +1481,8 @@ class HonchoSessionManager:
             raise
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
+            if raise_errors:
+                raise
             return []
 
     def search_context(
@@ -1468,6 +1491,7 @@ class HonchoSessionManager:
         query: str,
         max_tokens: int = 800,
         peer: str = "user",
+        raise_errors: bool = False,
     ) -> str:
         """
         Search raw messages across every session visible from the target
@@ -1480,6 +1504,10 @@ class HonchoSessionManager:
             max_tokens: Approximate budget for returned content. Snippets are
                 accumulated until this budget (≈4 chars/token) is exhausted.
             peer: Peer alias or explicit peer ID whose sessions to search.
+            raise_errors: Re-raise a backend failure (after the peer-search
+                fallback also fails) instead of returning "". Explicit tool
+                calls pass True so a timeout or server error surfaces as an
+                error, not as "no relevant context found".
 
         Returns:
             Ranked message excerpts as a formatted string, or empty string
@@ -1530,6 +1558,8 @@ class HonchoSessionManager:
                 raise
             except Exception as e2:
                 logger.debug("Honcho peer search fallback also failed: %s", e2)
+                if raise_errors:
+                    raise
                 return ""
 
         if not messages:

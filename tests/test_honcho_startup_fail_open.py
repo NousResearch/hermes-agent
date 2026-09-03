@@ -306,7 +306,7 @@ def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):
     assert provider._session_initialized is False
 
     class ToolManager:
-        def get_peer_card(self, session_key, peer="user"):
+        def get_peer_card(self, session_key, peer="user", raise_errors=False):
             return ["ready"]
 
     init_calls = []

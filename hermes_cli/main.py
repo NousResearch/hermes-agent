@@ -12556,6 +12556,14 @@ def cmd_dashboard(args):
                 exc_info=True,
             )
 
+    # The desktop app and remote backends run agent turns through serve's
+    # in-process /api/ws gateway (and the dashboard's Chat tab), so lifecycle
+    # hooks must be wired on this path too. _prepare_agent_startup's
+    # _AGENT_COMMANDS gate deliberately excludes serve/dashboard (they are not
+    # interactive agent-entrypoint commands), which means hooks would never
+    # register here otherwise.
+    _register_shell_hooks(accept_hooks=False)
+
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no
@@ -12822,6 +12830,35 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _register_shell_hooks(accept_hooks: bool = False) -> None:
+    """Register configured shell + outbound webhooks (idempotent).
+
+    Shared by ``_prepare_agent_startup`` (interactive agent entrypoints) and
+    ``cmd_dashboard`` (the headless ``serve`` backend and the dashboard), so
+    lifecycle hooks fire regardless of how the agent turn is hosted. ``serve``
+    is deliberately absent from ``_AGENT_COMMANDS`` (it is not an interactive
+    agent-entrypoint command), but it still hosts agent turns via its
+    in-process ``/api/ws`` gateway and must therefore wire hooks itself.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=accept_hooks)
+
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+
+        register_outbound_webhooks(_hooks_cfg)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed",
+            exc_info=True,
+        )
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo: chokepoint guarantee that HERMES_YOLO_MODE is set before ANY
@@ -12916,23 +12953,7 @@ def _prepare_agent_startup(args) -> None:
                 "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
-    try:
-        from hermes_cli.config import load_config
-        from agent.shell_hooks import register_from_config
-
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
-        register_outbound_webhooks(_hooks_cfg)
-    except Exception:
-        logger.debug(
-            "shell-hook registration failed at CLI startup",
-            exc_info=True,
-        )
+    _register_shell_hooks(accept_hooks=_accept_hooks)
 
 
 def _apply_safe_mode(args) -> None:

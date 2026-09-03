@@ -81,6 +81,23 @@ class TestWhatsAppEnvViaSecretScope:
         finally:
             ss.reset_secret_scope(tok_b)
 
+    def test_empty_canonical_group_allowlist_does_not_fall_back_to_legacy(
+        self, monkeypatch
+    ):
+        """An explicit empty canonical list must revoke stale legacy grants."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+        monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "")
+        monkeypatch.setenv("WHATSAPP_GROUP_ALLOW_FROM", "stale-group@g.us")
+
+        adapter = WhatsAppAdapter(
+            PlatformConfig(enabled=True, extra={"group_policy": "allowlist"})
+        )
+
+        assert adapter._group_allow_from == set()
+        assert adapter._group_allowlist_source == "WHATSAPP_GROUP_ALLOWED_USERS"
+
 
 class TestWhatsAppCommonUsesSecretScope:
     """The shared WhatsAppBehaviorMixin methods must also use get_secret."""
@@ -125,6 +142,23 @@ class TestWhatsAppCommonUsesSecretScope:
             mixin.name = "test"
 
             assert mixin._whatsapp_require_mention() is True
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_live_dm_allowlist_uses_profile_scope(self, tmp_path, monkeypatch):
+        """Python intake must enforce the same profile list passed to Node."""
+        from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+
+        monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "111")
+        ss.set_multiplex_active(True)
+        (tmp_path / ".env").write_text("WHATSAPP_ALLOWED_USERS=222\n")
+        tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
+        try:
+            mixin = object.__new__(WhatsAppBehaviorMixin)
+            mixin._dm_allowlist_source = "WHATSAPP_ALLOWED_USERS"
+            mixin._allow_from = {"stale-snapshot"}
+
+            assert mixin._live_dm_allow_from() == {"222"}
         finally:
             ss.reset_secret_scope(tok)
 

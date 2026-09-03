@@ -546,11 +546,71 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return float(default)
         return parsed
 
+    async def _try_reuse_running_bridge(
+        self,
+        bridge_path: Path,
+        *,
+        quiet: bool = False,
+    ) -> bool:
+        """Return True if a live bridge is running on the configured port,
+        reports status:connected, serves the same bridge.js that is on disk,
+        and matches the send-read-receipts config.
+
+        On success the adapter is marked connected and the polling loop is
+        started, mirroring the happy path in connect().
+        """
+        import aiohttp
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"http://127.0.0.1:{self._bridge_port}/health",
+                    timeout=aiohttp.ClientTimeout(total=2),
+                ) as resp:
+                    if resp.status != 200:
+                        return False
+                    data = await resp.json()
+                    bridge_status = data.get("status", "unknown")
+                    if bridge_status != "connected":
+                        if not quiet:
+                            print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
+                        return False
+                    running_hash = data.get("scriptHash", "")
+                    disk_hash = _file_content_hash(bridge_path)
+                    running_read_receipts = bool(data.get("sendReadReceipts", False))
+                    config_matches = running_read_receipts == self._send_read_receipts
+                    if (
+                        running_hash
+                        and disk_hash
+                        and running_hash == disk_hash
+                        and config_matches
+                    ):
+                        if not quiet:
+                            print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                        self._mark_connected()
+                        self._bridge_process = None  # Not managed by us
+                        self._http_session = aiohttp.ClientSession()
+                        self._poll_task = asyncio.create_task(self._poll_messages())
+                        self._wire_plugin_handlers(None)
+                        return True
+                    stale_reason = (
+                        f"running={running_hash or 'unversioned'}, disk={disk_hash}"
+                        if running_hash != disk_hash
+                        else "send_read_receipts config changed"
+                    )
+                    if not quiet:
+                        print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
+                    return False
+        except Exception:
+            return False
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
         Start the WhatsApp bridge.
-        
+
         This launches the Node.js bridge process and waits for it to be ready.
+        On a reconnect, it first tries to reuse an already running bridge so
+        the watcher does not pay the full cold-start cost.
         """
         if not check_whatsapp_requirements():
             logger.warning("[%s] Node.js not found. WhatsApp requires Node.js.", self.name)
@@ -570,6 +630,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 retryable=False,
             )
             return False
+
+        # Fast path: on a reconnect, a previously started bridge may still be
+        # alive. Probe /health before touching npm, pidfiles, or ports to avoid
+        # the full cold-start cost (#80094).
+        if is_reconnect:
+            if await self._try_reuse_running_bridge(bridge_path):
+                return True
 
         # Pre-flight: skip the 30s bridge bootstrap entirely if the user
         # never finished pairing.  Without creds.json the bridge prints
@@ -663,56 +730,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            
-            # Check if bridge is already running and connected
-            import aiohttp
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"http://127.0.0.1:{self._bridge_port}/health",
-                        timeout=aiohttp.ClientTimeout(total=2)
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            bridge_status = data.get("status", "unknown")
-                            if bridge_status == "connected":
-                                # Staleness handshake: only reuse a running
-                                # bridge if it is serving the same bridge.js
-                                # that is on disk right now.  A long-lived
-                                # bridge survives gateway restarts AND
-                                # `hermes update`, so without this check it
-                                # keeps serving pre-update code forever
-                                # (e.g. no inbound media download).  Old
-                                # bridges that don't report scriptHash are
-                                # treated as stale by definition.
-                                running_hash = data.get("scriptHash", "")
-                                disk_hash = _file_content_hash(bridge_path)
-                                running_read_receipts = bool(data.get("sendReadReceipts", False))
-                                config_matches = running_read_receipts == self._send_read_receipts
-                                if (
-                                    running_hash
-                                    and disk_hash
-                                    and running_hash == disk_hash
-                                    and config_matches
-                                ):
-                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                    self._mark_connected()
-                                    self._bridge_process = None  # Not managed by us
-                                    self._http_session = aiohttp.ClientSession()
-                                    self._poll_task = asyncio.create_task(self._poll_messages())
-                                    # Plugin-registered native handlers.
-                                    self._wire_plugin_handlers(None)
-                                    return True
-                                stale_reason = (
-                                    f"running={running_hash or 'unversioned'}, disk={disk_hash}"
-                                    if running_hash != disk_hash
-                                    else "send_read_receipts config changed"
-                                )
-                                print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
-                            else:
-                                print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
-            except Exception:
-                pass  # Bridge not running, start a new one
+
+            # Check if bridge is already running and connected.
+            if await self._try_reuse_running_bridge(bridge_path):
+                return True
             
             # Kill any orphaned bridge from a previous gateway run
             _kill_stale_bridge_by_pidfile(self._session_path)

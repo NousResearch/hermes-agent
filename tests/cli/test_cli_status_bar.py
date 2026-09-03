@@ -120,6 +120,32 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_status_bar_shows_session_suffix_by_default(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "20260901_120000_abc123"
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "sid abc123" in text
+
+    def test_status_bar_session_field_can_be_hidden(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "20260901_120000_abc123"
+
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+
+        assert "sid abc123" not in text
+
+    def test_status_bar_session_field_can_be_explicitly_shown(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "20260901_120000_abc123"
+
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "session"]}}}):
+            text = cli_obj._build_status_bar_text(width=120)
+
+        assert "sid abc123" in text
+
 
     def test_input_height_counts_prompt_only_on_first_wrapped_row(self):
         # Regression for prompt_toolkit classic CLI resize glitches: the prompt

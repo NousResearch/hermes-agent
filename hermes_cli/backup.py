@@ -1185,6 +1185,14 @@ def _default_new_file_mode() -> Optional[int]:
     return 0o666 & ~current
 
 
+def _archive_execute_bits(zf: zipfile.ZipFile, member: str) -> int:
+    """Return safe Unix execute bits recorded for a zip member."""
+    info = zf.getinfo(member)
+    if info.create_system != 3:  # ZipInfo's Unix creator identifier.
+        return 0
+    return stat.S_IMODE(info.external_attr >> 16) & 0o111
+
+
 def _extract_member_atomically(
     zf: zipfile.ZipFile,
     member: str,
@@ -1214,7 +1222,9 @@ def _extract_member_atomically(
 
     Permission bits *and* ownership are carried across the replace so routing
     through mkstemp does not change the file the caller would otherwise have
-    produced.  ``os.replace`` swaps in a temp file owned by the *writing* user,
+    produced.  A newly created file also receives Unix execute bits recorded
+    by the archive while its read/write bits continue to come from the current
+    umask.  ``os.replace`` swaps in a temp file owned by the *writing* user,
     so without the chown a ``sudo hermes import`` would silently re-own every
     restored file to root — on the disaster-recovery path, and on exactly the
     Docker/NAS installs ``utils._restore_file_owner`` documents.  Both concerns
@@ -1238,6 +1248,11 @@ def _extract_member_atomically(
     owner = _preserve_file_owner(target)
     if mode is None:
         mode = new_file_mode
+        execute_bits = _archive_execute_bits(zf, member)
+        if execute_bits:
+            # When the umask probe failed, retain mkstemp's documented 0600
+            # fallback rather than turning an executable into execute-only.
+            mode = (mode if mode is not None else 0o600) | execute_bits
     else:
         # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
         # ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve

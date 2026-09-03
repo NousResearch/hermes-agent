@@ -832,6 +832,75 @@ class TestImportAtomicWrites:
             for name, content in files.items():
                 zf.writestr(name, content)
 
+    def test_new_file_inherits_archive_execute_bits(self, tmp_path, monkeypatch):
+        """A fresh restore keeps executable scripts runnable."""
+        zip_path = tmp_path / "backup.zip"
+        member = zipfile.ZipInfo("skills/demo/run.sh")
+        member.create_system = 3
+        member.external_attr = 0o106755 << 16
+        self._zip(zip_path, {member: "#!/bin/sh\nexit 0\n"})
+
+        restored_modes: list[int | None] = []
+        monkeypatch.setattr(
+            "hermes_cli.backup._restore_file_mode",
+            lambda _path, mode: restored_modes.append(mode),
+        )
+
+        from hermes_cli.backup import _extract_member_atomically
+
+        target = tmp_path / "run.sh"
+        with zipfile.ZipFile(zip_path) as zf:
+            _extract_member_atomically(zf, member.filename, target, 0o644)
+
+        assert target.read_text() == "#!/bin/sh\nexit 0\n"
+        assert restored_modes == [0o755]
+
+    def test_existing_file_ignores_archive_execute_bits(self, tmp_path, monkeypatch):
+        """Archive metadata must not change an existing target's mode."""
+        zip_path = tmp_path / "backup.zip"
+        member = zipfile.ZipInfo("config.yaml")
+        member.create_system = 3
+        member.external_attr = 0o100755 << 16
+        self._zip(zip_path, {member: "model: restored\n"})
+
+        target = tmp_path / "config.yaml"
+        target.write_text("model: original\n")
+        monkeypatch.setattr("hermes_cli.backup._preserve_file_mode", lambda _path: 0o640)
+        restored_modes: list[int | None] = []
+        monkeypatch.setattr(
+            "hermes_cli.backup._restore_file_mode",
+            lambda _path, mode: restored_modes.append(mode),
+        )
+
+        from hermes_cli.backup import _extract_member_atomically
+
+        with zipfile.ZipFile(zip_path) as zf:
+            _extract_member_atomically(zf, member.filename, target, 0o644)
+
+        assert restored_modes == [0o640]
+
+    def test_new_file_ignores_non_unix_mode_metadata(self, tmp_path, monkeypatch):
+        """DOS-created entries retain the normal umask-derived fallback."""
+        zip_path = tmp_path / "backup.zip"
+        member = zipfile.ZipInfo("notes.txt")
+        member.create_system = 0
+        member.external_attr = 0o100755 << 16
+        self._zip(zip_path, {member: "notes\n"})
+
+        restored_modes: list[int | None] = []
+        monkeypatch.setattr(
+            "hermes_cli.backup._restore_file_mode",
+            lambda _path, mode: restored_modes.append(mode),
+        )
+
+        from hermes_cli.backup import _extract_member_atomically
+
+        target = tmp_path / "notes.txt"
+        with zipfile.ZipFile(zip_path) as zf:
+            _extract_member_atomically(zf, member.filename, target, 0o644)
+
+        assert restored_modes == [0o644]
+
     def test_failed_member_leaves_existing_file_intact(self, tmp_path, monkeypatch):
         """A dying member must not destroy the file it was replacing."""
         hermes_home = tmp_path / ".hermes"

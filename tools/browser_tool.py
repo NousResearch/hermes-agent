@@ -5309,7 +5309,11 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 
-def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str]:
+def _camofox_current_page_private_url(
+    tab_id: str,
+    user_id: str,
+    session: Optional[dict] = None,
+) -> Optional[str]:
     """Return the Camofox page URL when it targets a private/internal address.
 
     Camofox analogue of ``_current_page_private_url`` (evaluate endpoint instead
@@ -5317,6 +5321,9 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
     can't be determined, or the probe errors (fail-open on probe failure,
     matching the snapshot/vision guards — do not change to fail-closed without
     also changing the sibling).
+
+    A stale-tab HTTP error still clears *session* when provided so a dead
+    tab_id is not kept after the probe swallows the exception.
     """
     try:
         from tools.browser_camofox import _post
@@ -5330,18 +5337,44 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
         if current_url and (_is_always_blocked_url(current_url) or not _is_safe_url(current_url)):
             return current_url
     except Exception as exc:
+        if session is not None:
+            from tools.browser_camofox import _clear_stale_tab
+
+            _clear_stale_tab(session, exc, endpoint="evaluate")
         logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)
     return None
 
 
 def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS via Camofox's /tabs/{tab_id}/evaluate endpoint (if available)."""
-    from tools.browser_camofox import _ensure_tab, _post
+    from tools.browser_camofox import (
+        _EVAL_CAPABILITY_ERROR,
+        _STALE_TAB_ERROR,
+        _clear_stale_tab,
+        _ensure_tab,
+        _post,
+        classify_camofox_http_error,
+    )
     try:
         tab_info = _ensure_tab(task_id or "default")
         tab_id = tab_info.get("tab_id") or tab_info.get("id")
         user_id = tab_info["user_id"]
-        resp = _post(f"/tabs/{tab_id}/evaluate", body={"expression": expression, "userId": user_id})
+        try:
+            resp = _post(
+                f"/tabs/{tab_id}/evaluate",
+                body={"expression": expression, "userId": user_id},
+            )
+        except Exception as e:
+            kind = classify_camofox_http_error(e, endpoint="evaluate")
+            if kind == "stale":
+                _clear_stale_tab(tab_info, e, endpoint="evaluate")
+                return tool_error(_STALE_TAB_ERROR, success=False)
+            if kind == "capability":
+                return json.dumps({
+                    "success": False,
+                    "error": _EVAL_CAPABILITY_ERROR,
+                })
+            raise
 
         # Camofox returns the result in a JSON envelope
         raw_result = resp.get("result") if isinstance(resp, dict) else resp
@@ -5353,7 +5386,9 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
                 pass
 
         if _eval_ssrf_guard_active(task_id or "default"):
-            _blocked_url = _camofox_current_page_private_url(tab_id, user_id)
+            _blocked_url = _camofox_current_page_private_url(
+                tab_id, user_id, session=tab_info
+            )
             if _blocked_url:
                 return json.dumps({
                     "success": False,
@@ -5370,15 +5405,13 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             "result_type": type(parsed).__name__,
         }, ensure_ascii=False, default=str)
     except Exception as e:
-        error_msg = str(e)
-        # Graceful degradation — server may not support eval
-        if any(code in error_msg for code in ("404", "405", "501")):
+        kind = classify_camofox_http_error(e, endpoint="evaluate")
+        if kind == "capability":
             return json.dumps({
                 "success": False,
-                "error": "JavaScript evaluation is not supported by this Camofox server. "
-                         "Use browser_snapshot or browser_vision to inspect page state.",
+                "error": _EVAL_CAPABILITY_ERROR,
             })
-        return tool_error(error_msg, success=False)
+        return tool_error(str(e), success=False)
 
 
 def _maybe_start_recording(task_id: str):

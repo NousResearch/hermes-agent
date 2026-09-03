@@ -31,7 +31,9 @@ def _block_active(monkeypatch):
 
     monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(
-        browser_tool, "_camofox_current_page_private_url", lambda tab_id, user_id: PRIVATE_URL
+        browser_tool,
+        "_camofox_current_page_private_url",
+        lambda tab_id, user_id, session=None: PRIVATE_URL,
     )
 
 
@@ -41,7 +43,7 @@ def _block_inactive_guard(monkeypatch):
 
     monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: False)
 
-    def fail_probe(tab_id, user_id):
+    def fail_probe(tab_id, user_id, session=None):
         raise AssertionError("must not probe page URL when the SSRF guard is inactive")
 
     monkeypatch.setattr(browser_tool, "_camofox_current_page_private_url", fail_probe)
@@ -52,7 +54,9 @@ def _public_page(monkeypatch):
 
     monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda task_id: True)
     monkeypatch.setattr(
-        browser_tool, "_camofox_current_page_private_url", lambda tab_id, user_id: None
+        browser_tool,
+        "_camofox_current_page_private_url",
+        lambda tab_id, user_id, session=None: None,
     )
 
 

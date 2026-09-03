@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from gateway.config import Platform
-from tests.gateway.restart_test_helpers import make_restart_runner
+from tests.gateway.restart_test_helpers import attach_real_stop, make_restart_runner
 
 
 @pytest.fixture(autouse=True)
@@ -204,6 +204,7 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         import tools.terminal_tool as _tt
 
         runner, adapter = make_restart_runner()
+        attach_real_stop(runner)
         runner._restart_drain_timeout = 0.01  # force the interrupt path
         sched._running_job_ids.add("be62d36a9914")
 

@@ -1367,6 +1367,32 @@ def skill_view(
                 candidates = project_candidates
 
         if len(candidates) > 1:
+            # Content-identical duplicates are not a real ambiguity: installs
+            # commonly mirror the same skill into both the active profile dir
+            # and an external dir, and `skills_list()` dedupes such copies
+            # first-win (so it advertises the name as enabled). Fold
+            # byte-identical SKILL.md candidates — keeping the first
+            # collected, which matches the list's precedence order — so a
+            # name the list advertises also loads by bare name (otherwise
+            # `--skills` worker spawns hard-fail on names `skills list`
+            # reports as enabled). Divergent copies still refuse below; an
+            # unreadable candidate cannot be proven identical and is kept,
+            # failing closed.
+            distinct_candidates: List[Tuple[Optional[Path], Path]] = []
+            seen_skill_md_content: set = set()
+            for cand_dir, cand_md in candidates:
+                try:
+                    cand_content = cand_md.read_bytes()
+                except OSError:
+                    cand_content = None
+                if cand_content is not None:
+                    if cand_content in seen_skill_md_content:
+                        continue
+                    seen_skill_md_content.add(cand_content)
+                distinct_candidates.append((cand_dir, cand_md))
+            candidates = distinct_candidates
+
+        if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",

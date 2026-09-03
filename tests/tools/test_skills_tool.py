@@ -969,3 +969,58 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
+
+    def test_identical_local_and_external_copies_load_first_win(self, tmp_path):
+        """Byte-identical copies across tiers are not a real ambiguity.
+
+        Installs commonly mirror the same skill into both the active
+        profile-local dir and an external dir; ``hermes skills list``
+        dedupes such copies first-win and advertises the name as enabled,
+        so the bare-name lookup must not refuse — otherwise ``--skills``
+        worker spawns hard-fail on exactly the names the list reports as
+        enabled. The surviving copy is the first collected (local before
+        external), matching the list order.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir, "kanban-worker", category="devops", body="SHARED WORKER BODY"
+        )
+        _make_skill(
+            external_dir, "kanban-worker", category="devops", body="SHARED WORKER BODY"
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("kanban-worker")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "devops/kanban-worker/SKILL.md"
+        assert "SHARED WORKER BODY" in result["content"]
+
+    def test_divergent_same_layout_copies_still_refuse(self, tmp_path):
+        """Identical directory layout but divergent SKILL.md content keeps
+        the collision refusal — silently picking a side would reintroduce
+        the shadowing bug class the refusal was added to prevent."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "kanban-worker", category="devops", body="LOCAL BODY")
+        _make_skill(
+            external_dir, "kanban-worker", category="devops", body="EXTERNAL BODY"
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("kanban-worker")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous skill name 'kanban-worker'" in result["error"]
+        assert len(result["matches"]) == 2

@@ -272,15 +272,26 @@ class TodoStore:
 
     @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Collapse duplicate ids, keeping the last occurrence in its position."""
+        """Collapse duplicate ids, keeping the last occurrence in its position.
+
+        Items without an explicit ``id`` are NOT collapsed against each other:
+        each gets a unique synthetic key so all unkeyed items survive the dedup
+        pass. ``_validate`` then assigns each survivor its own fallback id.
+        See #83389.
+        """
         last_index: Dict[str, int] = {}
         for i, item in enumerate(todos):
             if not isinstance(item, dict):
                 # Non-dict items get a synthetic key so _validate can handle them
                 last_index[f"__invalid_{i}"] = i
                 continue
-            item_id = str(item.get("id", "")).strip() or "?"
-            last_index[item_id] = i
+            item_id = str(item.get("id", "")).strip()
+            if item_id:
+                last_index[item_id] = i
+            else:
+                # Unkeyed items each get a unique synthetic key so the dedup
+                # pass cannot silently drop earlier ones.
+                last_index[f"__no_id_{i}"] = i
         return [todos[i] for i in sorted(last_index.values())]
 
     @staticmethod

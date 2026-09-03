@@ -302,6 +302,85 @@ class TestRealProfileCdpLaunch:
         assert "--cdp" in captured["argv"]
         self._reset()
 
+    @pytest.mark.parametrize(
+        ("headed", "configured", "expect_headless"),
+        [(True, False, False), (False, True, True)],
+    )
+    def test_explicit_headed_launch_overrides_config(
+        self, tmp_path, monkeypatch, headed, configured, expect_headless
+    ):
+        import tools.browser_tool as bt
+        self._reset()
+        if headed:
+            monkeypatch.setenv("DISPLAY", ":99")
+        captured = {}
+        proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            captured["chrome_argv"] = argv
+            (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt, "_agent_browser_get_cdp", side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=configured):
+            cdp, err = bt._real_profile_cdp(headed=headed)
+        assert err is None and cdp == "http://127.0.0.1:41000"
+        assert ("--headless=new" in captured["chrome_argv"]) is expect_headless
+        self._reset()
+
+    @pytest.mark.parametrize("headed", [True, None])
+    def test_existing_runtime_rejects_opposite_effective_mode(self, headed):
+        import tools.browser_tool as bt
+        self._reset()
+        bt._real_profile_cdp_cache.update(cdp="http://127.0.0.1:41000", headed=False)
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_is_headed_mode", return_value=True):
+            cdp, err = bt._real_profile_cdp(headed=headed)
+        assert cdp is None
+        assert "already running headless" in err
+        self._reset()
+
+    def test_omitted_reuses_unknown_mode_without_claiming_config(self, tmp_path):
+        import tools.browser_tool as bt
+
+        self._reset()
+        with (
+            patch.object(bt, "_use_real_profile", return_value=True),
+            patch(
+                "hermes_cli.browser_connect.detect_default_chromium",
+                return_value="chrome",
+            ),
+            patch(
+                "hermes_cli.browser_connect.real_profile_copy_dir",
+                return_value=str(tmp_path),
+            ),
+            patch.object(
+                bt,
+                "_agent_browser_get_cdp",
+                return_value="http://127.0.0.1:41000",
+            ),
+            patch.object(bt, "_cdp_http_ready", return_value=True),
+            patch.object(bt, "_cdp_on_data_dir", return_value=True),
+            patch.object(bt, "_is_headed_mode", return_value=True),
+        ):
+            cdp, err = bt._real_profile_cdp(headed=None)
+        assert err is None
+        assert cdp == "http://127.0.0.1:41000"
+        assert bt._real_profile_cdp_cache == {"cdp": cdp}
+        self._reset()
+
     def test_reuses_only_session_on_our_copy_dir(self, tmp_path):
         """A live session on a DIFFERENT dir (stale/throwaway) is closed, not reused."""
         import tools.browser_tool as bt

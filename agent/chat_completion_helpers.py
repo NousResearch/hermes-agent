@@ -3588,8 +3588,8 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     try:
         headed = False
         try:
-            from tools.browser_tool import _is_headed_mode
-            headed = _is_headed_mode()
+            from tools.browser_tool import _preserve_browser_between_turns
+            headed = _preserve_browser_between_turns()
         except Exception:
             headed = bool(os.environ.get("AGENT_BROWSER_HEADED"))
         if headed:

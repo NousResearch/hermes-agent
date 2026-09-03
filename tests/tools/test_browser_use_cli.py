@@ -842,6 +842,11 @@ class TestSkillTextDescription:
 
 
 class TestBrowserExec:
+    def test_schema_exposes_optional_headed_override(self):
+        prop = bu_cli.BROWSER_EXEC_SCHEMA["parameters"]["properties"]["headed"]
+        assert prop["type"] == "boolean"
+        assert "headed" not in bu_cli.BROWSER_EXEC_SCHEMA["parameters"]["required"]
+
     def test_missing_cli_returns_install_hint(self, monkeypatch):
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         result = json.loads(bu_cli.browser_exec("print(page_info())"))
@@ -866,6 +871,38 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert "bu:r7k2" in result["output"]
         assert result["session"] == "r7k2"
+
+    @pytest.mark.parametrize("headed", [True, False])
+    def test_headed_override_reaches_real_profile_launch(
+        self, tmp_path, monkeypatch, headed
+    ):
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        seen = {}
+
+        def route(env, force_local, headed):
+            seen.update(force_local=force_local, headed=headed)
+            env["BU_CDP_URL"] = "http://127.0.0.1:9222"
+            env[bu_cli._REAL_PROFILE_SENTINEL] = "1"
+            return None
+
+        monkeypatch.setattr(bu_cli, "_resolve_real_profile_cdp", route)
+        monkeypatch.setattr(bu_cli, "_resolve_backend_cdp", lambda *a, **k: None)
+        result = json.loads(
+            bu_cli.browser_exec("print(1)", local=True, headed=headed)
+        )
+        assert result["success"] is True
+        assert seen == {"force_local": True, "headed": headed}
+
+    def test_headed_override_rejects_nonlocal_backend(self, tmp_path, monkeypatch):
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho should-not-run\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(bu_cli, "_resolve_real_profile_cdp", lambda *a, **k: None)
+        monkeypatch.setattr(bu_cli, "_resolve_backend_cdp", lambda *a, **k: None)
+        monkeypatch.setenv(bu_cli._REAL_PROFILE_SENTINEL, "spoofed")
+        result = json.loads(bu_cli.browser_exec("print(1)", headed=True))
+        assert "local real-profile browser" in result["error"]
+        assert "output" not in result
 
     def test_invalid_session_name_rejected(self, monkeypatch, tmp_path):
         cli = _fake_cli(tmp_path, "cat > /dev/null\n")

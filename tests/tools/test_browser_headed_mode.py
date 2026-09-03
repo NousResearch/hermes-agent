@@ -12,10 +12,11 @@ import pytest
 
 
 def _reset_headed_cache():
-    """Reset the module-level headed-mode cache so tests start clean."""
+    """Reset headed-mode and active-runtime caches so tests start clean."""
     import tools.browser_tool as bt
     bt._cached_headed_mode = None
     bt._headed_mode_resolved = False
+    bt._real_profile_cdp_cache.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -65,7 +66,7 @@ class TestCleanupTaskResourcesHeadedSkip:
     def test_headless_still_cleans_browser(self):
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_tool._is_headed_mode", return_value=False),
+            patch("tools.browser_tool._preserve_browser_between_turns", return_value=False),
             patch("run_agent.cleanup_vm"),
             patch("run_agent.cleanup_browser") as mock_cb,
             patch(
@@ -81,7 +82,7 @@ class TestCleanupTaskResourcesHeadedSkip:
         """Headed mode only affects the browser; VM teardown is untouched."""
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_tool._is_headed_mode", return_value=True),
+            patch("tools.browser_tool._preserve_browser_between_turns", return_value=True),
             patch("run_agent.cleanup_vm") as mock_vm,
             patch("run_agent.cleanup_browser"),
             patch(
@@ -91,6 +92,94 @@ class TestCleanupTaskResourcesHeadedSkip:
         ):
             cleanup_task_resources(_make_agent(), "task-x")
             mock_vm.assert_called_once_with("task-x")
+
+
+class TestEffectiveHeadedPersistence:
+    def test_explicit_headed_runtime_overrides_headless_config(self):
+        import tools.browser_tool as bt
+        bt._real_profile_cdp_cache.update(cdp="http://127.0.0.1:41000", headed=True)
+        with patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_is_headed_mode", return_value=False):
+            assert bt._preserve_browser_between_turns() is True
+
+    def test_explicit_headless_runtime_overrides_headed_config(self):
+        import tools.browser_tool as bt
+        bt._real_profile_cdp_cache.update(cdp="http://127.0.0.1:41000", headed=False)
+        with patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_is_headed_mode", return_value=True):
+            assert bt._preserve_browser_between_turns() is False
+
+    def test_recovers_headed_marker_after_process_restart(self, tmp_path):
+        import tools.browser_tool as bt
+
+        (tmp_path / ".hermes-browser-mode").write_text("headed", encoding="utf-8")
+        with (
+            patch.object(bt, "_use_real_profile", return_value=True),
+            patch.object(bt, "_using_lightpanda_engine", return_value=False),
+            patch.object(
+                bt,
+                "_agent_browser_get_cdp",
+                return_value="http://127.0.0.1:41000",
+            ),
+            patch.object(bt, "_cdp_http_ready", return_value=True),
+            patch.object(bt, "_cdp_on_data_dir", return_value=True),
+            patch.object(bt, "_is_headed_mode", return_value=False),
+            patch(
+                "hermes_cli.browser_connect.detect_default_chromium",
+                return_value="chrome",
+            ),
+            patch(
+                "hermes_cli.browser_connect.real_profile_copy_dir",
+                return_value=str(tmp_path),
+            ),
+        ):
+            assert bt._preserve_browser_between_turns() is True
+        assert bt._real_profile_cdp_cache == {
+            "cdp": "http://127.0.0.1:41000",
+            "headed": True,
+        }
+
+    def test_invalid_mode_marker_does_not_claim_headless(self, tmp_path):
+        import tools.browser_tool as bt
+
+        (tmp_path / ".hermes-browser-mode").write_text("invalid", encoding="utf-8")
+        assert bt._read_real_profile_headed_mode(str(tmp_path)) is None
+        with (
+            patch.object(bt, "_use_real_profile", return_value=True),
+            patch.object(bt, "_using_lightpanda_engine", return_value=False),
+            patch.object(
+                bt,
+                "_agent_browser_get_cdp",
+                return_value="http://127.0.0.1:41000",
+            ),
+            patch.object(bt, "_cdp_http_ready", return_value=True),
+            patch.object(bt, "_cdp_on_data_dir", return_value=True),
+            patch.object(bt, "_is_headed_mode", return_value=False),
+            patch(
+                "hermes_cli.browser_connect.detect_default_chromium",
+                return_value="chrome",
+            ),
+            patch(
+                "hermes_cli.browser_connect.real_profile_copy_dir",
+                return_value=str(tmp_path),
+            ),
+        ):
+            assert bt._preserve_browser_between_turns() is True
+        assert bt._real_profile_cdp_cache == {}
+
+    def test_recovery_error_preserves_unknown_runtime(self):
+        import tools.browser_tool as bt
+
+        with (
+            patch.object(bt, "_use_real_profile", return_value=True),
+            patch.object(bt, "_using_lightpanda_engine", return_value=False),
+            patch.object(bt, "_is_headed_mode", return_value=False),
+            patch(
+                "hermes_cli.browser_connect.detect_default_chromium",
+                side_effect=RuntimeError("unavailable"),
+            ),
+        ):
+            assert bt._preserve_browser_between_turns() is True
 
 
 # ---------------------------------------------------------------------------

@@ -1640,7 +1640,20 @@ def _agent_browser_close_session(session_name: str) -> None:
         logger.debug("real-profile session close failed: %s", e)
 
 
-def _real_profile_cdp() -> tuple:
+def _read_real_profile_headed_mode(copy_dir: str) -> Optional[bool]:
+    """Read the persisted effective mode for a managed profile runtime."""
+    try:
+        value = Path(copy_dir, ".hermes-browser-mode").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if value == "headed":
+        return True
+    if value == "headless":
+        return False
+    return None
+
+
+def _real_profile_cdp(headed: Optional[bool] = None) -> tuple:
     """Resolve ``(cdp_url, error)`` for consented real-profile browsing.
 
     Snapshots the user's default-Chromium profile into a hermes-owned copy
@@ -1667,7 +1680,7 @@ def _real_profile_cdp() -> tuple:
             cleanup_real_profile_snapshots()
         except Exception as e:
             logger.debug("real-profile cleanup-on-consent-off failed: %s", e)
-        _real_profile_cdp_cache.pop("cdp", None)
+        _real_profile_cdp_cache.clear()
         return None, None
 
     # Lightpanda cannot load a Chromium profile — agent-browser rejects
@@ -1683,6 +1696,8 @@ def _real_profile_cdp() -> tuple:
             "or turn the toggle off."
         )
 
+    effective_headed = _is_headed_mode() if headed is None else headed
+
     from hermes_cli.browser_connect import (
         UNSUPPORTED_CHANNEL,
         detect_default_chromium,
@@ -1694,6 +1709,21 @@ def _real_profile_cdp() -> tuple:
         # Reuse a live copy-browser from an earlier call this process made.
         cached = _real_profile_cdp_cache.get("cdp")
         if cached and _cdp_http_ready(cached):
+            cached_headed = _real_profile_cdp_cache.get("headed")
+            if cached_headed is None and headed is not None:
+                return None, (
+                    "The Hermes real-profile browser is already running, but its "
+                    "headed mode cannot be verified. Close it and retry to apply an "
+                    "effective headed value safely."
+                )
+            if cached_headed is not None and effective_headed != cached_headed:
+                running = "headed" if cached_headed else "headless"
+                requested = "headed" if effective_headed else "headless"
+                return None, (
+                    f"The Hermes real-profile browser is already running {running}; "
+                    f"it cannot be reused as {requested}. Close the existing browser "
+                    "session or use the same headed value, then retry."
+                )
             return cached, None
         _real_profile_cdp_cache.pop("cdp", None)
 
@@ -1732,7 +1762,28 @@ def _real_profile_cdp() -> tuple:
         copy_dir = real_profile_copy_dir(browser)
         existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+            existing_headed = _read_real_profile_headed_mode(copy_dir)
+            if existing_headed is None and headed is not None:
+                return None, (
+                    "The Hermes real-profile browser is already running, but its "
+                    "headed mode cannot be verified. Close it and retry to apply an "
+                    "effective headed value safely."
+                )
+            if existing_headed is not None and effective_headed != existing_headed:
+                running = "headed" if existing_headed else "headless"
+                requested = "headed" if effective_headed else "headless"
+                return None, (
+                    f"The Hermes real-profile browser is already running {running}; "
+                    f"it cannot be reused as {requested}. Close the existing browser "
+                    "session or use the same headed value, then retry."
+                )
+            _real_profile_cdp_cache.clear()
             _real_profile_cdp_cache["cdp"] = existing
+            # A pre-feature runtime has no marker. Omitted headed keeps the
+            # historical reuse behavior without pretending its effective mode
+            # is known; explicit overrides still fail closed.
+            if existing_headed is not None:
+                _real_profile_cdp_cache["headed"] = existing_headed
             return existing, None
         if existing:
             # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
@@ -1814,11 +1865,23 @@ def _real_profile_cdp() -> tuple:
         _has_display = bool(
             os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
         )
-        _want_headed = _is_headed_mode() and (
+        _want_headed = effective_headed and (
             _has_display or not sys.platform.startswith("linux")
         )
+        if headed is True and not _want_headed:
+            return None, (
+                "headed=true requires a graphical display, but no DISPLAY or "
+                "WAYLAND_DISPLAY is available on this Linux host."
+            )
         if not _want_headed:
             chrome_argv.append("--headless=new")
+        try:
+            Path(copy_dir, ".hermes-browser-mode").write_text(
+                "headed" if _want_headed else "headless",
+                encoding="utf-8",
+            )
+        except OSError as e:
+            return None, f"browser.use_real_profile is on, but mode state could not be saved: {e}"
         try:
             chrome_proc = subprocess.Popen(
                 chrome_argv,
@@ -1916,9 +1979,48 @@ def _real_profile_cdp() -> tuple:
                 "started without exposing a devtools endpoint. Retry, or turn "
                 "the toggle off."
             )
-        _real_profile_cdp_cache["cdp"] = cdp
+        _real_profile_cdp_cache.update(cdp=cdp, headed=_want_headed)
         logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
+
+
+def _preserve_browser_between_turns() -> bool:
+    """Return the effective persistence mode for the active local runtime."""
+    cached = _real_profile_cdp_cache.get("cdp")
+    if cached and _cdp_http_ready(cached):
+        runtime_headed = _real_profile_cdp_cache.get("headed")
+        if isinstance(runtime_headed, bool):
+            return runtime_headed
+
+    # A headed browser can survive a gateway restart while this process-local
+    # cache cannot. Recover the mode only for the live managed profile copy,
+    # never from an unowned or stale marker.
+    if _use_real_profile() and not _using_lightpanda_engine():
+        try:
+            from hermes_cli.browser_connect import (
+                UNSUPPORTED_CHANNEL,
+                detect_default_chromium,
+                real_profile_copy_dir,
+            )
+
+            browser = detect_default_chromium()
+            if browser and browser != UNSUPPORTED_CHANNEL:
+                copy_dir = real_profile_copy_dir(browser)
+                existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
+                if (
+                    existing
+                    and _cdp_http_ready(existing)
+                    and _cdp_on_data_dir(existing, copy_dir)
+                ):
+                    persisted = _read_real_profile_headed_mode(copy_dir)
+                    if isinstance(persisted, bool):
+                        _real_profile_cdp_cache.update(cdp=existing, headed=persisted)
+                        return persisted
+                    return True
+        except Exception as exc:
+            logger.debug("real-profile mode recovery failed: %s", exc)
+            return True
+    return _is_headed_mode()
 
 
 def _url_is_private(url: str) -> bool:

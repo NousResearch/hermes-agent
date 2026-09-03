@@ -243,6 +243,14 @@ to fully quit the browser — it won't loop or kill again on its own.
   real-profile local session on demand via the `browser_exec` tool's `local`
   argument (the tool only exposes that argument when this toggle is on) — the
   cloud backend keeps serving everything else.
+- **Per-launch visibility.** `browser_exec(..., headed=true)` can override
+  `browser.headed` when it starts a new Hermes-managed real-profile browser;
+  `headed=false` explicitly keeps that launch headless, and omitting the
+  argument preserves the configured default. The copied profile is one shared
+  browser runtime even when several named `browser_exec` daemons attach to it,
+  so an opposite explicit value fails clearly instead of restarting the browser
+  and destroying its tabs. The override is not available for cloud browsers,
+  operator-owned CDP connections, or non-graphical engines such as Lightpanda.
 - **Security framing:** this is a consent-gated convenience, not an isolation
   boundary. A page the agent visits runs with your real logins, so only enable
   it when you want the agent acting as you. Off by default.

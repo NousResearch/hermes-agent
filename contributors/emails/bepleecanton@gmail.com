@@ -1,2 +1,2 @@
 beplee
-# PR #102393 salvage (stale checkpoint pruning)
+# PR #102406 salvage (executive bus)

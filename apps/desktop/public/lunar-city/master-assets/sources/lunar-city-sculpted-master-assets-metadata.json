@@ -6,6 +6,7 @@
       "collection": "Master Asset - building-library",
       "displayName": "LIBRARY",
       "evaluatedTriangleCount": 508640,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-library",
       "kind": "building",
       "lodPolicy": [
@@ -37,6 +38,7 @@
       "collection": "Master Asset - building-research-lab",
       "displayName": "RESEARCH LAB",
       "evaluatedTriangleCount": 493632,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-research-lab",
       "kind": "building",
       "lodPolicy": [
@@ -68,6 +70,7 @@
       "collection": "Master Asset - building-arts-studio",
       "displayName": "ARTS STUDIO",
       "evaluatedTriangleCount": 500128,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-arts-studio",
       "kind": "building",
       "lodPolicy": [
@@ -99,6 +102,7 @@
       "collection": "Master Asset - building-engineering-workshop",
       "displayName": "ENGINEERING",
       "evaluatedTriangleCount": 492192,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-engineering-workshop",
       "kind": "building",
       "lodPolicy": [
@@ -131,6 +135,7 @@
       "collection": "Master Asset - building-operations-depot",
       "displayName": "OPERATIONS",
       "evaluatedTriangleCount": 487776,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-operations-depot",
       "kind": "building",
       "lodPolicy": [
@@ -161,6 +166,7 @@
       "collection": "Master Asset - building-release-gatehouse",
       "displayName": "RELEASE",
       "evaluatedTriangleCount": 487776,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-release-gatehouse",
       "kind": "building",
       "lodPolicy": [
@@ -191,6 +197,7 @@
       "collection": "Master Asset - building-triage-clinic",
       "displayName": "TRIAGE",
       "evaluatedTriangleCount": 488544,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-triage-clinic",
       "kind": "building",
       "lodPolicy": [
@@ -223,6 +230,7 @@
       "collection": "Master Asset - building-council-hall",
       "displayName": "COUNCIL",
       "evaluatedTriangleCount": 504800,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-council-hall",
       "kind": "building",
       "lodPolicy": [
@@ -253,6 +261,7 @@
       "collection": "Master Asset - building-review-office",
       "displayName": "REVIEW",
       "evaluatedTriangleCount": 488928,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-review-office",
       "kind": "building",
       "lodPolicy": [
@@ -285,6 +294,7 @@
       "collection": "Master Asset - building-archive",
       "displayName": "ARCHIVE",
       "evaluatedTriangleCount": 508640,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-archive",
       "kind": "building",
       "lodPolicy": [
@@ -316,6 +326,7 @@
       "collection": "Master Asset - building-break-garden",
       "displayName": "BREAK GARDEN",
       "evaluatedTriangleCount": 576864,
+      "finishedSilhouetteComponentCount": 0,
       "id": "building-break-garden",
       "kind": "building",
       "lodPolicy": [
@@ -342,10 +353,11 @@
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 15,
+      "animationRigWireCount": 31,
       "collection": "Master Asset - leader-owl-archivist",
       "displayName": "OWL ARCHIVIST",
-      "evaluatedTriangleCount": 456608,
+      "evaluatedTriangleCount": 712608,
+      "finishedSilhouetteComponentCount": 19,
       "id": "leader-owl-archivist",
       "kind": "leader",
       "lodPolicy": [
@@ -357,6 +369,7 @@
       "materials": [
         "Hero beak gold keratin",
         "Hero cyan glass emission",
+        "Hero dark interior alloy",
         "Hero gold trim",
         "Hero ink black detail",
         "Hero leader fur",
@@ -367,21 +380,22 @@
         "Hero warm eye highlight",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 39,
+      "meshObjectCount": 58,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "knowledge",
-      "sculptedSurfaceCount": 39,
+      "sculptedSurfaceCount": 58,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 9,
+      "animationRigWireCount": 15,
       "collection": "Master Asset - leader-fox-scientist",
       "displayName": "FOX SCIENTIST",
-      "evaluatedTriangleCount": 425920,
+      "evaluatedTriangleCount": 651904,
+      "finishedSilhouetteComponentCount": 18,
       "id": "leader-fox-scientist",
       "kind": "leader",
       "lodPolicy": [
@@ -393,6 +407,7 @@
       "materials": [
         "Hero cyan glass emission",
         "Hero cyan identity emission",
+        "Hero dark interior alloy",
         "Hero fox amber fur PBR",
         "Hero gold trim",
         "Hero ink black detail",
@@ -402,21 +417,22 @@
         "Hero white hull PBR",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 29,
+      "meshObjectCount": 47,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "research",
-      "sculptedSurfaceCount": 29,
+      "sculptedSurfaceCount": 47,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 9,
+      "animationRigWireCount": 18,
       "collection": "Master Asset - leader-raccoon-artist",
       "displayName": "RACCOON ARTIST",
-      "evaluatedTriangleCount": 444192,
+      "evaluatedTriangleCount": 681120,
+      "finishedSilhouetteComponentCount": 17,
       "id": "leader-raccoon-artist",
       "kind": "leader",
       "lodPolicy": [
@@ -427,6 +443,7 @@
       ],
       "materials": [
         "Hero cyan glass emission",
+        "Hero dark interior alloy",
         "Hero gold trim",
         "Hero green identity emission",
         "Hero ink black detail",
@@ -436,21 +453,22 @@
         "Hero warm eye highlight",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 29,
+      "meshObjectCount": 46,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "creative",
-      "sculptedSurfaceCount": 29,
+      "sculptedSurfaceCount": 46,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 10,
+      "animationRigWireCount": 17,
       "collection": "Master Asset - leader-eagle-councillor",
       "displayName": "EAGLE COUNCILLOR",
-      "evaluatedTriangleCount": 424480,
+      "evaluatedTriangleCount": 648544,
+      "finishedSilhouetteComponentCount": 17,
       "id": "leader-eagle-councillor",
       "kind": "leader",
       "lodPolicy": [
@@ -462,6 +480,7 @@
       "materials": [
         "Hero beak gold keratin",
         "Hero cyan glass emission",
+        "Hero dark interior alloy",
         "Hero eagle bronze feather PBR",
         "Hero gold trim",
         "Hero ink black detail",
@@ -471,21 +490,22 @@
         "Hero warm eye highlight",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 28,
+      "meshObjectCount": 45,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "governance",
-      "sculptedSurfaceCount": 28,
+      "sculptedSurfaceCount": 45,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 10,
+      "animationRigWireCount": 16,
       "collection": "Master Asset - leader-badger-engineer",
       "displayName": "BADGER ENGINEER",
-      "evaluatedTriangleCount": 438016,
+      "evaluatedTriangleCount": 701376,
+      "finishedSilhouetteComponentCount": 19,
       "id": "leader-badger-engineer",
       "kind": "leader",
       "lodPolicy": [
@@ -498,6 +518,7 @@
         "Hero badger slate fur PBR",
         "Hero cyan glass emission",
         "Hero cyan identity emission",
+        "Hero dark interior alloy",
         "Hero gold trim",
         "Hero ink black detail",
         "Hero leader fur",
@@ -506,21 +527,22 @@
         "Hero white hull PBR",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 28,
+      "meshObjectCount": 47,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "engineering",
-      "sculptedSurfaceCount": 28,
+      "sculptedSurfaceCount": 47,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 7,
+      "animationRigWireCount": 12,
       "collection": "Master Asset - leader-gold-medic",
       "displayName": "GOLD MEDIC",
-      "evaluatedTriangleCount": 435328,
+      "evaluatedTriangleCount": 691264,
+      "finishedSilhouetteComponentCount": 18,
       "id": "leader-gold-medic",
       "kind": "leader",
       "lodPolicy": [
@@ -532,6 +554,7 @@
       "materials": [
         "Hero amber identity emission",
         "Hero cyan glass emission",
+        "Hero dark interior alloy",
         "Hero gold trim",
         "Hero golden medic fur PBR",
         "Hero ink black detail",
@@ -541,21 +564,22 @@
         "Hero warm eye highlight",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 29,
+      "meshObjectCount": 47,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "medical",
-      "sculptedSurfaceCount": 29,
+      "sculptedSurfaceCount": 47,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 11,
+      "animationRigWireCount": 18,
       "collection": "Master Asset - leader-hawk-reviewer",
       "displayName": "HAWK REVIEWER",
-      "evaluatedTriangleCount": 423040,
+      "evaluatedTriangleCount": 647104,
+      "finishedSilhouetteComponentCount": 17,
       "id": "leader-hawk-reviewer",
       "kind": "leader",
       "lodPolicy": [
@@ -567,6 +591,7 @@
       "materials": [
         "Hero beak gold keratin",
         "Hero cyan glass emission",
+        "Hero dark interior alloy",
         "Hero gold trim",
         "Hero hawk russet feather PBR",
         "Hero ink black detail",
@@ -576,21 +601,22 @@
         "Hero warm eye highlight",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 25,
+      "meshObjectCount": 42,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "review",
-      "sculptedSurfaceCount": 25,
+      "sculptedSurfaceCount": 42,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
       "textureResolutionTarget": "4k"
     },
     {
-      "animationRigWireCount": 15,
+      "animationRigWireCount": 31,
       "collection": "Master Asset - leader-owl-historian",
       "displayName": "OWL HISTORIAN",
-      "evaluatedTriangleCount": 456608,
+      "evaluatedTriangleCount": 712608,
+      "finishedSilhouetteComponentCount": 19,
       "id": "leader-owl-historian",
       "kind": "leader",
       "lodPolicy": [
@@ -603,6 +629,7 @@
         "Hero archive owl violet feather PBR",
         "Hero beak gold keratin",
         "Hero cyan glass emission",
+        "Hero dark interior alloy",
         "Hero gold trim",
         "Hero ink black detail",
         "Hero leader fur",
@@ -612,11 +639,11 @@
         "Hero warm eye highlight",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 39,
+      "meshObjectCount": 58,
       "minimumTriangleCount": 120000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "archive",
-      "sculptedSurfaceCount": 39,
+      "sculptedSurfaceCount": 58,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -626,7 +653,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-audit",
       "displayName": "AUDIT WORKER - methodical",
-      "evaluatedTriangleCount": 403584,
+      "evaluatedTriangleCount": 428640,
+      "finishedSilhouetteComponentCount": 6,
       "id": "worker-audit",
       "kind": "worker",
       "lodPolicy": [
@@ -636,16 +664,17 @@
       ],
       "materials": [
         "Hero cyan glass emission",
+        "Hero gold trim",
         "Hero ink black detail",
         "Hero violet identity emission",
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 21,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "audit",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 21,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -655,7 +684,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-operations",
       "displayName": "OPERATIONS WORKER - protective",
-      "evaluatedTriangleCount": 403584,
+      "evaluatedTriangleCount": 421248,
+      "finishedSilhouetteComponentCount": 5,
       "id": "worker-operations",
       "kind": "worker",
       "lodPolicy": [
@@ -670,11 +700,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 20,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "operations",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 20,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -684,7 +714,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-release",
       "displayName": "RELEASE WORKER - bold",
-      "evaluatedTriangleCount": 403584,
+      "evaluatedTriangleCount": 421248,
+      "finishedSilhouetteComponentCount": 5,
       "id": "worker-release",
       "kind": "worker",
       "lodPolicy": [
@@ -695,15 +726,16 @@
       "materials": [
         "Hero amber identity emission",
         "Hero cyan glass emission",
+        "Hero gold trim",
         "Hero ink black detail",
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 20,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "release",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 20,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -713,7 +745,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-research",
       "displayName": "RESEARCH WORKER - curious",
-      "evaluatedTriangleCount": 403584,
+      "evaluatedTriangleCount": 421632,
+      "finishedSilhouetteComponentCount": 5,
       "id": "worker-research",
       "kind": "worker",
       "lodPolicy": [
@@ -728,11 +761,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 20,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "research",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 20,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -742,7 +775,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-review",
       "displayName": "REVIEW WORKER - exacting",
-      "evaluatedTriangleCount": 403584,
+      "evaluatedTriangleCount": 421248,
+      "finishedSilhouetteComponentCount": 5,
       "id": "worker-review",
       "kind": "worker",
       "lodPolicy": [
@@ -753,15 +787,16 @@
       "materials": [
         "Hero cyan glass emission",
         "Hero ink black detail",
+        "Hero inset panel alloy",
         "Hero violet identity emission",
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 20,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "review",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 20,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -771,7 +806,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - worker-support",
       "displayName": "SUPPORT WORKER - social",
-      "evaluatedTriangleCount": 403584,
+      "evaluatedTriangleCount": 425184,
+      "finishedSilhouetteComponentCount": 5,
       "id": "worker-support",
       "kind": "worker",
       "lodPolicy": [
@@ -786,11 +822,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 20,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "support",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 20,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -800,7 +836,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-curious",
       "displayName": "CHILD - curious",
-      "evaluatedTriangleCount": 399616,
+      "evaluatedTriangleCount": 416896,
+      "finishedSilhouetteComponentCount": 4,
       "id": "child-curious",
       "kind": "child",
       "lodPolicy": [
@@ -815,11 +852,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 19,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "child",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 19,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -829,7 +866,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-social",
       "displayName": "CHILD - social",
-      "evaluatedTriangleCount": 399616,
+      "evaluatedTriangleCount": 416896,
+      "finishedSilhouetteComponentCount": 4,
       "id": "child-social",
       "kind": "child",
       "lodPolicy": [
@@ -844,11 +882,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 19,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "child",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 19,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -858,7 +896,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-bold",
       "displayName": "CHILD - bold",
-      "evaluatedTriangleCount": 399616,
+      "evaluatedTriangleCount": 416896,
+      "finishedSilhouetteComponentCount": 4,
       "id": "child-bold",
       "kind": "child",
       "lodPolicy": [
@@ -873,11 +912,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 19,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "child",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 19,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -887,7 +926,8 @@
       "animationRigWireCount": 4,
       "collection": "Master Asset - child-cautious",
       "displayName": "CHILD - cautious",
-      "evaluatedTriangleCount": 399616,
+      "evaluatedTriangleCount": 416896,
+      "finishedSilhouetteComponentCount": 4,
       "id": "child-cautious",
       "kind": "child",
       "lodPolicy": [
@@ -902,11 +942,11 @@
         "Hero worker helmet ceramic",
         "Hero worker suit fabric alloy"
       ],
-      "meshObjectCount": 15,
+      "meshObjectCount": 19,
       "minimumTriangleCount": 45000,
       "retopologyTarget": "quad_dominant_smart_low_poly",
       "role": "child",
-      "sculptedSurfaceCount": 15,
+      "sculptedSurfaceCount": 19,
       "silhouetteCompletion": "reference_mask_guided_plus_inferred_occluded_structure",
       "sourceQuality": "full_resolution_high_poly_master",
       "sourceStatus": "needs_visual_approval_and_retopology",
@@ -917,6 +957,7 @@
       "collection": "Master Asset - terrain-colony-basin",
       "displayName": "Concave lunar colony basin",
       "evaluatedTriangleCount": 703488,
+      "finishedSilhouetteComponentCount": 0,
       "id": "terrain-colony-basin",
       "kind": "terrain",
       "lodPolicy": [
@@ -943,6 +984,7 @@
       "collection": "Master Asset - road-network-primary",
       "displayName": "Ground-conforming road network",
       "evaluatedTriangleCount": 199296,
+      "finishedSilhouetteComponentCount": 0,
       "id": "road-network-primary",
       "kind": "road",
       "lodPolicy": [
@@ -969,6 +1011,7 @@
       "collection": "Master Asset - skybox-lunar-orbit",
       "displayName": "Lunar orbit skybox",
       "evaluatedTriangleCount": 479744,
+      "finishedSilhouetteComponentCount": 0,
       "id": "skybox-lunar-orbit",
       "kind": "skybox",
       "lodPolicy": [
@@ -996,6 +1039,7 @@
       "collection": "Master Asset - dispatcher-cube",
       "displayName": "Dispatcher companion cube",
       "evaluatedTriangleCount": 207552,
+      "finishedSilhouetteComponentCount": 0,
       "id": "dispatcher-cube",
       "kind": "dispatcher",
       "lodPolicy": [
@@ -1024,6 +1068,7 @@
       "collection": "Master Asset - vehicle-bus",
       "displayName": "Colony bus / tram",
       "evaluatedTriangleCount": 188544,
+      "finishedSilhouetteComponentCount": 0,
       "id": "vehicle-bus",
       "kind": "vehicle",
       "lodPolicy": [
@@ -1051,6 +1096,7 @@
       "collection": "Master Asset - prop-status-signage",
       "displayName": "In-world status signage set",
       "evaluatedTriangleCount": 168096,
+      "finishedSilhouetteComponentCount": 0,
       "id": "prop-status-signage",
       "kind": "prop",
       "lodPolicy": [
@@ -1077,6 +1123,7 @@
       "collection": "Master Asset - prop-repair-tools",
       "displayName": "Repair and recovery tools",
       "evaluatedTriangleCount": 168096,
+      "finishedSilhouetteComponentCount": 0,
       "id": "prop-repair-tools",
       "kind": "prop",
       "lodPolicy": [
@@ -1100,9 +1147,12 @@
     }
   ],
   "blend": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
+  "buildingPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-buildings.png",
+  "leaderPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-leaders.png",
   "preview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-preview.png",
   "schemaVersion": 1,
   "source": "local_blender_sculpted_master_scene",
+  "supportPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-support.png",
   "validation": {
     "allRequiredAssetsPresent": true,
     "completesCroppedAndOccludedSilhouettes": true,
@@ -1113,7 +1163,10 @@
     "usesPerAssetCollections": true,
     "usesProceduralPbrMaterials": true,
     "usesRawSoulContent": false,
+    "usesReferenceGradeLeaderFinishing": true,
+    "usesRoleSpecificWorkerFinishing": true,
     "usesSculptedMeshSkins": true,
     "usesSingleAuthoritativeMasterScene": true
-  }
+  },
+  "workerChildPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-workers-children.png"
 }

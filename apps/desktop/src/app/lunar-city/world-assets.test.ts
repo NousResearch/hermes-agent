@@ -292,12 +292,19 @@ describe('Lunar City asset manifest', () => {
         animationRigWireCount: number
         collection: string
         evaluatedTriangleCount: number
+        finishedSilhouetteComponentCount: number
         id: string
+        kind: string
         minimumTriangleCount: number
         silhouetteCompletion: string
         sourceQuality: string
       }>
+      buildingPreview: string
+      leaderPreview: string
+      preview: string
+      supportPreview: string
       validation: Record<string, boolean>
+      workerChildPreview: string
     }
 
     expect(manifest.productionUse).toBe('production_source_intake')
@@ -325,11 +332,31 @@ describe('Lunar City asset manifest', () => {
     expect(manifest.validation.requiresNoRawSoulContent).toBe(true)
     expect(manifest.validation.requiresNoPrivateProfileIdentifiers).toBe(true)
     expect(masterMetadata.assetCount).toBe(36)
+    expect(masterMetadata.preview).toBe('lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-preview.png')
+    expect(masterMetadata.buildingPreview).toBe(
+      'lunar-city/master-assets/sources/lunar-city-sculpted-master-buildings.png'
+    )
+    expect(masterMetadata.leaderPreview).toBe('lunar-city/master-assets/sources/lunar-city-sculpted-master-leaders.png')
+    expect(masterMetadata.workerChildPreview).toBe(
+      'lunar-city/master-assets/sources/lunar-city-sculpted-master-workers-children.png'
+    )
+    expect(masterMetadata.supportPreview).toBe('lunar-city/master-assets/sources/lunar-city-sculpted-master-support.png')
+    for (const preview of [
+      masterMetadata.preview,
+      masterMetadata.buildingPreview,
+      masterMetadata.leaderPreview,
+      masterMetadata.workerChildPreview,
+      masterMetadata.supportPreview
+    ]) {
+      expect(existsSync(join(process.cwd(), 'public', preview))).toBe(true)
+    }
     expect(masterMetadata.validation.usesSingleAuthoritativeMasterScene).toBe(true)
     expect(masterMetadata.validation.usesPerAssetCollections).toBe(true)
     expect(masterMetadata.validation.allRequiredAssetsPresent).toBe(true)
     expect(masterMetadata.validation.usesSculptedMeshSkins).toBe(true)
     expect(masterMetadata.validation.usesAnimationRigWiresForCharacters).toBe(true)
+    expect(masterMetadata.validation.usesReferenceGradeLeaderFinishing).toBe(true)
+    expect(masterMetadata.validation.usesRoleSpecificWorkerFinishing).toBe(true)
     expect(masterMetadata.validation.completesCroppedAndOccludedSilhouettes).toBe(true)
     expect(masterMetadata.validation.usesRawSoulContent).toBe(false)
     expect(masterMetadata.validation.containsPrivateProfileIdentifiers).toBe(false)
@@ -354,6 +381,12 @@ describe('Lunar City asset manifest', () => {
       expect(metadata?.sourceQuality).toBe('full_resolution_high_poly_master')
       expect(metadata?.silhouetteCompletion).toBe('reference_mask_guided_plus_inferred_occluded_structure')
       expect(metadata?.evaluatedTriangleCount).toBeGreaterThanOrEqual(metadata?.minimumTriangleCount ?? 0)
+      if (metadata?.kind === 'leader') {
+        expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(12)
+      }
+      if (metadata?.kind === 'worker' || metadata?.kind === 'child') {
+        expect(metadata.finishedSilhouetteComponentCount).toBeGreaterThanOrEqual(3)
+      }
       expect(asset.acceptance.sourceQuality).toBe('full_resolution_high_poly_master')
       expect(asset.acceptance.rejectIf).toContain('floating_blob')
       expect(asset.acceptance.rejectIf).toContain('simple_mascot_placeholder')

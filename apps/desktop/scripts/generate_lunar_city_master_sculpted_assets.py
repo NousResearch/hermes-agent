@@ -33,6 +33,10 @@ OUT_DIR = ROOT / "public" / "lunar-city" / "master-assets" / "sources"
 MASTER_BLEND = OUT_DIR / "lunar-city-sculpted-master-assets.blend"
 MASTER_METADATA = OUT_DIR / "lunar-city-sculpted-master-assets-metadata.json"
 MASTER_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-assets-preview.png"
+MASTER_BUILDINGS_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-buildings.png"
+MASTER_LEADERS_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-leaders.png"
+MASTER_WORKERS_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-workers-children.png"
+MASTER_SUPPORT_PREVIEW = OUT_DIR / "lunar-city-sculpted-master-support.png"
 
 
 BUILDINGS = [
@@ -134,6 +138,7 @@ def collection_triangle_count(collection):
     mesh_count = 0
     sculpted = 0
     rig_wires = 0
+    finished_components = 0
     material_names = set()
     for obj in collection.objects:
         if obj.get("component") == "animation-wire-rig" or obj.type == "CURVE":
@@ -143,6 +148,8 @@ def collection_triangle_count(collection):
         mesh_count += 1
         if obj.get("mesh_construction") or obj.get("master_asset"):
             sculpted += 1
+        if str(obj.get("asset_component", "")).startswith("finished-"):
+            finished_components += 1
         for slot in obj.material_slots:
             if slot.material:
                 material_names.add(slot.material.name)
@@ -152,7 +159,7 @@ def collection_triangle_count(collection):
             total += sum(max(1, len(poly.vertices) - 2) for poly in mesh.polygons)
         finally:
             evaluated.to_mesh_clear()
-    return total, mesh_count, sculpted, rig_wires, sorted(material_names)
+    return total, mesh_count, sculpted, rig_wires, finished_components, sorted(material_names)
 
 
 def add_wrapped_density_skin(asset_id, kind, role, collection, mats, scale=(1.0, 1.0, 1.0), material_key="shell"):
@@ -171,6 +178,8 @@ def add_wrapped_density_skin(asset_id, kind, role, collection, mats, scale=(1.0,
         48,
     )
     obj["mesh_construction"] = "continuous_high_density_reference_skin"
+    obj["review_visibility"] = "hidden_in_preview_visible_as_retopology_source_in_blend"
+    obj.hide_render = True
     set_master_metadata(obj, asset_id, kind, role, "retopology-source-wrap-skin")
     return obj
 
@@ -203,6 +212,134 @@ def add_occluded_silhouette_completion(asset_id, kind, role, collection, mats, m
             obj["silhouette_completion"] = "completed_from_reference_context_not_flat_crop_boundary"
 
 
+def add_reference_grade_leader_finish(asset_id, role, label_text, collection, mats, accent):
+    """Add the visible anthropomorphic finish missing from rough blob passes."""
+    lower = label_text.lower()
+    accent_mat = mats[accent]
+    skin_mat = hero.leader_skin_material(label_text, role, mats)
+    z = 1.74
+
+    for obj in collection.objects:
+        component = str(obj.get("component", ""))
+        if component in {"single-piece-body-skin", "robe-cloth-skin", "retopology-source-wrap-skin"} or component.endswith("body_skin"):
+            obj["review_visibility"] = "hidden_in_preview_visible_as_retopology_source_in_blend"
+            obj.hide_render = True
+
+    coat_verts = [
+        (-0.36, -0.38, 1.25),
+        (0.36, -0.38, 1.25),
+        (0.48, -0.24, 0.42),
+        (0.22, -0.32, 0.12),
+        (-0.22, -0.32, 0.12),
+        (-0.48, -0.24, 0.42),
+        (-0.28, 0.12, 1.2),
+        (0.28, 0.12, 1.2),
+        (0.36, 0.18, 0.38),
+        (0.16, 0.1, 0.08),
+        (-0.16, 0.1, 0.08),
+        (-0.36, 0.18, 0.38),
+    ]
+    coat_faces = [
+        (0, 1, 2, 3, 4, 5),
+        (6, 11, 10, 9, 8, 7),
+        (0, 6, 7, 1),
+        (1, 7, 8, 2),
+        (2, 8, 9, 3),
+        (3, 9, 10, 4),
+        (4, 10, 11, 5),
+        (5, 11, 6, 0),
+    ]
+    mesh = bpy.data.meshes.new(f"{asset_id}_finished_tailored_coat_mesh")
+    mesh.from_pydata(coat_verts, [], coat_faces)
+    mesh.update()
+    mesh.materials.append(accent_mat)
+    coat = bpy.data.objects.new(f"{asset_id}_finished_tailored_coat_skin", mesh)
+    collection.objects.link(coat)
+    coat["mesh_construction"] = "continuous_tailored_cloak_skin"
+    set_master_metadata(coat, asset_id, "character", role, "finished-tailored-coat-skin")
+    hero.polish_surface(coat, subdivision=1, bevel=0.025)
+
+    hero.chamfer(f"{asset_id}_finished_inner_vest_panel", (0, -0.43, 0.82), (0.18, 0.018, 0.36), mats["dark"], collection, asset_id, "character", role, "finished-inner-vest-panel")
+    for stripe in range(5):
+        x = (stripe - 2) * 0.055
+        seam = lunar.curve(f"{asset_id}_finished_cloak_gold_seam_{stripe}", [(x, -0.47, 1.12), (x * 0.7, -0.48, 0.72), (x * 0.35, -0.44, 0.28)], 0.01, mats["gold"], collection)
+        set_master_metadata(seam, asset_id, "character", role, "finished-cloak-gold-seam")
+
+    # Face and posture are the first-read features in the reference. These
+    # are deliberately large and frontal so the leader does not collapse into
+    # a generic pawn when viewed at desktop game scale.
+    hero.ellipsoid(f"{asset_id}_finished_forward_head_mass", (0, -0.18, z), (0.34, 0.26, 0.3), skin_mat, collection, asset_id, "character", role, "finished-head-mass", 64, 28)
+    hero.ellipsoid(f"{asset_id}_finished_muzzle_volume", (0, -0.48, z - 0.08), (0.18, 0.08, 0.12), mats["fur_light"], collection, asset_id, "character", role, "finished-muzzle-volume", 36, 16)
+    for side in (-1, 1):
+        hero.ellipsoid(f"{asset_id}_finished_eye_white_{side}", (side * 0.13, -0.53, z + 0.05), (0.07, 0.018, 0.052), mats["white"], collection, asset_id, "character", role, "finished-eye-white", 24, 12)
+        hero.ellipsoid(f"{asset_id}_finished_eye_pupil_{side}", (side * 0.135, -0.548, z + 0.048), (0.03, 0.008, 0.026), mats["black"], collection, asset_id, "character", role, "finished-eye-pupil", 16, 8)
+        hero.ellipsoid(f"{asset_id}_finished_shoulder_pad_{side}", (side * 0.36, -0.06, 1.18), (0.22, 0.16, 0.1), accent_mat, collection, asset_id, "character", role, "finished-shoulder-pad", 32, 12)
+        hero.sculpted_limb(f"{asset_id}_finished_robed_sleeve_{side}", (side * 0.34, -0.05, 1.1), (side * 0.58, -0.34, 0.75), 0.085, 0.052, accent_mat, collection, asset_id, role, "finished-robed-sleeve", 18)
+        hero.ellipsoid(f"{asset_id}_finished_hand_{side}", (side * 0.62, -0.38, 0.72), (0.075, 0.05, 0.055), mats["fur_light"], collection, asset_id, "character", role, "finished-hand", 20, 10)
+
+    if "owl" in lower:
+        for side in (-1, 1):
+            hero.ellipsoid(f"{asset_id}_finished_owl_face_disc_{side}", (side * 0.135, -0.565, z + 0.04), (0.14, 0.014, 0.16), mats["fur_light"], collection, asset_id, "character", role, "finished-owl-face-disc", 32, 16)
+            hero.cone(f"{asset_id}_finished_owl_horn_{side}", (side * 0.22, -0.13, z + 0.35), 0.095, 0.006, 0.42, skin_mat, collection, asset_id, "character", role, "finished-owl-horn", 16, rotation=(0.32, side * 0.56, 0))
+        for index in range(11):
+            dx = (index - 5) * 0.045
+            feather = lunar.curve(f"{asset_id}_finished_layered_chest_feather_{index}", [(dx, -0.46, 1.1), (dx * 0.8, -0.5, 0.92), (dx * 0.55, -0.46, 0.76)], 0.015, skin_mat, collection)
+            set_master_metadata(feather, asset_id, "character", role, "finished-layered-chest-feather")
+        hero.cone(f"{asset_id}_finished_short_beak", (0, -0.61, z - 0.05), 0.07, 0.01, 0.22, mats["beak"], collection, asset_id, "character", role, "finished-beak", 20, rotation=(1.52, 0, 0))
+    elif "fox" in lower:
+        hero.cone(f"{asset_id}_finished_long_fox_snout", (0, -0.64, z - 0.06), 0.13, 0.025, 0.5, mats["fur_light"], collection, asset_id, "character", role, "finished-fox-snout", 28, rotation=(1.54, 0, 0))
+        for side in (-1, 1):
+            hero.cone(f"{asset_id}_finished_tall_fox_ear_{side}", (side * 0.24, -0.08, z + 0.34), 0.105, 0.005, 0.48, skin_mat, collection, asset_id, "character", role, "finished-fox-ear", 18, rotation=(0.26, side * 0.62, 0))
+        tail = lunar.curve(f"{asset_id}_finished_bushy_fox_tail", [(0.26, 0.18, 0.38), (0.82, 0.34, 0.9), (0.55, 0.05, 1.42)], 0.13, skin_mat, collection)
+        set_master_metadata(tail, asset_id, "character", role, "finished-bushy-fox-tail")
+        hero.cone(f"{asset_id}_finished_telescope_prop", (0.64, -0.42, 1.18), 0.075, 0.045, 0.72, mats["shell"], collection, asset_id, "character", role, "finished-telescope-prop", 24, rotation=(1.2, 0.12, -0.72))
+    elif "raccoon" in lower:
+        for side in (-1, 1):
+            hero.ellipsoid(f"{asset_id}_finished_raccoon_mask_{side}", (side * 0.13, -0.575, z + 0.04), (0.115, 0.012, 0.075), mats["black"], collection, asset_id, "character", role, "finished-raccoon-mask", 24, 10)
+        for band in range(4):
+            tail = lunar.curve(f"{asset_id}_finished_ringed_tail_band_{band}", [(0.28, 0.22, 0.4 + band * 0.16), (0.68, 0.3, 0.55 + band * 0.16), (0.62, 0.12, 0.68 + band * 0.16)], 0.025, mats["black"] if band % 2 else skin_mat, collection)
+            set_master_metadata(tail, asset_id, "character", role, "finished-ringed-tail-band")
+        hero.cylinder(f"{asset_id}_finished_paintbrush_prop", (0.58, -0.38, 1.02), 0.02, 0.64, mats["gold"], collection, asset_id, "character", role, "finished-paintbrush-prop", 12, rotation=(0.8, 0.2, -0.55))
+    elif "eagle" in lower or "hawk" in lower:
+        hero.cone(f"{asset_id}_finished_hooked_raptor_beak", (0, -0.64, z - 0.04), 0.105, 0.006, 0.38, mats["beak"], collection, asset_id, "character", role, "finished-raptor-beak", 24, rotation=(1.5, 0, 0))
+        for side in (-1, 1):
+            wing = lunar.curve(f"{asset_id}_finished_feathered_wing_{side}", [(side * 0.28, 0.02, 1.25), (side * 0.76, 0.08, 0.9), (side * 0.54, 0.0, 0.48)], 0.095 if "eagle" in lower else 0.07, skin_mat, collection)
+            set_master_metadata(wing, asset_id, "character", role, "finished-feathered-wing")
+            hero.cone(f"{asset_id}_finished_brow_crest_{side}", (side * 0.1, -0.59, z + 0.17), 0.05, 0.006, 0.2, mats["white"], collection, asset_id, "character", role, "finished-brow-crest", 12, rotation=(1.1, side * 0.18, side * 0.65))
+    elif "badger" in lower:
+        stripe = lunar.curve(f"{asset_id}_finished_badger_crown_stripe", [(0, -0.59, z + 0.24), (0, -0.61, z + 0.03), (0, -0.58, z - 0.22)], 0.045, mats["white"], collection)
+        set_master_metadata(stripe, asset_id, "character", role, "finished-badger-crown-stripe")
+        for side in (-1, 1):
+            hero.ellipsoid(f"{asset_id}_finished_badger_face_band_{side}", (side * 0.14, -0.57, z + 0.03), (0.095, 0.012, 0.16), mats["black"], collection, asset_id, "character", role, "finished-badger-face-band", 24, 12)
+            hero.ellipsoid(f"{asset_id}_finished_stocky_badger_shoulder_{side}", (side * 0.34, -0.05, 1.14), (0.26, 0.18, 0.12), skin_mat, collection, asset_id, "character", role, "finished-stocky-shoulder", 32, 12)
+        hero.chamfer(f"{asset_id}_finished_wrench_prop", (0.56, -0.42, 0.96), (0.18, 0.035, 0.065), mats["shell"], collection, asset_id, "character", role, "finished-wrench-prop")
+    elif "gold" in lower:
+        hero.ellipsoid(f"{asset_id}_finished_soft_medic_helmet", (0, -0.16, z + 0.06), (0.36, 0.26, 0.26), skin_mat, collection, asset_id, "character", role, "finished-medic-helmet", 48, 22)
+        hero.chamfer(f"{asset_id}_finished_medic_cross_bar", (0, -0.59, z + 0.18), (0.16, 0.014, 0.036), mats["red"], collection, asset_id, "character", role, "finished-medic-cross-bar")
+        hero.chamfer(f"{asset_id}_finished_medic_cross_stem", (0, -0.59, z + 0.18), (0.042, 0.014, 0.14), mats["red"], collection, asset_id, "character", role, "finished-medic-cross-stem")
+        hero.chamfer(f"{asset_id}_finished_medkit_prop", (-0.58, -0.42, 0.82), (0.18, 0.05, 0.13), mats["white"], collection, asset_id, "character", role, "finished-medkit-prop")
+
+
+def add_reference_grade_worker_finish(asset_id, role, collection, mats, accent):
+    accent_mat = mats[accent]
+    for side in (-1, 1):
+        hero.ellipsoid(f"{asset_id}_finished_glove_{side}", (side * 0.42, -0.34, 0.46), (0.06, 0.04, 0.045), mats["helmet"], collection, asset_id, "character", role, "finished-worker-glove", 18, 8)
+        hero.ellipsoid(f"{asset_id}_finished_knee_joint_{side}", (side * 0.14, -0.05, 0.28), (0.055, 0.04, 0.045), accent_mat, collection, asset_id, "character", role, "finished-worker-knee-joint", 18, 8)
+    if role == "audit":
+        hero.ellipsoid(f"{asset_id}_finished_magnifier_lens", (0.44, -0.44, 0.72), (0.09, 0.016, 0.09), mats["glass"], collection, asset_id, "character", role, "finished-audit-magnifier", 24, 10)
+        hero.cylinder(f"{asset_id}_finished_magnifier_handle", (0.52, -0.38, 0.58), 0.014, 0.28, mats["gold"], collection, asset_id, "character", role, "finished-audit-handle", 10, rotation=(0.75, 0.3, -0.5))
+    elif role == "operations":
+        hero.chamfer(f"{asset_id}_finished_hardhat_brim", (0, -0.28, 1.2), (0.23, 0.035, 0.035), accent_mat, collection, asset_id, "character", role, "finished-hardhat-brim")
+    elif role == "release":
+        hero.chamfer(f"{asset_id}_finished_delivery_crate", (0.5, -0.36, 0.62), (0.16, 0.12, 0.12), mats["gold"], collection, asset_id, "character", role, "finished-delivery-crate")
+    elif role == "research":
+        hero.cylinder(f"{asset_id}_finished_sample_vial", (0.46, -0.4, 0.68), 0.035, 0.22, mats["glass"], collection, asset_id, "character", role, "finished-sample-vial", 16)
+    elif role == "review":
+        hero.chamfer(f"{asset_id}_finished_clipboard", (-0.42, -0.36, 0.68), (0.12, 0.022, 0.16), mats["panel"], collection, asset_id, "character", role, "finished-clipboard")
+    elif role == "support":
+        hero.ellipsoid(f"{asset_id}_finished_support_heart_status", (0, -0.31, 0.76), (0.07, 0.012, 0.055), mats["green"], collection, asset_id, "character", role, "finished-support-heart", 18, 8)
+
+
 def make_master_building(parent, asset_id, role, title, accent, x, y, mats):
     collection = master_collection(parent, asset_id)
     hero.make_building(asset_id, role, title, accent, x, y, collection, mats)
@@ -226,6 +363,10 @@ def make_master_character(parent, asset_id, role, label_text, accent, x, y, mats
     hero.make_character(asset_id, role, label_text, accent, x, y, collection, mats, kind)
     add_wrapped_density_skin(asset_id, "character", role, collection, mats, scale=(0.42, 0.32, 0.92), material_key="fur" if kind == "leader" else "helmet")
     add_occluded_silhouette_completion(asset_id, kind, role, collection, mats, "fur" if kind == "leader" else "helmet")
+    if kind == "leader":
+        add_reference_grade_leader_finish(asset_id, role, label_text, collection, mats, accent)
+    else:
+        add_reference_grade_worker_finish(asset_id, role, collection, mats, accent)
     for obj in collection.objects:
         if obj.get("asset_id") == asset_id:
             set_master_metadata(obj, asset_id, "character", role, obj.get("component", "character-component"))
@@ -378,10 +519,71 @@ def setup_review_camera():
     lunar.move_to(camera, lighting)
 
 
+def set_named_collections_render(collections, visible_ids):
+    visible_names = {f"Master Asset - {asset_id}" for asset_id in visible_ids}
+    for _asset_id, _kind, _role, _display_name, collection in collections:
+        collection_hidden = collection.name not in visible_names
+        collection.hide_render = collection_hidden
+        for obj in collection.objects:
+            obj.hide_render = collection_hidden or obj.get("review_visibility") == "hidden_in_preview_visible_as_retopology_source_in_blend"
+
+
+def show_all_collections(collections):
+    for _asset_id, _kind, _role, _display_name, collection in collections:
+        collection.hide_render = False
+        for obj in collection.objects:
+            obj.hide_render = obj.get("review_visibility") == "hidden_in_preview_visible_as_retopology_source_in_blend"
+
+
+def aim_camera(location, target, ortho_scale):
+    camera = bpy.context.scene.camera
+    if not camera:
+        return
+    camera.location = location
+    camera.data.ortho_scale = ortho_scale
+    camera.rotation_euler = (Vector(target) - camera.location).to_track_quat("-Z", "Y").to_euler()
+
+
+def render_review_previews(collections):
+    scene = bpy.context.scene
+    scene.render.image_settings.file_format = "PNG"
+
+    # The skybox and terrain are valid source assets, but they physically
+    # occlude the board when shown in the all-asset orthographic review render.
+    set_named_collections_render(
+        collections,
+        [asset_id for asset_id, kind, *_rest in collections if kind not in {"skybox", "terrain"}],
+    )
+    aim_camera((0, -42, 27), (0, -4.5, 1.0), 44)
+    scene.render.filepath = str(MASTER_PREVIEW)
+    bpy.ops.render.render(write_still=True)
+
+    set_named_collections_render(collections, [asset_id for asset_id, kind, *_rest in collections if kind == "building"])
+    aim_camera((0, -33, 18), (0, 2.2, 1.0), 42)
+    scene.render.filepath = str(MASTER_BUILDINGS_PREVIEW)
+    bpy.ops.render.render(write_still=True)
+
+    set_named_collections_render(collections, [asset_id for asset_id, kind, *_rest in collections if kind == "leader"])
+    aim_camera((0, -25, 14), (0, -10.2, 0.95), 20)
+    scene.render.filepath = str(MASTER_LEADERS_PREVIEW)
+    bpy.ops.render.render(write_still=True)
+
+    set_named_collections_render(collections, [asset_id for asset_id, kind, *_rest in collections if kind in {"worker", "child"}])
+    aim_camera((0, -26, 13), (0, -17.3, 0.65), 20)
+    scene.render.filepath = str(MASTER_WORKERS_PREVIEW)
+    bpy.ops.render.render(write_still=True)
+
+    set_named_collections_render(collections, [asset_id for asset_id, kind, *_rest in collections if kind in {"terrain", "road", "dispatcher", "vehicle", "prop"}])
+    aim_camera((0, -38, 24), (0, -22.8, 1.2), 36)
+    scene.render.filepath = str(MASTER_SUPPORT_PREVIEW)
+    bpy.ops.render.render(write_still=True)
+    show_all_collections(collections)
+
+
 def build_metadata(collections):
     assets = []
     for asset_id, kind, role, display_name, collection in collections:
-        triangle_count, mesh_count, sculpted_count, rig_count, material_names = collection_triangle_count(collection)
+        triangle_count, mesh_count, sculpted_count, rig_count, finished_count, material_names = collection_triangle_count(collection)
         hero_asset = kind in {"terrain", "building", "leader", "dispatcher"}
         assets.append(
             {
@@ -393,6 +595,7 @@ def build_metadata(collections):
                 "meshObjectCount": mesh_count,
                 "sculptedSurfaceCount": sculpted_count,
                 "animationRigWireCount": rig_count,
+                "finishedSilhouetteComponentCount": finished_count,
                 "evaluatedTriangleCount": triangle_count,
                 "minimumTriangleCount": 120000 if hero_asset else 45000,
                 "textureResolutionTarget": "4k" if hero_asset else "2k",
@@ -409,6 +612,10 @@ def build_metadata(collections):
         "source": "local_blender_sculpted_master_scene",
         "blend": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets.blend",
         "preview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-assets-preview.png",
+        "buildingPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-buildings.png",
+        "leaderPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-leaders.png",
+        "workerChildPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-workers-children.png",
+        "supportPreview": "lunar-city/master-assets/sources/lunar-city-sculpted-master-support.png",
         "assetCount": len(assets),
         "assets": assets,
         "validation": {
@@ -418,6 +625,12 @@ def build_metadata(collections):
             "usesSculptedMeshSkins": all(asset["sculptedSurfaceCount"] > 0 for asset in assets),
             "usesAnimationRigWiresForCharacters": all(
                 asset["animationRigWireCount"] > 0 for asset in assets if asset["kind"] in {"leader", "worker", "child", "dispatcher"}
+            ),
+            "usesReferenceGradeLeaderFinishing": all(
+                asset["finishedSilhouetteComponentCount"] >= 12 for asset in assets if asset["kind"] == "leader"
+            ),
+            "usesRoleSpecificWorkerFinishing": all(
+                asset["finishedSilhouetteComponentCount"] >= 3 for asset in assets if asset["kind"] in {"worker", "child"}
             ),
             "usesProceduralPbrMaterials": True,
             "containsPrivateProfileIdentifiers": False,
@@ -441,28 +654,30 @@ def main():
 
     collections = []
     for index, (asset_id, role, title, accent) in enumerate(BUILDINGS):
-        x = -16 + (index % 4) * 10
+        x = -10.5 + (index % 4) * 7.0
         y = 8 if index < 4 else (2.2 if index < 8 else -3.6)
         collection = make_master_building(root, asset_id, role, title, accent, 0, 0, mats)
         position_collection(collection, x, y)
         collections.append((asset_id, "building", role, title, collection))
 
     for index, (asset_id, role, label, accent) in enumerate(LEADERS):
-        x = -16 + index * 4.6
+        x = -8.4 + (index % 4) * 5.6
+        y = -8.6 - (index // 4) * 3.2
         collection = make_master_character(root, asset_id, role, f"{label} LEADER", accent, 0, 0, mats, "leader")
-        position_collection(collection, x, -9.0)
+        position_collection(collection, x, y)
         collections.append((asset_id, "leader", role, label, collection))
 
     for index, (asset_id, role, label, accent) in enumerate(WORKERS):
-        x = -12 + index * 4.5
+        x = -7.5 + (index % 3) * 7.5
+        y = -14.4 - (index // 3) * 3.0
         collection = make_master_character(root, asset_id, role, label, accent, 0, 0, mats, "worker")
-        position_collection(collection, x, -13.2)
+        position_collection(collection, x, y)
         collections.append((asset_id, "worker", role, label, collection))
 
     for index, (asset_id, role, label, accent) in enumerate(CHILDREN):
-        x = -7 + index * 4.5
+        x = -8.4 + index * 5.6
         collection = make_master_character(root, asset_id, role, label, accent, 0, 0, mats, "child")
-        position_collection(collection, x, -16.6)
+        position_collection(collection, x, -20.2)
         collections.append((asset_id, "child", role, label, collection))
 
     for index, (asset_id, kind, role, display_name, material_key) in enumerate(SUPPORT_ASSETS):
@@ -498,10 +713,8 @@ def main():
     metadata = build_metadata(collections)
     MASTER_METADATA.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 
-    scene.render.filepath = str(MASTER_PREVIEW)
-    scene.render.image_settings.file_format = "PNG"
     bpy.ops.wm.save_as_mainfile(filepath=str(MASTER_BLEND))
-    bpy.ops.render.render(write_still=True)
+    render_review_previews(collections)
     print(json.dumps({"blend": str(MASTER_BLEND), "metadata": str(MASTER_METADATA), "assetCount": len(collections)}))
 
 

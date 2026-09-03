@@ -8138,6 +8138,96 @@ def resolve_vision_provider_client(
     return requested, client, final_model
 
 
+def _resolve_vision_with_fallback(
+    resolved_provider: Optional[str],
+    resolved_model: Optional[str],
+    resolved_base_url: Optional[str],
+    resolved_api_key: Optional[str],
+    main_runtime: Optional[Dict[str, Any]],
+) -> Tuple[str, Optional[Any], Optional[str]]:
+    """Resolve the vision client, walking fallback_chain before raising.
+
+    Replaces the old auto-backend-only retry in the vision branch of
+    ``_call_llm_impl`` with the same pattern every other auxiliary task
+    already uses: try the configured provider → on failure, try
+    ``auxiliary.<task>.fallback_chain`` (per-task entries) → if that is
+    empty, try top-level ``fallback_providers`` → finally auto-backend.
+
+    Returns ``(effective_provider, client, final_model)``.
+    ``effective_provider`` is the label actually used (e.g. the fallback
+    chain entry or "auto"), for logging and response attribution.
+    """
+    # Step 1 — the configured vision provider (explicit or auto).
+    provider_used, client, final_model = resolve_vision_provider_client(
+        provider=resolved_provider,
+        model=resolved_model,
+        base_url=resolved_base_url,
+        api_key=resolved_api_key,
+        main_runtime=main_runtime,
+    )
+    if client is not None:
+        return provider_used or resolved_provider or "vision", client, final_model
+
+    # Step 2 — task-level fallback_chain (auxiliary.vision.fallback_chain).
+    fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+        "vision", resolved_provider or "auto", reason="vision provider unavailable",
+    )
+    if fb_client is not None:
+        return fb_label or resolved_provider or "vision", fb_client, fb_model
+
+    # Step 3 — top-level fallback_providers (now live — was dead config).
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_cli.config import load_config_readonly
+
+        chain = get_fallback_chain(load_config_readonly())
+    except Exception:
+        chain = []
+
+    if isinstance(chain, list) and chain:
+        for i, entry in enumerate(chain):
+            if not isinstance(entry, dict):
+                continue
+            fb_provider = str(entry.get("provider", "")).strip()
+            if not fb_provider:
+                continue
+            label = f"fallback_providers[{i}]({fb_provider})"
+            try:
+                fb_client, fb_model = _resolve_fallback_entry(entry)
+            except Exception:
+                fb_client, fb_model = None, None
+            if fb_client is not None:
+                logger.info(
+                    "Auxiliary vision: %s on %s — top-level fallback to %s (%s)",
+                    "vision provider unavailable", resolved_provider or "auto",
+                    label, fb_model or fb_provider,
+                )
+                return label, fb_client, fb_model
+            logger.debug(
+                "Auxiliary vision: top-level fallback %s failed to build a client, continuing chain",
+                label,
+            )
+
+    # Step 4 — auto-backend retry (OpenRouter → Nous → stop).
+    # Only try auto when the explicit provider was NOT already "auto" and
+    # the initial resolve_vision_provider_client did not itself walk the
+    # auto order — otherwise we double-try the same backends.
+    is_explicit_auto = (resolved_provider or "").strip().lower() in {"auto", ""}
+    if not is_explicit_auto:
+        _provider_used, client, final_model = resolve_vision_provider_client(
+            provider="auto",
+            model=resolved_model,
+            base_url=None,
+            api_key=None,
+            main_runtime=main_runtime,
+        )
+        if client is not None:
+            return "auto", client, final_model
+
+    # Nothing worked.
+    return "vision", None, None
+
+
 def get_auxiliary_extra_body() -> dict:
     """Return extra_body kwargs for auxiliary API calls.
     
@@ -10471,25 +10561,13 @@ def _call_llm_impl(
     effective_provider = resolved_provider
 
     if task == "vision":
-        effective_provider, client, final_model = resolve_vision_provider_client(
-            provider=resolved_provider if resolved_provider != "auto" else provider,
-            model=resolved_model or model,
-            base_url=resolved_base_url or base_url,
-            api_key=resolved_api_key or api_key,
-            async_mode=False,
-            main_runtime=main_runtime,
+        effective_provider, client, final_model = _resolve_vision_with_fallback(
+            resolved_provider,
+            resolved_model or model,
+            resolved_base_url or base_url,
+            resolved_api_key or api_key,
+            main_runtime,
         )
-        if client is None and resolved_provider != "auto" and not resolved_base_url:
-            logger.warning(
-                "Vision provider %s unavailable, falling back to auto vision backends",
-                resolved_provider,
-            )
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto",
-                model=resolved_model,
-                async_mode=False,
-                main_runtime=main_runtime,
-            )
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "

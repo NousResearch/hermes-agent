@@ -3235,7 +3235,32 @@ def cmd_chat(args):
         except OSError as e:
             print(f"Error: cannot enter --in directory {in_dir}: {e}")
             sys.exit(1)
+        # ``resolve_agent_cwd`` and every tool prefer TERMINAL_CWD over the
+        # process cwd. A relay launched from a kanban worker inherits that
+        # worker's workspace here, so chdir alone leaves the resumed Bot Chat
+        # logically anchored to the parent task. Keep the runtime carrier in
+        # sync with the explicit command-line override.
+        os.environ["TERMINAL_CWD"] = _target_dir
         args.no_restore_cwd = True
+    elif os.environ.get("HERMES_KANBAN_TASK"):
+        # Dispatcher workers are already launched with cwd=workspace and a
+        # matching TERMINAL_CWD. Preserve that current task boundary when a
+        # worker resumes a named session: a valid cwd stored by another board
+        # must not chdir this process out of the task it currently owns.
+        _task_workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+        if (
+            _task_workspace
+            and os.path.isabs(_task_workspace)
+            and os.path.isdir(_task_workspace)
+        ):
+            _task_workspace = os.path.abspath(_task_workspace)
+            try:
+                os.chdir(_task_workspace)
+            except OSError:
+                pass
+            else:
+                os.environ["TERMINAL_CWD"] = _task_workspace
+                args.no_restore_cwd = True
 
     # --resume latest: keyword for "most recent session" — same resolution
     # as `-c` with no name (workspace-scoped MRU, then global fallback).
@@ -3311,7 +3336,12 @@ def cmd_chat(args):
                 print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
             elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
                 os.chdir(_saved_cwd)
+                os.environ["TERMINAL_CWD"] = os.path.abspath(_saved_cwd)
                 print(f"↪ restored workspace dir: {_saved_cwd}")
+            elif _saved_cwd:
+                # Keep the runtime carrier aligned even when no chdir was
+                # needed; an inherited value otherwise outranks os.getcwd().
+                os.environ["TERMINAL_CWD"] = os.path.abspath(_saved_cwd)
         except Exception:
             pass  # never let cwd-restore break a resume
         finally:

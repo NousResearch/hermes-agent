@@ -84,8 +84,17 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     }
   }
 
-  // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
-  base = base.replace(/-\d{8}$/, '')
+  // Drop trailing snapshot/routing noise — date-pins first (official ids
+  // pin 8 digits `…-20251101`; marketplace routes like Volcano/Ark use 6
+  // `…-260801`), then marketplace routing suffixes (`…-modelhub`). They can
+  // stack (`…-260801-modelhub`), so strip repeatedly until nothing matches.
+  for (;;) {
+    const stripped = base
+      .replace(/-\d{6,8}$/, '')
+      .replace(/-modelhub$/i, '')
+    if (stripped === base) break
+    base = stripped
+  }
 
   return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }

@@ -16,6 +16,21 @@ describe('model-status-label', () => {
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
   })
 
+  it('strips 6-digit marketplace date-pins (Volcano/Ark ids)', () => {
+    expect(displayModelName('glm-5-3-260801')).toBe('Glm 5 3')
+    expect(displayModelName('deepseek-v4-flash-260801')).toBe('Deepseek V4 Flash')
+  })
+
+  it('strips marketplace routing suffixes (-modelhub)', () => {
+    expect(displayModelName('minimax-m3-modelhub')).toBe('Minimax M3')
+    expect(displayModelName('deepseek-v4-pro-modelhub')).toBe('Deepseek V4 Pro')
+  })
+
+  it('handles date-pin and routing suffix combined', () => {
+    // 6-digit date first, then the routing suffix — both must fall off.
+    expect(displayModelName('glm-5-3-260801-modelhub')).toBe('Glm 5 3')
+  })
+
   it('maps reasoning effort to compact labels', () => {
     expect(reasoningEffortLabel('high')).toBe('High')
     expect(reasoningEffortLabel('xhigh')).toBe('XHigh')

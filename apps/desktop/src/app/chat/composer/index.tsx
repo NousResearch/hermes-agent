@@ -1317,21 +1317,7 @@ export function ChatBar({
                     composerSurfaceGlass
                   )}
                 />
-                <CodingStatusRow
-                  onBranchOff={handleBranchOff}
-                  onConvertBranch={handleConvertBranch}
-                  onListBranches={handleListBranches}
-                  // A tile's rail reviews ITS worktree: pin the pane's scope to
-                  // this surface's cwd. Main keeps the classic follow-the-
-                  // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
-                  onOpenWorktree={openInWorktree}
-                  onSwitchBranch={handleSwitchBranch}
-                  // Blank in a bot chat: the row hides itself without a repo,
-                  // and stops probing git / GitHub for a surface that has no
-                  // branch to show. Cheaper than a second composer.
-                  repoPath={botChat ? undefined : cwd}
-                />
+                {/* CodingStatusRow hidden by user preference */}
                 <div
                   className={cn(
                     'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',

@@ -91,3 +91,13 @@ class TestCorruptTimestamps:
 
         assert _format_timestamp(0) == "N/A"
         assert _format_timestamp(1700000000) == "2023-11-14 22:13:20"
+
+    def test_tag_shaped_timestamp_is_escaped_at_sinks(self):
+        from hermes_cli.session_export_html import _generate_messages_html
+
+        evil = "<script>alert(1)</script>"
+        html = _generate_messages_html(
+            [{"role": "user", "content": "hi", "timestamp": evil}]
+        )
+        assert evil not in html
+        assert "&lt;script&gt;" in html

@@ -5685,24 +5685,31 @@ def ensure_lmstudio_model_loaded(
         response_payload = json.loads(response_body.decode())
     except Exception:
         response_payload = None
-    load_config = response_payload.get("load_config") if isinstance(response_payload, dict) else None
-    applied_context = (
-        _positive_int(load_config.get("context_length"))
-        if isinstance(load_config, dict)
-        else None
-    )
-    if applied_context is not None:
-        return _result(applied_context, load_attempted=True)
-
+    
+    # Try to read context from load_config in the response (when explicit_context was sent)
+    if isinstance(response_payload, dict):
+        load_config = response_payload.get("load_config")
+        if isinstance(load_config, dict):
+            applied_context = _positive_int(load_config.get("context_length"))
+            if applied_context is not None:
+                return _result(applied_context, load_attempted=True)
+    
+    # If no context in load_config (e.g., loaded without explicit context), 
+    # fetch the models list to read from the now-loaded instance
     try:
         refreshed_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
     except Exception:
         refreshed_models = None
-    if refreshed_models is None:
-        return _result(None, load_attempted=True)
-    refreshed_entry = _find_entry(refreshed_models)
-    refreshed_context = _loaded_context(refreshed_entry) if refreshed_entry is not None else None
-    return _result(refreshed_context, load_attempted=True)
+    
+    if refreshed_models is not None:
+        refreshed_entry = _find_entry(refreshed_models)
+        if refreshed_entry is not None:
+            refreshed_context = _loaded_context(refreshed_entry)
+            if refreshed_context is not None:
+                return _result(refreshed_context, load_attempted=True)
+    
+    # Could not determine runtime context after loading — return None to let caller handle fallback
+    return _result(None, load_attempted=True)
 
 
 def lmstudio_model_reasoning_options(

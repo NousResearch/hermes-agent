@@ -624,3 +624,17 @@ export function createVersionResolver(fetchVersionFn, {
     return cachedVersion;
   };
 }
+
+/**
+ * Resolve the linked-device display name shown on the paired phone under
+ * WhatsApp -> Linked devices. Operators running the bridge for a business
+ * line can set WHATSAPP_DEVICE_NAME; unset/blank keeps the historical
+ * default so existing deployments are unaffected.
+ */
+export const DEFAULT_DEVICE_NAME = 'Hermes Agent';
+
+export function resolveDeviceName(value, fallback = DEFAULT_DEVICE_NAME) {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}

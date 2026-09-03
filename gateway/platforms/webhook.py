@@ -25,8 +25,8 @@ Security:
   - Body size limits checked before reading payload
   - Generic HMAC supports a V2 signature (X-Webhook-Signature-V2) that
     binds a timestamp into the signed data for replay protection; the
-    legacy body-only V1 (X-Webhook-Signature) is deprecated but still
-    accepted with a warning, since it has no replay protection
+    legacy body-only V1 (X-Webhook-Signature) is rejected because it has
+    no replay protection
   - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
 """
 
@@ -198,9 +198,6 @@ class WebhookAdapter(BasePlatformAdapter):
         self._dynamic_routes_mtime: float = 0.0
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
-        # Routes already warned about legacy V1 body-only signatures
-        # (once-per-route so a busy sender doesn't spam the log).
-        self._v1_signature_warned: set[str] = set()
 
         # Delivery info keyed by session chat_id.
         #
@@ -451,6 +448,50 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
+    def _authenticated_delivery_identity(
+        self, request: "web.Request", body: bytes
+    ) -> Optional[str]:
+        """Return the delivery identity covered by the accepted signature.
+
+        ``X-Request-ID`` and ``X-GitHub-Delivery`` are useful provider metadata,
+        but neither is covered by the corresponding signature in this adapter.
+        They therefore cannot be used as idempotency or session keys.  For
+        those schemes, derive the key from the bytes that were authenticated:
+        the V2 timestamp/body pair or the GitHub body.  Svix already signs its
+        message ID, so its existing identity remains unchanged.
+        """
+        def _header(name: str) -> str:
+            return (
+                request.headers.get(name, "")
+                or request.headers.get(name.lower(), "")
+                or request.headers.get(name.upper(), "")
+            )
+
+        # Keep the same precedence as _validate_signature().
+        svix_id = _header("svix-id")
+        svix_timestamp = _header("svix-timestamp")
+        svix_signature = _header("svix-signature")
+        if svix_id or svix_timestamp or svix_signature:
+            # _validate_svix_signature() has already authenticated svix_id.
+            return svix_id or None
+
+        if _header("X-Hub-Signature-256"):
+            digest = hashlib.sha256(body).hexdigest()
+            return f"github-body:{digest}"
+
+        if _header("X-Webhook-Signature-V2"):
+            timestamp = _header("X-Webhook-Timestamp")
+            if not timestamp:
+                return None
+            signed_content = timestamp.encode() + b"." + body
+            digest = hashlib.sha256(signed_content).hexdigest()
+            return f"generic-v2:{digest}"
+
+        # GitLab's token scheme and explicit local-test auth retain their
+        # historical delivery-id behavior for compatibility.  Body-only
+        # generic/Linear signatures are rejected before this method is called.
+        return None
+
     def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
         """Return True when this delivery should be processed."""
         seen_at = self._seen_deliveries.get(delivery_id)
@@ -469,7 +510,7 @@ class WebhookAdapter(BasePlatformAdapter):
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """Per-route toolset override.
 
-        Webhook session chat_ids are ``webhook:{route}:{delivery_id}``.
+        Webhook session chat_ids are ``webhook:{route}:{replay_identity}``.
         When the matching route config carries a ``toolsets`` list, that list
         replaces the platform-level ``platform_toolsets.webhook`` resolution
         for this run only. Routes without the key keep the platform default
@@ -866,7 +907,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.warning("[webhook] Skill loading failed: %s", e)
 
-        # Build a unique delivery ID
+        # Build a unique delivery ID.  Keep the provider/caller value for
+        # response and MessageEvent compatibility, but never use an unsigned
+        # value as the replay/session identity when a stronger authenticated
+        # identity is available.
         delivery_id = request.headers.get(
             "X-GitHub-Delivery",
             request.headers.get(
@@ -874,11 +918,17 @@ class WebhookAdapter(BasePlatformAdapter):
                 request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
             ),
         )
+        authenticated_identity = self._authenticated_delivery_identity(
+            request, raw_body
+        )
+        replay_identity = authenticated_identity or delivery_id
 
         # ── Idempotency ─────────────────────────────────────────
-        # Skip duplicate deliveries (webhook retries).
+        # Skip duplicate deliveries (webhook retries).  For GitHub and V2,
+        # replay_identity is derived from the authenticated bytes rather than
+        # the caller-controlled delivery header.
         now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
+        if not self._record_delivery_id(replay_identity, now):
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -945,9 +995,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=502,
             )
 
-        # Use delivery_id in session key so concurrent webhooks on the
-        # same route get independent agent runs (not queued/interrupted).
-        session_chat_id = f"webhook:{route_name}:{delivery_id}"
+        # Use the authenticated replay identity in the session key so
+        # caller-controlled IDs cannot create a second concurrent agent run.
+        session_chat_id = f"webhook:{route_name}:{replay_identity}"
 
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
@@ -1014,9 +1064,9 @@ class WebhookAdapter(BasePlatformAdapter):
     ) -> None:
         """Close the per-delivery webhook session once its run finishes.
 
-        A webhook delivery is one-shot: the ``delivery_id`` is baked into the
-        session key, so the session will never receive a second turn.  Mirror
-        the cron completion path (``cron/scheduler.py`` →
+        A webhook delivery is one-shot: the authenticated ``replay_identity``
+        is baked into the session key, so the session will never receive a
+        second turn.  Mirror the cron completion path (``cron/scheduler.py`` →
         ``end_session(..., "cron_complete")``) by marking the session ended
         when the run completes.  Without this, webhook sessions keep
         ``ended_at`` NULL forever; ``SessionDB.prune_sessions`` only reaps
@@ -1130,17 +1180,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 signature_header=svix_signature,
             )
 
-        # Linear: linear-signature = <hex HMAC-SHA256 of the raw body, keyed
-        # by the webhook signing key>. Linear's documented scheme signs the
-        # body only (no timestamp binding), so this mirrors it exactly;
-        # without this branch every Linear delivery to a secret-configured
-        # route was rejected as unrecognized (#87348).
+        # Linear's documented ``linear-signature`` scheme signs the body only,
+        # so it cannot authenticate freshness or a provider-controlled delivery
+        # identity. Do not allow that legacy compatibility branch to authorize
+        # agent work or direct delivery. In particular, never turn a caller's
+        # X-Request-ID into an authenticated idempotency key for this scheme.
         linear_sig = _header("linear-signature")
         if linear_sig:
-            expected_linear = hmac.new(
-                secret.encode(), body, hashlib.sha256
-            ).hexdigest()
-            return _hmac_str_equal(linear_sig, expected_linear)
+            logger.warning(
+                "[webhook] Rejecting legacy Linear body-only signature; "
+                "a freshness-bound provider signature is required"
+            )
+            return False
 
         # GitHub: X-Hub-Signature-256 = sha256=<hex>
         gh_sig = request.headers.get("X-Hub-Signature-256", "")
@@ -1198,29 +1249,20 @@ class WebhookAdapter(BasePlatformAdapter):
             ).hexdigest()
             return _hmac_str_equal(v2_sig, expected_v2)
 
-        # Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256 of body>
-        # (deprecated — no replay protection, since the signature only
-        # covers the body: a captured (body, signature) pair replays
-        # indefinitely with no timestamp binding it to a specific delivery.)
+        # Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256 of body>.
+        # It has no replay protection because the signature only covers the
+        # body. Reject it rather than warning and accepting a captured pair;
+        # caller-controlled X-Request-ID and a receipt-time fallback are not
+        # authenticated delivery identities.
         # Only reachable when X-Webhook-Signature-V2 was not sent at all —
         # see the guard above.
         generic_sig = request.headers.get("X-Webhook-Signature", "")
         if generic_sig:
-            expected = hmac.new(
-                secret.encode(), body, hashlib.sha256
-            ).hexdigest()
-            route_name = request.match_info.get("route_name", "")
-            if route_name not in self._v1_signature_warned:
-                self._v1_signature_warned.add(route_name)
-                logger.warning(
-                    "[webhook] Route '%s' uses legacy body-only HMAC (no "
-                    "timestamp), which is vulnerable to replay attacks. Add "
-                    "an 'X-Webhook-Timestamp' header and switch to "
-                    "'X-Webhook-Signature-V2' (HMAC-SHA256 of "
-                    "'<timestamp>.<body>').",
-                    route_name,
-                )
-            return _hmac_str_equal(generic_sig, expected)
+            logger.warning(
+                "[webhook] Rejecting legacy generic body-only HMAC; "
+                "use X-Webhook-Signature-V2 with X-Webhook-Timestamp"
+            )
+            return False
 
         # No recognised signature header but secret is configured → reject
         logger.debug(

@@ -155,8 +155,8 @@ class TestValidateSignature:
             # Must return False, never raise.
             assert adapter._validate_signature(req, body, secret) is False
 
-    def test_linear_signature_valid_accepts(self):
-        """Linear signs the raw body (hex HMAC-SHA256) in linear-signature."""
+    def test_linear_signature_body_only_rejects(self):
+        """Linear's body-only compatibility signature cannot authorize work."""
         adapter = _make_adapter()
         body = b'{"type": "Issue", "data": {"id": "abc"}}'
         secret = "linear-webhook-key"
@@ -164,7 +164,7 @@ class TestValidateSignature:
 
         req = _mock_request(headers={"linear-signature": sig})
 
-        assert adapter._validate_signature(req, body, secret) is True
+        assert adapter._validate_signature(req, body, secret) is False
 
     def test_linear_signature_mismatch_rejects(self):
         """A well-formed linear-signature computed with the wrong key fails closed."""
@@ -263,24 +263,19 @@ class TestValidateSignature:
         })
         assert adapter._validate_signature(req, body, secret) is False
 
-    def test_v1_replay_attack_succeeds_demonstrating_the_hole_v2_closes(self):
-        """Regression/documentation test: a captured (body, signature) V1
-        pair replays successfully no matter how much time has passed,
-        because the V1 signature has no timestamp binding at all. This is
-        the exact vulnerability V2 fixes — it is not asserting desired
-        behavior, it is pinning the known, accepted-with-warning legacy
-        gap so a future change to V1's semantics doesn't silently alter it
-        without a deliberate decision."""
+    def test_v1_body_only_signature_rejects(self):
+        """A captured body/signature pair cannot authorize a legacy replay."""
         adapter = _make_adapter()
         body = b'{"event": "push"}'
         secret = "generic-secret"
         sig = _generic_signature(body, secret)
         original_request = _mock_request(headers={"X-Webhook-Signature": sig})
-        assert adapter._validate_signature(original_request, body, secret) is True
-        # "Time passes" — nothing about a V1 signature depends on time, so
-        # a captured pair replayed much later still validates.
-        replayed_request = _mock_request(headers={"X-Webhook-Signature": sig})
-        assert adapter._validate_signature(replayed_request, body, secret) is True
+        assert adapter._validate_signature(original_request, body, secret) is False
+        # A caller-controlled request ID must not change the result.
+        replayed_request = _mock_request(
+            headers={"X-Webhook-Signature": sig, "X-Request-ID": "fresh-id"}
+        )
+        assert adapter._validate_signature(replayed_request, body, secret) is False
 
 
     def test_validate_svix_signature_raw_secret_valid(self):

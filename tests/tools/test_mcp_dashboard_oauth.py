@@ -26,8 +26,30 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
         "error": None,
     }
 
-    flow.deliver_callback(code="code-1", state="s1", error=None)
-    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1")
+    flow.deliver_callback(
+        code="code-1", state="s1", error=None, iss="https://idp.example"
+    )
+    assert asyncio.run(flow.wait_for_callback()) == (
+        "code-1",
+        "s1",
+        "https://idp.example",
+    )
+
+
+def test_dashboard_flow_callback_without_iss_returns_none_iss():
+    """Legacy callback producers that omit RFC 9207 iss still round-trip."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-iss-none",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-iss-none",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s9"))
+    flow.deliver_callback(code="code-9", state="s9", error=None)
+    assert asyncio.run(flow.wait_for_callback()) == ("code-9", "s9", None)
 
 
 def test_dashboard_flow_accepts_only_one_concurrent_callback():

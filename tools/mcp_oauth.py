@@ -954,8 +954,8 @@ def _make_callback_waiter(
         if dashboard_flow is not None:
             # The dashboard flow still speaks the legacy tuple; normalize it
             # here so both callback sources hand the SDK one shape.
-            dash_code, dash_state = await dashboard_flow.wait_for_callback()
-            return _authorization_code_result(dash_code, dash_state)
+            dash_code, dash_state, dash_iss = await dashboard_flow.wait_for_callback()
+            return _authorization_code_result(dash_code, dash_state, dash_iss)
 
         # Reject before binding the callback listener in non-interactive
         # contexts. Reaching here means the SDK entered the authorization-code

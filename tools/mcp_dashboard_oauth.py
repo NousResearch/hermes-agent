@@ -33,6 +33,7 @@ class DashboardOAuthFlow:
     tools: list[dict] = field(default_factory=list)
     expected_state: str | None = field(default=None, init=False)
     _callback: tuple[str, str | None] | None = field(default=None, init=False, repr=False)
+    _callback_iss: str | None = field(default=None, init=False, repr=False)
     _callback_error: str | None = field(default=None, init=False, repr=False)
     _authorization_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _callback_ready: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
@@ -65,6 +66,7 @@ class DashboardOAuthFlow:
         code: str | None,
         state: str | None,
         error: str | None,
+        iss: str | None = None,
     ) -> None:
         with self._lock:
             if self._callback_ready.is_set():
@@ -81,9 +83,15 @@ class DashboardOAuthFlow:
                 self._callback = (code, state)
             else:
                 self._callback_error = "OAuth callback did not include code or error"
+            # RFC 9207 issuer — the SDK validates it against discovered
+            # metadata when the server advertised
+            # `authorization_response_iss_parameter_supported` (e.g. Resend).
+            self._callback_iss = iss
             self._callback_ready.set()
 
-    async def wait_for_callback(self, timeout: float = 300.0) -> tuple[str, str | None]:
+    async def wait_for_callback(
+        self, timeout: float = 300.0
+    ) -> tuple[str, str | None, str | None]:
         ready = await asyncio.to_thread(self._callback_ready.wait, timeout)
         if not ready:
             raise TimeoutError("Timed out waiting for MCP OAuth callback")
@@ -91,7 +99,8 @@ class DashboardOAuthFlow:
             raise RuntimeError(f"OAuth authorization failed: {self._callback_error}")
         if self._callback is None:
             raise RuntimeError("OAuth callback did not include an authorization code")
-        return self._callback
+        code, state = self._callback
+        return code, state, self._callback_iss
 
     def mark_approved(self) -> None:
         with self._lock:

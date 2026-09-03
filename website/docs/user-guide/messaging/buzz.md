@@ -153,6 +153,16 @@ hermes gateway start
 
 Check status with `hermes gateway status` — Buzz connection state is reported there, including for env-only setups.
 
+## Agent terminal access to Buzz credentials
+
+When the agent itself invokes the `buzz` CLI from its **terminal tool** (e.g. to publish a message with `buzz messages send`), the managed Buzz credentials must be inherited by that subprocess. Hermes strips secrets from subprocess environments by default, so this is scoped deliberately:
+
+- `BUZZ_RELAY_URL`, `BUZZ_PRIVATE_KEY`, and `BUZZ_AUTH_TAG` are marked `terminal_passthrough` in the bundled Buzz platform manifest — they reach **terminal-spawned subprocesses only** (foreground and background/PTY).
+- They remain stripped from `execute_code` and all generic subprocess spawns (skills, Docker/Modal sandboxes, browser workers, computer-use drivers, etc.).
+- The vars must be present in the gateway's own environment (`.env` or the platform's `requires_env` setup) to be inherited — the passthrough only forwards what the gateway process already has.
+
+This is what keeps the [Buzz Desktop managed runtime](https://github.com/block/buzz) (which drives Hermes via ACP) able to reply without manual `terminal.env_passthrough` configuration.
+
 ## Notes and limitations
 
 - **`BUZZ_*` env vars are available in terminal tool children for Buzz sessions** — the agent can invoke the `buzz` CLI directly (e.g. `buzz messages send ...`) because `BUZZ_PRIVATE_KEY`, `BUZZ_AUTH_TAG`, `BUZZ_RELAY_URL`, and the other `BUZZ_*` variables are passed through to terminal subprocesses when the session's platform is `buzz` or the process is a Buzz Desktop managed agent (`BUZZ_MANAGED_AGENT`). Non-Buzz sessions on the same host, `execute_code`, and other non-terminal spawns remain sealed.

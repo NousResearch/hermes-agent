@@ -635,6 +635,25 @@ def _format_richlink_content(content: Dict[str, Any]) -> str:
     return "\n".join(parts) if parts else "[Photon rich link received with no URL]"
 
 
+def _format_location_content(content: Dict[str, Any]) -> str:
+    """Render a Photon/Find My location as explicit model-readable context."""
+    try:
+        latitude = float(content.get("latitude"))
+        longitude = float(content.get("longitude"))
+    except (TypeError, ValueError):
+        return "[Photon location received with invalid coordinates]"
+    labels = [
+        str(content.get(key) or "").strip()
+        for key in ("name", "shortAddress", "address", "longAddress")
+    ]
+    label = next((value for value in labels if value), "Shared location")
+    accuracy = content.get("accuracy")
+    suffix = ""
+    if isinstance(accuracy, (int, float)) and accuracy >= 0:
+        suffix = f"; accuracy ~{accuracy:g} m"
+    return f"[Location shared] {label} ({latitude:.6f}, {longitude:.6f}{suffix})"
+
+
 def _richlink_url_from_content(content: Dict[str, Any]) -> Optional[str]:
     ctype = content.get("type")
     if ctype == "text":
@@ -1421,6 +1440,9 @@ class PhotonAdapter(BasePlatformAdapter):
         elif ctype == "richlink":
             text = _format_richlink_content(content)
             mtype = MessageType.TEXT
+        elif ctype == "location":
+            text = _format_location_content(content)
+            mtype = MessageType.LOCATION
         elif ctype == "group":
             text_parts: List[str] = []
             mtype = MessageType.TEXT

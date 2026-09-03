@@ -7,12 +7,14 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "postinstall": "node patch-spectrum-mixed-attachments.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=18.17"
   },
   "dependencies": {
+    "@photon-ai/advanced-imessage": "2.1.0",
     "spectrum-ts": "12.7.0"
   },
   "overrides": {

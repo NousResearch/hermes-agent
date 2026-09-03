@@ -57,6 +57,112 @@ def watchdog_interval_seconds() -> Optional[float]:
     return interval
 
 
+def _watchdog_pid_matches_current_process() -> bool:
+    """Reject a WATCHDOG_PID inherited from another process."""
+    raw_pid = os.environ.get("WATCHDOG_PID", "").strip()
+    if not raw_pid:
+        return True
+    try:
+        return int(raw_pid) == os.getpid()
+    except (TypeError, ValueError):
+        return False
+
+
+class SystemdStartupDeadline:
+    """Extend startup while a watchdog-enabled Type=notify unit initializes."""
+
+    def __init__(
+        self,
+        *,
+        config_enabled: bool = True,
+        interval_seconds: float = 30.0,
+        extend_seconds: int = 60,
+    ) -> None:
+        self._config_enabled = bool(config_enabled)
+        self._interval_seconds = max(0.01, float(interval_seconds))
+        self._extend_usec = max(1, int(extend_seconds * 1_000_000))
+        self._task: Optional[asyncio.Task[None]] = None
+        self._owner_task: Optional[asyncio.Task[object]] = None
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self._config_enabled
+            and watchdog_interval_seconds() is not None
+            and _watchdog_pid_matches_current_process()
+        )
+
+    @property
+    def task(self) -> Optional[asyncio.Task[None]]:
+        return self._task
+
+    def start(self) -> bool:
+        """Start repeatedly extending systemd's startup deadline."""
+        if not self.enabled:
+            return False
+        if self._task is not None and not self._task.done():
+            return True
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        # Emit before returning: GatewayRunner construction and state migrations
+        # are synchronous and can block the event loop before _run gets a turn.
+        notify(f"EXTEND_TIMEOUT_USEC={self._extend_usec}")
+        self._task = asyncio.create_task(
+            self._run(), name="hermes-systemd-startup-deadline"
+        )
+        self._owner_task = asyncio.current_task()
+        if self._owner_task is not None:
+            self._owner_task.add_done_callback(self._cancel_if_owner_done)
+        return True
+
+    def _cancel_if_owner_done(self, owner: asyncio.Task[object]) -> None:
+        """Cancel orphaned renewal if startup exits before the READY handoff."""
+        if owner is not self._owner_task:
+            return
+        self._owner_task = None
+        task = self._task
+        self._task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._interval_seconds)
+                notify(f"EXTEND_TIMEOUT_USEC={self._extend_usec}")
+        except asyncio.CancelledError:
+            return
+
+    async def stop(self) -> None:
+        """Cancel startup notifications without emitting runtime state."""
+        task = self._task
+        self._task = None
+        owner = self._owner_task
+        self._owner_task = None
+        if owner is not None:
+            owner.remove_done_callback(self._cancel_if_owner_done)
+        if task is None or task is asyncio.current_task():
+            return
+        current = asyncio.current_task()
+        if not task.done():
+            task.cancel()
+        try:
+            # The owner may be cancelled while the child performs cancellation
+            # cleanup. Shield prevents that second cancellation from aborting
+            # the child and lets us distinguish owner cancellation below.
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if current is not None and current.cancelling():
+                raise
+        except Exception:
+            pass
+        # Deliver cancellation already queued for this caller after consuming
+        # only the child task's expected cancellation.
+        await asyncio.sleep(0)
+
+
 class SystemdWatchdog:
     """Feed systemd while the asyncio event loop continues to make progress."""
 
@@ -76,7 +182,11 @@ class SystemdWatchdog:
 
     @property
     def enabled(self) -> bool:
-        return self._config_enabled and self.interval_seconds is not None
+        return (
+            self._config_enabled
+            and self.interval_seconds is not None
+            and _watchdog_pid_matches_current_process()
+        )
 
     @property
     def unhealthy(self) -> bool:
@@ -161,16 +271,27 @@ class SystemdWatchdog:
         self._stopping = True
         task = self._task
         current = asyncio.current_task()
-        if task is not None and task is not current:
-            if not task.done():
-                task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-        self._task = None
-        if self.enabled and not self._stopping_notified:
-            notify("STOPPING=1")
-            self._stopping_notified = True
+        try:
+            if task is not None and task is not current:
+                if not task.done():
+                    task.cancel()
+                try:
+                    # Keep cancellation of this owner separate from the child
+                    # cancellation requested above; the child swallows its own
+                    # CancelledError as part of normal watchdog teardown.
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if current is not None and current.cancelling():
+                        raise
+                except Exception:
+                    pass
+                # Give a cancellation queued for this caller a checkpoint even
+                # when the child completed before the callback was delivered.
+                await asyncio.sleep(0)
+        finally:
+            # Cancellation must propagate without leaving stale watchdog state
+            # or skipping systemd's shutdown transition.
+            self._task = None
+            if self.enabled and not self._stopping_notified:
+                notify("STOPPING=1")
+                self._stopping_notified = True

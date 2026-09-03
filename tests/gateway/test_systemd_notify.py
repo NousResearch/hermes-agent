@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 
 import pytest
@@ -53,6 +54,165 @@ def test_notify_uses_nonblocking_datagram_send(monkeypatch):
 
     assert notify_mod.notify("READY=1") is True
     assert calls[0] == ("setblocking", False)
+
+
+def test_startup_deadline_rejects_mismatched_watchdog_pid(monkeypatch):
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid() + 1))
+
+    from gateway.systemd_notify import SystemdStartupDeadline
+
+    assert SystemdStartupDeadline().enabled is False
+
+
+@pytest.mark.asyncio
+async def test_startup_deadline_repeats_until_stopped(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid()))
+
+    import gateway.systemd_notify as notify_mod
+
+    monkeypatch.setattr(
+        notify_mod, "notify", lambda message: calls.append(message) or True
+    )
+    deadline = notify_mod.SystemdStartupDeadline(
+        interval_seconds=0.01, extend_seconds=1
+    )
+
+    assert deadline.start() is True
+    await asyncio.sleep(0.025)
+    await deadline.stop()
+    count_after_stop = len(calls)
+    await asyncio.sleep(0.02)
+
+    assert calls.count("EXTEND_TIMEOUT_USEC=1000000") >= 2
+    assert len(calls) == count_after_stop
+    assert deadline.task is None
+
+
+@pytest.mark.asyncio
+async def test_startup_deadline_extends_before_start_returns(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid()))
+
+    import gateway.systemd_notify as notify_mod
+
+    monkeypatch.setattr(
+        notify_mod, "notify", lambda message: calls.append(message) or True
+    )
+    deadline = notify_mod.SystemdStartupDeadline(
+        interval_seconds=60, extend_seconds=1
+    )
+
+    assert deadline.start() is True
+    assert calls == ["EXTEND_TIMEOUT_USEC=1000000"]
+    await deadline.stop()
+
+
+@pytest.mark.asyncio
+async def test_startup_deadline_stop_propagates_caller_cancellation(monkeypatch):
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid()))
+
+    import gateway.systemd_notify as notify_mod
+
+    monkeypatch.setattr(notify_mod, "notify", lambda _message: True)
+    deadline = notify_mod.SystemdStartupDeadline()
+    assert deadline.start() is True
+
+    async def cancel_during_stop():
+        current = asyncio.current_task()
+        assert current is not None
+        asyncio.get_running_loop().call_soon(current.cancel)
+        await deadline.stop()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.create_task(cancel_during_stop())
+
+    assert deadline.task is None
+
+
+@pytest.mark.asyncio
+async def test_startup_deadline_stops_when_owner_task_fails(monkeypatch):
+    calls: list[str] = []
+    deadlines = []
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid()))
+
+    import gateway.systemd_notify as notify_mod
+
+    monkeypatch.setattr(
+        notify_mod, "notify", lambda message: calls.append(message) or True
+    )
+
+    async def failing_startup_owner():
+        deadline = notify_mod.SystemdStartupDeadline(
+            interval_seconds=0.01, extend_seconds=1
+        )
+        deadlines.append(deadline)
+        assert deadline.start() is True
+        raise RuntimeError("pre-ready failure")
+
+    with pytest.raises(RuntimeError, match="pre-ready failure"):
+        await asyncio.create_task(failing_startup_owner())
+    await asyncio.sleep(0.03)
+
+    assert deadlines[0].task is None
+    assert calls == ["EXTEND_TIMEOUT_USEC=1000000"]
+
+
+@pytest.mark.asyncio
+async def test_startup_deadline_is_inert_when_config_disabled(monkeypatch):
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+
+    from gateway.systemd_notify import SystemdStartupDeadline
+
+    deadline = SystemdStartupDeadline(config_enabled=False)
+    assert deadline.enabled is False
+    assert deadline.start() is False
+    await deadline.stop()
+
+
+def test_runtime_watchdog_rejects_mismatched_watchdog_pid(monkeypatch):
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid() + 1))
+
+    from gateway.systemd_notify import SystemdWatchdog
+
+    assert SystemdWatchdog().enabled is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_watchdog_stop_propagates_caller_cancellation(monkeypatch):
+    monkeypatch.setenv("NOTIFY_SOCKET", "/tmp/hermes-test-notify")
+    monkeypatch.setenv("WATCHDOG_USEC", "1000000")
+    monkeypatch.setenv("WATCHDOG_PID", str(os.getpid()))
+
+    import gateway.systemd_notify as notify_mod
+
+    monkeypatch.setattr(notify_mod, "notify", lambda _message: True)
+    watchdog = notify_mod.SystemdWatchdog()
+    assert watchdog.start() is True
+
+    async def cancel_during_stop():
+        current = asyncio.current_task()
+        assert current is not None
+        asyncio.get_running_loop().call_soon(current.cancel)
+        await watchdog.stop()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.create_task(cancel_during_stop())
+
+    assert watchdog.task is None
 
 
 @pytest.mark.asyncio

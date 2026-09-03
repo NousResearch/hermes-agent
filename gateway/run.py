@@ -70,6 +70,7 @@ from agent.turn_context import (
 )
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.systemd_notify import SystemdStartupDeadline
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -33847,8 +33848,70 @@ def _looks_like_profile_conflict_from_cmdline(command: str, our_home) -> bool:
     return False
 
 
+async def _construct_runner_with_startup_deadline(
+    config: Optional[GatewayConfig],
+) -> tuple[GatewayRunner, SystemdStartupDeadline]:
+    """Start deadline renewal before the runner can open or migrate state.db."""
+    effective_config = (
+        config if config is not None else load_gateway_config_for_runner()
+    )
+    deadline = SystemdStartupDeadline(
+        config_enabled=effective_config.systemd_watchdog_seconds > 0
+    )
+    deadline.start()
+    try:
+        runner = GatewayRunner(effective_config)
+    except BaseException:
+        await deadline.stop()
+        raise
+    return runner, deadline
 
-async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
+
+async def _discover_mcp_and_start_runner(
+    runner: GatewayRunner,
+    deadline: Optional[SystemdStartupDeadline] = None,
+) -> tuple[bool, SystemdStartupDeadline]:
+    """Start the runner while keeping its systemd startup deadline active."""
+    if deadline is None:
+        deadline = SystemdStartupDeadline(
+            config_enabled=runner.config.systemd_watchdog_seconds > 0
+        )
+        deadline.start()
+    try:
+        # Keep the event loop responsive while a configured MCP server is slow
+        # or unreachable. The deadline task can therefore continue notifying
+        # systemd throughout MCP discovery and sequential adapter startup.
+        try:
+            await _discover_gateway_mcp_tools(runner.config)
+        except Exception as exc:
+            logger.debug("MCP tool discovery failed: %s", exc)
+        success = await runner.start()
+    except BaseException:
+        await deadline.stop()
+        raise
+    if not success:
+        await deadline.stop()
+    return success, deadline
+
+
+async def _complete_systemd_startup(
+    deadline: SystemdStartupDeadline,
+    runner: GatewayRunner,
+) -> None:
+    """Stop deadline extension immediately before the runtime READY signal."""
+    await deadline.stop()
+    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
+    if callable(start_watchdog):
+        start_watchdog()
+
+
+async def _start_gateway_impl(
+    config: Optional[GatewayConfig] = None,
+    replace: bool = False,
+    verbosity: Optional[int] = 0,
+    *,
+    _systemd_startup_deadline_holder: Optional[List[SystemdStartupDeadline]] = None,
+) -> bool:
     """
     Start the gateway and run until interrupted.
     
@@ -34109,10 +34172,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if _stderr_level < logging.getLogger().level:
             logging.getLogger().setLevel(_stderr_level)
 
-    runner = GatewayRunner(config)
+    runner, systemd_startup_deadline = (
+        await _construct_runner_with_startup_deadline(config)
+    )
+    if _systemd_startup_deadline_holder is not None:
+        # Register ownership before any post-construction setup can fail so the
+        # public wrapper's finally block covers every subsequent exit path.
+        _systemd_startup_deadline_holder.append(systemd_startup_deadline)
     # Multiplex: swap the launch-home file handlers for per-profile routers so
     # each profile's records land in its own logs/ (#82936). Must run after
-    # the runner resolved the (possibly None) config and after setup_logging.
+    # the runner resolved the effective config and after setup_logging.
     _enable_multiplex_log_routing(runner.config)
     # ``--replace`` is explicit startup authority, not a durable reconnect
     # policy. GatewayRunner scopes this bit to cold adapter connects and clears
@@ -34386,20 +34455,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _ensure_windows_gateway_venv_imports()
 
-    # MCP tool discovery — run in an executor so the asyncio event loop
-    # stays responsive even when a configured MCP server is slow or
-    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
-    # internally; calling it from the loop thread would freeze platform
-    # heartbeats (Discord shard, Telegram polling) until it returned.
-    # See #16856.
+    # MCP discovery and adapter startup run under a renewable systemd startup
+    # deadline when the opt-in watchdog unit owns the notify environment.
     try:
-        await _discover_gateway_mcp_tools(runner.config)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
-
-    # Start the gateway
-    try:
-        success = await runner.start()
+        (
+            success,
+            systemd_startup_deadline,
+        ) = await _discover_mcp_and_start_runner(
+            runner, deadline=systemd_startup_deadline
+        )
     except BaseException:
         _shutdown_gateway_health_export(runner)
         raise
@@ -34417,6 +34481,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
     if runner.should_exit_cleanly:
+        await systemd_startup_deadline.stop()
         _shutdown_gateway_health_export(runner)
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
@@ -34431,6 +34496,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             raise SystemExit(runner.exit_code)
         return True
     if not runner._running:
+        await systemd_startup_deadline.stop()
         # Startup was intentionally aborted by restart/shutdown before entering
         # running mode; preserve that lifecycle path without starting cron.
         try:
@@ -34565,11 +34631,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     housekeeping_thread.start()
 
     # READY is emitted only after adapters, cron, and housekeeping have all
-    # reached their running boundary. Missing config/systemd runtime state
-    # leaves the watchdog disabled without changing gateway behavior.
-    start_watchdog = getattr(runner, "_start_systemd_watchdog", None)
-    if callable(start_watchdog):
-        start_watchdog()
+    # reached their running boundary. Stop startup extensions immediately
+    # before the runtime watchdog sends READY=1.
+    await _complete_systemd_startup(systemd_startup_deadline, runner)
 
     # Wait for shutdown
     await runner.wait_for_shutdown()
@@ -34655,6 +34719,33 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         raise SystemExit(75)
 
     return True
+
+
+async def start_gateway(
+    config: Optional[GatewayConfig] = None,
+    replace: bool = False,
+    verbosity: Optional[int] = 0,
+) -> bool:
+    """Run the gateway while owning its startup deadline on every exit path.
+
+    ``_start_gateway_impl`` must keep the deadline alive across runner
+    construction, PID/lock setup, adapter startup, cron, and housekeeping.
+    Centralizing the final stop here makes every return, exception, and
+    cancellation after construction fail closed without duplicating cleanup at
+    each startup branch. Normal READY handoff already stops it; ``stop()`` is
+    intentionally idempotent, so this finalizer is then a no-op.
+    """
+    startup_deadlines: List[SystemdStartupDeadline] = []
+    try:
+        return await _start_gateway_impl(
+            config,
+            replace,
+            verbosity,
+            _systemd_startup_deadline_holder=startup_deadlines,
+        )
+    finally:
+        if startup_deadlines:
+            await startup_deadlines[-1].stop()
 
 
 def _guard_corrupt_user_config() -> None:

@@ -158,6 +158,7 @@ async def test_wisdom_candidate_notice_defers_to_slack_with_private_routing_iden
                 "scope_id": "T_TEAM",
                 "user_id": "U_OWNER",
                 "profile": "collective-demo",
+                "hermes_profile": "collective-demo",
             },
         }
     ]

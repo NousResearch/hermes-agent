@@ -7694,7 +7694,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not response_url:
             return False
         try:
-            async with aiohttp.ClientSession(trust_env=True) as session:
+            async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 async with session.post(
                     response_url,
                     json={

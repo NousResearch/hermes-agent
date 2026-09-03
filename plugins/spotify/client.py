@@ -222,6 +222,21 @@ class SpotifyClient:
     def get_playlist(self, *, playlist_id: str, market: Optional[str] = None) -> Any:
         return self.request("GET", f"/playlists/{playlist_id}", params={"market": market})
 
+    def get_playlist_items(
+        self,
+        *,
+        playlist_id: str,
+        limit: int = 20,
+        offset: int = 0,
+        market: Optional[str] = None,
+    ) -> Any:
+        """Fetch playlist tracks via the modern paginated endpoint."""
+        return self.request("GET", f"/playlists/{playlist_id}/items", params={
+            "limit": limit,
+            "offset": offset,
+            "market": market,
+        })
+
     def create_playlist(
         self,
         *,

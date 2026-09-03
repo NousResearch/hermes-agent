@@ -13783,6 +13783,13 @@ def _run_prompt_submit(
                 payload["warning"] = status_note
             if result.get("response_previewed"):
                 payload["response_previewed"] = True
+            # A transform_llm_output plugin hook may have rewritten the final
+            # text after streaming finished. Tell the renderer so it treats
+            # this payload as the authoritative replacement for the current
+            # turn's streamed assistant text even when there is no prefix
+            # relationship between the streamed and final text.
+            if isinstance(result, dict) and result.get("response_transformed"):
+                payload["response_transformed"] = True
             # Forward the structured billing-wall descriptor (provider,
             # billing_url, is_nous, message) so the TUI/desktop render a
             # billing-specific recovery surface instead of re-parsing text.

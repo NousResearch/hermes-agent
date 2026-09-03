@@ -562,6 +562,7 @@ export function useMessageStream({
       sessionId: string,
       text: string,
       responsePreviewed?: boolean,
+      responseTransformed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000
     ) => {
@@ -678,7 +679,20 @@ export function useMessageStream({
               (finalText === existingText || finalText.startsWith(existingText) || existingText.startsWith(finalText))
             )
 
-            if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
+            // A transform_llm_output plugin hook rewrites the final text after
+            // streaming finishes (e.g. restoring pseudonyms to real values).
+            // The rewritten text can share NO prefix relationship with what was
+            // streamed, yet it is still this turn's authoritative reply: settle
+            // it onto the current turn's bubble in place instead of appending a
+            // duplicate (which session reconciliation would then suppress,
+            // leaving the pre-transform text on screen while the DB holds the
+            // transformed one). Gated on sawAssistantPayload so a stale/foreign
+            // completion cannot overwrite an unrelated previous bubble.
+            const transformedCurrentReply = Boolean(
+              responseTransformed && state.sawAssistantPayload && finalText
+            )
+
+            if (existing.pending || transformedCurrentReply || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )

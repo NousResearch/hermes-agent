@@ -169,6 +169,10 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — a transform_llm_output hook rewrote the final text
+  // after streaming finished. The text authoritatively replaces the current
+  // turn's streamed assistant text even without a prefix relationship.
+  response_transformed?: boolean
   // message.complete with status "error" — `text` is streamed partial output
   // (keep it visible), not the error string.
   partial?: boolean

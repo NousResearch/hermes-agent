@@ -18,6 +18,7 @@ export interface GatewayEventDeps {
     sessionId: string,
     text: string,
     responsePreviewed?: boolean,
+    responseTransformed?: boolean,
     failure?: { error: string; partial: boolean },
     occurredAt?: number
   ) => void

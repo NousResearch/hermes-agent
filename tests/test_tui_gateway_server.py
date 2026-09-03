@@ -22261,3 +22261,98 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_prompt_submit_message_complete_carries_response_transformed(monkeypatch):
+    """A transform_llm_output plugin hook rewrites the final text after
+    streaming finishes (agent/turn_finalizer.py sets response_transformed on
+    the turn result). Desktop sessions deliver through _run_prompt_submit, so
+    the message.complete payload must forward that flag — the renderer needs
+    it to authoritatively replace the streamed bubble with text that may share
+    no prefix relationship with what was streamed (e.g. pseudonym restore)."""
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            assert self._target is not None
+            self._target()
+
+    def _make_agent(final_result: dict):
+        class _Agent:
+            model = "gold-model"
+            provider = "gold-provider"
+            session_id = "session-key"
+            session_input_tokens = 10
+            session_output_tokens = 5
+            session_prompt_tokens = 10
+            session_completion_tokens = 5
+            session_total_tokens = 15
+            session_api_calls = 1
+            context_compressor = None
+
+            def clear_interrupt(self):
+                return None
+
+            def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+                if stream_callback is not None:
+                    stream_callback("TOKEN_1")
+                return final_result
+
+        return _Agent()
+
+    fixed_info = {"model": "gold-model", "provider": "gold-provider", "usage": {"total": 15}}
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: dict(fixed_info))
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
+    fake_title = types.ModuleType("agent.title_generator")
+    setattr(fake_title, "maybe_auto_title", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": False}})
+
+    def _run_turn(final_result: dict):
+        events: list[tuple] = []
+        monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: events.append((event, sid, payload)))
+        server._sessions["sid"] = _session(agent=_make_agent(final_result))
+        try:
+            server.handle_request(
+                {"id": "turn-1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
+            )
+            return events
+        finally:
+            server._sessions.pop("sid", None)
+
+    # Hook rewrote the final text: the flag must ride on message.complete so
+    # the renderer can settle the rewritten text onto the streamed bubble.
+    transformed_result = {
+        "final_response": "example-service.internal",
+        "response_transformed": True,
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "example-service.internal"},
+        ],
+    }
+    events = _run_turn(transformed_result)
+    completes = [(e, sid, p) for e, sid, p in events if e == "message.complete"]
+    assert completes, "message.complete was never emitted"
+    _, _, payload = completes[-1]
+    assert payload.get("response_transformed") is True
+    assert payload.get("text") == "example-service.internal"
+
+    # No hook ran: the flag must be absent (old behavior preserved).
+    plain_result = {
+        "final_response": "TOKEN_1",
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "TOKEN_1"},
+        ],
+    }
+    events = _run_turn(plain_result)
+    completes = [(e, sid, p) for e, sid, p in events if e == "message.complete"]
+    assert completes, "message.complete was never emitted"
+    _, _, payload = completes[-1]
+    assert "response_transformed" not in payload

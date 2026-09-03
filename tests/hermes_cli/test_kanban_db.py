@@ -1647,3 +1647,49 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# check_respawn_guard: active_pr authorship
+# ---------------------------------------------------------------------------
+
+
+PR_COMMENT = "Review target: https://github.com/acme/widget/pull/42 please look"
+
+
+def _ready_task(conn, *, assignee):
+    """check_respawn_guard is status-agnostic; the caller filters for ready."""
+    return kb.create_task(conn, title="t", assignee=assignee)
+
+
+def test_active_pr_guard_ignores_other_authors(kanban_home):
+    """A PR link posted by someone other than the assignee is context, not
+    evidence that this task's worker opened a PR."""
+    with kb.connect_closing() as conn:
+        tid = _ready_task(conn, assignee="reviewer")
+        kb.add_comment(conn, tid, "builder", PR_COMMENT)
+        assert kb.check_respawn_guard(conn, tid) != "active_pr"
+
+
+def test_active_pr_guard_fires_for_own_assignee(kanban_home):
+    """Original behaviour preserved: the assignee's own PR link still guards."""
+    with kb.connect_closing() as conn:
+        tid = _ready_task(conn, assignee="builder")
+        kb.add_comment(conn, tid, "builder", PR_COMMENT)
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_matches_any_author_when_unassigned(kanban_home):
+    """Unassigned tasks keep the previous any-author semantics."""
+    with kb.connect_closing() as conn:
+        tid = _ready_task(conn, assignee=None)
+        kb.add_comment(conn, tid, "anyone", PR_COMMENT)
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+
+def test_active_pr_guard_ignores_non_pr_comment_from_assignee(kanban_home):
+    """A comment without a PR URL never trips the guard."""
+    with kb.connect_closing() as conn:
+        tid = _ready_task(conn, assignee="builder")
+        kb.add_comment(conn, tid, "builder", "no links here, just a status note")
+        assert kb.check_respawn_guard(conn, tid) != "active_pr"

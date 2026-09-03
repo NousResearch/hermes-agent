@@ -8074,7 +8074,7 @@ class DispatchResult:
 
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
-    ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    ``"active_pr"`` (GitHub PR URL in a recent comment by the assignee)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
@@ -9447,8 +9447,11 @@ def check_respawn_guard(
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) **written by the task's own
+        assignee**.  A prior worker already opened a PR; re-spawning risks a
+        duplicate PR on the same task.  A PR link posted by anyone else is
+        context, not evidence, and does not trip the guard.  Tasks with no
+        assignee match on any author, preserving the previous behaviour.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9537,13 +9540,25 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Only the task's OWN assignee counts: another agent linking the PR for
+    #    context is not evidence that this task's worker opened it, and would
+    #    otherwise strand the card for the whole guard window.  Tasks with no
+    #    assignee keep the previous any-author behaviour.
+    assignee_row = conn.execute(
+        "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    guard_assignee = ((assignee_row["assignee"] if assignee_row else "") or "").strip()
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT author, body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not c["body"] or not _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            continue
+        if guard_assignee and (c["author"] or "").strip() != guard_assignee:
+            continue
+        return "active_pr"
 
     return None
 

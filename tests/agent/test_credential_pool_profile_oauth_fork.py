@@ -254,6 +254,37 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
 
 
+def test_profile_auth_add_persists_when_root_and_profile_are_empty(fleet):
+    """A named-profile OAuth login must not report success then
+    discard the new row when neither the root nor profile has that provider.
+
+    With no borrowed root ids, add_entry previously used _persist(); the
+    borrowed-root safety path is update-only and therefore ignored the brand-
+    new id.  This is the exact empty-store state after a lost shared auth.json.
+    """
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text())
+    del store["credential_pool"]["anthropic"]
+    (root / "auth.json").write_text(json.dumps(store))
+
+    kid = _profile(fleet, "empty-kid")
+    fleet["use"](kid)
+    pool = load_pool("anthropic")
+    assert pool.entries() == []
+    assert pool._borrowed_root_ids == set()
+
+    pool.add_entry(PooledCredential(
+        provider="anthropic", id="own-empty", label="mine", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:hermes_pkce", access_token="at-mine-empty",
+        refresh_token="rt-mine-empty",
+    ))
+
+    assert [e["id"] for e in fleet["rows"](kid)] == ["own-empty"]
+    assert fleet["rows"](root) is None
+
+
 def test_classic_mode_persist_is_unchanged(fleet):
     from agent.credential_pool import load_pool
 

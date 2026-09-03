@@ -2990,14 +2990,28 @@ class CredentialPool:
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
+            borrowed_ids = set(getattr(self, "_borrowed_root_ids", ()) or ())
+            # A named profile adding its FIRST single-use OAuth credential
+            # must claim the row in its own store even when root has no row to
+            # borrow.  In that empty-root case ``_borrowed_root_ids`` is empty,
+            # but the generic ``_persist`` path still classifies the profile as
+            # a borrower and sends the payload through persist_pool_entries'
+            # update-only root merge.  With no matching root id the new row is
+            # dropped while ``hermes auth add`` reports success.
+            profile_claims_first_single_use_row = (
+                self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
+                and not _profile_owns_pool_provider(self.provider)
+                and _borrowed_single_use_pool_root() is not None
+            )
+            if borrowed_ids or profile_claims_first_single_use_row:
                 # ``hermes -p <profile> auth add <single-use provider>``: the
                 # profile is claiming its OWN credential. Persist only the
                 # profile-owned rows locally — copying the borrowed root
                 # grant alongside them would fork its single-use refresh
-                # token (#100339). Once the profile owns rows, the root
-                # fallback for this provider is shadowed (existing contract).
+                # token (#100339).  The same local-claim path is required when
+                # root and profile are both empty. Once the profile
+                # owns rows, the root fallback for this provider is shadowed
+                # (existing contract).
                 write_credential_pool(
                     self.provider,
                     [e.to_dict() for e in self._entries if e.id not in borrowed_ids],

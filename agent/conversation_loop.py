@@ -4426,6 +4426,23 @@ def run_conversation(
                                 _continue_content = _get_continuation_prompt(
                                     _is_partial_stream_stub, _dropped_tools
                                 )
+                                # When the model used its entire output budget on
+                                # chain-of-thought (reasoning_content) and produced
+                                # zero visible content, a normal "continue where you
+                                # left off" prompt is semantically vacuous — the model
+                                # deterministically repeats the reasoning-only response
+                                # until the retry budget is exhausted (#83915).
+                                # Detect: empty content AND non-empty reasoning on the
+                                # assistant turn, then override the nudge to an
+                                # explicit reasoning-termination directive.
+                                _asst_content = getattr(assistant_message, "content", None) or ""
+                                _asst_reasoning = (
+                                    getattr(assistant_message, "reasoning", None)
+                                    or getattr(assistant_message, "reasoning_content", None)
+                                    or ""
+                                )
+                                if not _asst_content and _asst_reasoning:
+                                    _continue_content = _CODEX_INCOMPLETE_NUDGE
                                 continue_msg = {
                                     "role": "user",
                                     "content": _continue_content,

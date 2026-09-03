@@ -2985,6 +2985,15 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            # The merged event represents the latest inbound message for
+            # reply-anchor purposes; otherwise the bot's reply quotes an
+            # earlier message in the burst (issue #59582).
+            latest_message_id = getattr(event, "message_id", None)
+            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
+            if latest_message_id is not None:
+                existing.message_id = str(latest_message_id)
+            if latest_anchor is not None and hasattr(existing, "reply_to_message_id"):
+                existing.reply_to_message_id = str(latest_anchor)
             return
 
     pending_messages[session_key] = event

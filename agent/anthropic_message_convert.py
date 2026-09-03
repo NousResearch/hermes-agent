@@ -675,7 +675,7 @@ def _convert_tool_message_to_result(
             ]
     elif isinstance(content, list):
         converted = _content_parts_to_anthropic_blocks(content)
-        if any(b.get("type") == "image" for b in converted):
+        if converted:
             multimodal_blocks = converted
     # Back-compat: some callers stash blocks under a private key.
     if multimodal_blocks is None:
@@ -690,11 +690,29 @@ def _convert_tool_message_to_result(
     if multimodal_blocks:
         result_content: Any = multimodal_blocks
     elif isinstance(content, str):
-        result_content = content
+        result_content = content if content.strip() else "(no output)"
     else:
         result_content = json.dumps(content) if content else "(no output)"
-    if not result_content:
+
+    if isinstance(result_content, str):
+        if not result_content.strip():
+            result_content = "(no output)"
+    elif isinstance(result_content, list):
+        has_substance = any(
+            (b.get("type") == "image")
+            or (
+                b.get("type") == "text"
+                and isinstance(b.get("text"), str)
+                and b.get("text", "").strip()
+            )
+            for b in result_content
+            if isinstance(b, dict)
+        )
+        if not has_substance:
+            result_content = "(no output)"
+    elif not result_content:
         result_content = "(no output)"
+
     tool_result = {
         "type": "tool_result",
         "tool_use_id": _sanitize_tool_id(m.get("tool_call_id", "")),

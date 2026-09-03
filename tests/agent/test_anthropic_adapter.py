@@ -894,9 +894,62 @@ class TestConvertMessages:
         assert tool_block["content"] == "result"
         assert tool_block["cache_control"] == {"type": "ephemeral"}
 
+    def test_tool_result_list_of_text_parts_converts_to_anthropic_blocks(self):
+        messages = [
+            {"role": "system", "content": "You are an assistant"},
+            {"role": "user", "content": "run tool"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "tc_1", "function": {"name": "test", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "tc_1", "content": [{"type": "text", "text": "part 1"}, {"type": "text", "text": "part 2"}]},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_block = user_msg["content"][0]
+        assert tool_block["type"] == "tool_result"
+        assert tool_block["content"] == [
+            {"type": "text", "text": "part 1"},
+            {"type": "text", "text": "part 2"},
+        ]
 
+    def test_tool_result_whitespace_scalar_coerces_to_placeholder(self):
+        messages = [
+            {"role": "system", "content": "You are an assistant"},
+            {"role": "user", "content": "run tool"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "tc_1", "function": {"name": "test", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "tc_1", "content": "   \n\t  "},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_block = user_msg["content"][0]
+        assert tool_block["type"] == "tool_result"
+        assert tool_block["content"] == "(no output)"
 
-
+    def test_tool_result_whitespace_only_blocks_coerces_to_placeholder(self):
+        messages = [
+            {"role": "system", "content": "You are an assistant"},
+            {"role": "user", "content": "run tool"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "tc_1", "function": {"name": "test", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "tc_1", "content": [{"type": "text", "text": "   "}]},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_block = user_msg["content"][0]
+        assert tool_block["type"] == "tool_result"
+        assert tool_block["content"] == "(no output)"
 
     def test_empty_user_message_string_gets_placeholder(self):
         """Empty user message strings should get '(empty message)' placeholder.
@@ -1907,3 +1960,78 @@ class TestFinalPayloadHasNoBlankTextBlocks:
         )
         image_blocks = [b for b in tool_result_block["content"] if b.get("type") == "image"]
         assert len(image_blocks) == 1
+
+    def test_structured_text_parts_preserved_and_idempotent(self):
+        """Structured text blocks in tool results must preserve block ordering and conversion idempotency."""
+        messages = [
+            {"role": "user", "content": "analyze files"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_multi_text",
+                        "function": {"name": "batch_read", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_multi_text",
+                "content": [
+                    {"type": "text", "text": "=== Section 1: Configuration ==="},
+                    {"type": "text", "text": "port: 8080\nhost: localhost"},
+                    {"type": "text", "text": "=== Section 2: Status ===\nhealthy"},
+                ],
+            },
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        tool_result_block = next(
+            b for b in tool_result_msg["content"] if b.get("type") == "tool_result"
+        )
+        content_blocks = tool_result_block["content"]
+        assert isinstance(content_blocks, list)
+        assert len(content_blocks) == 3
+        assert content_blocks[0] == {"type": "text", "text": "=== Section 1: Configuration ==="}
+        assert content_blocks[1] == {"type": "text", "text": "port: 8080\nhost: localhost"}
+        assert content_blocks[2] == {"type": "text", "text": "=== Section 2: Status ===\nhealthy"}
+
+        # Idempotency: second pass does not duplicate or alter blocks
+        assert _find_blank_text_blocks(result) == []
+
+    def test_tool_result_empty_or_whitespace_only_uses_sentinel(self):
+        """Whitespace-only tool output gets '(no output)' placeholder to satisfy Anthropic API."""
+        messages = [
+            {"role": "user", "content": "run blank command"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_blank_1", "function": {"name": "noop", "arguments": "{}"}},
+                    {"id": "call_blank_2", "function": {"name": "noop2", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_blank_1", "content": "   \n\t  "},
+            {"role": "tool", "tool_call_id": "call_blank_2", "content": [{"type": "text", "text": "  "}]},
+        ]
+        _, result = convert_messages_to_anthropic(messages)
+        assert _find_blank_text_blocks(result) == []
+        tool_result_msg = next(
+            m
+            for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
+        blocks = [b for b in tool_result_msg["content"] if b.get("type") == "tool_result"]
+        assert len(blocks) == 2
+        assert blocks[0]["content"] == "(no output)"
+        assert blocks[1]["content"] == "(no output)"
+

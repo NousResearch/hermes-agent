@@ -219,6 +219,42 @@ class TestWeixinStatePersistence:
         assert writes[-1] == {"user-1": "t1", "user-2": "t2"}
 
 
+class TestWeixinAesCryptographyCompatibility:
+    def test_aes_round_trip_does_not_require_removed_default_backend(self, monkeypatch):
+        cipher_kwargs = []
+
+        class _FakeContext:
+            def update(self, data):
+                return data
+
+            def finalize(self):
+                return b""
+
+        class _FakeCipher:
+            def __init__(self, *args, **kwargs):
+                cipher_kwargs.append(kwargs)
+
+            def encryptor(self):
+                return _FakeContext()
+
+            def decryptor(self):
+                return _FakeContext()
+
+        def _removed_default_backend():
+            raise AssertionError("default_backend() must not be called")
+
+        monkeypatch.setattr(weixin, "Cipher", _FakeCipher)
+        monkeypatch.setattr(weixin, "algorithms", type("_Algorithms", (), {"AES": staticmethod(lambda key: key)}))
+        monkeypatch.setattr(weixin, "modes", type("_Modes", (), {"ECB": staticmethod(lambda: object())}))
+        monkeypatch.setattr(weixin, "default_backend", _removed_default_backend, raising=False)
+
+        key = b"0123456789abcdef"
+        ciphertext = weixin._aes128_ecb_encrypt(b"weixin-media", key)
+
+        assert weixin._aes128_ecb_decrypt(ciphertext, key) == b"weixin-media"
+        assert cipher_kwargs == [{}, {}]
+
+
 class TestWeixinQrLogin:
     @pytest.mark.asyncio
     async def test_qr_login_timeout_uses_monotonic_clock(self, tmp_path):
@@ -878,4 +914,3 @@ class TestWeixinVoiceGatewayHandoff:
             "VOICE event body leaked Tencent's STT text — runner would trust "
             "the wrong transcript instead of re-transcribing (#27300)."
         )
-

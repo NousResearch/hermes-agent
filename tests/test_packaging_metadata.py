@@ -3,6 +3,7 @@ import re
 import tomllib
 from pathlib import Path
 
+from packaging.version import Version
 import pytest
 
 
@@ -63,7 +64,8 @@ def test_faster_whisper_is_not_a_base_dependency():
 # transitive dep (fastapi in [web]; sse-starlette/mcp in [mcp]/[computer-use]/
 # [dev]) so we pin it directly in every extra that exposes a server surface and
 # enforce the floor in both pyproject and the committed lockfile.
-_STARLETTE_CVE_FLOOR = (1, 0, 1)
+_STARLETTE_CVE_FLOOR = Version("1.0.1")
+_PYTHON_MULTIPART_CVE_FLOOR = Version("0.0.32")
 _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
     # reviewed CVE pins must not slide back to stale versions that downgrade
@@ -74,16 +76,36 @@ _UPDATE_DOWNGRADE_GUARD_FLOORS = {
 }
 
 
-def _version_tuple(spec: str) -> tuple[int, ...]:
-    # "1.0.1" -> (1, 0, 1); tolerant of pre/post suffixes by truncating.
-    head = spec.split("+", 1)[0]
-    parts = []
-    for chunk in head.split("."):
-        digits = "".join(ch for ch in chunk if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
+def _starlette_at_cve_floor(version: str) -> bool:
+    return Version(version) >= _STARLETTE_CVE_FLOOR
+
+
+def _python_multipart_at_cve_floor(version: str) -> bool:
+    return Version(version) >= _PYTHON_MULTIPART_CVE_FLOOR
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    (
+        ("0.0.31.post999", False),
+        ("0.0.32rc1", False),
+        ("0.0.32", True),
+    ),
+)
+def test_python_multipart_floor_uses_pep440_ordering(version, expected):
+    assert _python_multipart_at_cve_floor(version) is expected
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    (
+        ("1.0.0", False),
+        ("1.0.1rc1", False),
+        ("1.0.1", True),
+    ),
+)
+def test_starlette_floor_uses_pep440_ordering(version, expected):
+    assert _starlette_at_cve_floor(version) is expected
 
 
 def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
@@ -114,9 +136,9 @@ def test_starlette_pinned_above_cve_2026_48710_floor_in_pyproject():
         )
 
     for extra, ver in found.items():
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
+        assert _starlette_at_cve_floor(ver), (
             f"[{extra}] pins starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))}"
+            f"floor {_STARLETTE_CVE_FLOOR}"
         )
 
 
@@ -142,11 +164,57 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 
     assert versions, "starlette not found in uv.lock"
     for ver in versions:
-        assert _version_tuple(ver) >= _STARLETTE_CVE_FLOOR, (
+        assert _starlette_at_cve_floor(ver), (
             f"uv.lock resolves starlette=={ver}, below the CVE-2026-48710 fix "
-            f"floor {'.'.join(map(str, _STARLETTE_CVE_FLOOR))} — regenerate the "
+            f"floor {_STARLETTE_CVE_FLOOR} — regenerate the "
             f"lockfile after bumping the pin"
         )
+
+
+def test_python_multipart_core_dependency_has_cve_fixed_floor():
+    """The core upload path must not resolve a vulnerable multipart parser.
+
+    ``python-multipart`` is a direct core dependency for FastAPI upload/form
+    handling.  The exact ``[web]`` pin and lockfile do not protect users who
+    install the default core package, so the core requirement must carry the
+    same patched floor.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    specs = [
+        spec
+        for spec in data["project"]["dependencies"]
+        if _distribution_name(spec) == "python-multipart"
+    ]
+    assert len(specs) == 1, f"expected one core python-multipart requirement, got {specs}"
+
+    spec = specs[0]
+    match = re.search(r">=\s*([^,\s;]+)", spec)
+    assert match, f"core python-multipart requirement must declare a lower bound: {spec}"
+    version = match.group(1)
+    assert _python_multipart_at_cve_floor(version), (
+        f"core python-multipart floor {match.group(1)} is below the patched "
+        f"floor {_PYTHON_MULTIPART_CVE_FLOOR}"
+    )
+    assert re.search(r"<\s*1(?:\b|$)", spec), (
+        f"core python-multipart requirement must retain its major-version ceiling: {spec}"
+    )
+    locked_versions = _locked_versions("python-multipart")
+    assert locked_versions, "python-multipart is missing from uv.lock"
+    assert all(_python_multipart_at_cve_floor(version) for version in locked_versions), (
+        f"uv.lock resolves python-multipart below the patched floor: {sorted(locked_versions)}"
+    )
+
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    root_package = next(package for package in lock["package"] if package["name"] == "hermes-agent")
+    locked_core_specs = [
+        requirement["specifier"]
+        for requirement in root_package["metadata"]["requires-dist"]
+        if requirement["name"] == "python-multipart" and "marker" not in requirement
+    ]
+    expected_specifier = re.sub(r"^[^=<>!~]+", "", spec).strip()
+    assert locked_core_specs == [expected_specifier], (
+        "uv.lock root metadata must mirror the core python-multipart requirement"
+    )
 
 
 
@@ -433,4 +501,26 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "a lazy feature is missing a security pin it must mirror from the "
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
+    )
+
+
+def test_dashboard_lazy_install_pins_python_multipart_at_cve_floor():
+    """The dashboard lazy path must keep the patched multipart parser pin."""
+    dashboard_specs = _lazy_deps_by_feature().get("tool.dashboard")
+    assert dashboard_specs is not None, "tool.dashboard is missing from LAZY_DEPS"
+
+    multipart_specs = [
+        spec for spec in dashboard_specs if _distribution_name(spec) == "python-multipart"
+    ]
+    assert len(multipart_specs) == 1, (
+        "tool.dashboard must carry one exact python-multipart pin, "
+        f"got {multipart_specs}"
+    )
+
+    spec = multipart_specs[0]
+    assert "==" in spec, f"tool.dashboard must exact-pin python-multipart, got {spec!r}"
+    version = spec.split("==", 1)[1].split(";", 1)[0].strip()
+    assert _python_multipart_at_cve_floor(version), (
+        f"tool.dashboard pins python-multipart=={version}, below the patched "
+        f"floor {_PYTHON_MULTIPART_CVE_FLOOR}"
     )

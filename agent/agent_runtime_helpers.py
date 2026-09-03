@@ -2708,6 +2708,85 @@ def anthropic_prompt_cache_policy(
     return False, False
 
 
+def prompt_cache_status_summary(agent) -> str:
+    """Describe the resolved prompt-cache state for this agent in one line.
+
+    ``anthropic_prompt_cache_policy`` above is the only decision-maker; this
+    helper never re-implements it. When caching is off it re-runs the same
+    policy with ONE input counterfactually flipped to find which input is the
+    blocker, so the explanation can never drift away from the rule that
+    actually fired.
+
+    Why this exists: a disabled cache is invisible today. The ENABLED banner in
+    ``agent_init`` has no DISABLED counterpart and is suppressed under
+    ``quiet_mode``, which the ACP adapter forces on. A route that resolves to
+    ``(False, False)`` therefore re-bills the entire prompt on every single API
+    call with no signal anywhere, on any surface. #11970 (Bedrock never
+    injected cachePoint) and #17332 (MiniMax's own models on the native wire)
+    were both instances of that class, each found only after the fact.
+
+    Returns a string like::
+
+        ENABLED (native Anthropic, 5m TTL)
+        DISABLED (api_mode is unset; set model.api_mode: anthropic_messages if
+                  this endpoint speaks the Anthropic Messages protocol)
+    """
+    should_cache = bool(getattr(agent, "_use_prompt_caching", False))
+    ttl = getattr(agent, "_cache_ttl", None) or "5m"
+
+    if should_cache:
+        if getattr(agent, "_use_native_cache_layout", False):
+            source = (
+                "native Anthropic"
+                if getattr(agent, "provider", "") == "anthropic"
+                else "Anthropic-compatible endpoint"
+            )
+        else:
+            source = "Claude via OpenRouter"
+        return f"ENABLED ({source}, {ttl} TTL)"
+
+    return f"DISABLED ({_prompt_cache_disabled_reason(agent)})"
+
+
+def _prompt_cache_disabled_reason(agent) -> str:
+    """Name the input that keeps ``anthropic_prompt_cache_policy`` at False.
+
+    Counterfactual probing rather than a second copy of the branch table: flip
+    one input, ask the real policy again, and report whichever flip turns
+    caching on. A branch added to the policy is picked up here for free.
+    """
+    if getattr(agent, "_cache_disabled", False):
+        return "prompt_caching.cache_ttl is set to a disable value in config.yaml"
+
+    api_mode = (getattr(agent, "api_mode", "") or "").strip()
+    model = (getattr(agent, "model", "") or "").strip()
+
+    if api_mode != "anthropic_messages":
+        native, _ = anthropic_prompt_cache_policy(agent, api_mode="anthropic_messages")
+        if native:
+            spelled = f"api_mode is {api_mode!r}" if api_mode else "api_mode is unset"
+            return (
+                f"{spelled}; set model.api_mode: anthropic_messages in config.yaml "
+                "if this endpoint speaks the Anthropic Messages protocol"
+            )
+
+    if "claude" not in model.lower():
+        # Probe with a Claude-named model to distinguish "the model is what
+        # blocks this route" from "this route has no cache layout at all".
+        claude_ok, _ = anthropic_prompt_cache_policy(agent, model="claude-sonnet-4-5")
+        if claude_ok:
+            return (
+                f"model {model!r} is not recognised as a Claude-family model on this "
+                "transport, and no other cache layout covers it"
+            )
+
+    provider = (getattr(agent, "provider", "") or "").strip() or "(unset)"
+    return (
+        f"no supported cache layout for provider={provider!r} "
+        f"api_mode={api_mode or '(unset)'!r} model={model or '(unset)'!r}"
+    )
+
+
 
 def _provider_supplied_client(agent, client_kwargs: dict) -> Any | None:
     """Ask the registered ProviderProfile for a custom client, if any.

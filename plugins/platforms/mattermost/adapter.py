@@ -790,38 +790,46 @@ class MattermostAdapter(BasePlatformAdapter):
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"
         logger.info("Mattermost: connecting to %s", ws_url)
 
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        self._ws = ws
 
-        # Authenticate via the WebSocket.
-        auth_msg = {
-            "seq": 1,
-            "action": "authentication_challenge",
-            "data": {"token": self._token},
-        }
-        await self._ws.send_json(auth_msg)
-        logger.info("Mattermost: WebSocket connected and authenticated")
+        try:
+            # Authenticate via the WebSocket.
+            auth_msg = {
+                "seq": 1,
+                "action": "authentication_challenge",
+                "data": {"token": self._token},
+            }
+            await ws.send_json(auth_msg)
+            logger.info("Mattermost: WebSocket connected and authenticated")
 
-        async for raw_msg in self._ws:
-            if self._closing:
-                return
+            async for raw_msg in ws:
+                if self._closing:
+                    return
 
-            if raw_msg.type in {
-                raw_msg.type.TEXT,
-                raw_msg.type.BINARY,
-            }:
-                try:
-                    event = json.loads(raw_msg.data)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                await self._handle_ws_event(event)
-            elif raw_msg.type in {
-                raw_msg.type.ERROR,
-                raw_msg.type.CLOSE,
-                raw_msg.type.CLOSING,
-                raw_msg.type.CLOSED,
-            }:
-                logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
-                break
+                if raw_msg.type in {
+                    raw_msg.type.TEXT,
+                    raw_msg.type.BINARY,
+                }:
+                    try:
+                        event = json.loads(raw_msg.data)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    await self._handle_ws_event(event)
+                elif raw_msg.type in {
+                    raw_msg.type.ERROR,
+                    raw_msg.type.CLOSE,
+                    raw_msg.type.CLOSING,
+                    raw_msg.type.CLOSED,
+                }:
+                    logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
+                    break
+        finally:
+            try:
+                await ws.close()
+            finally:
+                if self._ws is ws:
+                    self._ws = None
 
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""

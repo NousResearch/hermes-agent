@@ -757,6 +757,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "WHATSAPP_DEBUG", "WHATSAPP_FORWARD_OWNER_MESSAGES",
                 "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
                 "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
+                "WHATSAPP_DEVICE_NAME",
             ):
                 _v = _wenv(_key)
                 if _v:

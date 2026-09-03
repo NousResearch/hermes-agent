@@ -50,12 +50,19 @@ import {
 
 // Proxy support for environments behind an HTTP proxy (e.g., mainland China)
 const PROXY_URL = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy;
+// Mask credentials in any logged proxy URL (user:pass@host -> user:***@host).
+// Greedy password match up to the LAST '@' so passwords containing '@' are fully masked.
+function maskProxyUrl(url) {
+  return typeof url === 'string'
+    ? url.replace(/(\/\/[^:@/]+):(.+)@/, '$1:***@')
+    : url;
+}
 let proxyAgent = null;
 if (PROXY_URL) {
   try {
     const { HttpsProxyAgent } = await import('https-proxy-agent');
     proxyAgent = new HttpsProxyAgent(PROXY_URL);
-    console.log(`🔗 Using proxy: ${PROXY_URL}`);
+    console.log(`🔗 Using proxy: ${maskProxyUrl(PROXY_URL)}`);
   } catch (e) {
     console.warn(`⚠️  Could not load https-proxy-agent, falling back to direct connection: ${e.message}`);
   }

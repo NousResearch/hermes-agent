@@ -88,6 +88,11 @@ logger = logging.getLogger(__name__)
 # logged in.
 _DEFAULT_TTL_SECONDS = 12 * 60 * 60  # 12h
 _REFRESH_TTL_SECONDS = 30 * 24 * 60 * 60  # 30d
+# Permit small clock differences when deciding whether an access token was
+# minted under a longer, superseded TTL. Tokens substantially longer than the
+# provider's current policy are sent through the normal refresh path so a TTL
+# reduction takes effect without forcing a login.
+_ACCESS_TTL_CLOCK_SKEW_SECONDS = 60
 
 # scrypt parameters (RFC 7914 / stdlib hashlib.scrypt). n must be a power
 # of two; these are the widely-recommended interactive-login parameters
@@ -222,7 +227,21 @@ class BasicAuthProvider(DashboardAuthProvider):
         self._username = username
         self._password_hash = password_hash
         self._secret = secret
-        self._ttl = max(60, int(ttl_seconds))
+        requested_ttl = max(60, int(ttl_seconds))
+        if requested_ttl >= _REFRESH_TTL_SECONDS:
+            # Refresh is attempted only after access verification fails. If the
+            # two tokens expire together there is no interval in which the RT
+            # can rotate the session, so "automatic refresh" deterministically
+            # becomes a forced login at the shared boundary.
+            logger.warning(
+                "dashboard-auth-basic: access-token TTL (%ss) must be shorter "
+                "than the refresh-token TTL (%ss); using the safe default (%ss)",
+                requested_ttl,
+                _REFRESH_TTL_SECONDS,
+                _DEFAULT_TTL_SECONDS,
+            )
+            requested_ttl = _DEFAULT_TTL_SECONDS
+        self._ttl = requested_ttl
 
     # ---- OAuth methods: not used (pure-password provider) ------------------
 
@@ -261,11 +280,18 @@ class BasicAuthProvider(DashboardAuthProvider):
     # ---- session lifecycle -------------------------------------------------
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
+        now = int(time.time())
         payload = _unsign(access_token, self._secret)
         if (
             payload is None
             or payload.get("kind") != "access"
-            or payload.get("exp", 0) <= int(time.time())
+            or payload.get("exp", 0) <= now
+            # A config correction from an overlong access TTL to a safe value
+            # must also repair sessions minted before the restart. Treat those
+            # still-valid tokens as refresh-due; middleware then rotates the
+            # matching RT and writes the shorter-lived pair back to the client.
+            or payload.get("exp", 0)
+            > now + self._ttl + _ACCESS_TTL_CLOCK_SKEW_SECONDS
         ):
             return None
         return self._session_from_payload(access_token, "", payload)

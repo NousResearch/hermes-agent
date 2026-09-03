@@ -118,6 +118,51 @@ class TestProvider:
         assert r.user_id == "admin"
         assert p.verify_session(access_token=r.access_token) is not None
 
+    def test_access_ttl_cannot_consume_the_refresh_window(self, basic, monkeypatch):
+        now = 1_000_000
+        monkeypatch.setattr(basic.time, "time", lambda: now)
+        p = self._make(basic, ttl_seconds=basic._REFRESH_TTL_SECONDS)
+
+        session = p.complete_password_login(
+            username="admin", password="hunter2"
+        )
+
+        assert session.expires_at == now + basic._DEFAULT_TTL_SECONDS
+        monkeypatch.setattr(
+            basic.time,
+            "time",
+            lambda: now + basic._DEFAULT_TTL_SECONDS,
+        )
+        assert p.verify_session(access_token=session.access_token) is None
+        assert p.refresh_session(refresh_token=session.refresh_token).user_id == "admin"
+
+    def test_shorter_config_rotates_an_existing_overlong_session(
+        self, basic, monkeypatch
+    ):
+        now = 2_000_000
+        secret = secrets.token_bytes(32)
+        password_hash = basic.hash_password("hunter2")
+        monkeypatch.setattr(basic.time, "time", lambda: now)
+        old = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=password_hash,
+            secret=secret,
+            ttl_seconds=7 * 24 * 60 * 60,
+        )
+        session = old.complete_password_login(
+            username="admin", password="hunter2"
+        )
+        current = basic.BasicAuthProvider(
+            username="admin",
+            password_hash=password_hash,
+            secret=secret,
+            ttl_seconds=basic._DEFAULT_TTL_SECONDS,
+        )
+
+        assert current.verify_session(access_token=session.access_token) is None
+        rotated = current.refresh_session(refresh_token=session.refresh_token)
+        assert rotated.expires_at == now + basic._DEFAULT_TTL_SECONDS
+
 
     def test_cross_secret_token_does_not_verify(self, basic):
         p1 = self._make(basic)

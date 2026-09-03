@@ -3031,13 +3031,19 @@ def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[t
     return api_key, base_url
 
 
-def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
+def _resolve_nous_runtime_api(
+    *, force_refresh: bool = False, stale_access_token: Optional[str] = None
+) -> Optional[tuple[str, str]]:
     """Return fresh Nous runtime credentials when available.
 
     This mirrors the main agent's 401 recovery path and keeps auxiliary
     clients aligned with the singleton auth store + JWT refresh flow instead of
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
+
+    ``stale_access_token`` is the bearer that just 401'd; with ``force_refresh``
+    it lets the auth store adopt a sibling process's rotation instead of
+    re-POSTing the shared grant.
     """
     pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh)
     if pooled is not None:
@@ -3049,6 +3055,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
         creds = resolve_nous_runtime_credentials(
             timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
             force_refresh=force_refresh,
+            stale_access_token=stale_access_token or None,
         )
     except Exception as exc:
         logger.debug("Auxiliary Nous runtime credential resolution failed: %s", exc)
@@ -8298,7 +8305,7 @@ def _refresh_nous_auxiliary_client(
     401 lands under the ``task=""`` key while the stale entry survives under the
     task-scoped key (#58894).
     """
-    runtime = _resolve_nous_runtime_api(force_refresh=True)
+    runtime = _resolve_nous_runtime_api(force_refresh=True, stale_access_token=api_key)
     if runtime is None:
         return None, model
 

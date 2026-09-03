@@ -7,6 +7,7 @@ import pytest
 
 from agent.skill_bundles import (
     _slugify,
+    bundle_path_for,
     build_bundle_invocation_message,
     delete_bundle,
     get_bundle,
@@ -264,6 +265,58 @@ class TestSaveAndDeleteBundle:
         delete_bundle("doomed")
         assert get_bundle("doomed") is None
 
+
+class TestSaveBundleDurability:
+    """An overwrite replaces a bundle the user authored.
+
+    A truncating write empties the file before the dump lands, and
+    ``_load_bundle_file`` reads empty YAML as "not a mapping; skipping" — the
+    bundle drops out of slash-command discovery with only a WARNING, and
+    ``save_bundle`` refreshes the cache right after the write, so the loss
+    shows up immediately and the next save starts from nothing.
+    """
+
+    def test_existing_bundle_survives_an_interrupted_save(self, bundles_env, monkeypatch):
+        save_bundle("keeper", ["s1"], description="original")
+        path = bundle_path_for("keeper")
+        original = path.read_bytes()
+
+        def boom(fd):
+            raise OSError("simulated crash mid-write")
+
+        monkeypatch.setattr(os, "fsync", boom)
+        try:
+            save_bundle("keeper", ["s2"], description="replacement", overwrite=True)
+        except OSError:
+            pass  # the durable path refuses to swap in a half-written file
+
+        assert path.read_bytes() == original, "the previous bundle was destroyed"
+        reload_bundles()
+        info = get_bundle("keeper")
+        assert info is not None, "bundle vanished from discovery after a failed save"
+        assert info["skills"] == ["s1"]
+
+    def test_overwrite_keeps_the_existing_file_mode(self, bundles_env):
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits")
+        import stat
+
+        save_bundle("moded", ["s1"])
+        path = bundle_path_for("moded")
+        os.chmod(path, 0o640)
+
+        save_bundle("moded", ["s2"], overwrite=True)
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+    def test_new_bundle_is_not_locked_to_0600(self, bundles_env):
+        if os.name == "nt":
+            pytest.skip("POSIX permission bits")
+        import stat
+
+        save_bundle("fresh", ["s1"])
+        mode = stat.S_IMODE(bundle_path_for("fresh").stat().st_mode)
+        assert mode == 0o644, f"new bundle landed at {oct(mode)}"
 
 
 class TestReloadBundles:

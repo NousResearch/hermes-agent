@@ -411,9 +411,22 @@ def save_bundle(
     if instruction:
         payload["instruction"] = instruction
 
-    path.write_text(
+    # ``overwrite=True`` replaces a bundle the user already authored, and a
+    # bare ``write_text`` truncates it before the dump lands. An interrupted
+    # save leaves empty YAML, which ``_load_bundle_file`` reads as "not a
+    # mapping; skipping" — the bundle disappears from slash-command discovery
+    # with only a WARNING, and the ``scan_bundles()`` refresh below makes that
+    # visible immediately, so the editor's next save starts from nothing.
+    # ``preserve_mode`` keeps an existing bundle's bits instead of tightening
+    # it to mkstemp's 0600; a fresh one lands at 0644 like the other
+    # user-facing files Hermes creates.
+    from utils import atomic_write_text
+
+    atomic_write_text(
+        path,
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
+        preserve_mode=True,
+        create_mode=0o644,
     )
     scan_bundles()  # refresh cache
     return path

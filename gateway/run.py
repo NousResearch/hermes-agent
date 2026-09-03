@@ -8530,17 +8530,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ``running`` (#85993 — Telegram's 180s).
         """
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
+        from gateway.plugin_dispatch import connect_adapter
+
         if timeout <= 0:
-            return await adapter.connect(is_reconnect=is_reconnect)
+            result = connect_adapter(adapter, is_reconnect=is_reconnect)
+            if inspect.isawaitable(result):
+                return await result
+            return bool(result)
         # Use the detach-on-timeout pattern instead of plain asyncio.wait_for:
         # asyncio.wait_for cancels the overdue task but then waits for it to
         # exit. An adapter connect() that catches CancelledError can therefore
         # block recovery forever (the watcher never reaches the next retry).
         # Keep ownership of the old task through its done callback, but
         # release the runner at the deadline (#70344).
-        task = asyncio.ensure_future(
-            adapter.connect(is_reconnect=is_reconnect)
-        )
+        connected = connect_adapter(adapter, is_reconnect=is_reconnect)
+        if not inspect.isawaitable(connected):
+            return bool(connected)
+        task = asyncio.ensure_future(connected)
         try:
             done, _pending = await asyncio.wait({task}, timeout=timeout)
         except asyncio.CancelledError:

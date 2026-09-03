@@ -121,6 +121,25 @@ class TestIRCInteractiveSetup:
         out = capsys.readouterr().out
         assert "IRC setup complete!" in out
 
+    def test_configure_platform_passes_config_when_setup_fn_requires_it(self, monkeypatch, capsys):
+        """Third-party plugins (Keet) still declare setup_fn(config)."""
+        import hermes_cli.gateway as gateway_mod
+
+        seen = []
+
+        def fake_setup(config):
+            seen.append(config)
+            print("legacy setup complete")
+
+        plat = _register_irc_platform(setup_fn=fake_setup)
+        try:
+            gateway_mod._configure_platform(plat)
+        finally:
+            _unregister_irc_platform()
+
+        assert seen == [plat]
+        assert "legacy setup complete" in capsys.readouterr().out
+
 
     def test_configure_platform_fallback_when_no_setup_fn(self, monkeypatch, capsys):
         """A plugin with no setup_fn falls back to env-var instructions."""

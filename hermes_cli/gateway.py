@@ -8016,7 +8016,9 @@ def _configure_platform(platform: dict) -> None:
     entry = platform.get("_registry_entry")
 
     if entry is not None and entry.setup_fn is not None:
-        entry.setup_fn()
+        from gateway.plugin_dispatch import invoke_setup_fn
+
+        invoke_setup_fn(entry.setup_fn, config=platform)
         return
 
     fn = _builtin_setup_fn(platform["key"])

@@ -754,6 +754,19 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
     name = str(job.get("name") or prompt[:50] or (skills[0] if skills else "") or job_id or "cron job")
+    if "latest_execution" in job:
+        latest_execution = job["latest_execution"]
+    else:
+        # Non-list callers receive plain job records, so fetch the same ledger
+        # truth that list_jobs() attaches before formatting the public shape.
+        try:
+            from cron.executions import latest_execution as get_latest_execution
+
+            latest_execution = get_latest_execution(job_id)
+        except Exception:
+            # Ledger availability must not make an otherwise valid job action
+            # fail; match list_jobs()'s fail-closed null field.
+            latest_execution = None
     result = {
         "job_id": job_id,
         "name": name,
@@ -769,6 +782,10 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "next_run_at": job.get("next_run_at"),
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
+        # Keep the occurrence ledger beside the historical completion summary.
+        # Without it, a prior last_status="ok" can be mistaken for the result
+        # of a newer claimed/running/failed/unknown attempt.
+        "latest_execution": latest_execution,
         "last_delivery_error": job.get("last_delivery_error"),
         "last_delivery_unverified": job.get("last_delivery_unverified"),
         "last_fire_error": job.get("last_fire_error"),

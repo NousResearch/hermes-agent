@@ -8474,6 +8474,22 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
         return False
     if not _dispatch_via_service_manager_if_s6("start"):
         return False
+    # The supervised child owns the gateway from here; this process will
+    # never reach a GatewayRunner, so the startup-liveness watchdog armed
+    # by hermes_cli.main's argv fast-path (argv IS `gateway run`) has no
+    # disarm site left. On the execvp path that is academic — the image
+    # swap takes the watchdog thread with it — but the #36208 fallback
+    # parks in _block_until_terminated() with ~zero CPU and no progress
+    # lease, which is precisely the parked-deadlock signature: the
+    # watchdog fires on schedule and os._exit(75)s the container's CMD
+    # process, killing a container whose supervised gateway is healthy.
+    # Disarm at the handoff, before either heartbeat.
+    try:
+        from hermes_startup_watchdog import disarm_startup_watchdog
+
+        disarm_startup_watchdog()
+    except Exception:
+        pass
     # Loud breadcrumb: explain the upgrade and how to opt out. Print to
     # stderr so it doesn't pollute stdout-parsing scripts. The
     # supervised gateway's own logs are routed by s6-log to both

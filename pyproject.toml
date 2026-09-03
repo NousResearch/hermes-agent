@@ -596,8 +596,10 @@ hermes_cli = ["observability/schemas/*.json", "data/*.json", "local_runtime/*.js
 gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
-# wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# wheel contains adapters but discovery finds zero bundled plugins. Photon
+# additionally runs a Node sidecar whose package metadata and modules must
+# remain beside the Python adapter in packaged installs.
+plugins = ["**/plugin.yaml", "**/plugin.yml", "platforms/photon/sidecar/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

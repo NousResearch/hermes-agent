@@ -4,10 +4,14 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import json
 import os
+import re
 import shutil
 import stat
 import sys
+import time
+from collections.abc import Iterator
 from contextvars import ContextVar, Token
 from pathlib import Path
 
@@ -499,7 +503,7 @@ _NODE_BOOTSTRAP_SCRIPT = Path(__file__).resolve().parent / "scripts" / "lib" / "
 _INSTALL_ROOT = Path(__file__).resolve().parent
 
 
-def node_tool_runnable(path: str | None) -> bool:
+def node_tool_runnable(path: str | None, env: dict[str, str] | None = None) -> bool:
     """Return True only when *path* is a Node/npm/npx binary that actually runs.
 
     Hermes-managed Node trees live under ``$HERMES_HOME/node`` (or a profile's
@@ -510,7 +514,9 @@ def node_tool_runnable(path: str | None) -> bool:
     broken npm and fail the Node refresh / web UI build.
 
     Probe with ``--version`` (same pattern as :func:`agent_browser_runnable`) so
-    broken managed wrappers are detected before use.
+    broken managed wrappers are detected before use. *env* overrides the probe
+    environment; user-runtime detection passes the ambient environment so the
+    probe cannot recurse through :func:`with_hermes_node_path`.
     """
     if not path:
         return False
@@ -530,7 +536,7 @@ def node_tool_runnable(path: str | None) -> bool:
             [path, "--version"],
             capture_output=True,
             timeout=10,
-            env=with_hermes_node_path(),
+            env=env if env is not None else with_hermes_node_path(),
             creationflags=windows_hide_flags(),
         )
     except (OSError, subprocess.TimeoutExpired, ValueError):
@@ -1020,14 +1026,233 @@ def find_node_executable_on_path(command: str) -> str | None:
     return None
 
 
-def find_node_executable(command: str) -> str | None:
-    """Resolve a Node.js command, preferring healthy Hermes-managed installs.
+_ENGINE_CLAUSE_RE = re.compile(
+    r"^\s*(?P<op>\^|>=|<)?\s*v?(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)\s*$"
+)
 
-    This is for Hermes-owned subprocesses that should not be broken by a bad,
-    missing, or elevation-triggering system Node/npm on PATH. When a managed
-    tree exists but cannot be healed, returns ``None`` instead of falling back
-    to system npm on PATH.
+
+def _engines_spec(engine: str) -> tuple[list[tuple[str | None, tuple[int, int, int]]], bool]:
+    """Parse ``engines.<engine>`` from the checkout's root package.json.
+
+    Returns ``(clauses, supported)``. Each clause is ``(op, version)`` where
+    ``op`` is ``None`` (exact), ``"^"``, ``">="`` or ``"<"`` and ``version`` a
+    3-tuple. ``supported`` is False when the spec is missing or uses grammar
+    beyond that set — callers must fail closed rather than guess.
     """
+    package_json = Path(__file__).resolve().parent / "package.json"
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], False
+    engines = data.get("engines") if isinstance(data, dict) else None
+    if not isinstance(engines, dict):
+        return [], False
+    spec = engines.get(engine)
+    if not isinstance(spec, str) or not spec.strip():
+        return [], False
+    clauses: list[tuple[str | None, tuple[int, int, int]]] = []
+    for part in spec.split("||"):
+        match = _ENGINE_CLAUSE_RE.match(part)
+        if not match:
+            return [], False
+        clauses.append(
+            (
+                match.group("op"),
+                (
+                    int(match.group("major")),
+                    int(match.group("minor")),
+                    int(match.group("patch")),
+                ),
+            )
+        )
+    return clauses, True
+
+
+def _version_tuple(version: str) -> tuple[int, int, int] | None:
+    """Parse ``vX.Y.Z`` / ``X.Y.Z`` (leading whitespace tolerated) or None."""
+    match = re.match(r"^\s*v?(\d+)\.(\d+)\.(\d+)", version or "")
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _version_satisfies(
+    version: str,
+    clauses: list[tuple[str | None, tuple[int, int, int]]],
+    supported: bool,
+) -> bool:
+    """Evaluate *version* against parsed engine clauses (fail-closed)."""
+    if not supported:
+        return False
+    parsed = _version_tuple(version)
+    if parsed is None:
+        return False
+    for op, spec in clauses:
+        if op in (None, "^"):
+            ok = parsed[0] == spec[0] and parsed >= spec
+        elif op == ">=":
+            ok = parsed >= spec
+        elif op == "<":
+            ok = parsed < spec
+        else:  # pragma: no cover - the clause regex constrains op
+            ok = False
+        if ok:
+            return True
+    return False
+
+
+def _node_satisfies_engines(version: str) -> bool:
+    clauses, supported = _engines_spec("node")
+    return _version_satisfies(version, clauses, supported)
+
+
+def _npm_satisfies_engines(version: str) -> bool:
+    clauses, supported = _engines_spec("npm")
+    return _version_satisfies(version, clauses, supported)
+
+
+def _probe_tool_version(path: str) -> str | None:
+    """Return ``--version`` output for *path*, or None when the probe fails.
+
+    Runs with the ambient environment — never ``with_hermes_node_path()`` — so
+    user-runtime detection cannot recurse into itself.
+    """
+    import subprocess
+
+    try:
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=os.environ,
+            creationflags=windows_hide_flags(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    version = (result.stdout or b"").decode(errors="replace").strip()
+    return version or None
+
+
+def _iter_path_node_candidates(command: str) -> Iterator[str]:
+    """Yield *command* candidates found on PATH, Windows shim order included."""
+    names = _candidate_node_command_names(command)
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        for name in names:
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                yield str(candidate)
+
+
+def _user_managed_node_executable(command: str, home: Path | None = None) -> str | None:
+    """Return the first suitable *command* on PATH outside the managed tree.
+
+    A candidate is suitable when it is runnable and, for ``node``/``npm``, its
+    version satisfies the checkout's ``engines`` (fail-closed: unknown grammar
+    or an unparseable version is unsuitable). Candidates resolve through
+    symlinks, so the installer's command-link-dir links that point back into
+    ``$HERMES_HOME/node`` never count as a user runtime. Probes run with the
+    ambient environment — never ``with_hermes_node_path()`` — so detection
+    cannot recurse into itself.
+    """
+    root = home or get_hermes_home()
+    managed_roots: list[str] = []
+    for directory in iter_hermes_node_dirs(root):
+        try:
+            managed_roots.append(str(directory.resolve()))
+        except OSError:
+            continue
+
+    for candidate in _iter_path_node_candidates(command):
+        try:
+            resolved = str(Path(candidate).resolve())
+        except OSError:
+            resolved = os.path.normpath(candidate)
+        if any(_path_under_any(resolved, [root_]) for root_ in managed_roots):
+            continue
+        # Probe and return the CANDIDATE, not its resolved target: version
+        # managers (mise/nvm shims, Homebrew) dispatch on argv[0], so the
+        # symlinked shim behaves like the command while the resolved target
+        # does not.
+        version = _probe_tool_version(candidate)
+        if version is None:
+            continue
+        if command == "node" and not _node_satisfies_engines(version):
+            continue
+        if command == "npm" and not _npm_satisfies_engines(version):
+            continue
+        return candidate
+    return None
+
+
+# Seconds a cached detection verdict stays valid. PATH / HERMES_HOME changes
+# re-key the cache immediately; the TTL bounds staleness for everything else
+# (a version manager swapping the shim's target without touching PATH, say).
+_USER_MANAGED_NODE_CACHE_TTL_SECONDS = 60.0
+
+_user_managed_node_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
+
+
+def _user_managed_node_cache_key(home: Path | None = None) -> tuple[str, str, str]:
+    """Fingerprint everything a detection verdict depends on.
+
+    PATH and HERMES_HOME re-key on change, and the managed tree's directory
+    mtimes are folded in so an upgrade or reprovision immediately invalidates
+    a cached verdict. The tree fingerprint uses the same *home* as the key's
+    HERMES_HOME component — a profile-scoped call must not mix profile home
+    with default-home tree state.
+    """
+    key_home = home or get_hermes_home()
+    path = os.environ.get("PATH", "")
+    managed_state: list[str] = []
+    for directory in iter_hermes_node_dirs(key_home):
+        try:
+            managed_state.append(f"{directory}:{directory.stat().st_mtime:.6f}")
+        except OSError:
+            managed_state.append(f"{directory}:missing")
+    return (path, str(key_home), ";".join(managed_state))
+
+
+def user_managed_node_detected(home: Path | None = None) -> bool:
+    """True when a suitable user-managed Node (or npm) is reachable on PATH.
+
+    Cached per process with a bounded TTL. The cache re-keys immediately when
+    PATH, HERMES_HOME, or the managed tree's directory mtimes change, and
+    expires after ``_USER_MANAGED_NODE_CACHE_TTL_SECONDS`` regardless, so a
+    version manager swapping shim targets mid-process is stale for at most one
+    TTL. Tests may clear ``hermes_constants._user_managed_node_cache`` to
+    force a synchronous re-evaluation.
+    """
+    key = _user_managed_node_cache_key(home)
+    entry = _user_managed_node_cache.get(key)
+    now = time.monotonic()
+    if entry is not None and now - entry[0] < _USER_MANAGED_NODE_CACHE_TTL_SECONDS:
+        return entry[1]
+    detected = bool(
+        _user_managed_node_executable("node", home)
+        or _user_managed_node_executable("npm", home)
+    )
+    _user_managed_node_cache[key] = (now, detected)
+    return detected
+
+
+def find_node_executable(command: str) -> str | None:
+    """Resolve a Node.js command, honouring a user-managed runtime first.
+
+    A suitable user-managed Node/npm on PATH (outside the Hermes-managed tree,
+    satisfying the checkout's ``engines``) wins — the user's toolchain
+    outranks Hermes' own. Only when no suitable user runtime exists does
+    resolution fall back to the Hermes-managed tree, healing it as needed.
+    Returns ``None`` when no usable runtime exists anywhere.
+    """
+    user = _user_managed_node_executable(command)
+    if user:
+        return user
     managed = find_hermes_node_executable(command)
     if managed:
         return managed
@@ -1037,7 +1262,14 @@ def find_node_executable(command: str) -> str | None:
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Return *env* with Hermes-managed Node directories prepended to PATH."""
+    """Return *env* with Hermes-managed Node directories prepended to PATH.
+
+    No-op when a suitable user-managed runtime is present — Hermes must not
+    shadow the user's Node toolchain in the subprocesses it spawns.
+    Managed-only installs keep the prepend so managed tools stay resolvable.
+    """
+    if user_managed_node_detected():
+        return dict(os.environ if env is None else env)
     merged = dict(os.environ if env is None else env)
     existing = merged.get("PATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]

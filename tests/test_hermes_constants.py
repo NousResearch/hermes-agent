@@ -682,6 +682,10 @@ class TestAgentBrowserRunnable:
 
         monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: 0x08000000)
         monkeypatch.setattr(subprocess_mod, "run", fake_run)
+        # Hermetic PATH: user-managed Node detection runs through
+        # with_hermes_node_path(), and a dev machine's runtime on PATH would
+        # otherwise consume the fake subprocess probe first.
+        monkeypatch.setenv("PATH", "")
 
         assert agent_browser_runnable(str(good)) is True
         assert captured[0][0] == [str(good), "--version"]

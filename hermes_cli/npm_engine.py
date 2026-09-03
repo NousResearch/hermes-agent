@@ -175,10 +175,12 @@ def upgrade_managed_npm(
 ) -> bool:
     """Upgrade the managed npm at *npm* in place to satisfy *npm_range*.
 
-    ``--prefix`` targets the managed tree explicitly: a managed install writes
-    ``prefix=~/.local`` into ``$HERMES_HOME/node/etc/npmrc`` so that global
-    installs land on PATH, and without the override the "upgrade" would install
-    a second npm somewhere else while the managed one stayed stale.
+    ``--prefix`` targets the managed tree explicitly: the managed npm's
+    prefix-local npmrc points at the managed tree itself — or at the command
+    link dir's parent on managed-only installs (see
+    ``_nb_configure_npm_prefix`` in ``scripts/lib/node-bootstrap.sh``) — and
+    without the override the "upgrade" would install a second npm somewhere
+    else while the managed one stayed stale.
     """
     if not quiet:
         print(

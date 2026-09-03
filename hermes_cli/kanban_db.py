@@ -10907,6 +10907,13 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    # Jail the worker tree in its own transient cgroup scope so its memory
+    # bills against itself, not against the dispatcher's service (the
+    # 2026-08-06/2026-08-08 gateway-freeze class). Empty prefix = unwrapped
+    # spawn, byte-for-byte the historical behavior.
+    scope_prefix = _worker_scope_prefix(task.id)
+    if scope_prefix:
+        cmd = scope_prefix + cmd
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,
@@ -10935,6 +10942,63 @@ def _default_spawn(
 # ---------------------------------------------------------------------------
 # Long-lived dispatcher daemon
 # ---------------------------------------------------------------------------
+
+def _worker_scope_prefix(task_id: str, kanban_cfg: Optional[dict] = None) -> list[str]:
+    """systemd-run argv prefix that jails a worker in its own transient scope.
+
+    WHY (incident 2026-08-08, second of its class after 2026-08-06): workers
+    spawned with a bare ``Popen(start_new_session=True)`` inherit the
+    dispatcher's cgroup. When the dispatcher is the gateway, every worker —
+    plus its MCP servers, language servers, and any browser it launches —
+    bills against ``hermes-gateway.service``'s MemoryMax. Three QA workers
+    drove the gateway cgroup to its 14G ceiling; with swap not yet exhausted
+    the kernel chose direct-reclaim thrashing over OOM, freezing the event
+    loop for 20 minutes until the external watchdog restarted it.
+
+    ``systemd-run --user --scope`` gives the worker tree its own cgroup and
+    memory ceiling, so a runaway worker OOM-kills ALONE and the gateway's
+    budget protects only the gateway. Probe-verified on this host
+    (2026-08-08, /tmp/probe_systemd_scope2.py): the payload is EXEC'd (the
+    returned PID is the worker, so crash detection and SIGTERM reclaim are
+    unchanged), grandchildren cannot escape the scope, MemoryMax lands on
+    the scope cgroup, scope OOM leaves the spawner untouched, exit codes
+    propagate, and the transient scope self-collects on exit.
+
+    Fail-open: an empty list (Windows, systemd-run absent, or scoping
+    disabled via ``kanban.worker_scope_enabled: false``) spawns the worker
+    unwrapped, exactly as before. A worker that dies instantly because scope
+    creation failed is caught by the existing spawn-failure circuit breaker.
+    """
+    if _IS_WINDOWS:
+        return []
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    if not (kanban_cfg or {}).get("worker_scope_enabled", True):
+        return []
+    if shutil.which("systemd-run") is None:
+        return []
+    memory_max = str((kanban_cfg or {}).get("worker_memory_max") or "4G")
+    # Unit names must be unique per spawn: re-runs of the same task would
+    # otherwise collide with a still-collecting previous scope. A random
+    # token, not a timestamp — two spawns in the same millisecond (dispatcher
+    # batch tick) must still get distinct units.
+    safe_task = re.sub(r"[^a-zA-Z0-9_.-]", "-", str(task_id))
+    unit = f"hermes-kanban-{safe_task}-{secrets.token_hex(4)}"
+    return [
+        "systemd-run", "--user", "--quiet", "--scope",
+        "--unit", unit,
+        "--property", f"MemoryMax={memory_max}",
+        # No swap thrash inside the jail either: a worker that overruns its
+        # budget should die promptly, not grind the host through swap first.
+        "--property", "MemorySwapMax=0",
+        "--",
+    ]
+
 
 def run_daemon(
     *,

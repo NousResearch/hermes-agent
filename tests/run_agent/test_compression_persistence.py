@@ -17,6 +17,7 @@ Bug scenario (pre-fix):
 """
 
 import os
+import socket
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -390,7 +391,7 @@ class TestStoredPromptCwdDrift:
         return agent
 
     @staticmethod
-    def _host_block(cwd: str) -> str:
+    def _host_block(cwd: str, hostname: str | None = None) -> str:
         """A stored prompt fragment shaped like the real host-info block.
 
         ``build_environment_hints`` always emits ``User home directory:``
@@ -401,9 +402,58 @@ class TestStoredPromptCwdDrift:
         """
         return (
             "Host: Linux (6.16.0)\n"
+            f"Machine hostname: {hostname or socket.gethostname()}\n"
             "User home directory: /home/tester\n"
             f"Current working directory: {cwd}\n"
         )
+
+    def test_stored_prompt_stale_when_machine_hostname_differs(self):
+        """A session DB copied from another host must rebuild its prompt."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = self._host_block("/project/current", hostname="personal-pc")
+
+        with (
+            patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),
+            patch("socket.gethostname", return_value="atlas"),
+        ):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False
+
+    def test_stored_prompt_fresh_when_machine_hostname_matches(self):
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = (
+            self._host_block("/project/current", hostname="atlas")
+            + "\n# AGENTS.md\nMachine hostname: personal-pc\n"
+        )
+
+        with (
+            patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),
+            patch("socket.gethostname", return_value="atlas"),
+        ):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is True
+
+    def test_legacy_local_prompt_without_machine_hostname_is_rebuilt(self):
+        """One rebuild upgrades pre-runtime-identity prompt snapshots."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        stored_prompt = (
+            "Host: Linux (6.16.0)\n"
+            "User home directory: /home/tester\n"
+            "Current working directory: /project/current\n"
+        )
+
+        with (
+            patch("agent.conversation_loop.resolve_agent_cwd", return_value="/project/current"),
+            patch("socket.gethostname", return_value="atlas"),
+        ):
+            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False
 
     def test_stored_prompt_stale_when_cwd_differs(self):
         """Different cwd should force a prompt rebuild."""

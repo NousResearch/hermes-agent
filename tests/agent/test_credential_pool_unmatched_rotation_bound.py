@@ -108,3 +108,64 @@ class TestUnmatchedHintRotationIsBounded:
         assert statuses["cred-0"] != "exhausted"
         assert nxt is not None
         assert nxt.access_token == "key-healthy"
+
+
+    def test_select_between_rotations_does_not_defeat_the_bound(
+        self, tmp_path, monkeypatch
+    ):
+        """#83447: the agent flow calls select() between consecutive 401
+        rotations (rotate -> swap -> retry -> re-select). The old select()
+        reset wiped the streak every cycle, so a pool whose entries all fail
+        401 with an unmatched hint looped forever. The bound must survive
+        select() calls within the retry window."""
+        pool = _seed_pool(
+            tmp_path, monkeypatch,
+            [_entry(0, "key-a"), _entry(1, "key-b")],
+        )
+        results = []
+        for _ in range(10):  # caller's retry loop, re-selecting each time
+            pool.select()  # agent re-selects between retries
+            nxt = pool.mark_exhausted_and_rotate(
+                status_code=401,
+                error_context={"reason": "unauthorized"},
+                api_key_hint="oauth-runtime-token-that-matches-nothing",
+            )
+            results.append(nxt)
+            if nxt is None:
+                break
+        else:
+            pytest.fail(
+                "unbounded 401 retry loop: select() reset the streak every "
+                "cycle (#83447)"
+            )
+        assert results[-1] is None
+        # The escape must NOT have invented cooldowns for healthy keys.
+        statuses = {e.id: e.last_status for e in pool._entries}
+        assert all(status != "exhausted" for status in statuses.values())
+
+
+    def test_streak_decays_after_window(self, tmp_path, monkeypatch):
+        """Rotations separated by more than the window are not consecutive:
+        a stale streak must not trip the bound for a genuinely new problem."""
+        pool = _seed_pool(
+            tmp_path, monkeypatch,
+            [_entry(0, "key-a"), _entry(1, "key-b"), _entry(2, "key-c")],
+        )
+        # Two rotations within the window accumulate...
+        for _ in range(2):
+            pool.mark_exhausted_and_rotate(
+                status_code=401,
+                error_context={"reason": "unauthorized"},
+                api_key_hint="no-match",
+            )
+        assert pool._unmatched_rotation_streak == 2
+        # ...then a long gap: the next rotation starts a fresh streak.
+        pool._unmatched_rotation_streak_last_ts -= (
+            pool._UNMATCHED_ROTATION_WINDOW_SECONDS + 1
+        )
+        pool.mark_exhausted_and_rotate(
+            status_code=401,
+            error_context={"reason": "unauthorized"},
+            api_key_hint="no-match",
+        )
+        assert pool._unmatched_rotation_streak == 1

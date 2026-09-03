@@ -689,8 +689,16 @@ def _chat_messages_to_responses_input(
                             "content": normalized_content_parts,
                         }
                         item_id = raw_item.get("id")
+                        # If we replayed reasoning items from this message with
+                        # stripped IDs (store=False path), we must also strip
+                        # the message item IDs. The API requires that a message
+                        # item depending on a reasoning item cannot reference an
+                        # ID if the reasoning item's ID was stripped — otherwise
+                        # it fails with "Item 'msg_*' was provided without its
+                        # required 'reasoning' item: 'rs_*'" (#97442).
                         if (
                             not is_github_responses
+                            and not has_codex_reasoning
                             and isinstance(item_id, str)
                             and item_id.strip()
                         ):

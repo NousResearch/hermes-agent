@@ -16,6 +16,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from run_agent import AIAgent
+
 
 @pytest.fixture
 def session_db(tmp_path):
@@ -145,6 +147,46 @@ class TestBranchCommandCLI:
         assert kwargs["parent_session_id"] == original_id
         assert kwargs["reset"] is False
         assert kwargs["reason"] == "branch"
+
+    def test_branch_runs_external_context_engine_transition(self, cli_instance):
+        """A reused agent must bind an ordinary engine to the branch session."""
+        calls = []
+
+        class ExternalEngine:
+            context_length = 100_000
+
+            def on_session_end(self, session_id, messages):
+                calls.append(("end", session_id, list(messages)))
+
+            def on_session_reset(self):
+                calls.append(("reset",))
+
+            def on_session_start(self, session_id, **kwargs):
+                calls.append(("start", session_id, kwargs))
+
+        agent = MagicMock()
+        agent.session_id = cli_instance.session_id
+        agent.context_compressor = ExternalEngine()
+        agent.reset_session_state.side_effect = lambda **kwargs: (
+            AIAgent._transition_context_engine_session(
+                agent,
+                new_session_id=agent.session_id,
+                reset_engine=True,
+                **kwargs,
+            )
+        )
+        cli_instance.agent = agent
+        old_session_id = cli_instance.session_id
+        old_history = list(cli_instance.conversation_history)
+
+        from cli import HermesCLI
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        assert calls[0] == ("end", old_session_id, old_history)
+        assert calls[1] == ("reset",)
+        assert calls[2][0:2] == ("start", cli_instance.session_id)
+        assert calls[2][2]["old_session_id"] == old_session_id
 
 
 

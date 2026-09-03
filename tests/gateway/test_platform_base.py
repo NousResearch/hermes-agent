@@ -23,6 +23,35 @@ from gateway.platforms.base import (
 )
 
 
+def test_media_delivery_roots_follow_runtime_profile_home(tmp_path, monkeypatch):
+    """Profile selection after import must move generated-media authority too."""
+    import gateway.platforms.base as platform_base
+
+    active_home = tmp_path / "profiles" / "reviewer"
+    monkeypatch.setattr(platform_base, "get_hermes_home", lambda: active_home)
+    monkeypatch.setattr(platform_base, "MEDIA_DELIVERY_SAFE_ROOTS", ())
+    monkeypatch.setattr(platform_base, "_profile_cache_roots", lambda: [])
+    monkeypatch.setattr(platform_base, "_kanban_attachment_roots", lambda: [])
+
+    roots = platform_base._media_delivery_allowed_roots()
+
+    expected = {
+        active_home / "cache" / "images",
+        active_home / "cache" / "audio",
+        active_home / "cache" / "videos",
+        active_home / "cache" / "documents",
+        active_home / "cache" / "screenshots",
+        active_home / "image_cache",
+        active_home / "audio_cache",
+        active_home / "video_cache",
+        active_home / "document_cache",
+        active_home / "browser_screenshots",
+    }
+    assert expected <= set(roots)
+    assert active_home / "audi_cache" not in roots
+    assert active_home / "screenshot_cache" not in roots
+
+
 def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     """Encrypted Bitwarden cache is covered by the media credential guard."""
     import gateway.platforms.base as base

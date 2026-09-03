@@ -108,6 +108,64 @@ async def test_gateway_loop_goal_note_when_goal_active(loop_env):
 
 
 @pytest.mark.asyncio
+async def test_gateway_loop_goal_note_survives_slow_db_init(tmp_path, monkeypatch):
+    """A slow state.db init must not swallow the active-/goal note.
+
+    Regression (CI run 33709241320, slice 11/12): on a loaded runner the
+    goals SessionDB bootstrap outlived its grace window, so
+    ``GoalManager.set()`` dropped the write. The later ``/loop`` warm-up
+    then found no persisted goal and the reply omitted the "an active
+    /goal is driving this session" note -- the reply silently disagreed
+    with the goal the user had just set. The write is now deferred and
+    flushed once the DB lands.
+
+    The ordering matters: the goal is set BEFORE anything warms the DB,
+    so the write hits a cold cache with no bootstrap in flight. That is
+    what expired the window in CI, and it is why widening the window
+    alone was never the fix.
+    """
+    import hermes_state
+
+    monkeypatch.setattr(goals, "_DB_BOOTSTRAP_INIT_WAIT_S", 0.2)
+
+    real_session_db = hermes_state.SessionDB
+
+    class _SlowSessionDB(real_session_db):
+        def __init__(self, *a, **k):
+            time.sleep(0.8)  # past the shrunk init window
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(hermes_state, "SessionDB", _SlowSessionDB)
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+    # Tolerate the deferred-write buffer being absent so an unfixed tree
+    # fails on the real symptom (missing note) instead of an AttributeError.
+    if hasattr(goals, "_DEFERRED_GOAL_WRITES"):
+        goals._DEFERRED_GOAL_WRITES.clear()
+
+    try:
+        # Cold cache + slow init: this write cannot land inside the window.
+        from hermes_cli.goals import GoalManager
+
+        GoalManager(session_id="sid-gateway-loop").set("finish the migration")
+
+        runner = _make_runner()
+        response = await GatewayRunner._handle_loop_command(
+            runner, _make_event("/loop 5m poll CI")
+        )
+        assert "active /goal" in response, response
+        # ...and it is genuinely durable, not just an in-memory echo.
+        assert goals.GoalManager("sid-gateway-loop").state is not None
+    finally:
+        goals._DB_CACHE.clear()
+        if hasattr(goals, "_DEFERRED_GOAL_WRITES"):
+            goals._DEFERRED_GOAL_WRITES.clear()
+
+
+@pytest.mark.asyncio
 async def test_post_turn_loop_completion_completes_inflight_tick(loop_env):
     runner = _make_runner()
     await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))

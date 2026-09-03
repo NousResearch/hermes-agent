@@ -745,6 +745,61 @@ _DB_CACHE: Dict[str, Any] = {}
 _DB_BOOTSTRAP_LOCK = threading.Lock()
 _DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
 
+# Writes that `save_goal` could not persist because no SessionDB was
+# available yet (cold cache, bootstrap window expired). Keyed by
+# ``(home, session_id)`` so a later successful `_get_session_db()` can
+# flush them. Bounded: one entry per session, replaced on rewrite.
+_DEFERRED_GOAL_WRITES: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_DEFERRED_WRITES_LOCK = threading.Lock()
+
+
+def _defer_goal_write(session_id: str, state: "GoalState") -> None:
+    """Remember a goal write that could not be persisted yet.
+
+    ``save_goal`` returns False when SessionDB is unavailable, but the
+    caller has already told the user the goal is set. Dropping the write
+    makes that reply a lie for the whole lifetime of the process: the DB
+    may come up a moment later (the gateway warms it off-loop) and every
+    subsequent read would still find nothing. Buffering the write lets
+    the next successful ``_get_session_db()`` flush it, so durability is
+    late instead of lost.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = str(get_hermes_home())
+    except Exception:
+        return
+    try:
+        payload = state.to_json()
+    except Exception as exc:
+        logger.debug("GoalManager: could not serialize deferred goal: %s", exc)
+        return
+    with _DEFERRED_WRITES_LOCK:
+        _DEFERRED_GOAL_WRITES[(home, session_id)] = {"payload": payload, "at": time.time()}
+
+
+def _flush_deferred_goal_writes(home: str, db: Any) -> None:
+    """Persist buffered goal writes for ``home`` now that a DB exists.
+
+    Best-effort: a flush failure leaves the entry in place for the next
+    attempt rather than discarding state we already acknowledged.
+    """
+    with _DEFERRED_WRITES_LOCK:
+        keys = [k for k in _DEFERRED_GOAL_WRITES if k[0] == home]
+        if not keys:
+            return
+        pending = {k: _DEFERRED_GOAL_WRITES.pop(k) for k in keys}
+    for (_home, session_id), entry in pending.items():
+        try:
+            db.set_meta(_meta_key(session_id), entry["payload"])
+        except Exception as exc:
+            logger.warning(
+                "GoalManager: deferred goal write for %s still not durable: %s",
+                session_id,
+                exc,
+            )
+
 # How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap
 # before degrading to None. Normal SessionDB init is ~10-100ms, so a call
 # that arrives mid-bootstrap usually picks the cached instance up within
@@ -793,6 +848,11 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
         if db is not None and home not in _DB_CACHE:
             _DB_CACHE[home] = db
         _DB_BOOTSTRAP_INFLIGHT.pop(home, None)
+        cached = _DB_CACHE.get(home)
+    # The bootstrap thread is its own DB-availability path, so flush here
+    # too: a write deferred before the bootstrap started must still land.
+    if cached is not None:
+        _flush_deferred_goal_writes(home, cached)
     done.set()
 
 
@@ -869,7 +929,10 @@ def _get_session_db() -> Optional[Any]:
                 # watchdog's probe timeout.
                 wait = _DB_BOOTSTRAP_LOOP_WAIT_S
         done.wait(wait)
-        return _DB_CACHE.get(home)
+        cached = _DB_CACHE.get(home)
+        if cached is not None:
+            _flush_deferred_goal_writes(home, cached)
+        return cached
 
     try:
         db = SessionDB()
@@ -885,8 +948,10 @@ def _get_session_db() -> Optional[Any]:
                 db.close()
             except Exception:
                 pass
+            _flush_deferred_goal_writes(home, existing)
             return existing
         _DB_CACHE[home] = db
+    _flush_deferred_goal_writes(home, db)
     return db
 
 
@@ -934,12 +999,17 @@ def save_goal(session_id: str, state: GoalState) -> bool:
         return False
     db = _get_session_db()
     if db is None:
+        # The caller has already told the user the goal is set. Do not drop
+        # the write: buffer it so the next successful _get_session_db() can
+        # flush it once the bootstrap lands.
+        _defer_goal_write(session_id, state)
         logger.error("GoalManager: SessionDB unavailable; goal state is not durable")
         return False
     try:
         db.set_meta(_meta_key(session_id), state.to_json())
         return True
     except Exception as exc:
+        _defer_goal_write(session_id, state)
         logger.error("GoalManager: set_meta failed; goal state is not durable: %s", exc)
         return False
 

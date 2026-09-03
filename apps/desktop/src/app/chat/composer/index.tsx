@@ -30,6 +30,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { ComposerDragRegion } from './composer-drag-region'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -1095,7 +1096,7 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck={false}
+        spellCheck
         suppressContentEditableWarning
       />
       <ComposerDirectiveActions editorRef={editorRef} />
@@ -1243,6 +1244,18 @@ export function ChatBar({
             data-thread-scrolled-up={scrolledUp ? '' : undefined}
             data-tip-region=""
             data-tour={composerTourMarker}
+            onDoubleClick={
+              popoutAllowed
+                ? event => {
+                    if (
+                      event.target instanceof Element &&
+                      !event.target.closest('[data-slot="composer-surface"]')
+                    ) {
+                      handleComposerToggle()
+                    }
+                  }
+                : undefined
+            }
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
@@ -1275,22 +1288,16 @@ export function ChatBar({
             {!poppedOut && (
               <div
                 className="pointer-events-none absolute inset-0 rounded-[inherit]"
+                data-slot="composer-fade-overlay"
                 style={{ background: COMPOSER_FADE_BACKGROUND }}
               />
             )}
-            {/* Drag region: covers the transparent grab margin around the surface.
-              The surface sits on top (z-4) so only the exposed ring receives this
-              element's hover/cursor — grab cursor + a diagonal hatch (/////)
-              appear when you hover the draggable margin, never over the input.
-              The hatch pattern + opacity ladder live in styles.css. */}
+            {/* Drag affordance: the visual frame covers the transparent grab
+              margin, but stays pointer-transparent so Chromium's native
+              context-menu hit test reaches the editable surface. The root
+              handles drag and double-click gestures from that margin. */}
             {popoutAllowed && (
-              <div
-                aria-hidden
-                className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
-                data-dragging={dragging ? '' : undefined}
-                data-slot="composer-drag-region"
-                onDoubleClick={handleComposerToggle}
-              />
+              <ComposerDragRegion dragging={dragging} />
             )}
             <div className="relative w-full rounded-[inherit]">
               {hudMode && busy && <span aria-hidden className="arc-border arc-composer" />}

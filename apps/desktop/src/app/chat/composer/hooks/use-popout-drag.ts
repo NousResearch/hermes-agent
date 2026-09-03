@@ -58,7 +58,18 @@ function gestureTargetOk(target: EventTarget | null) {
  *  the editor and composer surface bubble through the root too, but they belong
  *  to text selection and controls, never to the pop-out gesture. */
 function isDockDragPlatform(target: EventTarget | null) {
-  return target instanceof Element && Boolean(target.closest('[data-slot="composer-drag-region"]'))
+  if (!(target instanceof Element)) {
+    return false
+  }
+
+  if (target.closest('[data-slot="composer-drag-region"]')) {
+    return true
+  }
+
+  // The visual drag region is pointer-transparent so Chromium's native
+  // context-menu hit test reaches the editable surface. The root receives
+  // events from its exposed 5px padding instead.
+  return Boolean(target.closest('[data-slot="composer-root"]') && !target.closest('[data-slot="composer-surface"]'))
 }
 
 /** Floating composer's 5px outer frame — grab here to drag without long-press. */

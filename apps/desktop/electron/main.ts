@@ -280,6 +280,7 @@ import {
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { selectPoolEvictions } from './pool-eviction'
+import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import {
   LocalBackendSpawnCoordinator,
   type LocalBackendSpawnRequest,
@@ -1413,13 +1414,86 @@ const profileDeletionGate = new ProfileDeletionGate()
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
-const POOL_MAX_BACKENDS = Math.max(1, Number(process.env.HERMES_DESKTOP_POOL_MAX) || 3)
-const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || 10 * 60_000)
-const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(POOL_MAX_BACKENDS)
+// Pool sizing is a device preference (Settings → Advanced → pool rows), not a
+// launch constant: mutable at runtime, persisted in userData, applied live.
+// The legacy HERMES_DESKTOP_POOL_* env vars remain the initial-value fallback
+// for scripted/headless setups; after launch the stored preference wins.
+const POOL_LIMITS_PATH = path.join(app.getPath('userData'), 'pool-limits.json')
+
+function readPersistedPoolLimits() {
+  try {
+    const limits = parsePoolLimits(fs.readFileSync(POOL_LIMITS_PATH, 'utf8'))
+    rememberLog(
+      `[pool-limits] loaded from ${POOL_LIMITS_PATH}: maxBackends=${limits.maxBackends}, idleMs=${limits.idleMs}`
+    )
+
+    return limits
+  } catch {
+    // No persisted file yet — fall back to the legacy env vars so scripted
+    // setups keep working. Log which source won: a silently-ignored env var
+    // here costs a scripted-setup user a debugging session.
+    const fromEnv = clampPoolLimits({
+      maxBackends: Number(process.env.HERMES_DESKTOP_POOL_MAX) || undefined,
+      idleMs: Number(process.env.HERMES_DESKTOP_POOL_IDLE_MS) || undefined
+    })
+
+    if (fromEnv.maxBackends !== POOL_LIMITS_DEFAULTS.maxBackends || fromEnv.idleMs !== POOL_LIMITS_DEFAULTS.idleMs) {
+      rememberLog(`[pool-limits] no saved file; using env-var overrides: maxBackends=${fromEnv.maxBackends}, idleMs=${fromEnv.idleMs}`)
+    } else {
+      rememberLog('[pool-limits] no saved file and no env overrides; using defaults')
+    }
+
+    return fromEnv
+  }
+}
+
+function persistPoolLimits(limits) {
+  try {
+    fs.mkdirSync(path.dirname(POOL_LIMITS_PATH), { recursive: true })
+    // Atomic write: write to a temp file in the same directory, then rename.
+    // A crash mid-write would otherwise leave truncated JSON and silently
+    // lose the user's saved sizing.
+    const tmpPath = `${POOL_LIMITS_PATH}.tmp`
+    fs.writeFileSync(tmpPath, JSON.stringify(limits, null, 2), 'utf8')
+    fs.renameSync(tmpPath, POOL_LIMITS_PATH)
+  } catch (error) {
+    rememberLog(`[pool-limits] write failed: ${error.message}`)
+  }
+}
+
+let poolLimits = readPersistedPoolLimits()
+// Hard cap on local backends that are starting OR running (the LRU eviction
+// above is soft — it spares keepalive-fresh entries). Follows the live
+// preference: setPoolLimits() pushes a new max into the coordinator.
+const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits.maxBackends)
 // How long a spawn may wait for a free local slot. Must stay under the
 // renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS (45s, src/lib/with-timeout.ts) so
 // the queued ticket fails before the renderer does and the user sees why.
 const POOL_SLOT_WAIT_MS = 30_000
+
+function poolMaxBackends() {
+  return poolLimits.maxBackends
+}
+
+function poolIdleMs() {
+  return poolLimits.idleMs
+}
+
+/**
+ * Apply new limits live: persist, then converge the running pool — evict
+ * LRU backends down to the new max, and let the (already running) idle
+ * reaper handle a shortened idle window on its next tick. Returns the
+ * limits actually in force (post-clamp).
+ */
+function setPoolLimits(raw) {
+  poolLimits = clampPoolLimits(raw)
+  persistPoolLimits(poolLimits)
+  localBackendSpawnCoordinator.setLimit(poolLimits.maxBackends)
+  evictLruPoolBackends(poolMaxBackends())
+  startPoolIdleReaper()
+
+  return { ...poolLimits }
+}
 
 // A backend touched within this window has a live renderer socket (the keepalive
 // pings every 60s for every open profile). LRU eviction must spare these — a
@@ -1439,7 +1513,7 @@ const POOL_SLOT_WAIT_MS = 30_000
 //                       re-allocating pooled gateway secondaries ~700×/day).
 //   * 3× ping + 60s headroom = ~4 min, comfortable margin for two missed
 //     pings + WSL2 IPC stall. The hard ceiling for the cap-eligible set is
-//     POOL_IDLE_MS above (default 10 min) — this constant only governs the
+//     pool idle window above (default 10 min) — this constant only governs the
 //     "is this backend plausibly still alive" question for LRU eviction,
 //     not when the idle reaper definitively tears a backend down.
 const POOL_KEEPALIVE_FRESH_MS = Math.max(
@@ -11261,7 +11335,7 @@ async function ensureBackend(profile) {
     return connection
   }
 
-  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+  evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -11427,7 +11501,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       return existingLocal.connectionPromise
     }
 
-    evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+    evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
       process: null,
@@ -11498,7 +11572,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
     )
   }
 
-  evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
+  evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -12153,7 +12227,7 @@ function evictLruPoolBackends(keep) {
   const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 
   for (const profile of evictions) {
-    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
+    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
     stopPoolBackend(profile)
   }
 }
@@ -12167,8 +12241,8 @@ function startPoolIdleReaper() {
     const now = Date.now()
 
     for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > POOL_IDLE_MS) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(POOL_IDLE_MS / 1000)}s)`)
+      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
+        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
         stopPoolBackend(profile)
       }
     }
@@ -12293,9 +12367,9 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   entry.localBackendSlotKey = poolKey
   entry.localBackendSpawnRequest = spawnRequest
 
-  if (localBackendSpawnCoordinator.activeCount >= POOL_MAX_BACKENDS) {
+  if (localBackendSpawnCoordinator.activeCount >= poolMaxBackends()) {
     rememberLog(
-      `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${POOL_MAX_BACKENDS} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
+      `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${poolMaxBackends()} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
     )
   }
 
@@ -14713,6 +14787,18 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
 
   return { ok: true }
+})
+// Pool sizing (Settings → Advanced): device-local, live-applied. Main is
+// authoritative (it owns the pool and the persisted copy); the returned
+// limits are what actually took effect post-clamp.
+ipcMain.handle('hermes:pool-limits:get', async () => ({ ...poolLimits }))
+ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
+  const next = setPoolLimits({
+    maxBackends: typeof raw?.maxBackends === 'number' ? raw.maxBackends : poolLimits.maxBackends,
+    idleMs: typeof raw?.idleMs === 'number' ? raw.idleMs : poolLimits.idleMs
+  })
+
+  return { ok: true, limits: next }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))

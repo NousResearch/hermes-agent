@@ -3190,6 +3190,8 @@ def create_task(
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
+    block_kind: Optional[str] = None,
+    block_reason: Optional[str] = None,
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -3227,6 +3229,11 @@ def create_task(
     (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
     ``--reasoning <level>``. It is independent of ``model_override``: a task
     can run the profile's own model at a different depth.
+
+    ``initial_status='blocked'`` writes a sticky ``blocked`` event in the same
+    transaction as the task row. ``block_kind`` (one of
+    :data:`VALID_BLOCK_KINDS`) and ``block_reason`` optionally describe that
+    initial blocker; neither is accepted for another initial status.
 
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
@@ -3404,6 +3411,19 @@ def create_task(
             )
         skills_list = cleaned
 
+    if initial_status != "blocked":
+        if block_kind is not None or block_reason is not None:
+            raise ValueError(
+                "block_kind and block_reason require initial_status='blocked'"
+            )
+    else:
+        if block_kind is not None and block_kind not in VALID_BLOCK_KINDS:
+            raise ValueError(
+                f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
+            )
+        if block_reason is not None and not isinstance(block_reason, str):
+            raise ValueError("block_reason must be a string or None")
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -3507,9 +3527,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        reasoning_effort,
+                        reasoning_effort, block_kind,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3532,6 +3552,7 @@ def create_task(
                         model_override,
                         provider_override,
                         reasoning_effort,
+                        block_kind,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
@@ -3565,6 +3586,18 @@ def create_task(
                         "provider_override": provider_override,
                     },
                 )
+                if initial_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {
+                            "reason": block_reason,
+                            "kind": block_kind,
+                            "recurrences": 0,
+                            "source_status": "ready",
+                        },
+                    )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:

@@ -1417,6 +1417,8 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
+    block_kind = args.get("block_kind")
+    block_reason = args.get("block_reason")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -1479,6 +1481,8 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
+                block_kind=block_kind,
+                block_reason=block_reason,
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
@@ -2265,6 +2269,22 @@ KANBAN_CREATE_SCHEMA = {
                     "require immediate human ops (R3 gate) to skip the "
                     "brief running-to-blocked transition. Defaults to "
                     "'running', which preserves the usual dispatch path."
+                ),
+            },
+            "block_kind": {
+                "type": "string",
+                "enum": ["dependency", "needs_input", "capability", "transient"],
+                "description": (
+                    "Optional typed reason for an initially blocked card. "
+                    "Only valid when initial_status is 'blocked'; use the same "
+                    "kinds as kanban_block. Omit for a generic sticky human blocker."
+                ),
+            },
+            "block_reason": {
+                "type": "string",
+                "description": (
+                    "Human-readable blocker reason for an initially blocked card. "
+                    "Only valid when initial_status is 'blocked'."
                 ),
             },
             "skills": {

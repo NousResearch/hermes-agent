@@ -416,6 +416,44 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_initial_typed_block_persists_through_tool_handler(worker_env):
+    """kanban_create forwards an initial typed blocker atomically to the DB."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "await operator approval",
+        "assignee": "peer",
+        "initial_status": "blocked",
+        "block_kind": "needs_input",
+        "block_reason": "Which production tenant should be used?",
+    })
+    result = json.loads(out)
+    assert result["ok"] is True, result
+    assert result["status"] == "blocked"
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, result["task_id"])
+        assert task.block_kind == "needs_input"
+        blocked = [event for event in kb.list_events(conn, task.id) if event.kind == "blocked"]
+        assert blocked[-1].payload["reason"] == "Which production tenant should be used?"
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, task.id).status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_create_schema_documents_typed_blocker_dependency():
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    properties = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert set(properties["block_kind"]["enum"]) == kb.VALID_BLOCK_KINDS
+    assert "initial_status is 'blocked'" in properties["block_kind"]["description"]
+    assert "initial_status is 'blocked'" in properties["block_reason"]["description"]
+
+
 def test_link_happy_path(worker_env):
     from hermes_cli import kanban_db as kb
     conn = kb.connect()

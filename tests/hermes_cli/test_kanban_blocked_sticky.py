@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -76,6 +77,65 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initial_block_is_sticky_and_not_auto_promoted(kanban_home: Path) -> None:
+    """An initially blocked parentless task must have a durable block event.
+
+    Without that event, ``recompute_ready`` mistakes the task for a recoverable
+    circuit-breaker block and promotes it because an empty parent set is done.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="awaiting human ops", initial_status="blocked")
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        events = kb.list_events(conn, tid)
+        assert [event.kind for event in events] == ["created", "blocked"]
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_initial_typed_block_persists_reason_kind_and_stays_sticky(kanban_home: Path) -> None:
+    """Typed initial blocks use the same durable blocker contract as block_task."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="awaiting credential grant",
+            initial_status="blocked",
+            block_kind="capability",
+            block_reason="Production credential must be granted by an operator.",
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "capability"
+        blocked = [event for event in kb.list_events(conn, tid) if event.kind == "blocked"]
+        assert len(blocked) == 1
+        assert blocked[0].payload == {
+            "reason": "Production credential must be granted by an operator.",
+            "kind": "capability",
+            "recurrences": 0,
+            "source_status": "ready",
+        }
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"block_kind": "not-a-kind", "initial_status": "blocked"}, "block kind must be one of"),
+        ({"block_kind": "capability", "initial_status": "running"}, "require initial_status='blocked'"),
+        ({"block_reason": "needs approval", "initial_status": "running"}, "require initial_status='blocked'"),
+    ],
+)
+def test_initial_block_metadata_is_valid_only_for_blocked_status(
+    kanban_home: Path, kwargs: dict[str, Any], message: str,
+) -> None:
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match=message):
+            getattr(kb, "create_task")(conn, title="invalid initial block metadata", **kwargs)
 
 
 # ---------------------------------------------------------------------------

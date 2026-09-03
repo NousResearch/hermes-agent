@@ -826,7 +826,11 @@ def _install_safe_python_generation(
     return None
 
 
-def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo | None]:
+def _smoke_candidate_venv(
+    venv_dir: Path,
+    *,
+    project_root: Path | None = None,
+) -> tuple[bool, str, SQLiteRuntimeInfo | None]:
     """Exercise the candidate interpreter and imports through its real path."""
     python = _venv_python(venv_dir)
     info = probe_sqlite_runtime(python)
@@ -854,10 +858,11 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
         "VIRTUAL_ENV",
     ):
         env.pop(key, None)
+    run_cwd = project_root if project_root is not None else venv_dir.parent
     try:
         result = subprocess.run(
             [str(python), "-I", "-c", check],
-            cwd=venv_dir.parent,
+            cwd=run_cwd,
             env=env,
             capture_output=True,
             text=True,
@@ -914,18 +919,20 @@ def _stage_candidate_venv(
         check=False,
     )
     if created.returncode != 0:
+        detail = (created.stderr or created.stdout or "").strip()
+        last_line = detail.splitlines()[-1] if detail else f"candidate venv creation failed (rc={created.returncode})"
         logger.warning(
             "candidate venv creation failed (rc=%d): %s",
             created.returncode,
-            (created.stderr or created.stdout or "").strip(),
+            last_line,
         )
         _remove_tree(candidate, boundary=runtime_root)
-        return None
+        return None, last_line
 
     if not (project_root / "uv.lock").is_file():
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
-        return None
+        return None, "uv.lock is missing"
     # Locked sync must see project [tool.uv] exclude-newer; --no-config /
     # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
     sync_env = dict(env)
@@ -942,19 +949,23 @@ def _stage_candidate_venv(
         ],
         cwd=project_root,
         env=sync_env,
+        capture_output=True,
+        text=True,
         check=False,
     )
     if synced.returncode != 0:
-        logger.warning("candidate dependency sync failed (rc=%d)", synced.returncode)
+        detail = (synced.stderr or synced.stdout or "").strip()
+        last_line = detail.splitlines()[-1] if detail else f"candidate dependency sync failed (rc={synced.returncode})"
+        logger.warning("candidate dependency sync failed (rc=%d): %s", synced.returncode, last_line)
         _remove_tree(candidate, boundary=runtime_root)
-        return None
+        return None, last_line
 
-    healthy, detail, _ = _smoke_candidate_venv(candidate)
+    healthy, detail, _ = _smoke_candidate_venv(candidate, project_root=project_root)
     if not healthy:
         logger.warning("candidate venv smoke failed: %s", detail)
         _remove_tree(candidate, boundary=runtime_root)
-        return None
-    return candidate
+        return None, detail
+    return candidate, ""
 
 
 def _rename_with_retry(source: Path, destination: Path) -> None:
@@ -1010,7 +1021,7 @@ def _cut_over_candidate(
             )
 
         try:
-            healthy, detail, info = _smoke_candidate_venv(live)
+            healthy, detail, info = _smoke_candidate_venv(live, project_root=project_root)
         except Exception as exc:
             healthy, detail, info = False, f"candidate smoke raised: {exc}", None
         if healthy:
@@ -1430,17 +1441,29 @@ def repair_vulnerable_runtime(
             )
         generation, python, candidate_info = provisioned
 
-        candidate = _stage_candidate_venv(
+        staged = _stage_candidate_venv(
             uv_bin,
             project_root=root,
             generation=generation,
             python=python,
         )
+        candidate: Path | None = None
+        smoke_detail = ""
+        if isinstance(staged, tuple):
+            candidate = staged[0]
+            smoke_detail = staged[1] if len(staged) > 1 else ""
+        elif isinstance(staged, Path):
+            candidate = staged
         if candidate is None:
             _remove_tree(generation, boundary=managed_python_install_dir(root))
+            fail_detail = (
+                f"replacement environment did not pass dependency and import smoke tests: {smoke_detail}"
+                if smoke_detail
+                else "replacement environment did not pass dependency and import smoke tests"
+            )
             return RuntimeRepairResult(
                 "failed",
-                "replacement environment did not pass dependency and import smoke tests",
+                fail_detail,
                 sqlite_before=current.sqlite_version_string,
                 sqlite_after=candidate_info.sqlite_version_string,
             )

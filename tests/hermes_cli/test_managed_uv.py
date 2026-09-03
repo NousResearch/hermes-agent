@@ -620,6 +620,62 @@ class TestRuntimeRepair:
         assert leftovers == [], f"no stale markers may remain: {leftovers}"
 
 
+class TestCandidateSmokeDiagnostics:
+    """Regression tests for issue #100477: candidate smoke diagnostics & cwd."""
+
+    def test_failed_candidate_smoke_reports_specific_detail(self, tmp_path):
+        """Repair failure must include actionable smoke-test diagnostics (#100477)."""
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, sentinel = _make_runtime_install(tmp_path, windows=sys.platform == "win32")
+        generation = root / ".hermes-runtime" / "cpython-3.12-fixed"
+        generation.mkdir(parents=True)
+        bin_name = "Scripts" if sys.platform == "win32" else "bin"
+        py_name = "python.exe" if sys.platform == "win32" else "python"
+        candidate_python = generation / bin_name / py_name
+        candidate_python.parent.mkdir(parents=True, exist_ok=True)
+        candidate_python.write_text("fixed interpreter", encoding="utf-8")
+        current = _runtime_info(candidate_python, (3, 49, 1))
+        fixed = _runtime_info(candidate_python, (3, 53, 1))
+
+        with patch(
+                 "hermes_cli.managed_uv.probe_sqlite_runtime",
+                 side_effect=[current, current],
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation",
+                 return_value=(generation, candidate_python, fixed),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._stage_candidate_venv",
+                 return_value=(None, "ModuleNotFoundError: No module named 'hermes_state'"),
+             ):
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "failed"
+        assert "ModuleNotFoundError: No module named 'hermes_state'" in result.detail
+
+    def test_smoke_candidate_venv_uses_project_root_cwd(self, tmp_path):
+        """_smoke_candidate_venv must execute inside project_root (#100477)."""
+        from hermes_cli.managed_uv import _smoke_candidate_venv
+
+        root = tmp_path / "checkout"
+        root.mkdir()
+        candidate = root / ".hermes-runtime" / "venv-candidate"
+        bin_name = "Scripts" if sys.platform == "win32" else "bin"
+        py_name = "python.exe" if sys.platform == "win32" else "python"
+        (candidate / bin_name).mkdir(parents=True)
+        (candidate / bin_name / py_name).write_text("py", encoding="utf-8")
+
+        observed_cwd = []
+        with patch("hermes_cli.managed_uv.probe_sqlite_runtime", return_value=_runtime_info(candidate / bin_name / py_name, (3, 53, 1))), \
+             patch("hermes_cli.managed_uv._venv_python", return_value=candidate / bin_name / py_name), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.side_effect = lambda *args, **kwargs: (observed_cwd.append(kwargs.get("cwd")) or MagicMock(returncode=0))
+            _smoke_candidate_venv(candidate, project_root=root)
+
+        assert observed_cwd == [root]
+
 class TestRuntimeCutover:
     def test_os_lock_blocks_concurrent_repair_and_releases(self, tmp_path):
         from hermes_cli.managed_uv import _acquire_repair_lock, _release_repair_lock

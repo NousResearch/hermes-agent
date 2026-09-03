@@ -348,6 +348,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
         thread_id=None,
         media_files=[],
         force_document=False,
+        force_plain=False,
     )
 
 
@@ -402,6 +403,7 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
         thread_id=None,
         media_files=[],
         force_document=False,
+        force_plain=False,
     )
 
 

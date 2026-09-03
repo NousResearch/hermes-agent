@@ -315,6 +315,7 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            force_plain=False,
         )
 
 
@@ -354,6 +355,108 @@ class TestSendMessageTool:
             thread_id=None,
             media_files=[],
             force_document=False,
+            force_plain=False,
+        )
+
+    def test_plain_directive_strips_and_forces_plain(self):
+        """[[plain]] prefix is stripped from the message and force_plain=True
+        is threaded through to _send_to_platform (angle-bracket text intact)."""
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "[[plain]]Deploy of <service> failed",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            # The [[plain]] directive is stripped; the literal <service>
+            # placeholder survives untouched in the forwarded message.
+            "Deploy of <service> failed",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            force_plain=True,
+        )
+
+    def test_plain_arg_forces_plain_without_directive(self):
+        """The CLI --plain flag arrives as args['plain']=True and forces
+        force_plain=True even with no [[plain]] directive in the text."""
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "status: <ok>",
+                        "plain": True,
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "status: <ok>",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            force_plain=True,
+        )
+
+    def test_no_plain_directive_leaves_force_plain_false(self):
+        """Default path: no directive, no flag => force_plain=False and the
+        message text is unchanged (regression guard against over-stripping)."""
+        config, telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "plain [[note]] body",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            # A lookalike [[note]] token is NOT the [[plain]] directive and is
+            # left in place; only [[plain]] triggers stripping.
+            "plain [[note]] body",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+            force_plain=False,
         )
 
     def test_top_level_send_failure_redacts_query_token(self):
@@ -778,6 +881,57 @@ class TestSendTelegramHtmlDetection:
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["parse_mode"] == "HTML"
         assert kwargs["text"] == "<b>Hello</b> world"
+
+    def test_force_plain_sends_with_no_parse_mode(self, monkeypatch):
+        """force_plain=True => parse_mode=None so nothing is interpreted."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "*not* _markdown_", force_plain=True)
+        )
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        # The actual parse_mode passed to the Bot API is None (not HTML/MarkdownV2).
+        assert kwargs["parse_mode"] is None
+        # Text is sent verbatim: no MarkdownV2 escaping of * or _.
+        assert kwargs["text"] == "*not* _markdown_"
+
+    def test_force_plain_sends_angle_bracket_placeholder_verbatim(self, monkeypatch):
+        """A literal <placeholder> is NOT treated as HTML when force_plain."""
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        raw = "Deploy of <service> to <region> failed: <error-code>"
+        asyncio.run(_send_telegram("tok", "123", raw, force_plain=True))
+
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        # Critically: even though the text contains angle-bracket tokens that
+        # the HTML auto-detector would otherwise match, force_plain wins and
+        # parse_mode is None, so Telegram receives the raw, unescaped text.
+        assert kwargs["parse_mode"] is None
+        assert kwargs["text"] == raw
+
+    def test_force_plain_beats_html_autodetection(self, monkeypatch):
+        """force_plain overrides the <tag> HTML heuristic (anti-tautology).
+
+        Without force_plain the same text takes the HTML branch (parse_mode
+        HTML); with it, parse_mode must be None. Asserting both directions
+        proves the flag actually drives the parse_mode, not a constant.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        text = "status: <ok>"
+
+        asyncio.run(_send_telegram("tok", "123", text, force_plain=False))
+        assert bot.send_message.await_args.kwargs["parse_mode"] == "HTML"
+
+        bot.send_message.reset_mock()
+        asyncio.run(_send_telegram("tok", "123", text, force_plain=True))
+        assert bot.send_message.await_args.kwargs["parse_mode"] is None
 
 
     def test_transient_bad_gateway_retries_text_send(self, monkeypatch):

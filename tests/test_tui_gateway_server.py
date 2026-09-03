@@ -7407,12 +7407,13 @@ class _RecordingAgent:
 def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     monkeypatch, tmp_path
 ):
-    """A close claimed during message.start must prevent the worker from running."""
+    """A close during external start must reject work and close its receipt."""
     _configure_immediate_prompt_run(monkeypatch, tmp_path, immediate_threads=False)
     emit_entered = threading.Event()
     release_emit = threading.Event()
     dispatch_results = []
     turns = []
+    events = []
     popped = []
     sid = "close-wins-publication"
     session = _session(
@@ -7421,7 +7422,8 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
         running=True,
     )
 
-    def _blocking_emit(event, *_args, **_kwargs):
+    def _blocking_emit(event, _sid, payload=None, **_kwargs):
+        events.append((event, payload or {}))
         if event == "message.start":
             emit_entered.set()
             assert release_emit.wait(timeout=2.0)
@@ -7430,7 +7432,13 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     server._sessions[sid] = session
     dispatch_thread = threading.Thread(
         target=lambda: dispatch_results.append(
-            server._run_prompt_submit("rid", sid, session, "turn")
+            server._run_prompt_submit(
+                "rid",
+                sid,
+                session,
+                "turn",
+                external_submission_id="gas-city-close-race",
+            )
         )
     )
 
@@ -7452,6 +7460,14 @@ def test_run_prompt_submit_rejects_worker_when_close_wins_publication(
     assert dispatch_results == [False]
     assert session["running"] is False
     assert turns == []
+    assert events[0] == (
+        "message.start",
+        {"external_submission_id": "gas-city-close-race"},
+    )
+    terminal_events = [payload for event, payload in events if event == "message.complete"]
+    assert len(terminal_events) == 1
+    assert terminal_events[0]["status"] == "error"
+    assert terminal_events[0]["external_submission_id"] == "gas-city-close-race"
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])

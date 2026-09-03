@@ -14532,6 +14532,13 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+        if external_submission_id:
+            _emit_terminal_turn_error(
+                sid,
+                session,
+                "Session closed or changed ownership before the external turn started",
+                external_submission_id=external_submission_id,
+            )
     return can_start
 
 

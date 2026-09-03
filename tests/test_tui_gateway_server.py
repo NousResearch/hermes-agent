@@ -1,3 +1,5 @@
+import ast
+import inspect
 import json
 import logging
 import os
@@ -11783,6 +11785,39 @@ def test_async_delegation_completion_is_in_live_tui_history_once():
     assert session["history"].count(completion) == 1
     assert agent._session_messages is session["history"]
     assert persisted == [("rollover-child", "completion payload", completion["display_metadata"])]
+
+
+def test_async_delegation_replays_are_acknowledged_without_a_second_tui_display():
+    """Every delivery path must gate display on a newly persisted completion.
+
+    A stale/replayed delegation event is still acknowledged by its lease owner,
+    but it must not create another visible ``status.update`` after the durable
+    or live-history dedupe rejects it. Keep this structural assertion across the
+    live poller, shutdown drain, and post-turn drain so a future edit cannot fix
+    only one delivery path.
+    """
+    tree = ast.parse(inspect.getsource(server))
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    completion_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_append_async_delegation_completion"
+    ]
+
+    assert len(completion_calls) == 3
+    for call in completion_calls:
+        parent = parents[call]
+        assert isinstance(parent, ast.Assign)
+        guarded = parents[parent]
+        assert isinstance(guarded, ast.If)
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_emit"
+            for node in ast.walk(guarded)
+        )
 
 
 # ── session.steer ────────────────────────────────────────────────────

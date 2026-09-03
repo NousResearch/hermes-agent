@@ -515,7 +515,8 @@ class SessionManager:
             return None
 
         try:
-            row = db.get_session(session_id)
+            resolved_session_id = db.resolve_resume_session_id(session_id)
+            row = db.get_session(resolved_session_id)
         except Exception:
             logger.debug("Failed to query DB for ACP session %s", session_id, exc_info=True)
             return None
@@ -553,7 +554,7 @@ class SessionManager:
         # for the rest of the session (see hermes_state.get_messages_as_conversation).
         try:
             history = db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                resolved_session_id, repair_alternation=True
             )
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
@@ -561,7 +562,7 @@ class SessionManager:
 
         try:
             agent = self._make_agent(
-                session_id=session_id,
+                session_id=resolved_session_id,
                 cwd=cwd,
                 model=model,
                 requested_provider=requested_provider,
@@ -583,7 +584,10 @@ class SessionManager:
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
-        logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
+        logger.info(
+            "Restored ACP session %s from DB tip %s (%d messages)",
+            session_id, resolved_session_id, len(history),
+        )
         return state
 
     def _delete_persisted(self, session_id: str) -> bool:

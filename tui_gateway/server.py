@@ -12770,10 +12770,11 @@ def _notification_poller_loop(
                 )
                 if db is None or not target_session_id:
                     raise RuntimeError("no durable session for delegation display")
-                _append_async_delegation_completion(
+                displayed = _append_async_delegation_completion(
                     session, db, target_session_id, text, evt,
                 )
-                _emit("status.update", sid, {"kind": "process", "text": text})
+                if displayed:
+                    _emit("status.update", sid, {"kind": "process", "text": text})
                 with session["history_lock"]:
                     session["running"] = False
             else:
@@ -12856,10 +12857,11 @@ def _notification_poller_loop(
                 )
                 if db is None or not target_session_id:
                     raise RuntimeError("no durable session for delegation display")
-                _append_async_delegation_completion(
+                displayed = _append_async_delegation_completion(
                     session, db, target_session_id, text, evt,
                 )
-                _emit("status.update", sid, {"kind": "process", "text": text})
+                if displayed:
+                    _emit("status.update", sid, {"kind": "process", "text": text})
                 with session["history_lock"]:
                     session["running"] = False
             else:
@@ -14317,10 +14319,11 @@ def _run_prompt_submit(
                         )
                         if db is None or not target_session_id:
                             raise RuntimeError("no durable session for delegation display")
-                        _append_async_delegation_completion(
+                        displayed = _append_async_delegation_completion(
                             session, db, target_session_id, synth, _evt,
                         )
-                        _emit("status.update", sid, {"kind": "process", "text": synth})
+                        if displayed:
+                            _emit("status.update", sid, {"kind": "process", "text": synth})
                         with session["history_lock"]:
                             session["running"] = False
                     else:

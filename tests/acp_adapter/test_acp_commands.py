@@ -1,3 +1,4 @@
+import json
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -6,6 +7,8 @@ from acp.schema import TextContentBlock
 
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
+from hermes_state import SessionDB
+from session_rollover import TurnBoundaryRollover
 
 
 class FakeAgent:
@@ -118,6 +121,66 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_db"] is sentinel_db
     assert captured["platform"] == "acp"
     assert captured["session_id"] == "acp-session"
+
+
+def test_acp_restart_parent_handle_restores_turn_boundary_child_tip(monkeypatch, tmp_path):
+    """The ACP handle remains stable while its agent resumes the rollover tip."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "acp-parent",
+        source="acp",
+        model="parent-model",
+        model_config={"cwd": "/parent"},
+    )
+    db.append_message("acp-parent", "user", "ended parent transcript")
+    child_id = TurnBoundaryRollover(db).mark_pending("acp-parent", threshold_tokens=1)
+    assert child_id is True
+    child_id = TurnBoundaryRollover(db).adopt_at_turn_boundary("acp-parent", active_work=False)
+    assert child_id
+    db.update_session_meta(
+        child_id,
+        json.dumps({"cwd": "/child", "provider": "child-provider"}),
+        "child-model",
+    )
+    db.append_message(child_id, "user", "child continuation transcript")
+
+    made = []
+
+    class _Agent:
+        model = "factory-model"
+
+    def factory(**_kwargs):
+        return _Agent()
+
+    manager = SessionManager(agent_factory=factory, db=db)
+    original_make_agent = manager._make_agent
+
+    def capture_make_agent(**kwargs):
+        made.append(kwargs)
+        return original_make_agent(**kwargs)
+
+    manager._make_agent = capture_make_agent
+    restored = manager.get_session("acp-parent")
+
+    assert restored is not None
+    assert restored.session_id == "acp-parent"
+    assert restored.cwd == "/child"
+    assert restored.model == "child-model"
+    assert [message["content"] for message in restored.history] == [
+        "child continuation transcript"
+    ]
+    assert made == [{
+        "session_id": child_id,
+        "cwd": "/child",
+        "model": "child-model",
+        "requested_provider": "child-provider",
+        "base_url": None,
+        "api_mode": None,
+    }]
 
 
 @pytest.mark.asyncio

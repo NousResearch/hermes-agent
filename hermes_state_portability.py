@@ -10,7 +10,9 @@ module-level constants live in hermes_state_common.
 
 import logging
 import json
+import math
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
@@ -442,13 +444,54 @@ class SessionPortabilityMixin:
             return value
         raise ValueError(f"{field} must be a string")
 
-    @staticmethod
-    def _import_json_object_or_none(value: Any, field: str) -> Optional[str]:
+    @classmethod
+    def _import_non_finite_path(cls, value: Any, path: str = "session") -> Optional[str]:
+        """Return the first path containing NaN/Infinity in decoded JSON."""
+        pending = [(value, path)]
+        seen: set[int] = set()
+        while pending:
+            current, current_path = pending.pop()
+            if isinstance(current, float) and not math.isfinite(current):
+                return current_path
+            if not isinstance(current, (dict, list)) or id(current) in seen:
+                continue
+            seen.add(id(current))
+            children = current.items() if isinstance(current, dict) else enumerate(current)
+            for key, child in reversed(list(children)):
+                child_path = (
+                    f"{current_path}.{key}"
+                    if isinstance(current, dict)
+                    else f"{current_path}[{key}]"
+                )
+                pending.append((child, child_path))
+        return None
+
+    @classmethod
+    def _validate_import_finite_numbers(cls, value: Any, path: str) -> None:
+        non_finite_path = cls._import_non_finite_path(value, path)
+        if non_finite_path:
+            raise ValueError(f"non-finite number at {non_finite_path}")
+
+    @classmethod
+    def _import_load_json(cls, value: str, path: str) -> Any:
+        """Decode JSON text and reject values unsafe for strict JSON output."""
+        try:
+            parsed = json.loads(value)
+        except RecursionError as exc:
+            raise ValueError(
+                f"{path} exceeds the maximum JSON nesting depth"
+            ) from exc
+        cls._validate_import_finite_numbers(parsed, path)
+        return parsed
+
+    @classmethod
+    def _import_json_object_or_none(cls, value: Any, field: str) -> Optional[str]:
         if value is None:
             return None
+        path = f"session.{field}"
         if isinstance(value, str):
             try:
-                parsed = json.loads(value)
+                parsed = cls._import_load_json(value, path)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"{field} must be valid JSON") from exc
             if not isinstance(parsed, dict):
@@ -456,46 +499,76 @@ class SessionPortabilityMixin:
             return value
         if not isinstance(value, dict):
             raise ValueError(f"{field} must be a JSON object")
+        cls._validate_import_finite_numbers(value, path)
         try:
-            return json.dumps(value)
-        except (TypeError, ValueError) as exc:
+            return json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError, RecursionError) as exc:
             raise ValueError(f"{field} must be JSON serializable") from exc
 
     @staticmethod
-    def _float_or_none(value: Any) -> Optional[float]:
+    def _import_float_or_none(value: Any, field: str) -> Optional[float]:
         if value is None:
             return None
         try:
-            return float(value)
-        except (TypeError, ValueError):
+            number = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field} must be a finite number") from exc
+        if not math.isfinite(number):
+            raise ValueError(f"{field} must be a finite number")
+        return number
+
+    @classmethod
+    def _import_timestamp_or_none(cls, value: Any, field: str) -> Optional[float]:
+        number = cls._import_float_or_none(value, field)
+        if number is None:
             return None
+        try:
+            datetime.fromtimestamp(number)
+            datetime.fromtimestamp(number, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise ValueError(f"{field} must be a supported Unix timestamp") from exc
+        return number
 
     @staticmethod
-    def _import_int_or_none(value: Any, field: str) -> Optional[int]:
+    def _is_sqlite_integer(value: int) -> bool:
+        return -(1 << 63) <= value <= (1 << 63) - 1
+
+    @classmethod
+    def _import_int_or_none(cls, value: Any, field: str) -> Optional[int]:
         if value is None:
             return None
         try:
-            return int(value)
-        except (TypeError, ValueError) as exc:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"{field} must be an integer") from exc
+        if not cls._is_sqlite_integer(number):
+            raise ValueError(f"{field} is outside SQLite's integer range")
+        return number
 
-    @staticmethod
-    def _int_or_default(value: Any, default: int = 0) -> int:
-        if value is None:
-            return default
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
-    @staticmethod
-    def _reasoning_json_value(value: Any) -> Any:
+    @classmethod
+    def _import_reasoning_json_value(cls, value: Any, path: str) -> Any:
         if not isinstance(value, str):
+            cls._validate_import_finite_numbers(value, path)
             return value
         try:
-            return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
+            return cls._import_load_json(value, path)
+        except json.JSONDecodeError:
             return value
+
+    @classmethod
+    def _import_message_content(cls, value: Any, path: str) -> Any:
+        if value is None or isinstance(value, (str, list, dict)):
+            return value
+        if isinstance(value, int):
+            if not cls._is_sqlite_integer(value):
+                raise ValueError(f"{path} is outside SQLite's integer range")
+            return value
+        if isinstance(value, float):
+            cls._validate_import_finite_numbers(value, path)
+            return value
+        raise ValueError(
+            f"{path} must be a string, list, object, finite number, or null"
+        )
 
     @staticmethod
     def _import_error(index: int, session_id: str, error: str) -> Dict[str, Any]:
@@ -563,6 +636,27 @@ class SessionPortabilityMixin:
             "platform_message_id",
             "message_id",
         )
+        session_timestamp_fields = (
+            "started_at",
+            "ended_at",
+        )
+        session_float_fields = (
+            "estimated_cost_usd",
+            "actual_cost_usd",
+        )
+        session_int_fields = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "api_call_count",
+        )
+        message_json_fields = (
+            "reasoning_details",
+            "codex_reasoning_items",
+            "codex_message_items",
+        )
 
         for index, raw in enumerate(sessions):
             if not isinstance(raw, dict):
@@ -574,6 +668,13 @@ class SessionPortabilityMixin:
                 continue
             if session_id in seen_ids:
                 errors.append(self._import_error(index, session_id, "duplicate session id"))
+                continue
+            try:
+                self._validate_import_finite_numbers(raw, "session")
+            except ValueError as exc:
+                errors.append(
+                    self._import_error(index, session_id, str(exc))
+                )
                 continue
             messages = raw.get("messages") or []
             if not isinstance(messages, list):
@@ -600,9 +701,14 @@ class SessionPortabilityMixin:
 
             try:
                 session_bytes = len(
-                    json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    json.dumps(
+                        raw,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
                 )
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, RecursionError):
                 errors.append(
                     self._import_error(index, session_id, "session must be JSON serializable")
                 )
@@ -632,6 +738,18 @@ class SessionPortabilityMixin:
                     clean_session[field] = self._import_text_or_none(
                         clean_session.get(field), field
                     )
+                for field in session_timestamp_fields:
+                    clean_session[field] = self._import_timestamp_or_none(
+                        clean_session.get(field), field
+                    )
+                for field in session_float_fields:
+                    clean_session[field] = self._import_float_or_none(
+                        clean_session.get(field), field
+                    )
+                for field in session_int_fields:
+                    clean_session[field] = self._import_int_or_none(
+                        clean_session.get(field), field
+                    )
 
                 clean_messages: List[Dict[str, Any]] = []
                 for message_index, message in enumerate(messages):
@@ -646,8 +764,21 @@ class SessionPortabilityMixin:
                             clean_message.get(field), field
                         )
                     clean_message["token_count"] = self._import_int_or_none(
-                        clean_message.get("token_count"), "token_count"
+                        clean_message.get("token_count"),
+                        "token_count",
                     )
+                    clean_message["timestamp"] = self._import_timestamp_or_none(
+                        clean_message.get("timestamp"),
+                        f"messages[{message_index}].timestamp",
+                    )
+                    message_path = f"session.messages[{message_index}]"
+                    clean_message["content"] = self._import_message_content(
+                        clean_message.get("content"), f"{message_path}.content"
+                    )
+                    for field in message_json_fields:
+                        clean_message[field] = self._import_reasoning_json_value(
+                            clean_message.get(field), f"{message_path}.{field}"
+                        )
                     clean_messages.append(clean_message)
             except ValueError as exc:
                 errors.append(self._import_error(index, session_id, str(exc)))
@@ -695,7 +826,7 @@ class SessionPortabilityMixin:
                     skipped_ids.append(session_id)
                     continue
 
-                started_at = self._float_or_none(raw.get("started_at"))
+                started_at = raw.get("started_at")
                 if started_at is None:
                     started_at = time.time()
                 archived = 1 if raw.get("archived") else 0
@@ -734,55 +865,34 @@ class SessionPortabilityMixin:
                         "model_config": raw.get("model_config"),
                         "system_prompt_hash": system_prompt_hash,
                         "started_at": started_at,
-                        "ended_at": self._float_or_none(raw.get("ended_at")),
+                        "ended_at": raw.get("ended_at"),
                         "end_reason": raw.get("end_reason"),
-                        "input_tokens": self._int_or_default(raw.get("input_tokens")),
-                        "output_tokens": self._int_or_default(raw.get("output_tokens")),
-                        "cache_read_tokens": self._int_or_default(
-                            raw.get("cache_read_tokens")
-                        ),
-                        "cache_write_tokens": self._int_or_default(
-                            raw.get("cache_write_tokens")
-                        ),
-                        "reasoning_tokens": self._int_or_default(
-                            raw.get("reasoning_tokens")
-                        ),
+                        "input_tokens": raw.get("input_tokens") or 0,
+                        "output_tokens": raw.get("output_tokens") or 0,
+                        "cache_read_tokens": raw.get("cache_read_tokens") or 0,
+                        "cache_write_tokens": raw.get("cache_write_tokens") or 0,
+                        "reasoning_tokens": raw.get("reasoning_tokens") or 0,
                         "cwd": raw.get("cwd"),
                         "git_branch": raw.get("git_branch"),
                         "git_repo_root": raw.get("git_repo_root"),
                         "billing_provider": raw.get("billing_provider"),
                         "billing_base_url": raw.get("billing_base_url"),
                         "billing_mode": raw.get("billing_mode"),
-                        "estimated_cost_usd": self._float_or_none(
-                            raw.get("estimated_cost_usd")
-                        ),
-                        "actual_cost_usd": self._float_or_none(
-                            raw.get("actual_cost_usd")
-                        ),
+                        "estimated_cost_usd": raw.get("estimated_cost_usd"),
+                        "actual_cost_usd": raw.get("actual_cost_usd"),
                         "cost_status": raw.get("cost_status"),
                         "cost_source": raw.get("cost_source"),
                         "pricing_version": raw.get("pricing_version"),
                         "title": raw.get("title"),
-                        "api_call_count": self._int_or_default(raw.get("api_call_count")),
+                        "api_call_count": raw.get("api_call_count") or 0,
                         "archived": archived,
                     },
                 )
 
-                sanitized_messages: List[Dict[str, Any]] = []
-                for msg in messages:
-                    clean = dict(msg)
-                    for key in (
-                        "reasoning_details",
-                        "codex_reasoning_items",
-                        "codex_message_items",
-                    ):
-                        clean[key] = self._reasoning_json_value(clean.get(key))
-                    sanitized_messages.append(clean)
-
                 total_messages, total_tool_calls = self._insert_message_rows(
                     conn,
                     session_id,
-                    sanitized_messages,
+                    messages,
                 )
                 conn.execute(
                     "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",

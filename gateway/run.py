@@ -3508,14 +3508,18 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
     )
 
 
-def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
+def _resolve_runtime_agent_kwargs_for_provider(
+    provider: str, target_model: Optional[str] = None
+) -> dict:
     """Resolve runtime credentials for a specific provider (e.g. from channel override)."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
     try:
-        runtime = resolve_runtime_provider(requested=provider)
+        runtime = resolve_runtime_provider(
+            requested=provider, target_model=target_model
+        )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
     return {
@@ -29519,8 +29523,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (e.g. credentials were removed since the switch) keep the
             # credential-less override — _resolve_session_agent_runtime falls
             # back to env-based resolution and applies model/provider on top.
+            #
+            # Crucially, pass the persisted model as target_model: OpenCode
+            # Zen/Go route different models through different API surfaces
+            # (anthropic_messages vs chat_completions), so re-resolving without
+            # the model derives api_mode from the stale config default and
+            # produces a mismatched combo (e.g. chat_completions api_mode with
+            # a /v1-stripped base_url) that 404s against opencode.ai. #100854.
             try:
-                runtime = _resolve_runtime_agent_kwargs_for_provider(provider)
+                runtime = _resolve_runtime_agent_kwargs_for_provider(
+                    provider, target_model=persisted.get("model") or None
+                )
                 override["api_key"] = runtime.get("api_key")
                 override["api_mode"] = runtime.get("api_mode")
                 override["credential_pool"] = runtime.get("credential_pool")
@@ -29530,6 +29543,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 override["requested_provider"] = runtime.get("requested_provider")
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
                 override["max_tokens"] = runtime.get("max_tokens")
+                # A persisted stripped /v1 URL (saved while an anthropic-routed
+                # model was active) must be re-normalized against the api_mode
+                # re-derived for the target model; otherwise a chat_completions
+                # model inherits the stripped URL and 404s. Refs #57585.
+                from hermes_cli.models import opencode_provider_family as _oc_fam
+                from hermes_cli.models import normalize_opencode_base_url as _oc_norm
+
+                if _oc_fam(provider) is not None and override.get("base_url"):
+                    override["base_url"] = _oc_norm(
+                        provider,
+                        override.get("api_mode"),
+                        override["base_url"],
+                    )
                 if not override.get("base_url"):
                     override["base_url"] = runtime.get("base_url")
             except Exception:

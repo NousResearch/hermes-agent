@@ -150,3 +150,125 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+# ── OpenCode /v1 mismatch on rehydrate (#100854) ────────────────────────
+#
+# A session switched to an Anthropic-routed OpenCode model (e.g.
+# ``/model qwen3.8-flash`` on opencode-go) persists the /v1-stripped base_url
+# (https://opencode.ai/zen/go). After a gateway restart, rehydration re-resolved
+# credentials WITHOUT the persisted model, so api_mode was derived from the
+# stale config default (chat_completions) and the stripped URL was kept — the
+# OpenAI client then POSTed to /zen/go/chat/completions, a 404 on the opencode
+# marketing site. Refs #57585 (stripped/persisted /v1) + #100854 (rehydrate).
+
+_OPENCODE_QWEN_OVERRIDE = {
+    "model": "qwen3.8-flash",
+    "provider": "opencode-go",
+    "base_url": "https://opencode.ai/zen/go",  # anthropic-stripped form
+}
+
+
+def test_rehydrate_passes_persisted_model_as_target_model(store_factory):
+    """Rehydration must resolve with the persisted model so OpenCode api_mode
+    is re-derived from the model actually in use, not the config default."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(session_key, _OPENCODE_QWEN_OVERRIDE)
+
+    runner = _make_runner(store_factory())
+
+    calls = {}
+
+    def _fake_resolve(provider, target_model=None):
+        calls["target_model"] = target_model
+        # Simulate a resolver that does NOT use the model: returns the
+        # chat_completions mode for the config default (the pre-fix behavior).
+        return {
+            "api_key": "sk-fre...hain",
+            "api_mode": "chat_completions",
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "provider": "opencode-go",
+            "requested_provider": "opencode-go",
+            "capabilities": {},
+            "max_tokens": 32_768,
+        }
+
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        side_effect=_fake_resolve,
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert calls["target_model"] == "qwen3.8-flash", (
+        "rehydrate must pass the persisted model as target_model"
+    )
+    assert override["api_mode"] == "chat_completions"
+
+
+def test_rehydrate_heals_stripped_v1_for_chat_completions_model(store_factory):
+    """A persisted /v1-stripped URL rehydrated into a chat_completions api_mode
+    must be healed back to /zen/go/v1, or the first post-restart turn 404s."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(session_key, _OPENCODE_QWEN_OVERRIDE)
+
+    runner = _make_runner(store_factory())
+
+    def _fake_resolve(provider, target_model=None):
+        return {
+            "api_key": "sk-fre...hain",
+            "api_mode": "chat_completions",  # e.g. stale config default wins
+            "base_url": "https://opencode.ai/zen/go/v1",
+            "provider": "opencode-go",
+            "requested_provider": "opencode-go",
+            "capabilities": {},
+            "max_tokens": 32_768,
+        }
+
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        side_effect=_fake_resolve,
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["base_url"] == "https://opencode.ai/zen/go/v1", (
+        "chat_completions api_mode must re-append /v1 to the persisted URL"
+    )
+
+
+def test_rehydrate_keeps_stripped_v1_for_anthropic_model(store_factory):
+    """The inverse: an anthropic_messages model must KEEP the stripped URL
+    (the Anthropic SDK prepends its own /v1/messages)."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(session_key, _OPENCODE_QWEN_OVERRIDE)
+
+    runner = _make_runner(store_factory())
+
+    def _fake_resolve(provider, target_model=None):
+        return {
+            "api_key": "sk-fre...hain",
+            "api_mode": "anthropic_messages",
+            "base_url": "https://opencode.ai/zen/go",  # resolver strips /v1
+            "provider": "opencode-go",
+            "requested_provider": "opencode-go",
+            "capabilities": {},
+            "max_tokens": 32_768,
+        }
+
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        side_effect=_fake_resolve,
+    ):
+        runner._rehydrate_session_model_override(session_key)
+
+    override = runner._session_model_overrides[session_key]
+    assert override["base_url"] == "https://opencode.ai/zen/go", (
+        "anthropic_messages api_mode must keep the /v1-stripped URL"
+    )

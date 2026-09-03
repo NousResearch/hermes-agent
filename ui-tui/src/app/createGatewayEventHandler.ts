@@ -25,6 +25,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
+import { lockComposerSubmit } from './composerSubmitGuard.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -824,6 +825,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'message.start':
         resetAgentsNudgeTurnState()
         turnController.startMessage()
+        lockComposerSubmit()
 
         return
       case 'status.update': {
@@ -1300,11 +1302,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
+        lockComposerSubmit()
 
         return
 
       case 'btw.complete':
         sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
+        lockComposerSubmit()
 
         return
       case 'review.summary': {
@@ -1317,6 +1321,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (text) {
           sys(text)
+          lockComposerSubmit()
         }
 
         return
@@ -1430,12 +1435,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (typeof text === 'string' && text.trim()) {
           turnController.recordInterimMessage(text)
+          lockComposerSubmit()
         }
 
         return
       }
 
       case 'message.complete': {
+        lockComposerSubmit()
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {

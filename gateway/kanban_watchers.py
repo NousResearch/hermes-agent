@@ -170,6 +170,44 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _profile_hosts_platform(profile: str, platform_str: str) -> bool:
+    """Does *profile* run its own adapter for *platform_str*?
+
+    Decided from configuration, not from this process's registries: in a
+    one-gateway-per-profile deployment the root gateway cannot see what other
+    gateway processes host, but it CAN read the owner profile's ``.env``. A
+    profile that has no bot token for the platform cannot deliver on it
+    anywhere, so refusing to deliver on its behalf just drops the message —
+    the "kanban_notify to telegram from a worker profile silently never
+    arrives" failure (Valicen, 2026-08-27). Unknown platforms (no token env
+    var in the canonical map) answer True: fail closed, no fallback.
+    """
+    try:
+        from gateway.config import PLATFORM_TOKEN_ENV_NAMES, Platform as _P
+        from hermes_cli.profiles import get_profile_dir
+
+        try:
+            plat = _P(platform_str)
+        except ValueError:
+            return True
+        env_name = PLATFORM_TOKEN_ENV_NAMES.get(plat)
+        if not env_name:
+            return True
+        env_file = get_profile_dir(profile or "default") / ".env"
+        if not env_file.is_file():
+            return False
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].strip()
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == env_name:
+                return bool(value.strip().strip("'\""))
+        return False
+    except Exception:
+        return True
+
+
 def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     """Return the tenant scope (Slack workspace) a subscription's wake keys to.
 
@@ -401,10 +439,14 @@ class GatewayKanbanWatchersMixin:
                                 board=slug,
                                 notifier_profiles=notifier_profiles,
                                 include_unowned=include_unowned,
-                            ) == 0:
+                            ) == 0 and _kb.count_notify_subs(board=slug) == 0:
+                                # Both owned AND total are zero. A non-zero
+                                # total with zero owned still needs the open:
+                                # the delivery fallback below may serve rows
+                                # whose owner profile cannot host the platform.
                                 logger.debug(
-                                    "kanban notifier: board %s has no subscriptions owned by %s; skipping open",
-                                    slug, sorted(notifier_profiles),
+                                    "kanban notifier: board %s has no subscriptions at all; skipping open",
+                                    slug,
                                 )
                                 continue
                         except Exception as exc:
@@ -509,6 +551,64 @@ class GatewayKanbanWatchersMixin:
                                         "kanban notifier: subscription for %s on board %s failed: %s",
                                         sub.get("task_id"), slug, sub_exc,
                                     )
+                            # Delivery fallback: a subscription owned by a
+                            # profile that has NO adapter for its platform
+                            # anywhere (checked from that profile's .env) can
+                            # only ever be delivered by a gateway that does
+                            # host the platform — this one. Without this the
+                            # row sits unclaimed forever with no error. The
+                            # "never fall back to the default profile's
+                            # adapter" rule stays intact for owners that run
+                            # their own bot: those are skipped as before.
+                            try:
+                                owned_names = set(notifier_profiles)
+                                orphan_candidates = [
+                                    o for o in _kb.list_notify_subs(conn)
+                                    if (o.get("notifier_profile") or "") not in owned_names
+                                    # "default" is the canonical platform host;
+                                    # its rows are never orphans. Legacy
+                                    # unstamped rows stay with the dispatcher.
+                                    and (o.get("notifier_profile") or "") not in ("", "default")
+                                    and (o.get("platform") or "").lower() in active_platforms
+                                ]
+                            except Exception:
+                                orphan_candidates = []
+                            for sub in orphan_candidates:
+                                try:
+                                    owner_profile = sub.get("notifier_profile") or ""
+                                    platform = (sub.get("platform") or "").lower()
+                                    if _profile_hosts_platform(owner_profile, platform):
+                                        continue
+                                    old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                        conn,
+                                        task_id=sub["task_id"],
+                                        platform=sub["platform"],
+                                        chat_id=sub["chat_id"],
+                                        thread_id=sub.get("thread_id") or "",
+                                        kinds=TERMINAL_KINDS,
+                                    )
+                                    if not events:
+                                        continue
+                                    task = _kb.get_task(conn, sub["task_id"])
+                                    kinds_seen = [getattr(e, "kind", None) or (e.get("kind") if isinstance(e, dict) else "?") for e in events]
+                                    logger.info(
+                                        "kanban notifier: delivering %s for %s on behalf of profile %s (it hosts no %s adapter)",
+                                        kinds_seen, sub["task_id"], owner_profile, platform,
+                                    )
+                                    deliveries.append({
+                                        "sub": sub,
+                                        "old_cursor": old_cursor,
+                                        "cursor": cursor,
+                                        "events": events,
+                                        "task": task,
+                                        "board": slug,
+                                        "fallback": True,
+                                    })
+                                except Exception as sub_exc:
+                                    logger.warning(
+                                        "kanban notifier: fallback subscription for %s on board %s failed: %s",
+                                        sub.get("task_id"), slug, sub_exc,
+                                    )
                         finally:
                             conn.close()
                     return deliveries
@@ -538,7 +638,12 @@ class GatewayKanbanWatchersMixin:
                     # wrong bot (the cross-profile mis-delivery this whole change
                     # exists to fix). The helper returns None only when the profile
                     # (or default) genuinely has no adapter for the platform.
-                    adapter = self._authorization_adapter(plat, sub_profile or None)
+                    if d.get("fallback"):
+                        # Owner profile hosts no adapter for this platform
+                        # (see _collect); this gateway's own adapter delivers.
+                        adapter = (getattr(self, "adapters", None) or {}).get(plat)
+                    else:
+                        adapter = self._authorization_adapter(plat, sub_profile or None)
                     if adapter is None:
                         logger.debug(
                             "kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
@@ -563,6 +668,17 @@ class GatewayKanbanWatchersMixin:
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
                     mode = sub.get("delivery_mode") or "notify"
+                    if d.get("fallback") and mode != "notify":
+                        # A fallback delivery runs on a gateway that is NOT the
+                        # subscription owner's: waking "the agent" here would
+                        # wake this gateway's agent in the owner's name (the
+                        # root agent answered for chief-of-staff tasks on the
+                        # first live run, 2026-08-28). Deliver passively only.
+                        logger.info(
+                            "kanban notifier: fallback delivery for %s downgraded %s -> notify (owner profile %s not hosted here)",
+                            sub["task_id"], mode, sub.get("notifier_profile"),
+                        )
+                        mode = "notify"
                     wake_agent = mode in ("notify+wake", "wake")
                     send_passive = mode != "wake"
                     # Worker handoff carried into the synthetic wake turn below

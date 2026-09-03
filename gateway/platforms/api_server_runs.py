@@ -875,14 +875,32 @@ async def _handle_runs(
                                     reset_room_execution_policy(room_policy_token)
                                 except Exception:
                                     pass
+                    # Prefer the turn record: ``run_conversation()``'s result
+                    # dict (agent/turn_finalizer.py) snapshots the served
+                    # runtime and cache tokens at turn end. After a
+                    # fallback_providers switch the agent keeps the fallback
+                    # runtime until the next turn restores the primary, so
+                    # this is the served pair, not the requested one —
+                    # pollers of GET /v1/runs/{id} need it for cost
+                    # attribution because the ``model`` field on the run
+                    # record only echoes the request (#102101).
+                    _turn = r if isinstance(r, dict) else {}
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        "cache_read_tokens": _turn.get("cache_read_tokens", 0) or 0,
+                        "cache_write_tokens": _turn.get("cache_write_tokens", 0) or 0,
                     }
-                    return r, u
+                    served_runtime = {
+                        "provider": str(_turn.get("provider") or ""),
+                        "model": str(_turn.get("model") or ""),
+                    }
+                    return r, u, served_runtime
 
-            result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+            result, usage, served_runtime = await asyncio.get_running_loop().run_in_executor(
+                None, _run_sync
+            )
             if (
                 run_id in self._stopping_run_ids
                 and isinstance(result, dict)
@@ -927,6 +945,7 @@ async def _handle_runs(
                     "timestamp": time.time(),
                     "output": final_response,
                     "usage": usage,
+                    "runtime": served_runtime,
                 }
                 if pending_steer:
                     completed_event["pending_steer"] = pending_steer
@@ -936,6 +955,7 @@ async def _handle_runs(
                     "completed",
                     output=final_response,
                     usage=usage,
+                    runtime=served_runtime,
                     last_event="run.completed",
                     **({"pending_steer": pending_steer} if pending_steer else {}),
                 )

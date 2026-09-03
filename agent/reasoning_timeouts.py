@@ -131,6 +131,19 @@ _REASONING_STALE_TIMEOUT_FLOORS: tuple[tuple[str, int], ...] = (
     # reasoning variants.
     ("ox-alpha", 300),
     ("x-preview-f-free", 300),
+    # Z.AI GLM — GLM 4.5+ and GLM 5.x reasoning models.  GLM emits
+    # ``reasoning_content`` in a separate delta field before final content
+    # (same wire shape as DeepSeek R1/V4), and long-horizon reasoning turns
+    # on GLM 5.x routinely exceed the 90s non-streaming default during the
+    # thinking phase — the stale watchdog kills the call mid-think and the
+    # user sees "Non-streaming API call timed out after 90s with no
+    # response".  ``glm-4`` / ``glm-5`` cover the reasoning families
+    # (glm-4.5, glm-4.6, glm-5, glm-5.3, …) via the separator right-anchor;
+    # plain ``glm-4``-era instruct models share the prefix and inherit the
+    # floor, which is the safe direction (a longer wait on a hung stream
+    # vs. killing a healthy reasoning stream mid-think).
+    ("glm-4", 600),
+    ("glm-5", 600),
     # Thinking Machines Inkling (thinkingmachines/inkling[-small][:free]
     # on OpenRouter).  Reasoning model (OpenRouter supported_parameters
     # includes "reasoning"); 1M context — same tier as the Grok

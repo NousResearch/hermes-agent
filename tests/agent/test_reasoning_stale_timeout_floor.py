@@ -56,6 +56,11 @@ import pytest
     ("deepseek/deepseek-v4-flash", 600.0),
     ("deepseek/deepseek-v4-pro", 600.0),
     ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
+    # Z.AI GLM reasoning families (glm-4.5/4.6, glm-5.x) — reasoning_content
+    # delta + multi-minute thinking phase, same tier as DeepSeek V4.
+    ("zai/glm-5.3", 600.0),
+    ("glm-4.6-air", 600.0),
+    ("glm-4.5-flash", 600.0),
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),

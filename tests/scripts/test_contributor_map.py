@@ -157,7 +157,8 @@ def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "EMAILS_DIR", d)
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
-    assert not (d / "agent@example-host.local").exists()
+    assert [p.name for p in d.iterdir()] == ["agent@Example-Host.local"]
+    assert (d / "agent@Example-Host.local").read_text(encoding="utf-8") == "someone\n"
 
 
 def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):

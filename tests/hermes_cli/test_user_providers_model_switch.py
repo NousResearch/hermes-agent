@@ -14,6 +14,7 @@ from hermes_cli import runtime_provider as rp
 def _no_live_builtin_provider_probes(monkeypatch):
     """Keep picker tests offline: builtin-provider catalog fetches hit the network."""
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.models.fetch_ollama_local_models", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         "hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: []
     )

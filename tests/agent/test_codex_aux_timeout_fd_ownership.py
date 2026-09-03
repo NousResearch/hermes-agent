@@ -22,7 +22,7 @@ import pytest
 from agent.auxiliary_client import _CodexCompletionsAdapter
 
 
-def _adapter_with_recording_client(stream):
+def _adapter_with_recording_client(stream, *, shutdown_seen=None):
     """Build an adapter whose client records (action, thread) events.
 
     The nested ``_client._transport._pool._connections`` shape is what
@@ -33,6 +33,8 @@ def _adapter_with_recording_client(stream):
     class _Sock:
         def shutdown(self, how):
             events.append(("shutdown", threading.get_ident()))
+            if shutdown_seen is not None:
+                shutdown_seen.set()
 
         def close(self):
             events.append(("sock.close", threading.get_ident()))
@@ -71,13 +73,25 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         shutdown(); the real close() must land on the owning thread in the
         adapter's ``finally``."""
 
-        def _stalled():
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                time.sleep(0.02)
-                yield SimpleNamespace(type="response.in_progress")
+        shutdown_seen = threading.Event()
+        timers = []
+        timer_type = threading.Timer
 
-        adapter, events = _adapter_with_recording_client(_stalled())
+        def _record_timer(*args, **kwargs):
+            timer = timer_type(*args, **kwargs)
+            timers.append(timer)
+            return timer
+
+        def _stalled():
+            # Model a blocked socket read. Emitting keepalives here lets the
+            # owner detect the deadline first and legitimately cancel the
+            # timer, so it does not exercise stranger-thread FD ownership.
+            assert shutdown_seen.wait(10), "watchdog did not shut down the socket"
+            yield SimpleNamespace(type="response.in_progress")
+
+        adapter, events = _adapter_with_recording_client(
+            _stalled(), shutdown_seen=shutdown_seen
+        )
         owner_tid = threading.get_ident()
 
         def _consume(stream, *, model, on_event):
@@ -87,7 +101,8 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
             return SimpleNamespace(output=[], usage=None)
 
         with (
-            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 0.3),
+            patch("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 2.0),
+            patch("agent.auxiliary_client.threading.Timer", _record_timer),
             patch("agent.auxiliary_client._evict_cached_client_instance"),
             patch("agent.codex_runtime._consume_codex_event_stream", _consume),
             pytest.raises(TimeoutError),
@@ -97,8 +112,10 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
                 timeout=300,
             )
 
-        # Give the daemon Timer thread a beat to finish its callback.
-        time.sleep(0.2)
+        # Observe all callback actions before asserting thread ownership.
+        for timer in timers:
+            timer.join(timeout=10)
+            assert not timer.is_alive(), "watchdog callback did not finish"
         actions = [a for a, _ in events]
         # Stranger thread (Timer) only shut the sockets down.
         shutdown_tids = {tid for a, tid in events if a == "shutdown"}

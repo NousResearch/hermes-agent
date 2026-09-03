@@ -285,11 +285,61 @@ class ReportedFailureAdapter:
 
     def __init__(self):
         self.attempts = 0
+        self.chat_ids = []
+        self.metadata = []
 
     async def send(self, chat_id, text, metadata=None):
         self.attempts += 1
+        self.chat_ids.append(chat_id)
+        self.metadata.append(metadata or {})
         from gateway.platforms.base import SendResult
         return SendResult(success=False, error="Not connected")
+
+
+def test_notifier_rewinds_failed_telegram_topic_delivery(tmp_path, monkeypatch):
+    """A reported send failure keeps the completion and subscription retryable."""
+    db_path = tmp_path / "failed-topic-delivery.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="topic completion", assignee="worker")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="-100123",
+            thread_id="2",
+        )
+        kb.complete_task(conn, tid, summary="finished")
+    finally:
+        conn.close()
+
+    adapter = ReportedFailureAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.attempts == 1
+    assert adapter.chat_ids == ["-100123"]
+    assert adapter.metadata == [{"thread_id": "2"}]
+    conn = kb.connect()
+    try:
+        _, events = kb.unseen_events_for_sub(
+            conn,
+            task_id=tid,
+            platform="telegram",
+            chat_id="-100123",
+            thread_id="2",
+            kinds=["completed", "blocked", "gave_up", "crashed", "timed_out"],
+        )
+        assert [event.kind for event in events] == ["completed"]
+        subscriptions = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert len(subscriptions) == 1
+    assert subscriptions[0]["thread_id"] == "2"
 
 
 def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):

@@ -21412,6 +21412,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
+        # Resolve the canonical event route before any turn context is bound.
+        # A missing route is normal; a matching invalid route raises and the
+        # turn fails closed without falling back to an unrelated project.
+        self._apply_project_session_route(context)
+
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         
@@ -27558,6 +27563,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.chat_id,
                     exc,
                 )
+
+    def _apply_project_session_route(self, context: SessionContext):
+        """Resolve one profile-local route and persist its Desktop cwd."""
+        from gateway.project_routes import apply_gateway_session_route
+        from hermes_cli import projects_db
+
+        profile_home = self._resolve_profile_home_for_source(context.source)
+        conn = projects_db.connect(profile_home / "projects.db")
+        try:
+            from gateway.project_routes import sync_route_table
+
+            sync_route_table(conn, profile_home)
+            store = getattr(self, "session_store", None)
+            session_db = getattr(store, "_db", None) if store is not None else None
+            if session_db is None:
+                session_db = getattr(self, "_session_db", None)
+            return apply_gateway_session_route(conn, session_db, context)
+        finally:
+            conn.close()
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

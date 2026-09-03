@@ -6114,6 +6114,25 @@ def run_job(
         return True, "", SILENT_MARKER, None
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
+    # Resolve the profile-local classification route before constructing the
+    # agent. This binds by exact job_id and never mutates _job_workdir,
+    # _SESSION_CWD, or TERMINAL_CWD (those remain execution concerns below).
+    _cron_project_binding = None
+    from gateway.project_routes import bind_inbound_session, sync_route_table
+    from hermes_cli import projects_db as _projects_db
+
+    _projects_conn = _projects_db.connect(_get_hermes_home() / "projects.db")
+    try:
+        sync_route_table(_projects_conn, _get_hermes_home())
+        _cron_project_binding = bind_inbound_session(
+            _projects_conn,
+            session_id=_cron_session_id,
+            origin_kind="cron",
+            origin_key=str(job_id),
+        )
+    finally:
+        _projects_conn.close()
+
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
@@ -6798,7 +6817,25 @@ def run_job(
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
+
+        # AIAgent has now created/reopened the state.db row. Stamp only the
+        # Desktop classification cwd; the cron execution cwd remains the job's
+        # independently resolved _job_workdir.
+        if _cron_project_binding and _cron_project_binding.cwd:
+            if _session_db is None:
+                raise RuntimeError(
+                    f"Cron route for {job_id} requires a session store for classification"
+                )
+            generation = _session_db.update_session_cwd(
+                _cron_session_id, _cron_project_binding.cwd
+            )
+            if generation is None:
+                from gateway.project_routes import InvalidProjectRouteError
+
+                raise InvalidProjectRouteError(
+                    f"cannot persist project route cwd for missing cron session {_cron_session_id}"
+                )
+
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
         # but a hung API call or stuck tool with no activity for the configured

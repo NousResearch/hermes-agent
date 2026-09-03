@@ -339,6 +339,7 @@ class SessionContext:
     # Session metadata
     session_key: str = ""
     session_id: str = ""
+    cwd: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -352,6 +353,7 @@ class SessionContext:
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
+            "cwd": self.cwd,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -10270,6 +10271,149 @@ def _session_home(session: dict) -> Path:
     return Path(profile_home) if profile_home else Path(_hermes_home)
 
 
+def _max_persisted_message_row_id(profile_home: Path) -> int | None:
+    """Capture a global row barrier before one Desktop turn starts."""
+    try:
+        with sqlite3.connect(profile_home / "state.db", timeout=5) as conn:
+            row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()
+        return int(row[0]) if row else 0
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+
+
+def _persisted_turn_row_ids(
+    profile_home: Path,
+    *,
+    prior_session_id: str,
+    current_session_id: str,
+    after_row_id: int,
+    user_text: str,
+    assistant_text: str,
+) -> tuple[int, int] | None:
+    """Prove one exact conversational pair from the current turn.
+
+    Consecutive means within user/assistant rows of the allowed session
+    lineage. Tool rows are expected inside a real agent turn, and writes from
+    other sessions may interleave globally; neither may supply or invalidate
+    this turn's durable identity.
+    """
+    clean_ids = tuple(
+        dict.fromkeys(sid for sid in (prior_session_id, current_session_id) if sid)
+    )
+    if not clean_ids:
+        return None
+    placeholders = ",".join("?" for _ in clean_ids)
+    try:
+        with sqlite3.connect(profile_home / "state.db", timeout=5) as conn:
+            rows = conn.execute(
+                f"""SELECT id, session_id, role, content FROM messages
+                    WHERE id > ? AND session_id IN ({placeholders})
+                      AND role IN ('user', 'assistant')
+                    ORDER BY id""",
+                (after_row_id, *clean_ids),
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return None
+
+    if prior_session_id == current_session_id:
+        allowed_lineages = {(prior_session_id, current_session_id)}
+    else:
+        # A rotation may persist the prompt in the old session and the final
+        # answer in the continuation, or persist both rows in the continuation.
+        allowed_lineages = {
+            (prior_session_id, current_session_id),
+            (current_session_id, current_session_id),
+        }
+    pairs: list[tuple[int, int]] = []
+    for index, left in enumerate(rows):
+        user_id, user_session_id, user_role, user_content = left
+        if user_role != "user" or user_content != user_text:
+            continue
+        for right in rows[index + 1 :]:
+            assistant_id, assistant_session_id, assistant_role, assistant_content = right
+            if assistant_role == "user":
+                # A second user row starts another turn in this lineage.
+                break
+            if (
+                assistant_role == "assistant"
+                and assistant_content == assistant_text
+                and (user_session_id, assistant_session_id) in allowed_lineages
+            ):
+                pairs.append((int(user_id), int(assistant_id)))
+                break
+    return pairs[0] if len(pairs) == 1 else None
+
+
+def _mirror_desktop_turn_after_persist(
+    session: dict,
+    *,
+    prior_session_id: str,
+    user_text: Any,
+    assistant_text: Any,
+    status: str,
+    status_note: str | None,
+    display_kind: str | None,
+    turn_start_row_id: int | None,
+) -> None:
+    """Best-effort mirror of an exact persisted Desktop turn to Telegram."""
+    if (
+        _resolve_session_platform() != "desktop"
+        or display_kind is not None
+        or status != "complete"
+        or status_note is not None
+        or turn_start_row_id is None
+        or not isinstance(user_text, str)
+        or not isinstance(assistant_text, str)
+        or not user_text.strip()
+        or not assistant_text.strip()
+    ):
+        return
+    current_session_id = str(
+        getattr(session.get("agent"), "session_id", "")
+        or session.get("session_key")
+        or ""
+    )
+    if not current_session_id:
+        return
+    try:
+        from gateway.project_routes import (
+            copy_session_binding,
+            mirror_desktop_turn,
+            sync_route_table,
+        )
+        from hermes_cli import projects_db
+
+        profile_home = _session_home(session)
+        with projects_db.connect_closing(profile_home / "projects.db") as conn:
+            sync_route_table(conn, profile_home)
+            if prior_session_id and prior_session_id != current_session_id:
+                copy_session_binding(conn, prior_session_id, current_session_id)
+
+        row_ids = _persisted_turn_row_ids(
+            profile_home,
+            prior_session_id=prior_session_id,
+            current_session_id=current_session_id,
+            after_row_id=turn_start_row_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+        )
+        if row_ids is None:
+            return
+        user_row_id, assistant_row_id = row_ids
+        mirror_desktop_turn(
+            profile_home,
+            current_session_id,
+            user_text=user_text,
+            assistant_text=assistant_text,
+            user_message_key=f"row:{user_row_id}",
+            assistant_message_key=f"row:{assistant_row_id}",
+        )
+    except Exception:
+        # The local turn is already durable. Routing/config/network failures
+        # must never turn a successful Desktop response into a failed turn.
+        logger.warning("Desktop Telegram mirror failed", exc_info=True)
+
+
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker for a turn whose outcome is about to reach the client.
 
@@ -13293,6 +13437,7 @@ def _run_prompt_submit(
         # session.resume auto-continues from it. Compression can rotate
         # session_key mid-turn, so remember the key we wrote under.
         marker_home = _session_home(session)
+        turn_start_message_row_id = _max_persisted_message_row_id(marker_home)
         marker_key = str(session.get("session_key") or "")
         marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
         marker_text = session.pop("_auto_continue_prompt", None) or text
@@ -13859,6 +14004,16 @@ def _run_prompt_submit(
             if terminal_receipt_committed:
                 _retire_turn_marker(session, marker_key)
             _emit("message.complete", sid, payload)
+            _mirror_desktop_turn_after_persist(
+                session,
+                prior_session_id=marker_key,
+                user_text=text,
+                assistant_text=raw,
+                status=status,
+                status_note=status_note,
+                display_kind=display_kind,
+                turn_start_row_id=turn_start_message_row_id,
+            )
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
             # After every TUI turn, if a /goal is active, ask the judge

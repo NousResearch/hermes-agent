@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
+from hermes_cli import projects_db
 from cron.scheduler import (
     SILENT_MARKER,
     _build_job_prompt,
@@ -588,6 +589,42 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_run_job_fails_closed_when_routed_session_cwd_is_not_persisted(
+        self, tmp_path
+    ):
+        cwd = tmp_path / "classification"
+        cwd.mkdir()
+        conn = projects_db.connect(tmp_path / "projects.db")
+        project_id = projects_db.create_project(
+            conn,
+            name="Cron routing",
+            slug="cron-routing",
+            primary_path=str(cwd),
+        )
+        conn.close()
+        (tmp_path / "session_project_routes.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "routes": [
+                        {
+                            "origin": {"source": "cron", "job_id": "test-job"},
+                            "project_id": project_id,
+                            "cwd": str(cwd),
+                        }
+                    ],
+                }
+            )
+        )
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+
+        with self._run_job_patches(tmp_path) as (fake_db, _mock_agent_cls):
+            fake_db.update_session_cwd.return_value = None
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is False
+        assert "cannot persist project route cwd" in str(error)
 
 
     @contextlib.contextmanager

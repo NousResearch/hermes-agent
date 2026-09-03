@@ -234,13 +234,34 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     fixed = raw_stripped
     # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    # 2. Close unclosed structures
-    open_curly = fixed.count('{') - fixed.count('}')
-    open_bracket = fixed.count('[') - fixed.count(']')
-    if open_curly > 0:
-        fixed += '}' * open_curly
-    if open_bracket > 0:
-        fixed += ']' * open_bracket
+    # 2. Close unclosed structures (string-aware: braces inside string
+    #    literals don't count, an unterminated trailing string is closed
+    #    first, and closers unwind innermost-first). Naive counting
+    #    destroyed repairable payloads: '{"a": [1, 2' gained '}' before
+    #    ']', and '{"content": "hello } world' counted as balanced (#102311).
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for ch in fixed:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]":
+            if stack and ((ch == "}" and stack[-1] == "{")
+                          or (ch == "]" and stack[-1] == "[")):
+                stack.pop()
+    if in_string:
+        fixed += '"'
+    for opener in reversed(stack):
+        fixed += "}" if opener == "{" else "]"
     # 3. Remove excess closing braces/brackets (bounded to 50 iterations)
     for _ in range(50):
         try:

@@ -292,8 +292,9 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
         cl._canonicalize_api_tool_calls(api_messages)
 
         sent = api_messages[0]["tool_calls"][0]["function"]["arguments"]
-        assert sent == "{}"
-        json.loads(sent)  # the whole point of the repair: never ship broken JSON
+        # Truncated mid-string values now complete instead of collapsing to
+        # {} (#102311) — still guaranteed parseable, now lossless.
+        assert json.loads(sent) == {"content": "# chapter draft\nline one\nline two"}
 
     def test_valid_calls_alongside_a_broken_one_are_untouched(self):
         """A broken call must not disturb its siblings' history entries."""
@@ -316,7 +317,7 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
         assert history == before
         sent = api_messages[0]["tool_calls"]
         assert json.loads(sent[0]["function"]["arguments"]) == json.loads(good)
-        assert sent[1]["function"]["arguments"] == "{}"
+        assert json.loads(sent[1]["function"]["arguments"]) == {"content": "cut"}
 
     def test_repeated_sends_do_not_accumulate_damage(self):
         """Re-canonicalizing the same history every iteration stays lossless."""
@@ -324,7 +325,9 @@ class TestUnrepairableArgsAreNotWrittenBackToHistory:
         for _ in range(5):
             api_messages = [dict(m) for m in history]
             cl._canonicalize_api_tool_calls(api_messages)
-            assert api_messages[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+            assert json.loads(
+                api_messages[0]["tool_calls"][0]["function"]["arguments"]
+            ) == {"content": "# chapter draft\nline one\nline two"}
         assert (
             history[0]["tool_calls"][0]["function"]["arguments"] == truncated
         )

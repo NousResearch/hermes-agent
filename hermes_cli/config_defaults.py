@@ -2124,8 +2124,15 @@ DEFAULT_CONFIG = {
         #                     /memory reject <id>.
         # To disable memory entirely, use memory_enabled: false instead.
         "write_approval": False,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+    # Capacity for accumulated long-term memory. The old defaults
+    # (memory 2200 / user 1375 chars) filled within a day or two of real
+    # use — a daily session-distillation cron then failed every write
+    # with "would exceed the limit" until consolidation gave up
+    # (#101459). Sized from a working deployment: ~6,600 chars of user
+    # memory accumulated over weeks of daily distillation, so 8,000
+    # user / 12,000 system leaves headroom without unbounded growth.
+    "memory_char_limit": 12000,  # ~4,400 tokens at 2.75 chars/token
+    "user_char_limit": 8000,     # ~2,900 tokens at 2.75 chars/token
         # Periodic built-in memory review. External providers with automatic
         # turn/session extraction can set this to 0 and keep the small local
         # store reserved for explicit high-frequency operational facts.

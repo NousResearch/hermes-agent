@@ -28,8 +28,8 @@ except Exception:  # pragma: no cover - handled at runtime
 
 
 ENTRY_DELIMITER = "\n§\n"
-DEFAULT_MEMORY_CHAR_LIMIT = 2200
-DEFAULT_USER_CHAR_LIMIT = 1375
+DEFAULT_MEMORY_CHAR_LIMIT = 12000
+DEFAULT_USER_CHAR_LIMIT = 8000
 SKILL_CATEGORY_DIRNAME = "openclaw-imports"
 SKILL_CATEGORY_DESCRIPTION = (
     "Skills migrated from an OpenClaw workspace."

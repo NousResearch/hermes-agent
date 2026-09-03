@@ -1930,8 +1930,8 @@ def init_agent(
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(
-                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                    user_char_limit=mem_config.get("user_char_limit", 1375),
+                    memory_char_limit=mem_config.get("memory_char_limit", 12000),
+                    user_char_limit=mem_config.get("user_char_limit", 8000),
                     memory_enabled=agent._memory_enabled,
                     user_profile_enabled=agent._user_profile_enabled,
                 )

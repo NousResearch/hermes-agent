@@ -1353,6 +1353,13 @@ _MEDIA_DELIVERY_CACHE_SUBDIRS = (
     "documents",
     "screenshots",
 )
+_MEDIA_DELIVERY_LEGACY_CACHE_DIRS = (
+    "image_cache",
+    "audio_cache",
+    "video_cache",
+    "document_cache",
+    "browser_screenshots",
+)
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -1405,6 +1412,11 @@ def _kanban_attachment_roots() -> List[Path]:
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
+    # Profile selection can change HERMES_HOME after this module is imported.
+    # Resolve the active profile's managed caches at validation time.
+    active_home = get_hermes_home()
+    roots.extend(active_home / "cache" / subdir for subdir in _MEDIA_DELIVERY_CACHE_SUBDIRS)
+    roots.extend(active_home / subdir for subdir in _MEDIA_DELIVERY_LEGACY_CACHE_DIRS)
     roots.extend(_profile_cache_roots())
     roots.extend(_kanban_attachment_roots())
     extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")

@@ -729,8 +729,14 @@ function loadInstallStamp() {
         })
       }
     } catch (e) {
-      console.warn(`[hermes] install-stamp.json found at ${p} , but parsing failed with ${e}`)
-      // Either ENOENT or malformed JSON; try the next candidate
+      // ENOENT = candidate path simply doesn't exist (normal probe — in dev
+      // mode process.resourcesPath points into node_modules/electron/dist,
+      // where no stamp lives). Skip quietly. Only warn when the file DOES
+      // exist but is malformed/unreadable — that's a real packaging bug.
+      const code = (e as NodeJS.ErrnoException)?.code
+      if (code && code !== 'ENOENT') {
+        console.warn(`[hermes] install-stamp.json at ${p} exists but failed to parse: ${e}`)
+      }
     }
   }
 

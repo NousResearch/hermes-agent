@@ -409,6 +409,8 @@ Before an authenticated resource request, the lifecycle service evaluates the lo
 
 A response rejecting an apparently valid or unknown-lifetime token causes one coordinated credential reload. If another process has already committed a different valid access token, Hermes retries once with that token. Otherwise, if the bundle is refreshable, Hermes performs one refresh attempt. The original request is not placed in an unbounded authentication retry loop.
 
+The refresh path classifies a failed token-endpoint response through the same `classify_outcome` helper the authorization path uses (§6.2): `invalid_grant` is definitive and maps to `reauthorization_required`; HTTP 5xx / timeout is indeterminate and returns a retryable failure that preserves stored state.
+
 A bundle committed with `probe=deferred` (§6.3) reaches the runtime unverified by design. Its first authentication rejection is expected, not anomalous: the runtime routes it straight into the reload/refresh recovery above and surfaces `reauthorization_required` if that fails, without the elevated logging reserved for a fresh-token rejection during commit.
 
 Wall-clock movement may change expiration classification after a restart or between requests. Hermes recalculates state from `expires_at` on every bundle load and before refresh-sensitive operations, applying the plausibility guard in §4.3. In-process timers use monotonic time and are advisory only; the persisted absolute expiration remains authoritative.

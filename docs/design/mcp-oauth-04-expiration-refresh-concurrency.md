@@ -2,7 +2,7 @@
 
 Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: transactional reauthorization (Chunk 3)
-Architecture sections: expiration policy (§4.2, §4.3), refresh flow (§7), concurrency model (§8.3, §8.4), diagnostics (§15)
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.2, §4.3, §5.1, §7.1, §8.3, §8.4, §12.1, §15
 Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-5 wall-clock guard, F-8 revision envelope; F-1, F-2, F-7)
 
 ## Purpose
@@ -98,6 +98,8 @@ class StoredState:
     revision: str            # sourced from and written to <safe-server>.json
 ```
 
+`StoredState` is the Chunk 2–4 transitional form of architecture §4.2's `StoredBundle`; Chunk 5 replaces it once the bundle is unified.
+
 Every successful credential mutation creates a random 128-bit revision, encoded as lowercase hex.
 The revision contains no token-derived material.
 
@@ -117,7 +119,8 @@ def compare_and_swap_tokens(
 Under a short cross-process mutation lock, the backend reads the current revision from
 `<safe-server>.json`, rejects a mismatch, then writes the merged token record and its new revision
 as a single atomic `os.replace` of that file, and releases the lock. CAS in Chunk 4 is token-record
-scoped; the versioned bundle backend generalizes it to whole-bundle CAS in Chunk 5.
+scoped; Chunk 5's versioned bundle backend generalizes it to whole-bundle CAS as architecture
+§5.1's `compare_and_swap`.
 
 ## Refresh coordination
 

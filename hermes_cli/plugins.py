@@ -6307,6 +6307,15 @@ def discover_plugins(force: bool = False) -> None:
     """
     _join_background_discovery()
     get_plugin_manager().discover_and_load(force=force)
+    # Plugin secret sources are registered by now, so a ``secrets.sources``
+    # name still missing from the registry is genuinely unknown rather than
+    # merely early (#89078). Never let reporting break discovery.
+    try:
+        from agent.secret_sources.registry import warn_unresolved_source_names
+
+        warn_unresolved_source_names()
+    except Exception:  # noqa: BLE001
+        logger.debug("Deferred secret-source warning failed", exc_info=True)
 
 
 _background_discovery_thread: Optional[threading.Thread] = None

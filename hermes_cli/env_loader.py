@@ -222,7 +222,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             for _name, _value in load_env_file(op_env).items():
                 local_env.setdefault(_name, _value)
         local_env["HERMES_HOME"] = str(home)
-        report = apply_all(cfg, home, environ=local_env)
+        report = apply_all(cfg, home, environ=local_env, warn_unknown=False)
     except Exception:  # noqa: BLE001 — preserve fail-open startup behavior
         return {}
 
@@ -714,7 +714,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
 
     try:
-        report = apply_all(cfg, home_path)
+        report = apply_all(cfg, home_path, warn_unknown=False)
     except Exception:  # noqa: BLE001 — belt-and-braces; apply_all shouldn't raise
         return
 

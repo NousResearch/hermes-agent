@@ -277,7 +277,7 @@ def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
 
     seen_env = {}
 
-    def _capture_apply_all(_cfg, home_path, environ=None):
+    def _capture_apply_all(_cfg, home_path, environ=None, *args, **kwargs):
         from agent.secret_sources.registry import ApplyReport
         seen_env.update(environ or {})
         return ApplyReport(sources=[], provenance={})
@@ -312,7 +312,7 @@ def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
 
     seen_env = {}
 
-    def _capture_apply_all(_cfg, home_path, environ=None):
+    def _capture_apply_all(_cfg, home_path, environ=None, *args, **kwargs):
         from agent.secret_sources.registry import ApplyReport
         seen_env.update(environ or {})
         return ApplyReport(sources=[], provenance={})
@@ -465,7 +465,7 @@ def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch
         str(home_b.resolve()): "value-b",
     }
 
-    def _fake_apply_all(_cfg, home_path):
+    def _fake_apply_all(_cfg, home_path, *args, **kwargs):
         value = values[str(Path(home_path).resolve())]
         monkeypatch.setenv("SHARED_API_KEY", value)
         return ApplyReport(

@@ -163,6 +163,11 @@ def register_source(
         target[name] = source
         if scope is None:
             _SOURCE_ORIGINS[name] = "builtin" if builtin else "plugin"
+    # A name parked as "unknown" during bootstrap is resolved the moment its
+    # plugin registers — the #89078 case. Drop it so the post-discovery
+    # report only names sources that never arrived.
+    with _pending_unknown_lock:
+        _pending_unknown_sources.discard(name)
     return True
 
 
@@ -280,7 +285,10 @@ def _reset_registry_for_tests() -> None:
         _SOURCE_ORIGINS.clear()
         _SCOPED_SOURCES.clear()
         _BUILTINS_LOADED = False
-
+    # Parked unknown-source names are process-global; leaving them behind
+    # leaks one test's misconfiguration into the next one's report.
+    with _pending_unknown_lock:
+        _pending_unknown_sources.clear()
 
 # ---------------------------------------------------------------------------
 # Orchestrated apply
@@ -342,8 +350,45 @@ def _fetch_with_timeout(
     return result
 
 
+# Names from ``secrets.sources`` that were unknown during early bootstrap.
+# Not yet a diagnosis: a plugin-provided source registers later in the same
+# process. Discharged by register_source(), reported by
+# warn_unresolved_source_names() once plugin discovery has run.
+_pending_unknown_sources: set = set()
+_pending_unknown_lock = threading.Lock()
+
+
+def warn_unresolved_source_names(*, scope: Optional[str] = None) -> List[str]:
+    """Warn about ``secrets.sources`` names still unknown after discovery.
+
+    The bootstrap pass parks unknown names instead of warning, because
+    plugins have not registered yet at that point (#89078). Call this once
+    plugin discovery is complete: anything still missing from ``_SOURCES``
+    is a real misconfiguration — a typo, or a plugin that is disabled or
+    failed to load — which is exactly the case #89078 asked to keep warning
+    about. Returns the names reported, and clears the pending set so a
+    second call is silent.
+    """
+    with _pending_unknown_lock:
+        pending = sorted(_pending_unknown_sources)
+        _pending_unknown_sources.clear()
+    # Same effective set the resolver uses, so a scope-registered plugin
+    # source is not reported as missing just because it is not global.
+    known = {source.name for source in list_sources(scope=scope)}
+    still_unknown = [n for n in pending if n not in known]
+    if still_unknown:
+        logger.warning(
+            "secrets.sources names unknown source(s): %s (known: %s)",
+            ", ".join(still_unknown), ", ".join(sorted(known)) or "none",
+        )
+    return still_unknown
+
+
 def _ordered_enabled_sources(
-    secrets_cfg: dict, *, scope: Optional[str] = None
+    secrets_cfg: dict,
+    *,
+    scope: Optional[str] = None,
+    warn_unknown: bool = True,
 ) -> List[SecretSource]:
     """Resolve which sources run, in which order.
 
@@ -363,10 +408,19 @@ def _ordered_enabled_sources(
         unknown = [e for e in explicit
                    if isinstance(e, str) and e not in sources]
         if unknown:
-            logger.warning(
-                "secrets.sources names unknown source(s): %s (known: %s)",
-                ", ".join(unknown), ", ".join(sources) or "none",
-            )
+            if warn_unknown:
+                logger.warning(
+                    "secrets.sources names unknown source(s): %s (known: %s)",
+                    ", ".join(unknown), ", ".join(sources) or "none",
+                )
+            else:
+                # Bootstrap runs before plugins register their sources
+                # (#89078), so "unknown" here is not yet a verdict. Park the
+                # names; register_source() discharges the ones a plugin
+                # supplies, and warn_unresolved_source_names() reports
+                # whatever is still unknown once discovery is done.
+                with _pending_unknown_lock:
+                    _pending_unknown_sources.update(unknown)
     for name in sources:
         if name not in order:
             order.append(name)
@@ -423,7 +477,8 @@ def _profile_alias_target(var: str, profile: str) -> Optional[str]:
 
 
 def apply_all(secrets_cfg: dict, home_path: Path,
-              environ: Optional[MutableMapping[str, str]] = None) -> ApplyReport:
+              environ: Optional[MutableMapping[str, str]] = None,
+              *, warn_unknown: bool = True) -> ApplyReport:
     """Fetch from every enabled source and apply the merged result to env.
 
     ``environ`` defaults to ``os.environ``; injectable for tests.
@@ -456,7 +511,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
 
     secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
     enabled = _ordered_enabled_sources(
-        secrets_cfg, scope=hermes_home_key(home_path)
+        secrets_cfg, scope=hermes_home_key(home_path), warn_unknown=warn_unknown
     )
     if not enabled:
         return report

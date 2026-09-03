@@ -170,10 +170,15 @@ def test_cold_profile_hydrates_external_source_without_global_env(
 
     calls = {"count": 0}
 
-    def _fake_apply_all(_cfg, _home, *, environ=None):
+    def _fake_apply_all(_cfg, _home, *, environ=None, warn_unknown=True):
         calls["count"] += 1
         assert environ is not os.environ
         assert environ is not None
+        # Bootstrap defers the unknown-source diagnosis until plugins have
+        # registered (#89078). Mirrored here because env_loader swallows a
+        # TypeError from this fake as a fail-open empty result, so a
+        # signature drift would look like "no secrets" rather than an error.
+        assert warn_unknown is False
         assert environ["EXPLICIT_API_KEY"] == "dotenv-wins"
         environ["TEST_PROVIDER_API_KEY"] = "profile-only"
         return ApplyReport(

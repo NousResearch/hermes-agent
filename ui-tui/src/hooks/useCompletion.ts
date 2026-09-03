@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
@@ -80,23 +80,42 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
+  const [completionKind, setCompletionKind] = useState<'path' | 'slash' | null>(null)
   const ref = useRef('')
+  // Set by accept handlers (Enter/Tab on a path row) so the popup does not
+  // immediately re-open into the just-selected folder — you can pick the next
+  // `@file`/`@folder` without fighting a drill-down listing. Consumed on the
+  // next input-change effect run; typing again re-enables completion.
+  const suppressRef = useRef(false)
 
   useEffect(() => {
     const clear = () => {
       setCompletions(prev => (prev.length ? [] : prev))
       setCompIdx(prev => (prev ? 0 : prev))
       setCompReplace(prev => (prev ? 0 : prev))
+      setCompletionKind(prev => (prev ? null : prev))
     }
 
     if (blocked) {
       ref.current = ''
+      suppressRef.current = false
       clear()
 
       return
     }
 
     if (input === ref.current) {
+      return
+    }
+
+    // An accepted path row bumps `input`; consume that here so we close the
+    // dropdown instead of re-requesting its directory listing. `ref.current`
+    // is intentionally left at the pre-accept value so the very next keystroke
+    // (typing `@` again) still re-arms completion.
+    if (suppressRef.current) {
+      suppressRef.current = false
+      clear()
+
       return
     }
 
@@ -138,6 +157,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
 
           setCompletions(items)
           setCompIdx(0)
+          setCompletionKind(request.method === 'complete.path' ? 'path' : 'slash')
           // An inline reference replaces its own token, so the gateway's
           // `replace_from` (an offset into the synthetic `/query` it was sent)
           // doesn't apply — the caller already knows where the token starts.
@@ -158,6 +178,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             }
           ])
           setCompIdx(0)
+          setCompletionKind(request.method === 'complete.path' ? 'path' : 'slash')
           setCompReplace(request.replaceFrom)
         })
     }, 60)
@@ -165,5 +186,9 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     return () => clearTimeout(t)
   }, [blocked, gw, input])
 
-  return { completions, compIdx, setCompIdx, compReplace }
+  const suppressNextCompletion = useCallback(() => {
+    suppressRef.current = true
+  }, [])
+
+  return { completions, compIdx, setCompIdx, compReplace, completionKind, suppressNextCompletion }
 }

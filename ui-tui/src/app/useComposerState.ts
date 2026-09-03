@@ -142,7 +142,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
   } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
-  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
+  const { completions, compIdx, setCompIdx, compReplace, completionKind, suppressNextCompletion } = useCompletion(
+    input,
+    isBlocked,
+    gw
+  )
 
   const clearIn = useCallback(() => {
     setInput('')
@@ -438,6 +442,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setInput,
       setInputBuf,
       setQueueEdit,
+      suppressNextCompletion,
       takeQueue: takeQ,
       syncTokens
     }),
@@ -457,6 +462,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setHistoryIdx,
       setInput,
       setQueueEdit,
+      suppressNextCompletion,
       takeQ,
       syncTokens
     ]
@@ -478,6 +484,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     () => ({
       compIdx,
       compReplace,
+      completionKind,
       completions,
       historyIdx,
       input,
@@ -486,7 +493,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       queuedDisplay,
       tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
+    [compIdx, compReplace, completionKind, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
   )
 
   return {

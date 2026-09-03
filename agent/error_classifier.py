@@ -420,6 +420,17 @@ _MODEL_NOT_FOUND_PATTERNS = [
     # and the error surfaces as a confusing "model not found" message
     # instead of automatically failing over.  See PR #58446.
     "no endpoints found that support tool use",
+    # Local inference servers (llama.cpp / Ollama / vLLM / LM Studio) report
+    # model load failures as HTTP 500 with "model failed to load". Retrying
+    # the same model deterministically fails; should fallback, not blind
+    # same-model server_error retry. See #102044.
+    "model failed to load",
+    "failed to load model",
+    "failed to load the model",
+    "could not load model",
+    "could not load the model",
+    "unable to load model",
+    "error loading model",
 ]
 
 
@@ -1470,6 +1481,17 @@ def _classify_by_status(
         ) and not _is_server_injected_param_rejection(error_msg, provider):
             return result_fn(
                 FailoverReason.format_error,
+                retryable=False,
+                should_fallback=True,
+            )
+        # Local inference servers (llama.cpp / Ollama / vLLM / LM Studio)
+        # report model load failures as HTTP 500 "model failed to load".
+        # Retrying the same model deterministically fails and floods the
+        # retry loop without fallback. Route to model_not_found so the
+        # caller can fallback to a different model. See #102044.
+        if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
                 retryable=False,
                 should_fallback=True,
             )

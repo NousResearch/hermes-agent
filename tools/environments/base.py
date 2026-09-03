@@ -777,6 +777,42 @@ class BaseEnvironment(ABC):
         """
         return re.compile(r"^HERMES_CUSTOM_[A-Za-z0-9_]*_API_KEY$")
 
+    def _snapshot_credential_exclusions(self, live_env: dict | None = None) -> tuple[str, ...]:
+        """Return the full set of credential names to exclude from the snapshot.
+
+        This is the CANONICAL snapshot credential-exclusion policy, applied to
+        EVERY snapshot write (both ``init_session()`` bootstrap and the
+        ``_wrap_command()`` post-command re-dump).  It combines:
+
+        - The static provider blocklist (from ``_snapshot_credential_exclusion_names``)
+        - The custom-provider API-key glob (from ``_snapshot_credential_exclusion_glob``)
+        - Dynamic Hermes-internal secrets (``AUXILIARY_*``, ``GATEWAY_RELAY_*``)
+          via ``_is_hermes_internal_secret`` applied to the live environment
+
+        Args:
+            live_env: The live environment dict to scan for dynamic names.
+                      Defaults to ``os.environ`` if not provided.
+        """
+        names: set[str] = set(self._snapshot_credential_exclusion_names())
+        cred_glob = self._snapshot_credential_exclusion_glob()
+
+        if live_env is None:
+            live_env = dict(os.environ)
+
+        # Apply the custom-provider glob AND the internal-secret predicate
+        # to the live environment to catch dynamic names.
+        try:
+            from tools.environments.local import _is_hermes_internal_secret
+            for name in live_env:
+                if cred_glob.match(name) or _is_hermes_internal_secret(name):
+                    names.add(name)
+        except Exception:
+            logger.debug(
+                "Could not apply dynamic credential snapshot exclusions",
+                exc_info=True,
+            )
+        return tuple(sorted(names))
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -824,18 +860,13 @@ class BaseEnvironment(ABC):
         _snap_tmp_template = self._quote_shell_path(self._snapshot_path + ".tmp.XXXXXXXXXX")
         _snap_tmp = '"$__hermes_snap_tmp"'
         # Per-command snapshot exclusions: profile-scoped passthrough names +
-        # explicit credential names + any live env matching the custom-provider
-        # API-key glob (HERMES_CUSTOM_<slug>_API_KEY).  All feed into the
-        # `unset` list inside _export_dump_excluding_session_vars so the snapshot
-        # on disk carries no credential (see _snapshot_credential_exclusion_*).
+        # the canonical credential-exclusion policy (provider blocklist +
+        # custom-provider glob + dynamic internal-secret predicate).
+        # All feed into the `unset` list inside _export_dump_excluding_session_vars
+        # so the snapshot on disk carries no credential.
         snapshot_excluded = (
             *self._snapshot_excluded_passthrough_names(),
-            *self._snapshot_credential_exclusion_names(),
-        )
-        cred_glob = self._snapshot_credential_exclusion_glob()
-        snapshot_excluded = (
-            *snapshot_excluded,
-            *(n for n in os.environ if cred_glob.match(n)),
+            *self._snapshot_credential_exclusions(),
         )
         bootstrap = (
             f"umask 077\n"
@@ -958,6 +989,13 @@ class BaseEnvironment(ABC):
 
         parts = []
         passthrough_names = self._snapshot_excluded_passthrough_names()
+        # Apply the SAME canonical credential-exclusion policy used by
+        # init_session() so the post-command snapshot re-dump strips
+        # credentials too (closes the two-writer root cause from #62336).
+        snapshot_excluded = (
+            *passthrough_names,
+            *self._snapshot_credential_exclusions(),
+        )
 
         # A shared snapshot may contain the previous profile's value. Save
         # the current process environment before sourcing it, then restore the
@@ -1042,7 +1080,7 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(
                 f"__hermes_snap_tmp=$(mktemp {_snap_tmp_template}) && "
-                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, passthrough_names)} "
+                f"{{ {_export_dump_excluding_session_vars(_snap_tmp, snapshot_excluded)} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )

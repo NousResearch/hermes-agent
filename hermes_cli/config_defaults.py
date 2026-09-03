@@ -3102,6 +3102,36 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4
             # estimate), regardless of context size. Range 200..60000.
             "listing_max_tokens": 4000,
+            # Optional embedding reranker over the BM25 results (default
+            # OFF). BM25 over tool names rewards token co-occurrence in long
+            # names, so on a flat REST-style catalog (Cloudflare, ~1.9K
+            # tools) "list accounts" surfaces get_accounts_rules_lists_*
+            # and never get_accounts. When enabled, the query and every
+            # deferred tool are embedded through an OpenAI-compatible
+            # /v1/embeddings endpoint (a local Ollama `nomic-embed-text`
+            # works: `ollama pull nomic-embed-text`) and results are
+            # reordered by cosine similarity ("rerank") or fused with the
+            # BM25 ranking ("rrf"). Tool vectors are embedded once per
+            # catalog and cached; any endpoint failure falls back to plain
+            # BM25. The bearer token, if the endpoint needs one, is
+            # HERMES_EMBED_API_KEY in .env — never a config key.
+            "reranker": {
+                "enabled": False,
+                # Required when enabled. Ollama: http://localhost:11434/v1/embeddings
+                "endpoint": "",
+                "model": "nomic-embed-text",
+                # "rerank" — order by embedding cosine similarity.
+                # "rrf"    — Reciprocal Rank Fusion of BM25 + embedding ranks.
+                "mode": "rerank",
+                # RRF smoothing constant (mode: rrf). Lower boosts top ranks.
+                "rrf_k": 10,
+                # nomic-embed task prefixes. Set both to "" for models that
+                # do not use them (text-embedding-3-*, all-MiniLM-*).
+                "query_prefix": "search_query: ",
+                "doc_prefix": "search_document: ",
+                # Seconds per embeddings request before falling back to BM25.
+                "timeout": 5.0,
+            },
         },
     },
 

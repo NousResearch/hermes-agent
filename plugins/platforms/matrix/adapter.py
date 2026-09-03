@@ -5,6 +5,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_E2EE_MODE off|optional|required (legacy MATRIX_ENCRYPTION=true => required);
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
+  MATRIX_ALLOW_KEY_SHARE false|allowed-users|all (cross-user room-key recovery; default false);
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
@@ -802,6 +803,15 @@ class MatrixAdapter(BasePlatformAdapter):
         raw_session_scope = os.getenv("MATRIX_SESSION_SCOPE", "auto").strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = _env_truthy("MATRIX_PROCESS_NOTICES", "false")
+
+        # Allow the operator to pull back room keys on demand. mautrix's default
+        # key-share policy serves only the bot's own devices and silently drops
+        # m.room_key_request from other users, which makes a client's "Request
+        # Key" button a no-op against the bot. Modes (see
+        # _normalize_allow_key_share): false / allowed-users / all.
+        self._allow_key_share: str = _normalize_allow_key_share(
+            os.getenv("MATRIX_ALLOW_KEY_SHARE", "false")
+        )
         self._reactions_enabled: bool = os.getenv("MATRIX_REACTIONS", "true").lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
@@ -1120,7 +1130,9 @@ class MatrixAdapter(BasePlatformAdapter):
         phase = "import"
         try:
             from mautrix.crypto import OlmMachine
+            from mautrix.crypto.key_share import RejectKeyShare
             from mautrix.crypto.store.asyncpg import PgCryptoStore
+            from mautrix.types import RoomKeyWithheldCode
             from mautrix.util.async_db import Database
             self._store_dir.mkdir(parents=True, exist_ok=True)
             phase = "create"
@@ -1149,6 +1161,52 @@ class MatrixAdapter(BasePlatformAdapter):
             olm = OlmMachine(client, crypto_store, crypto_state)
             olm.share_keys_min_trust = TrustState.UNVERIFIED
             olm.send_keys_min_trust = TrustState.UNVERIFIED
+            if self._allow_key_share != "false":
+                # Honor m.room_key_request from the operator. mautrix's default
+                # key-share policy serves only the bot's own devices and silently
+                # drops cross-user key requests, so a client's "Request Key"
+                # button is a no-op against the bot. "allowed-users" scopes
+                # recovery to the configured allowlist (keeping mautrix's
+                # blacklist + resolved-trust checks and gating on room
+                # membership); "all" mirrors the permissive send policy.
+                if self._allow_key_share == "all":
+                    async def _allow_key_share(device, request):
+                        if (
+                            device.user_id == client.mxid
+                            and device.device_id == client.device_id
+                        ):
+                            return False
+                        return (
+                            await olm.resolve_trust(device)
+                        ) >= olm.share_keys_min_trust
+                else:
+                    async def _allow_key_share(device, request):
+                        if device.user_id not in self._allowed_user_ids:
+                            return await olm.default_allow_key_share(
+                                device, request
+                            )
+                        if device.trust == TrustState.BLACKLISTED:
+                            raise RejectKeyShare(
+                                f"Rejecting key request from blacklisted "
+                                f"device {device.device_id}",
+                                code=RoomKeyWithheldCode.BLACKLISTED,
+                                reason="You have been blacklisted by this device",
+                            )
+                        if (
+                            await olm.resolve_trust(device)
+                        ) < olm.share_keys_min_trust:
+                            raise RejectKeyShare(
+                                f"Rejecting key request from untrusted "
+                                f"device {device.device_id}",
+                                code=RoomKeyWithheldCode.UNVERIFIED,
+                                reason="You have not been verified by this device",
+                            )
+                        if not await state_store.is_joined(
+                            request.room_id, device.user_id
+                        ):
+                            return False
+                        return True
+                olm.allow_key_share = _allow_key_share
             await olm.load()
             if not await self._verify_device_keys_on_server(client, olm):
                 return await self._abort_connect(api, crypto_db)
@@ -2965,6 +3023,21 @@ _YAML_LIST_KEYS = (
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS"))
 
 
+def _normalize_allow_key_share(raw: str) -> str:
+    """Normalize MATRIX_ALLOW_KEY_SHARE into ``false``/``allowed-users``/``all``.
+
+    Accepts booleans and loose spellings so an operator can't get silently
+    stuck on an unrecognized value. Anything unrecognized resolves to ``false``
+    (mautrix default: own devices only).
+    """
+    value = (raw or "").strip().lower()
+    if value in ("true", "1", "yes", "all"):
+        return "all"
+    if value in ("allowed", "allowed-users", "allowed_users"):
+        return "allowed-users"
+    return "false"
+
+
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """apply_yaml_config_fn: config.yaml matrix: keys → MATRIX_* env (env wins). Returns None. Lowercased
     flags apply whenever the key is present (None still writes "none"); list-valued keys skip None.
@@ -2984,6 +3057,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
             os.environ[env_name] = str(value)
     if "max_message_length" in matrix_cfg and not os.getenv("MATRIX_MAX_MESSAGE_LENGTH"):
         os.environ["MATRIX_MAX_MESSAGE_LENGTH"] = str(matrix_cfg["max_message_length"])
+    if "allow_key_share" in matrix_cfg and not os.getenv("MATRIX_ALLOW_KEY_SHARE"):
+        os.environ["MATRIX_ALLOW_KEY_SHARE"] = str(matrix_cfg["allow_key_share"]).lower()
     return None
 
 

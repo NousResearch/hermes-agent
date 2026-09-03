@@ -98,6 +98,7 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
+  allow_key_share: false          # false (own devices) | allowed-users (allowlist) | all (any device)
 ```
 
 Or via environment variables:
@@ -114,6 +115,7 @@ MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 MATRIX_ALLOW_ROOM_MENTIONS=false
+MATRIX_ALLOW_KEY_SHARE=false   # false | allowed-users | all — honor "Request Key" for room keys
 ```
 
 :::tip Disabling reactions
@@ -459,6 +461,30 @@ If Hermes bootstraps a new Matrix recovery key, it never logs the raw key. Set
 `MATRIX_RECOVERY_KEY_OUTPUT_FILE=/secure/path/matrix-recovery-key.txt` before
 startup to write a generated key once with file mode `0600`; the file is not
 overwritten if it already exists.
+
+### Recovering undecryptable messages ("Request Key")
+
+When a client shows "no key to unlock this message", clicking **Request Key**
+sends an `m.room_key_request` to the sender. By default mautrix only answers
+key requests from the bot's *own* devices and silently drops requests from
+other users, so the button appears to do nothing. Opt in to cross-user key
+sharing to give yourself a working recovery path:
+
+```bash
+MATRIX_ALLOW_KEY_SHARE=allowed-users
+```
+
+or `matrix.allow_key_share` in `config.yaml`. Values:
+
+| Value | Behavior |
+|-------|----------|
+| `false` (default) | Own devices only — mautrix default. |
+| `allowed-users` | Honor key requests from `MATRIX_ALLOWED_USERS` and the bot's own user. |
+| `all` | Honor key requests from any non-blacklisted device (at `share_keys_min_trust`). |
+
+`allowed-users` is the recommended choice for a personal bot: it scopes
+recovery to the operator's own account (already trusted to trigger the agent)
+without exposing room keys to other users.
 
 :::warning[Deleting the crypto store]
 If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.

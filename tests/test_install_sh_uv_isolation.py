@@ -27,6 +27,17 @@ import subprocess
 
 import pytest
 
+# These lift a shell function out of the POSIX installers and run it in a
+# `bash` harness. install.sh / setup-hermes.sh are the POSIX install path;
+# Windows uses install.ps1, and its migration is covered by the PowerShell CI
+# harness plus tests/hermes_cli/test_managed_uv.py. On native Windows git-bash
+# the harness writes WSL-style `/mnt/<drive>/...` paths that the host `bash`
+# cannot resolve, so skip here — the function is not exercised on Windows.
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX installer bash-harness: not runnable on native Windows",
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"

@@ -940,6 +940,11 @@ class TestWindowlessGatewayRestartSpec:
     hidden-console respawn spec (normalized interpreter + stable cwd + env
     overlay)."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="no-op is the non-Windows branch; the Windows spec branch is "
+        "covered by test_windows_keeps_console_python_and_preserves_tail",
+    )
     def test_noop_on_non_windows(self):
         import hermes_cli.gateway_windows as gw
 

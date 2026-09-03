@@ -16,11 +16,14 @@ Two invariants, each of which has been broken before:
    NameError-ing the Termux fast path in production for weeks.
 """
 
+import builtins
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+from hermes_cli import _startup_fast
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,6 +40,20 @@ _FORBIDDEN_MODULES = (
     "httpx",
     "openai",
 )
+
+
+def test_set_process_title_is_non_fatal_without_ctypes(monkeypatch):
+    """A cosmetic title must not abort startup on Python builds without _ctypes."""
+    real_import = builtins.__import__
+
+    def import_without_title_dependencies(name, *args, **kwargs):
+        if name in {"ctypes", "setproctitle"}:
+            raise ImportError(f"simulated missing {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_title_dependencies)
+
+    _startup_fast.set_process_title()
 
 
 def test_startup_fast_import_weight():

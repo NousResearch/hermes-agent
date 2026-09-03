@@ -10,6 +10,8 @@ import hermes_bootstrap
 
 hermes_bootstrap.harden_import_path()
 
+from hermes_cli import _startup_fast
+
 import json
 import logging
 import signal
@@ -420,6 +422,7 @@ def ensure_mcp_discovery_started() -> None:
 
 
 def main():
+    _startup_fast.set_process_title()
     _install_sidecar_publisher()
 
     # Cross-backend liveness (#94895): register a heartbeat row so the

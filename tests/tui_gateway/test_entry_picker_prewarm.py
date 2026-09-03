@@ -36,6 +36,9 @@ def _run_main(monkeypatch, events, *, prewarm=None):
     ``events`` receives ``("write", <event type>)`` for every write_json call
     and ``("prewarm",)`` when the spy fires, in call order.
     """
+    monkeypatch.setattr(
+        entry._startup_fast, "set_process_title", lambda: events.append(("title",))
+    )
     monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
     monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)
     monkeypatch.setattr(entry, "resolve_skin", lambda: "default")
@@ -80,6 +83,8 @@ def test_main_prewarms_picker_cache_after_gateway_ready(monkeypatch):
 
     ready_idx = events.index(("write", "gateway.ready"))
     prewarm_idx = events.index(("prewarm",))
+    title_idx = events.index(("title",))
+    assert title_idx < ready_idx
     assert ready_idx < prewarm_idx, (
         "prewarm must fire AFTER the gateway.ready write (idle window, "
         f"banner already shown); order was {events!r}"

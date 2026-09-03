@@ -28,13 +28,13 @@ import { rebuildAroundCaret, triggerKeyUpHandler } from '@/app/chat/composer/hoo
 import { useComposerUndo } from '@/app/chat/composer/hooks/use-composer-undo'
 import { useEmojiCompletions } from '@/app/chat/composer/hooks/use-emoji-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
+import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import {
   dragHasAttachments,
   droppedFileInlineRefs,
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from '@/app/chat/composer/inline-refs'
-import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
   composerPlainText,

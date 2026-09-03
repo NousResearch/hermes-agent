@@ -143,7 +143,8 @@ def _expand_acp_enabled_toolsets(
 ) -> List[str]:
     """Return ACP toolsets plus explicit MCP server toolsets for this session."""
     expanded: List[str] = []
-    for name in list(toolsets or ["hermes-acp"]):
+    resolved_toolsets = ["hermes-acp"] if toolsets is None else toolsets
+    for name in list(resolved_toolsets):
         if name and name not in expanded:
             expanded.append(name)
 
@@ -153,6 +154,332 @@ def _expand_acp_enabled_toolsets(
             expanded.append(toolset_name)
 
     return expanded
+
+
+def _acp_native_toolset_names(plugin_toolsets: set[str]) -> set[str]:
+    """Return native names without treating live MCP aliases as native."""
+    from toolsets import TOOLSETS, _get_registry_toolset_aliases
+
+    native_names = set(TOOLSETS) | set(plugin_toolsets) | {"all", "*"}
+    native_names.update(
+        alias
+        for alias, canonical in _get_registry_toolset_aliases().items()
+        if canonical in native_names
+    )
+    return native_names
+
+
+def _disabled_acp_mcp_server_names(config: dict) -> frozenset[str]:
+    """Map global disabled toolset names back to raw MCP server names."""
+    disabled = {
+        str(name).strip()
+        for name in ((config.get("agent") or {}).get("disabled_toolsets") or [])
+        if str(name).strip()
+    }
+    return frozenset(
+        name.removeprefix("mcp-") if name.startswith("mcp-") else name
+        for name in disabled
+    )
+
+
+def _resolve_acp_platform_toolsets(
+    config: dict,
+    *,
+    mcp_server_names: List[str] | None = None,
+) -> List[str]:
+    """Resolve ACP-native toolsets without making session startup brittle."""
+    try:
+        # The platform resolver derives plugin toolsets from the live plugin
+        # registry. ACP reaches this path before AIAgent imports model_tools,
+        # so discover explicitly rather than relying on that later side effect.
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.tools_config import (
+            _get_platform_tools,
+            _get_plugin_toolset_keys,
+            enabled_mcp_server_names,
+        )
+
+        discover_plugins()
+        plugin_toolsets = set(_get_plugin_toolset_keys())
+        native_names = _acp_native_toolset_names(plugin_toolsets)
+        enabled_mcp = set(enabled_mcp_server_names(config))
+        configured_mcp = {
+            str(name) for name in (config.get("mcp_servers") or {}).keys()
+        }
+        native_config = config
+        platform_toolsets = (config.get("platform_toolsets") or {}).get("acp")
+        if isinstance(platform_toolsets, list):
+            native_config = copy.deepcopy(config)
+            native_config["platform_toolsets"]["acp"] = [
+                str(name)
+                for name in platform_toolsets
+                if str(name) != "no_mcp"
+                and not (
+                    (
+                        str(name) in enabled_mcp
+                        and str(name) not in plugin_toolsets
+                    )
+                    or (
+                        str(name) in configured_mcp
+                        and str(name) not in native_names
+                    )
+                )
+            ]
+        native_toolsets = set(
+            _get_platform_tools(
+                native_config,
+                "acp",
+                include_default_mcp_servers=False,
+            )
+        )
+        native_toolsets.discard("hermes-acp")
+        native_toolsets.difference_update(enabled_mcp - native_names)
+        if isinstance(platform_toolsets, list):
+            selected = {str(name) for name in platform_toolsets}
+            native_toolsets.difference_update(
+                (selected & enabled_mcp) - plugin_toolsets
+            )
+        return [
+            "hermes-acp",
+            *sorted(native_toolsets),
+        ]
+    except Exception:
+        logger.debug("ACP: platform toolset resolution failed", exc_info=True)
+        # Plugin/platform configuration is optional. Keep the curated ACP
+        # baseline available so one broken plugin cannot remove file, terminal,
+        # memory, and skill tools from every session on the profile.
+        return ["hermes-acp"]
+
+
+def _resolve_acp_mcp_policy_details(
+    config: dict,
+) -> tuple[List[str], frozenset[str] | None, frozenset[str]]:
+    """Return initial MCP names and the durable per-session allowlist.
+
+    ``None`` means no per-platform restriction, while an empty frozenset is an
+    explicit deny-all policy. An ambiguous raw selection grants neither side,
+    but it cannot revoke a native capability granted independently by the
+    always-on ACP baseline or an explicitly enabled plugin toolset.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.tools_config import (
+            _get_plugin_toolset_keys,
+            enabled_mcp_server_names,
+        )
+
+        discover_plugins()
+        enabled = set(enabled_mcp_server_names(config))
+        enabled.difference_update(_disabled_acp_mcp_server_names(config))
+        platform_toolsets = (config.get("platform_toolsets") or {}).get("acp")
+        if not isinstance(platform_toolsets, list):
+            return sorted(enabled), None, frozenset()
+
+        selected = {str(name) for name in platform_toolsets}
+        if "no_mcp" in selected:
+            return [], frozenset(), frozenset()
+        configured = {
+            str(name) for name in (config.get("mcp_servers") or {}).keys()
+        }
+        selected_mcp = selected & configured
+        if selected_mcp:
+            # Unprefixed names shared with any native toolset are ambiguous.
+            # Grant neither side; unambiguous MCP names form the allowlist.
+            plugin_toolsets = set(_get_plugin_toolset_keys())
+            native_names = _acp_native_toolset_names(plugin_toolsets)
+            collisions = frozenset(selected_mcp & enabled & native_names)
+            explicit_references = {
+                name
+                for name in selected_mcp
+                if name not in native_names
+            }
+            allowed = frozenset(explicit_references & enabled)
+            return sorted(allowed), allowed, collisions
+        return sorted(enabled), None, frozenset()
+    except Exception:
+        logger.debug("ACP: MCP server resolution failed", exc_info=True)
+        return [], frozenset(), frozenset()
+
+
+def _resolve_acp_mcp_policy(
+    config: dict,
+) -> tuple[List[str], frozenset[str] | None]:
+    """Return initial MCP names and the durable per-session allowlist."""
+    enabled, allowed, _collisions = _resolve_acp_mcp_policy_details(config)
+    return enabled, allowed
+
+
+def _enabled_acp_mcp_server_names(config: dict) -> List[str]:
+    """Resolve MCP servers enabled when an ACP session is constructed."""
+    enabled, _allowed = _resolve_acp_mcp_policy(config)
+    return enabled
+
+
+def _agent_acp_capability_policy(agent) -> dict | None:
+    """Return the durable ACP capability policy attached to an agent."""
+    enabled = getattr(agent, "enabled_toolsets", None)
+    disabled = getattr(agent, "disabled_toolsets", None)
+    allowed = getattr(agent, "_acp_mcp_allowed_names", None)
+    denied = getattr(agent, "_acp_mcp_denied_names", frozenset())
+    if not isinstance(enabled, list) or not all(isinstance(v, str) for v in enabled):
+        return None
+    if disabled is not None and (
+        not isinstance(disabled, list)
+        or not all(isinstance(v, str) for v in disabled)
+    ):
+        return None
+    if allowed is not None and not isinstance(allowed, (set, frozenset)):
+        return None
+    if not isinstance(denied, (set, frozenset)):
+        return None
+    return {
+        "enabled_toolsets": list(dict.fromkeys(enabled)),
+        "disabled_toolsets": (
+            list(dict.fromkeys(disabled)) if disabled is not None else None
+        ),
+        "mcp_allowed_names": sorted(allowed) if allowed is not None else None,
+        "mcp_denied_names": sorted(denied),
+    }
+
+
+def _normalize_acp_capability_policy(policy: dict) -> dict:
+    """Validate a policy restored from durable session metadata."""
+    if not isinstance(policy, dict):
+        raise ValueError("ACP capability policy must be an object")
+    normalized = {}
+    for key in ("enabled_toolsets", "mcp_denied_names"):
+        value = policy.get(key)
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(f"ACP capability policy {key} must be a string list")
+        normalized[key] = list(dict.fromkeys(value))
+    for key in ("disabled_toolsets", "mcp_allowed_names"):
+        value = policy.get(key)
+        if value is not None and (
+            not isinstance(value, list)
+            or not all(isinstance(v, str) for v in value)
+        ):
+            raise ValueError(f"ACP capability policy {key} must be null or a string list")
+        normalized[key] = None if value is None else list(dict.fromkeys(value))
+    return normalized
+
+
+def _intersect_optional_names(
+    original: list[str] | None,
+    current: list[str] | None,
+) -> list[str] | None:
+    """Apply current tightening without widening an original optional allowlist."""
+    if original is None:
+        return current
+    if current is None:
+        return original
+    current_names = set(current)
+    return [name for name in original if name in current_names]
+
+
+def _merge_acp_capability_policy(original: dict, current: dict) -> dict:
+    """Preserve original grants while applying stricter current profile policy."""
+    original = _normalize_acp_capability_policy(original)
+    current = _normalize_acp_capability_policy(current)
+    current_enabled = set(current["enabled_toolsets"])
+    current_disabled = set(current["disabled_toolsets"] or [])
+    current_denied = set(current["mcp_denied_names"])
+    current_allowed = current["mcp_allowed_names"]
+
+    def remains_allowed(name: str) -> bool:
+        if name in current_enabled:
+            return True
+        if not name.startswith("mcp-") or name in current_disabled:
+            return False
+        server_name = name.removeprefix("mcp-")
+        if server_name in current_denied:
+            return False
+        return current_allowed is None or server_name in current_allowed
+
+    enabled = [
+        name for name in original["enabled_toolsets"] if remains_allowed(name)
+    ]
+    disabled = list(
+        dict.fromkeys(
+            (original["disabled_toolsets"] or [])
+            + (current["disabled_toolsets"] or [])
+        )
+    )
+    denied = sorted(
+        set(original["mcp_denied_names"]) | set(current["mcp_denied_names"])
+    )
+    return {
+        "enabled_toolsets": enabled,
+        "disabled_toolsets": disabled or None,
+        "mcp_allowed_names": _intersect_optional_names(
+            original["mcp_allowed_names"], current["mcp_allowed_names"]
+        ),
+        "mcp_denied_names": denied,
+    }
+
+
+def _current_acp_capability_policy(config: dict) -> dict:
+    """Resolve the current profile into a durable, monotonic ACP policy."""
+    (
+        configured_mcp_servers,
+        allowed_mcp_servers,
+        ambiguous_mcp_servers,
+    ) = _resolve_acp_mcp_policy_details(config)
+    globally_denied_mcp_servers = _disabled_acp_mcp_server_names(config)
+
+    # ACP clients can propose additional MCP servers after session creation.
+    # Reserve native/plugin names (including all/*) so an untrusted client
+    # cannot create a raw MCP alias in another capability namespace. Servers
+    # explicitly configured by the profile are already canonicalized to
+    # mcp-<name>; this registration denylist does not remove their tools.
+    plugin_toolsets: set[str] = set()
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.tools_config import _get_plugin_toolset_keys
+
+        discover_plugins()
+        plugin_toolsets = set(_get_plugin_toolset_keys())
+    except Exception:
+        logger.debug("ACP: plugin MCP-name reservation failed", exc_info=True)
+    try:
+        reserved_mcp_server_names = _acp_native_toolset_names(plugin_toolsets)
+    except Exception:
+        logger.debug("ACP: native MCP-name reservation failed", exc_info=True)
+        reserved_mcp_server_names = {"all", "*"}
+
+    disabled_toolsets = [
+        str(name)
+        for name in ((config.get("agent") or {}).get("disabled_toolsets") or [])
+        if str(name).strip()
+    ]
+    configured_mcp_names = {
+        str(name) for name in (config.get("mcp_servers") or {}).keys()
+    }
+    surface_denied_mcp_servers = (
+        globally_denied_mcp_servers | ambiguous_mcp_servers
+    )
+    for server_name in sorted(surface_denied_mcp_servers & configured_mcp_names):
+        canonical = f"mcp-{server_name}"
+        if canonical not in disabled_toolsets:
+            disabled_toolsets.append(canonical)
+
+    return {
+        "enabled_toolsets": _expand_acp_enabled_toolsets(
+            _resolve_acp_platform_toolsets(
+                config,
+                mcp_server_names=configured_mcp_servers,
+            ),
+            mcp_server_names=configured_mcp_servers,
+        ),
+        "disabled_toolsets": disabled_toolsets or None,
+        "mcp_allowed_names": (
+            sorted(allowed_mcp_servers)
+            if allowed_mcp_servers is not None
+            else None
+        ),
+        "mcp_denied_names": sorted(
+            globally_denied_mcp_servers | reserved_mcp_server_names
+        ),
+    }
 
 
 def _clear_task_cwd(task_id: str) -> None:
@@ -264,6 +591,7 @@ class SessionManager:
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            capability_policy=_agent_acp_capability_policy(original.agent),
         )
         state = SessionState(
             session_id=new_id,
@@ -432,7 +760,10 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
-        session_meta = {"cwd": state.cwd}
+        session_meta: dict[str, Any] = {"cwd": state.cwd}
+        capability_policy = _agent_acp_capability_policy(state.agent)
+        if capability_policy is not None:
+            session_meta["acp_capability_policy"] = capability_policy
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
@@ -452,7 +783,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -532,6 +863,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        capability_policy = None
         mc = row.get("model_config")
         if mc:
             try:
@@ -541,6 +873,16 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    if "acp_capability_policy" in meta:
+                        capability_policy = _normalize_acp_capability_policy(
+                            meta["acp_capability_policy"]
+                        )
+            except ValueError:
+                logger.warning(
+                    "Refusing to restore ACP session %s with malformed capability policy",
+                    session_id,
+                )
+                return None
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -567,6 +909,7 @@ class SessionManager:
                 requested_provider=requested_provider,
                 base_url=restored_base_url,
                 api_mode=restored_api_mode,
+                capability_policy=capability_policy,
             )
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
@@ -608,6 +951,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        capability_policy: dict | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -626,18 +970,17 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
-        configured_mcp_servers = [
-            name
-            for name, cfg in (config.get("mcp_servers") or {}).items()
-            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
-        ]
+        current_policy = _current_acp_capability_policy(config)
+        effective_policy = (
+            _merge_acp_capability_policy(capability_policy, current_policy)
+            if capability_policy is not None
+            else current_policy
+        )
 
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
-            ),
+            "enabled_toolsets": effective_policy["enabled_toolsets"],
+            "disabled_toolsets": effective_policy["disabled_toolsets"],
             "quiet_mode": True,
             "session_id": session_id,
             "session_db": self._get_db(),
@@ -685,6 +1028,20 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
+        # Retain the initial MCP capability decision across ACP-client server
+        # registration and every later tool-surface refresh. ``None`` means the
+        # profile did not set a per-platform MCP restriction.
+        allowed_names = effective_policy["mcp_allowed_names"]
+        setattr(
+            agent,
+            "_acp_mcp_allowed_names",
+            frozenset(allowed_names) if allowed_names is not None else None,
+        )
+        setattr(
+            agent,
+            "_acp_mcp_denied_names",
+            frozenset(effective_policy["mcp_denied_names"]),
+        )
         # Codex app-server sessions are spawned lazily on the first turn. Stamp
         # the ACP workspace onto the agent so the Codex runtime starts from the
         # editor/session cwd instead of the Hermes daemon's process cwd.

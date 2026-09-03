@@ -268,6 +268,95 @@ class TestListAndCleanup:
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 
+    def test_restore_preserves_original_acp_capability_policy(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        original_agent = SimpleNamespace(
+            model="test-model",
+            provider=None,
+            base_url=None,
+            api_mode=None,
+            enabled_toolsets=["hermes-acp", "mcp-notes"],
+            disabled_toolsets=["mcp-blocked"],
+            _acp_mcp_allowed_names=frozenset({"notes"}),
+            _acp_mcp_denied_names=frozenset({"blocked"}),
+        )
+        manager = SessionManager(agent_factory=lambda: original_agent, db=db)
+        state = manager.create_session(cwd="/tmp/project")
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        restored_agent = SimpleNamespace(model="test-model")
+        restored_manager = SessionManager(db=db)
+        with patch.object(
+            restored_manager,
+            "_make_agent",
+            return_value=restored_agent,
+        ) as make_agent:
+            restored = restored_manager.get_session(state.session_id)
+
+        assert restored is not None
+        policy = make_agent.call_args.kwargs["capability_policy"]
+        assert policy == {
+            "enabled_toolsets": ["hermes-acp", "mcp-notes"],
+            "disabled_toolsets": ["mcp-blocked"],
+            "mcp_allowed_names": ["notes"],
+            "mcp_denied_names": ["blocked"],
+        }
+
+    def test_fork_copies_original_acp_capability_policy(self, manager):
+        original = manager.create_session(cwd="/tmp/base")
+        original.agent.enabled_toolsets = ["hermes-acp"]
+        original.agent.disabled_toolsets = ["mcp-blocked"]
+        original.agent._acp_mcp_allowed_names = frozenset()
+        original.agent._acp_mcp_denied_names = frozenset({"blocked"})
+
+        with patch.object(manager, "_make_agent", return_value=_mock_agent()) as make_agent:
+            forked = manager.fork_session(original.session_id, cwd="/tmp/fork")
+
+        assert forked is not None
+        assert make_agent.call_args.kwargs["capability_policy"] == {
+            "enabled_toolsets": ["hermes-acp"],
+            "disabled_toolsets": ["mcp-blocked"],
+            "mcp_allowed_names": [],
+            "mcp_denied_names": ["blocked"],
+        }
+
+    def test_policy_merge_preserves_client_mcp_when_current_policy_allows_it(self):
+        original = {
+            "enabled_toolsets": ["hermes-acp", "mcp-client"],
+            "disabled_toolsets": None,
+            "mcp_allowed_names": None,
+            "mcp_denied_names": [],
+        }
+        current = {
+            "enabled_toolsets": ["hermes-acp"],
+            "disabled_toolsets": None,
+            "mcp_allowed_names": None,
+            "mcp_denied_names": ["all", "*", "memory"],
+        }
+
+        merged = acp_session._merge_acp_capability_policy(original, current)
+
+        assert merged["enabled_toolsets"] == ["hermes-acp", "mcp-client"]
+
+    def test_policy_merge_drops_client_mcp_when_current_policy_tightens(self):
+        original = {
+            "enabled_toolsets": ["hermes-acp", "mcp-client"],
+            "disabled_toolsets": None,
+            "mcp_allowed_names": None,
+            "mcp_denied_names": [],
+        }
+        current = {
+            "enabled_toolsets": ["hermes-acp"],
+            "disabled_toolsets": None,
+            "mcp_allowed_names": [],
+            "mcp_denied_names": ["all", "*", "memory"],
+        }
+
+        merged = acp_session._merge_acp_capability_policy(original, current)
+
+        assert merged["enabled_toolsets"] == ["hermes-acp"]
+
 
 
 

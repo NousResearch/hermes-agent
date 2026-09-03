@@ -72,7 +72,12 @@ from acp_adapter.events import (
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _agent_acp_capability_policy,
+    _expand_acp_enabled_toolsets,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
@@ -1132,11 +1137,30 @@ class HermesACPAgent(acp.Agent):
         if not mcp_servers:
             return
 
+        allowed_names = getattr(state.agent, "_acp_mcp_allowed_names", None)
+        if not isinstance(allowed_names, frozenset):
+            allowed_names = None
+        denied_names = getattr(state.agent, "_acp_mcp_denied_names", frozenset())
+        if not isinstance(denied_names, frozenset):
+            denied_names = frozenset()
+        accepted_servers = [
+            server
+            for server in mcp_servers
+            if server.name not in denied_names
+            and (allowed_names is None or server.name in allowed_names)
+        ]
+        if not accepted_servers:
+            logger.info(
+                "Session %s: ACP MCP registration denied by session policy",
+                state.session_id,
+            )
+            return
+
         try:
             from tools.mcp_tool import register_mcp_servers
 
             config_map: dict[str, dict] = {}
-            for server in mcp_servers:
+            for server in accepted_servers:
                 name = server.name
                 if isinstance(server, McpServerStdio):
                     config = {
@@ -1161,27 +1185,23 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from tools.mcp_tool import refresh_agent_mcp_tools
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
-                mcp_server_names=[server.name for server in mcp_servers],
+                mcp_server_names=[server.name for server in accepted_servers],
             )
-            state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
-            state.agent.tools = get_tool_definitions(
-                enabled_toolsets=enabled_toolsets,
-                disabled_toolsets=disabled_toolsets,
+            refresh_agent_mcp_tools(
+                state.agent,
+                enabled_override=enabled_toolsets,
+                disabled_override=disabled_toolsets,
                 quiet_mode=True,
             )
-            state.agent.valid_tool_names = {
-                tool["function"]["name"] for tool in state.agent.tools or []
-            }
-            inject_memory_provider_tools(state.agent)
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()
+            self.session_manager.save_session(state.session_id)
             logger.info(
                 "Session %s: refreshed tool surface after ACP MCP registration (%d tools)",
                 state.session_id,
@@ -2330,6 +2350,7 @@ class HermesACPAgent(acp.Agent):
 
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
         target_provider, new_model = self._resolve_model_selection(args, current_provider)
+        capability_policy = _agent_acp_capability_policy(state.agent)
 
         state.model = new_model
         state.agent = self.session_manager._make_agent(
@@ -2337,6 +2358,7 @@ class HermesACPAgent(acp.Agent):
             cwd=state.cwd,
             model=new_model,
             requested_provider=target_provider,
+            capability_policy=capability_policy,
         )
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
@@ -2352,7 +2374,11 @@ class HermesACPAgent(acp.Agent):
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             )
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                quiet_mode=True,
+            )
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={
@@ -2361,6 +2387,7 @@ class HermesACPAgent(acp.Agent):
                     if isinstance(tool, dict)
                 },
                 enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
                 _memory_manager=getattr(state.agent, "_memory_manager", None),
             )
             inject_memory_provider_tools(tool_view)
@@ -2582,6 +2609,7 @@ class HermesACPAgent(acp.Agent):
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
+            capability_policy = _agent_acp_capability_policy(state.agent)
             state.agent = self.session_manager._make_agent(
                 session_id=session_id,
                 cwd=state.cwd,
@@ -2589,6 +2617,7 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                capability_policy=capability_policy,
             )
             self.session_manager.save_session(session_id)
             logger.info(

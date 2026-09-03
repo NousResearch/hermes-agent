@@ -933,7 +933,7 @@ class _Runtime:
                 task,
                 self.relay.tools.call_end,
                 tool_call.handle,
-                fields,
+                self.relay.ToolExecutionResult(fields),
                 metadata=self._event_metadata(),
             )
         except Exception:

@@ -299,6 +299,16 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(home)
+        if not external_secrets:
+            # The process-global snapshot can be empty when this module's
+            # env_loader import ran apply_all() during an earlier (pre-dotenv)
+            # import order and the fetch only OVERRODE pre-existing env vars
+            # (provenance tracks only newly applied names, so the snapshot
+            # stays empty). Resolve this home's sources directly so the scope
+            # still carries vault secrets (#16958-regression: cron zai jobs
+            # failed with "No usable credentials found for provider 'zai'").
+            from hermes_cli.env_loader import hydrate_profile_secret_sources
+            external_secrets = hydrate_profile_secret_sources(home)
     except Exception:
         external_secrets = {}
 

@@ -246,10 +246,43 @@ class TestEnvFileParsing:
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,
             str(other.resolve()),
-            {"XIAOMI_API_KEY": "sk-other-profile"},
+            {"XIAOMI_API_KEY": "«redacted:sk-…»"},
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_build_profile_secret_scope_hydrates_when_snapshot_empty(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: a pre-dotenv env_loader import (cron-before-gateway
+        import order, commit 0583692c2d) can leave the process-global source
+        snapshot EMPTY — the startup apply_all only OVERRODE pre-existing env
+        values and provenance tracks only newly-applied names. In that case
+        build_profile_secret_scope() must still resolve the home's external
+        sources directly so scoped credential reads (cron zai jobs) do not
+        fail with "No usable credentials found for provider 'zai'".
+        """
+        (tmp_path / ".env").write_text("ZAI_REGION=us\n")
+        from hermes_cli import env_loader
+
+        # Snapshot is empty for this home — the failing state.
+        home_key = str(tmp_path.resolve())
+        monkeypatch.setitem(env_loader._SECRET_SOURCE_VALUES_BY_HOME, home_key, {})
+
+        # Fake the direct hydration path with a vault secret.
+        def fake_hydrate(hermes_home):
+            from pathlib import Path
+
+            if str(Path(hermes_home).resolve()) == home_key:
+                return {"GLM_API_KEY": "«redacted:sk-…»"}
+            return {}
+
+        monkeypatch.setattr(
+            env_loader, "hydrate_profile_secret_sources", fake_hydrate
+        )
+
+        scope = ss.build_profile_secret_scope(tmp_path)
+        assert scope == {"ZAI_REGION": "us", "GLM_API_KEY": "«redacted:sk-…»"}
 
 
 class TestApiServerListenerGlobals:

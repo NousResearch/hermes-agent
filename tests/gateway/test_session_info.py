@@ -154,3 +154,30 @@ class TestResetNoticeSessionInfo:
         assert "anthropic" in info
         assert "base-model" not in info
 
+    def test_reset_notice_uses_channel_model_override(self, runner, tmp_path):
+        from types import SimpleNamespace
+
+        base, profile = self._homes(tmp_path)
+        source = self._source()
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        with (
+            patch("gateway.run._hermes_home", base),
+            patch.object(
+                GatewayRunner,
+                "_resolve_profile_home_for_source",
+                return_value=profile,
+            ),
+            patch(
+                "gateway.run._get_channel_override",
+                return_value=SimpleNamespace(model="channel-model"),
+            ),
+            patch.object(
+                GatewayRunner,
+                "_format_session_info",
+                return_value="channel-info",
+            ) as format_info,
+        ):
+            assert runner._reset_notice_session_info(source) == "channel-info"
+
+        format_info.assert_called_once_with(model="channel-model")
+

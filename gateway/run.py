@@ -23952,6 +23952,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         When multiplexing, resolve model/provider/context inside the profile
         serving ``source`` — otherwise the banner advertises the base config's
         model while the session actually runs on the profile's (#59003).
+        Apply the source channel's model override for the same reason: the
+        reset banner should describe the route the next turn will use.
         Mirrors ``_run_agent``'s gating so single-profile gateways never
         enter the scope.
 
@@ -23961,19 +23963,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         inside this method, so contextvars behave correctly in the worker
         thread.
         """
+        channel_override = _get_channel_override(
+            self.config,
+            source.platform,
+            str(source.chat_id) if source.chat_id else "",
+            thread_id=(
+                str(source.thread_id)
+                if getattr(source, "thread_id", None)
+                else None
+            ),
+            parent_id=(
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            ),
+        )
+        channel_model = channel_override.model if channel_override else None
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(model=channel_model)
+        return self._format_session_info(model=channel_model)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, model: Optional[str] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
         """
-        resolved = _resolve_gateway_model_context()
+        resolved = _resolve_gateway_model_context(model=model)
         model = resolved.model
         provider = resolved.provider
         base_url = resolved.base_url

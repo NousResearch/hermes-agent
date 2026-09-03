@@ -4,7 +4,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { $hudActive, $hudSession, openHud, resetHudLayout } from './hud'
+import { $hudActive, $hudOrientation, $hudSession, openHud, resetHudLayout, setHudOrientation } from './hud'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -45,6 +45,47 @@ describe('resetHudLayout', () => {
     resetHudLayout()
 
     expect(resetLayout).toHaveBeenCalledOnce()
+  })
+})
+
+describe('hud orientation', () => {
+  const ORIENTATION_KEY = 'hermes.desktop.hud.orientation'
+
+  afterEach(() => {
+    window.localStorage.removeItem(ORIENTATION_KEY)
+    setHudOrientation('composer-top')
+  })
+
+  it('boots on the shipped composer-top layout when nothing is stored', async () => {
+    window.localStorage.removeItem(ORIENTATION_KEY)
+    vi.resetModules()
+
+    const { $hudOrientation: fresh } = await import('./hud')
+
+    expect(fresh.get()).toBe('composer-top')
+  })
+
+  it('boots on the persisted choice, and falls back on junk', async () => {
+    window.localStorage.setItem(ORIENTATION_KEY, JSON.stringify('composer-bottom'))
+    vi.resetModules()
+
+    const { $hudOrientation: restored } = await import('./hud')
+
+    expect(restored.get()).toBe('composer-bottom')
+
+    window.localStorage.setItem(ORIENTATION_KEY, '{corrupt')
+    vi.resetModules()
+
+    const { $hudOrientation: fallback } = await import('./hud')
+
+    expect(fallback.get()).toBe('composer-top')
+  })
+
+  it('persists the choice so a reopened HUD restores it', () => {
+    setHudOrientation('composer-bottom')
+
+    expect($hudOrientation.get()).toBe('composer-bottom')
+    expect(JSON.parse(window.localStorage.getItem(ORIENTATION_KEY) ?? '')).toBe('composer-bottom')
   })
 })
 

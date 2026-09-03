@@ -42,6 +42,7 @@ import {
   setNested,
   voiceFieldVisible
 } from './helpers'
+import { HudSettings } from './hud-settings'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
@@ -389,8 +390,8 @@ function ConfigSettingsInner({
         </div>
       )}
       {/* Device-local desktop prefs (not config.yaml) — they live here since
-          keeping the machine awake and the global Quick Entry chord are both
-          power-user, this-computer-only knobs. */}
+          keeping the machine awake, the global Quick Entry chord, and the HUD
+          layout are all power-user, this-computer-only knobs. */}
       {activeSectionId === 'advanced' && (
         <>
           <ToggleRow
@@ -406,6 +407,7 @@ function ConfigSettingsInner({
             onChange={setDisableF12}
           />
           <QuickEntrySettings />
+          <HudSettings />
         </>
       )}
       {/* Device-local attach/preview byte cap (main-process IPC guard). Chat is

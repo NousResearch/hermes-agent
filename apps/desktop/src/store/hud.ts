@@ -15,6 +15,7 @@
 
 import { atom } from 'nanostores'
 
+import { readJson, writeJson } from '@/lib/storage'
 import { requestComposerDraftSync } from '@/store/composer'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $sessions, rememberedSessionProfile } from '@/store/session'
@@ -42,6 +43,46 @@ export const $hudSession = atom<null | string>(null)
 /** True when the shell exposes HUD mode (desktop only). */
 export const canUseHud = (): boolean =>
   typeof window !== 'undefined' && typeof window.hermesDesktop?.hud?.open === 'function'
+
+// ── Orientation ──────────────────────────────────────────────────────────────
+
+/** Where the composer sits relative to the transcript band.
+ *  - `auto`: edge-aware — the band grows AWAY from the screen edge the HUD is
+ *    parked against (parked at the top the composer hugs the top and the
+ *    transcript hangs below; anywhere else the composer sits at the bottom
+ *    and the transcript grows upward). This was the layout until the
+ *    always-below experiment pinned it.
+ *  - `composer-top`: the Spotlight shape — composer pinned to the window's
+ *    top edge, transcript always hanging below, wherever the HUD is parked.
+ *  - `composer-bottom`: mirrored — composer pinned to the bottom edge,
+ *    transcript always above it. */
+export type HudOrientation = 'auto' | 'composer-top' | 'composer-bottom'
+
+export const HUD_ORIENTATIONS: readonly HudOrientation[] = ['auto', 'composer-top', 'composer-bottom']
+
+/** Device-local presentation preference — purely this window's layout, so it
+ *  lives in localStorage (the renderer owns it), scoped under one key. */
+const HUD_ORIENTATION_KEY = 'hermes.desktop.hud.orientation'
+
+const isHudOrientation = (value: unknown): value is HudOrientation =>
+  typeof value === 'string' && (HUD_ORIENTATIONS as readonly string[]).includes(value)
+
+/** The user's orientation choice. The default is `composer-top` — the shipped
+ *  Spotlight shape is preserved verbatim for everyone who never opens the
+ *  setting; `auto` restores the original edge-aware layout and
+ *  `composer-bottom` pins the bar to the bottom edge. */
+export const $hudOrientation = atom<HudOrientation>(readPersistedHudOrientation())
+
+function readPersistedHudOrientation(): HudOrientation {
+  const stored = readJson<unknown>(HUD_ORIENTATION_KEY)
+
+  return isHudOrientation(stored) ? stored : 'composer-top'
+}
+
+export function setHudOrientation(orientation: HudOrientation): void {
+  $hudOrientation.set(orientation)
+  writeJson(HUD_ORIENTATION_KEY, orientation)
+}
 
 export function openHud(sessionId?: null | string): void {
   const api = window.hermesDesktop?.hud

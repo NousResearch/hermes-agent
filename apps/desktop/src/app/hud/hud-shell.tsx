@@ -3,6 +3,7 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from 're
 import { useNavigate } from 'react-router'
 
 import { chatMessageText } from '@/lib/chat-messages'
+import { $hudOrientation } from '@/store/hud'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
@@ -38,10 +39,6 @@ const HUD_DIM_MS = Math.round(HUD_FADE_MS * 1.5)
  *  while the last of the text is still going — it reads as the transcript being
  *  drawn down into the bar rather than the two dissolving in lockstep. */
 const HUD_COLLAPSE_MS = Math.round(HUD_FADE_MS * 0.66)
-
-/** Composer on top, transcript always hanging below it — Spotlight's shape,
- *  rather than flipping to follow the screen edge the HUD is parked against. */
-const HUD_THREAD_ALWAYS_BELOW = true
 
 const composerHasFocus = () => document.activeElement?.closest(`[data-slot="${RICH_INPUT_SLOT}"]`) != null
 
@@ -217,11 +214,14 @@ export function HudShell() {
   useReportHudSession()
   useHudGoto(useNavigate())
 
-  // Which screen EDGE the window is parked against. Parked tight to the top,
-  // the composer flips to the window's top edge and the thread grows DOWN
-  // (data-hud-edge). Computed here from window.screenY — no IPC: the renderer
-  // always knows where its window is. Polled because the DOM has no
-  // window-move event; 300ms is imperceptible for a layout flip.
+  // Which layout the window shows, published to CSS as `data-hud-edge`:
+  // 'top' = composer hugs the window's TOP edge and the band hangs below it;
+  // 'bottom' = composer hugs the BOTTOM edge and the band grows upward.
+  // Driven by the persisted orientation preference ($hudOrientation):
+  // - 'composer-top' / 'composer-bottom' pin the bar to that edge directly.
+  // - 'auto' is edge-aware, computed here from window.screenY — no IPC: the
+  //   renderer always knows where its window is. Polled because the DOM has
+  //   no window-move event; 300ms is imperceptible for a layout flip.
   //
   // EDGE-tight, not a midpoint rule: the first cut compared topGap<bottomGap,
   // which flips the layout the moment the window crosses the vertical center
@@ -229,9 +229,26 @@ export function HudShell() {
   // flips to 'top' only when the HUD is actually parked against the top, and
   // back once it clearly leaves — the gap between the two thresholds is
   // hysteresis so the layout can't flutter while it's dragged along the line.
-  const [edge, setEdge] = useState<'bottom' | 'top'>('top')
+  const orientation = useStore($hudOrientation)
+  // Seeded from the pinned choice so a reopened HUD paints its layout on the
+  // first frame; 'auto' seeds the bottom (composer) layout, which the
+  // measurement corrects a moment later.
+  const [edge, setEdge] = useState<'bottom' | 'top'>(orientation === 'composer-top' ? 'top' : 'bottom')
 
   useEffect(() => {
+    // A pinned orientation wins outright — no measurement, no flip.
+    if (orientation === 'composer-top') {
+      setEdge('top')
+
+      return
+    }
+
+    if (orientation === 'composer-bottom') {
+      setEdge('bottom')
+
+      return
+    }
+
     // Measured on the WINDOW, and flush-only. Flipping is what lets the bar
     // reach the top of the screen at all: the window's top edge can sit against
     // the menu bar, and the flip moves the composer to that edge. Keying it off
@@ -243,15 +260,6 @@ export function HudShell() {
     const FLIP_OFF = 4
 
     const measure = () => {
-      // TRYING IT: the bar stays on top and the transcript always hangs below,
-      // wherever the HUD is parked. Flip the constant to re-enable the
-      // edge-aware layout (the CSS for both orientations is still here).
-      if (HUD_THREAD_ALWAYS_BELOW) {
-        setEdge('top')
-
-        return
-      }
-
       // availTop ≈ menu bar / notch inset on macOS; screenY is in full-screen
       // coordinates, so "parked at the top" means screenY ≈ availTop, not 0.
       const availTop = (window.screen as { availTop?: number }).availTop ?? 0
@@ -268,7 +276,7 @@ export function HudShell() {
       clearInterval(timer)
       window.removeEventListener('resize', measure)
     }
-  }, [])
+  }, [orientation])
 
   const rootRef = useRef<HTMLDivElement | null>(null)
 

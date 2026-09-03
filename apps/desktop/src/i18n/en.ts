@@ -733,7 +733,13 @@ export const en: Translations = {
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: 'Max preview / image load size in megabytes'
+      attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      hudOrientationTitle: 'HUD orientation',
+      hudOrientationDesc:
+        'Where the composer bar sits in HUD mode relative to the transcript. Follow screen edge flips the layout when the HUD is parked against the top of the screen.',
+      hudOrientationAuto: 'Follow screen edge',
+      hudOrientationTop: 'Composer on top',
+      hudOrientationBottom: 'Composer on bottom'
     },
     quickEntry: {
       enabledTitle: 'Quick Entry',

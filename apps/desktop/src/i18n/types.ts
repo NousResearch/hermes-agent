@@ -614,6 +614,11 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      hudOrientationTitle: string
+      hudOrientationDesc: string
+      hudOrientationAuto: string
+      hudOrientationTop: string
+      hudOrientationBottom: string
     }
     quickEntry: {
       enabledTitle: string

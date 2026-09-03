@@ -445,5 +445,8 @@ def test_docker_explicit_forward_cannot_export_hermes_internal_secret(
 
     args = env._build_init_env_args()
 
-    assert "DB_PASSWORD=fake-db-password" in args
-    assert not any(arg.startswith("BWS_ACCESS_TOKEN=") for arg in args)
+    # Docker receives name-only flags; values are injected only into the
+    # docker-client environment so credentials never appear in argv.
+    assert args == ["-e", "DB_PASSWORD"]
+    assert env._init_env_values == {"DB_PASSWORD": "fake-db-password"}
+    assert "BWS_ACCESS_TOKEN" not in env._init_env_values

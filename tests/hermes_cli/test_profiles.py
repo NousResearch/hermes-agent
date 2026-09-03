@@ -37,6 +37,7 @@ from hermes_cli.profiles import (
     rename_profile,
     export_profile,
     import_profile,
+    validate_profile_archive,
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
@@ -766,11 +767,134 @@ class TestRenameProfile:
 class TestExportImport:
     """Tests for export_profile() / import_profile()."""
 
+    def test_validate_archive_reports_deterministic_safe_plan(self, profile_env, tmp_path):
+        archive = tmp_path / "coder.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo("coder/")
+            info.type = tarfile.DIRTYPE
+            tf.addfile(info)
+            data = b"model: test\n"
+            info = tarfile.TarInfo("coder/config.yaml")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+        result = validate_profile_archive(str(archive))
+        assert result == {
+            "archive": str(archive),
+            "archive_root": "coder",
+            "profile_name": "coder",
+            "member_count": 2,
+            "valid": True,
+            "errors": [],
+            "warnings": [],
+            "destination": str(tmp_path / ".hermes" / "profiles" / "coder"),
+            "conflict": False,
+        }
 
+    def test_validate_rejects_credentials_runtime_and_links(self, profile_env, tmp_path):
+        archive = tmp_path / "bad.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            for name in ("coder/", "coder/.env", "coder/gateway.pid"):
+                info = tarfile.TarInfo(name)
+                if name.endswith("/"):
+                    info.type = tarfile.DIRTYPE
+                else:
+                    info.size = 1
+                tf.addfile(info, io.BytesIO(b"x") if info.size else None)
+            link = tarfile.TarInfo("coder/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            tf.addfile(link)
+        result = validate_profile_archive(str(archive))
+        assert result["valid"] is False
+        assert result["errors"] == [
+            "forbidden member: coder/.env",
+            "forbidden member: coder/gateway.pid",
+            "unsupported member type: coder/link",
+        ]
 
+    def test_validate_detects_destination_conflict_without_mutation(self, profile_env, tmp_path):
+        create_profile("coder", no_alias=True)
+        archive = tmp_path / "coder.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo("coder/")
+            info.type = tarfile.DIRTYPE
+            tf.addfile(info)
+        result = validate_profile_archive(str(archive))
+        assert result["valid"] is False
+        assert result["conflict"] is True
+        assert any(error.startswith("destination already exists") for error in result["errors"])
 
+    def test_import_dry_run_does_not_create_profile(self, profile_env, tmp_path):
+        archive = tmp_path / "coder.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo("coder/")
+            info.type = tarfile.DIRTYPE
+            tf.addfile(info)
+        result = import_profile(str(archive), name="preview", dry_run=True)
+        assert result["valid"] is True
+        assert result["profile_name"] == "preview"
+        assert not (tmp_path / ".hermes" / "profiles" / "preview").exists()
 
+    def test_named_export_excludes_every_forbidden_archive_name(self, profile_env, tmp_path):
+        profile_dir = create_profile("coder", no_alias=True)
+        forbidden = (
+            "auth.json", ".env", "auth.lock", "gateway.pid",
+            "gateway_state.json", "processes.json", "state.db",
+            "state.db-wal", "state.db-shm",
+        )
+        for filename in forbidden:
+            (profile_dir / filename).write_text("runtime or secret")
+        (profile_dir / "config.yaml").write_text("model: test")
 
+        archive = export_profile("coder", str(tmp_path / "coder.tar.gz"))
+
+        with tarfile.open(archive, "r:gz") as tf:
+            names = {Path(member).name for member in tf.getnames()}
+        assert names.isdisjoint(forbidden)
+        assert "config.yaml" in names
+
+    def test_import_missing_archive_raises_file_not_found(self, profile_env, tmp_path):
+        missing = tmp_path / "does-not-exist.tar.gz"
+
+        with pytest.raises(FileNotFoundError, match="Archive not found"):
+            import_profile(str(missing))
+
+    def test_validate_cli_does_not_print_none_profile(self, profile_env, tmp_path, capsys):
+        from hermes_cli.main import cmd_profile
+
+        archive = tmp_path / "invalid.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo("bad.name/config.yaml")
+            data = b"model: test\n"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(SystemExit):
+            cmd_profile(type("Args", (), {
+                "profile_action": "validate",
+                "archive": str(archive),
+                "json_output": False,
+            })())
+
+        output = capsys.readouterr().out
+        assert "Profile: None" not in output
+        assert "invalid archive profile name" in output
+
+    def test_dashboard_missing_archive_is_not_a_bad_request(self, profile_env, tmp_path):
+        import asyncio
+        from fastapi import HTTPException
+        from hermes_cli.web_models import ProfileImport
+        from hermes_cli.web_routers.profiles import import_profile_endpoint
+
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(import_profile_endpoint(ProfileImport(
+                archive=str(tmp_path / "missing.tar.gz"),
+            )))
+
+        assert exc_info.value.status_code == 404
+        assert "Archive not found" in str(exc_info.value.detail)
+
+    # ---------------------------------------------------------------
 
     # ---------------------------------------------------------------
     # Default profile export / import

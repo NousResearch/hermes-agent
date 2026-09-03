@@ -30,7 +30,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
@@ -2399,15 +2399,16 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             result = make_targz(base, tmpdir, "default")
             return Path(result)
 
-    # Named profiles — stage a filtered copy to exclude credentials
+    # Named profiles — stage a filtered copy using the same policy enforced by
+    # archive validation/import.  Runtime state must not make an exported
+    # named profile impossible to round-trip.
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
-        _CREDENTIAL_FILES = {"auth.json", ".env"}
         shutil.copytree(
             profile_dir,
             staged,
             symlinks=True,
-            ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
+            ignore=lambda d, contents: _PROFILE_ARCHIVE_FORBIDDEN_NAMES & set(contents),
         )
         _stage_extras(staged)
         _scrub_export_secrets(staged)
@@ -2415,19 +2416,179 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         return Path(result)
 
 
-def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
-    """Import a profile from a tar.gz archive.
+def _normalize_profile_archive_parts(member_name: str) -> List[str]:
+    """Return safe path parts for a profile archive member."""
+    normalized_name = member_name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(member_name)
 
-    If *name* is not given, infers it from the archive's top-level directory.
-    Returns the imported profile directory.
+    if (
+        not normalized_name
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+    ):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+
+    parts = [part for part in posix_path.parts if part not in {"", "."}]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+    return parts
+
+
+def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
+    """Extract a profile archive without allowing path escapes or links."""
+    import tarfile
+
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            parts = _normalize_profile_archive_parts(member.name)
+            target = destination.joinpath(*parts)
+
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+
+            if not member.isfile():
+                raise ValueError(
+                    f"Unsupported archive member type: {member.name}"
+                )
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            extracted = tf.extractfile(member)
+            if extracted is None:
+                raise ValueError(f"Cannot read archive member: {member.name}")
+
+            with extracted, open(target, "wb") as dst:
+                shutil.copyfileobj(extracted, dst)
+
+            try:
+                os.chmod(target, member.mode & 0o777)
+            except OSError:
+                pass
+
+
+def _inspect_profile_archive_roots(archive: Path) -> set[str]:
+    """Return the archive's top-level directory names.
+
+    Profile imports expect exactly one root directory. Inspecting the archive
+    before extraction lets us stage the import safely instead of mutating a
+    live profile tree first and reconciling names later.
     """
+    import tarfile
+
+    with tarfile.open(archive, "r:gz") as tf:
+        top_dirs = {
+            parts[0]
+            for member in tf.getmembers()
+            for parts in [_normalize_profile_archive_parts(member.name)]
+            if len(parts) > 1 or member.isdir()
+        }
+        if not top_dirs:
+            top_dirs = {
+                _normalize_profile_archive_parts(member.name)[0]
+                for member in tf.getmembers()
+                if member.isdir()
+            }
+    return top_dirs
+
+
+_PROFILE_ARCHIVE_FORBIDDEN_NAMES = frozenset({
+    "auth.json", ".env", "auth.lock", "gateway.pid", "gateway_state.json",
+    "processes.json", "state.db", "state.db-wal", "state.db-shm",
+})
+
+
+def validate_profile_archive(
+    archive_path: str, name: Optional[str] = None
+) -> dict:
+    """Inspect a profile archive without extracting or mutating anything.
+
+    The returned mapping is deliberately JSON-compatible and uses sorted error
+    lists so CLI and automation output is deterministic.
+    """
+    import tarfile
+
+    archive = Path(archive_path)
+    result = {
+        "archive": str(archive), "archive_root": None,
+        "profile_name": None, "member_count": 0, "valid": False,
+        "errors": [], "warnings": [], "destination": None, "conflict": False,
+    }
+    errors: list[str] = []
+    if not archive.is_file():
+        result["errors"] = [f"archive not found: {archive}"]
+        return result
+
+    try:
+        with tarfile.open(archive, "r:gz") as tf:
+            members = tf.getmembers()
+    except (OSError, tarfile.TarError) as exc:
+        result["errors"] = [f"archive unreadable: {exc}"]
+        return result
+
+    result["member_count"] = len(members)
+    roots: set[str] = set()
+    for member in members:
+        try:
+            parts = _normalize_profile_archive_parts(member.name)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if member.isdir() or len(parts) > 1:
+            roots.add(parts[0])
+        if not (member.isdir() or member.isfile()):
+            errors.append(f"unsupported member type: {member.name}")
+        if parts and parts[-1] in _PROFILE_ARCHIVE_FORBIDDEN_NAMES:
+            errors.append(f"forbidden member: {member.name}")
+
+    if len(roots) != 1:
+        errors.append("profile archive must contain exactly one top-level directory")
+    else:
+        archive_root = sorted(roots)[0]
+        result["archive_root"] = archive_root
+        try:
+            root_name = normalize_profile_name(archive_root)
+            validate_profile_name(root_name)
+        except ValueError as exc:
+            errors.append(f"invalid archive profile name: {exc}")
+        try:
+            inferred = normalize_profile_name(name or archive_root)
+            validate_profile_name(inferred)
+            result["profile_name"] = inferred
+            destination = get_profile_dir(inferred)
+            result["destination"] = str(destination)
+            conflict = destination.exists()
+            result["conflict"] = conflict
+            if conflict:
+                errors.append("destination already exists: " + str(destination))
+            if inferred == "default":
+                errors.append("cannot import as 'default'")
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    result["errors"] = sorted(set(errors))
+    result["valid"] = not result["errors"]
+    return result
+
+
+def import_profile(
+    archive_path: str, name: Optional[str] = None, *, dry_run: bool = False
+) -> Path | dict:
+    """Import a profile from a tar.gz archive, or return a dry-run plan."""
     import tempfile
 
     archive = Path(archive_path)
-    if not archive.exists():
+    if not dry_run and not archive.is_file():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    top_dirs = archive_root_dirs(archive)
+    plan = validate_profile_archive(archive_path, name=name)
+    if dry_run:
+        return plan
+    if not plan["valid"]:
+        raise ValueError("; ".join(plan["errors"]))
+
+    top_dirs = _inspect_profile_archive_roots(archive)
     archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
     inferred_name = name or archive_root
     if not inferred_name:

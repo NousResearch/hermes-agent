@@ -480,10 +480,32 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _slash_worker_cwd(cwd: str | None) -> str:
+    """Directory the slash-command worker should inherit.
+
+    Desktop sessions keep their project on ``session['cwd']`` while the
+    gateway process often sits in a launch directory that is not a git
+    repo (or is a different one). ``/worktree`` runs ``git rev-parse`` in
+    the worker's process cwd, so spawning with the gateway's cwd creates
+    the tree in the wrong place — or refuses altogether.
+    """
+    if cwd:
+        resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+        if os.path.isdir(resolved):
+            return resolved
+    return os.getcwd()
+
+
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(
+        self,
+        session_key: str,
+        model: str,
+        profile_home: str | None = None,
+        cwd: str | None = None,
+    ):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -543,11 +565,12 @@ class _SlashWorker:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            cwd=os.getcwd(),
+            cwd=_slash_worker_cwd(cwd),
             env=env,
             creationflags=windows_hide_flags(),
             start_new_session=True,
         )
+        self.cwd = _slash_worker_cwd(cwd)
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
 
@@ -6429,6 +6452,7 @@ def _restart_slash_worker(sid: str, session: dict):
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
             profile_home=session.get("profile_home"),
+            cwd=_session_cwd(session),
         )
     except Exception:
         session["slash_worker"] = None
@@ -16870,7 +16894,50 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
 
 
 
-def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
+def _parse_worktree_ready_path(output: str) -> str | None:
+    """Extract the path from a ``/worktree new`` success line.
+
+    The slash worker prints ``Worktree ready: <path>`` after creating the
+    tree. Desktop tools follow ``session['cwd']``, not the worker's
+    ``os.chdir``, so the gateway has to adopt that path.
+    """
+    marker = "Worktree ready:"
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if marker in stripped:
+            path = stripped.split(marker, 1)[1].strip()
+            return path or None
+    return None
+
+
+def _mirror_worktree_session_cwd(
+    sid: str, session: dict, arg: str, output: str
+) -> str:
+    """Retarget the live session after a successful ``/worktree new``."""
+    sub = arg.split(None, 1)[0].lower() if arg else ""
+    if sub not in {"new", "add", "create"}:
+        return ""
+    path = _parse_worktree_ready_path(output)
+    if not path:
+        return ""
+    try:
+        cwd = _set_session_cwd(session, path)
+    except ValueError as e:
+        return f"worktree created but session cwd was not updated: {e}"
+    agent = session.get("agent")
+    info = _session_info(agent, session) if agent is not None else {
+        "cwd": cwd,
+        "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
+        "lazy": True,
+    }
+    _emit("session.info", sid, info)
+    return ""
+
+
+def _mirror_slash_side_effects(
+    sid: str, session: dict, command: str, output: str = ""
+) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
     if not parts:
@@ -17029,6 +17096,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             from tools.process_registry import process_registry
 
             process_registry.kill_all()
+        elif name == "worktree":
+            warning = _mirror_worktree_session_cwd(sid, session, arg, output)
+            if warning:
+                return warning
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import (

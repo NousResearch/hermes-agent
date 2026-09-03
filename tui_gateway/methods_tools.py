@@ -1299,6 +1299,13 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
     worker = session.get("slash_worker")
+    wanted_cwd = _slash_worker_cwd(_session_cwd(session))
+    # A later session.cwd.set (folder tag, workspace.move) does not restart
+    # the persistent worker. Reusing the spawn cwd would create /worktree
+    # in the previous project (#102268 follow-up).
+    if worker is not None and getattr(worker, "cwd", None) != wanted_cwd:
+        _restart_slash_worker(params.get("session_id", ""), session)
+        worker = session.get("slash_worker")
     if not worker:
         # On-demand spawn is now the ONLY spawn path for a fresh session
         # (eager pre-warm removed), and slash.exec handlers run on the RPC
@@ -1316,6 +1323,7 @@ def _(rid, params: dict) -> dict:
                         session["session_key"],
                         getattr(session.get("agent"), "model", _resolve_model()),
                         profile_home=session.get("profile_home"),
+                        cwd=_session_cwd(session),
                     )
                     _attach_worker(params.get("session_id", ""), session, worker)
                 except Exception as e:
@@ -1323,7 +1331,9 @@ def _(rid, params: dict) -> dict:
 
     try:
         output = worker.run(cmd)
-        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        warning = _mirror_slash_side_effects(
+            params.get("session_id", ""), session, cmd, output=output
+        )
         payload = {"output": output or "(no output)"}
         if warning:
             payload["warning"] = warning

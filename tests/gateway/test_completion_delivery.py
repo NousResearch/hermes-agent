@@ -9,6 +9,7 @@ state (when available) is acknowledged through its authoritative SQLite API.
 import asyncio
 import json
 import queue
+import time
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -130,6 +131,81 @@ def test_unroutable_async_event_is_not_requeued_forever(
 
     adapter.handle_message.assert_not_awaited()
     assert isolated.empty()
+
+
+def test_durable_raw_session_without_api_adapter_waits_for_future_boot(
+    monkeypatch, isolated_registry,
+):
+    """An absent api_server transport must not exhaust durable retries."""
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    event = _async_event("deleg_raw_future_boot")
+    event["session_key"] = "20260711_raw_ui_session"
+    event["dispatched_at"] = time.time() - 1
+    event["completed_at"] = time.time()
+    _persist_pending_completion(event)
+    isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_not_awaited()
+    assert isolated.empty()
+    row = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert row is not None
+    assert row["delivery_state"] == "pending"
+    assert row["delivery_attempts"] == 0
+
+    restored = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(restored) == 1
+    assert restored.get_nowait()["delegation_id"] == event["delegation_id"]
+
+
+def test_durable_raw_session_batch_defers_every_row_before_claiming(
+    monkeypatch, isolated_registry,
+):
+    """A raw-session batch must not spend sibling delivery attempts."""
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [
+        _distinct_async_event(
+            f"deleg_raw_batch_{index}",
+            session_key="20260711_raw_ui_session",
+        )
+        for index in range(2)
+    ]
+    for event in events:
+        event["dispatched_at"] = time.time() - 1
+        event["completed_at"] = time.time()
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_not_awaited()
+    assert isolated.empty()
+    for event in events:
+        row = async_delegation.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert row["delivery_state"] == "pending"
+        assert row["delivery_attempts"] == 0
+
+    restored = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(restored) == 2
+    assert {restored.get_nowait()["delegation_id"] for _ in events} == {
+        event["delegation_id"] for event in events
+    }
 
 
 def test_concurrent_claims_share_the_same_narrow_delivery_seam():

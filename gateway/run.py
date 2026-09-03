@@ -4419,6 +4419,17 @@ def _parse_session_key(session_key: str) -> "dict | None":
     return None
 
 
+def _raw_watch_session_id(evt: dict) -> str:
+    """Return an unstructured wake target carried by a watch event."""
+    raw_sid = str(evt.get("origin_session_id") or "").strip()
+    if raw_sid:
+        return raw_sid
+    session_key = str(evt.get("session_key") or "").strip()
+    if session_key and _parse_session_key(session_key) is None:
+        return session_key
+    return ""
+
+
 def _shorten_command_for_display(command: str, limit: int = 80) -> str:
     """Collapse a shell command onto one line and cap its length for display."""
     one_line = " ".join((command or "").split())
@@ -28204,11 +28215,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Recover the raw session id and wake the real session via the API
             # server's own /v1/chat/completions entry point instead of
             # dropping the event.
-            raw_sid = str(evt.get("origin_session_id") or "").strip()
-            if not raw_sid:
-                _sk = str(evt.get("session_key") or "").strip()
-                if _sk and _parse_session_key(_sk) is None:
-                    raw_sid = _sk
+            raw_sid = _raw_watch_session_id(evt)
             if raw_sid:
                 adapter = self.adapters.get(Platform.API_SERVER)
                 from gateway.wake import (
@@ -28466,6 +28473,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "retry"
         return "deliver"
 
+    def _defer_unroutable_durable_raw_completion(self, evt: dict) -> bool:
+        """Leave a durable raw-session wake pending until transport exists."""
+        if evt.get("type") != "async_delegation":
+            return False
+        delegation_id = str(evt.get("delegation_id") or "")
+        raw_sid = _raw_watch_session_id(evt)
+        if (
+            not delegation_id
+            or not raw_sid
+            or self.adapters.get(Platform.API_SERVER) is not None
+        ):
+            return False
+        logger.warning(
+            "Deferring watch notification for raw session %s: no api_server "
+            "adapter is available; durable completion %s remains pending for "
+            "a future gateway start",
+            raw_sid,
+            delegation_id,
+        )
+        return True
+
     async def _deliver_completion_notification(
         self, synth_text: str, evt: dict,
     ) -> Optional[bool]:
@@ -28482,6 +28510,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         durable_delegation_id = ""
         if evt.get("type") == "async_delegation":
             durable_delegation_id = str(evt.get("delegation_id") or "")
+            if self._defer_unroutable_durable_raw_completion(evt):
+                return None
             if durable_delegation_id:
                 try:
                     from tools.async_delegation import claim_completion_delivery
@@ -28903,6 +28933,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             deliverable.append((evt, synth_text))
 
         if not deliverable:
+            return None
+        # Preflight the whole group before claiming any sibling. A missing raw
+        # session transport is shared by the route, so no durable row in this
+        # batch has made a delivery attempt yet.
+        if any(
+            self._defer_unroutable_durable_raw_completion(evt)
+            for evt, _synth_text in deliverable
+        ):
             return None
         if len(deliverable) == 1:
             evt, synth_text = deliverable[0]

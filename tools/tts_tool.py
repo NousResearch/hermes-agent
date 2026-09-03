@@ -3506,15 +3506,26 @@ def _text_to_speech_single(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
-        from agent.file_safety import is_write_approval_required, is_write_denied
+        from agent.file_safety import (
+            get_write_denied_error,
+            is_write_approval_required,
+            is_write_denied,
+        )
 
         if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
+            # Use the classification-aware message (safe-root vs credential),
+            # not the single conflated "protected credential or system path"
+            # string — a caller-supplied output_path outside HERMES_WRITE_SAFE_ROOT
+            # is a safe-root denial, not a credential-path one (#97110).
+            denial = get_write_denied_error(str(file_path), verb="output_path")
+            if denial is None:
+                denial = (
+                    f"output_path targets a protected credential or approval-gated "
+                    f"path: {file_path}. Choose a normal audio output location."
+                )
             return json.dumps({
                 "success": False,
-                "error": (
-                    f"output_path targets a protected credential or system path: "
-                    f"{file_path}. Choose a normal audio output location."
-                ),
+                "error": denial,
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -3865,14 +3876,23 @@ def text_to_speech_tool(
             base_path = _configured_command_tts_output_path(
                 base_path, command_provider_config,
             )
-        from agent.file_safety import is_write_approval_required, is_write_denied
+        from agent.file_safety import (
+            get_write_denied_error,
+            is_write_approval_required,
+            is_write_denied,
+        )
         if is_write_denied(str(base_path)) or is_write_approval_required(str(base_path)):
+            # Classification-aware message (safe-root vs credential), not the
+            # single conflated string (#97110).
+            denial = get_write_denied_error(str(base_path), verb="output_path")
+            if denial is None:
+                denial = (
+                    f"output_path targets a protected credential or approval-gated "
+                    f"path: {base_path}. Choose a normal audio output location."
+                )
             return json.dumps({
                 "success": False,
-                "error": (
-                    f"output_path targets a protected credential or system path: "
-                    f"{base_path}. Choose a normal audio output location."
-                ),
+                "error": denial,
             }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")

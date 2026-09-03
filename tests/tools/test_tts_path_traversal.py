@@ -48,7 +48,7 @@ def test_output_path_rejects_hermes_oauth_store(tmp_path, monkeypatch):
     ))
 
     assert result["success"] is False
-    assert "protected credential" in result["error"]
+    assert "protected system/credential" in result["error"]
     assert not target.exists()
 
 
@@ -69,5 +69,39 @@ def test_output_path_rejects_mcp_token_directory(tmp_path, monkeypatch):
     ))
 
     assert result["success"] is False
-    assert "protected credential" in result["error"]
+    assert "protected system/credential" in result["error"]
     assert not target.exists()
+
+
+def test_output_path_safe_root_denial_labels_safe_root(tmp_path, monkeypatch):
+    """A caller-supplied output_path outside HERMES_WRITE_SAFE_ROOT is a
+    safe-root denial and must be labeled as such, not conflated with a
+    credential/system path (#97110)."""
+    import agent.file_safety as file_safety
+    from tools import tts_tool
+
+    safe_root = tmp_path / "safe-root"
+    safe_root.mkdir()
+    monkeypatch.setattr(
+        file_safety, "get_safe_write_roots", lambda: [str(safe_root)]
+    )
+
+    outside = tmp_path / "outside" / "tts.mp3"
+    outside.parent.mkdir(exist_ok=True)
+
+    # Drive through the same helper text_to_speech_tool uses.
+    from agent.file_safety import get_write_denied_error
+
+    denial = get_write_denied_error(str(outside), verb="output_path")
+    assert denial is not None
+    assert "HERMES_WRITE_SAFE_ROOT" in denial
+    assert "protected" not in denial
+
+    # And the tool itself reports the safe-root message.
+    result = json.loads(tts_tool.text_to_speech_tool(
+        text="hello",
+        output_path=str(outside),
+    ))
+    assert result["success"] is False
+    assert "HERMES_WRITE_SAFE_ROOT" in result["error"]
+    assert "protected credential or system path" not in result["error"]

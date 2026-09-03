@@ -107,6 +107,79 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("how does the registration system work?", "...") is None
 
+    def test_rejects_bare_json_fence_as_title(self):
+        """A provider that wraps structured output in a markdown fence but
+        whose body is lost must not leak the '' ```json '' opener as the
+        session title. Regression for the VE desktop case where the opener
+        alone (with a valid title inside) became the name."""
+        for answer in (
+            "```json",
+            "```json\n",
+            "```json\n\n",
+            "```",
+        ):
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = answer
+            with patch("agent.title_generator.call_llm", return_value=mock_response):
+                result = generate_title("question")
+            assert result is None, f"title leaked for answer {answer!r}: {result!r}"
+
+    def test_retries_truncated_stream_and_uses_good_attempt(self):
+        """A cut streamed response (finish_reason='length' after a few tokens,
+        e.g. '```json\n{"title": "Те') must not become the title: the cheap
+        aux call is retried and a complete later attempt is used instead.
+        Regression for the repeated '{|' / '{' json-fragment session titles."""
+        def responses():
+            truncated = MagicMock()
+            truncated.choices = [MagicMock()]
+            truncated.choices[0].finish_reason = "length"
+            truncated.choices[0].message.content = '```json\n{"title": "Те'
+            good = MagicMock()
+            good.choices = [MagicMock()]
+            good.choices[0].finish_reason = "stop"
+            good.choices[0].message.content = '```json\n{"title": "Check connection"}\n```'
+            return [truncated, good]
+
+        with patch("agent.title_generator.call_llm", side_effect=responses()):
+            assert generate_title("проверка связи") == "Check connection"
+
+    def test_never_persists_fragment_when_stream_keeps_truncating(self):
+        """If every attempt is cut, generate_title must return None so the
+        caller keeps the derived title — a bare json fragment never lands in
+        the sessions table."""
+        def responses():
+            r = MagicMock()
+            r.choices = [MagicMock()]
+            r.choices[0].finish_reason = "length"
+            r.choices[0].message.content = "{"
+            return r
+
+        with patch("agent.title_generator.call_llm", side_effect=[responses()] * 3):
+            assert generate_title("проверка связи") is None
+
+    def test_extracts_title_from_unclosed_json_fence(self):
+        """A valid title inside an unclosed fence is still recovered — the
+        loose-scan path must survive unchanged."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "```json\n{\n  \"title\": \"fix login\"\n"
+        )
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question") == "fix login"
+
+    def test_extracts_title_from_closed_json_fence(self):
+        """A properly closed fenced-JSON answer still titles (the loose-scan
+        path must survive unchanged)."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "```json\n{\"title\": \"fix login button\"}\n```"
+        )
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") == "fix login button"
+
     def test_rejects_many_short_words(self):
         """13 short words stays under the 80-char cap but is not a title."""
         mock_response = MagicMock()

@@ -113,6 +113,23 @@ _TITLE_RESPONSE_FORMAT = {
     },
 }
 
+
+def _title_request_extra_body(
+    response_format_supported: Optional[bool],
+) -> dict:
+    """Return structured-output request fields when the route supports them.
+
+    Unknown capability is intentionally treated like unsupported capability:
+    title parsing already has JSON/prose fallbacks, while an optimistic
+    response_format parameter can make an otherwise valid auxiliary request
+    fail at the provider boundary (DeepSeek rejects ``json_schema`` with
+    HTTP 400, which pushes the title call down the fallback chain and onto
+    providers that wrap the response in a truncated fenced-JSON fragment).
+    """
+    if response_format_supported is True:
+        return {"response_format": _TITLE_RESPONSE_FORMAT}
+    return {}
+
 # Control-tag wrappers that surround machine-authored content inside what is
 # nominally a "user" message. Titling from these is what produces a session
 # named after a slash command or an injected reminder rather than the user's
@@ -296,6 +313,16 @@ def _extract_title_text(content: str) -> str:
     fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
     if fenced:
         raw = fenced.group(1).strip()
+    else:
+        # Unterminated fence: a max_tokens-truncated response often ends
+        # mid-fence, with the JSON payload (or its ``"title": "..."`` core)
+        # still present after the opener. Drop the ```json opener so
+        # the parse/loose-scan below sees the payload, not the fence.
+        unterminated = re.match(r"^```(?:json)?\s*(.*)$", raw, re.DOTALL)
+        if unterminated:
+            inner = unterminated.group(1).strip()
+            if inner:
+                raw = inner
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and isinstance(parsed.get("title"), str):
@@ -317,10 +344,23 @@ def _extract_title_text(content: str) -> str:
         raw = strip_think_blocks(None, raw).strip()
     except Exception:
         logger.debug("strip_think_blocks unavailable for title output", exc_info=True)
+    # Skip bare markdown-fence lines (```, ```json) left behind when a provider
+    # wraps structured output in a fence that our fenced-JSON regex above failed
+    # to close. Without this, a model that answers with just the opener leaks
+    # "```json" as the session title. (#49513)
+    raw = "\n".join(
+        ln for ln in raw.splitlines()
+        if not re.fullmatch(r"`{3,}\w*\s*", ln)
+    ).strip()
     raw = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
     if raw.lower().startswith("title:"):
         raw = raw[6:].strip()
-    return raw.strip("\"'").strip()
+    title = raw.strip("\"'`").strip()
+    # If a fence was the only surviving line (entire answer was just the opener,
+    # e.g. "```json" with the JSON body lost/truncated), nothing usable remains.
+    if not title or (title.count("`") >= 3 and not any(ch.isalnum() for ch in title)):
+        return ""
+    return title
 
 
 def _clean_title(text: str) -> Optional[str]:
@@ -344,6 +384,7 @@ def generate_title(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     runtime_validator: Optional[RuntimeValidator] = None,
+    response_format_supported: Optional[bool] = None,
 ) -> Optional[str]:
     """Generate a session title from the user's opening message.
 
@@ -400,34 +441,61 @@ def generate_title(
     ]
 
     try:
-        response = call_llm(
-            task="title_generation",
-            messages=messages,
-            # A title is a handful of tokens. The old 500-token ceiling let a
-            # chatty model burn seconds generating prose we then threw away.
-            max_tokens=64,
-            temperature=0.3,
-            timeout=timeout,
-            main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-        )
-        content = response.choices[0].message.content or ""
-        title = _clean_title(_extract_title_text(content))
-        # Answer-shaped output guard: titling is a 3-7 word task, so a title
-        # with many words is a model that ignored the task and answered
-        # the user's message instead ("I don't have context on X — that's
-        # not something I recognize..."). Truncating would store half an
-        # assistant blob as the session title, which is still an assistant
-        # blob — reject instead so the caller retries on the next exchange
-        # (maybe_auto_title fires for the first two exchanges).
-        # Port of can1357/oh-my-pi#7306.
-        if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
-            logger.debug(
-                "Rejecting answer-shaped title output (%d words > %d)",
-                len(title.split()), _MAX_TITLE_WORDS,
-            )
-            return None
-        return title
+        request_extra_body = _title_request_extra_body(response_format_supported)
+        request_kwargs = {
+            "task": "title_generation",
+            "messages": messages,
+            # A title is a handful of tokens, but providers that wrap the
+            # JSON in a markdown fence (or emit a short preamble before it)
+            # need headroom past the object itself. The old 64-token ceiling
+            # truncated those responses mid-fence, and the truncated fence
+            # opener ("```json") became the session title (#83903).
+            "max_tokens": 256,
+            "temperature": 0.3,
+            "timeout": timeout,
+            "main_runtime": main_runtime,
+        }
+        if request_extra_body:
+            request_kwargs["extra_body"] = request_extra_body
+        # A streamed title that ends mid-JSON — finish_reason='length' after a
+        # handful of tokens — leaves a bare fragment like
+        # '```json\n{"title": "Те' that can never name a session. That is a cut
+        # stream, not a model decision, so retry the cheap aux call rather than
+        # persist the fragment. Truncation is intermittent, so 3 attempts
+        # collapse the failure rate to ~0; on the final attempt we give up and
+        # return None so the caller keeps the derived title.
+        title = None
+        for attempt in range(3):
+            response = call_llm(**request_kwargs)
+            choice = response.choices[0]
+            content = choice.message.content or ""
+            if (
+                not content.strip()
+                or getattr(choice, "finish_reason", None) == "length"
+            ):
+                logger.debug(
+                    "Title attempt %d truncated (finish_reason=%r); retrying",
+                    attempt + 1, getattr(choice, "finish_reason", None),
+                )
+                continue
+            title = _clean_title(_extract_title_text(content))
+            # Answer-shaped output guard: titling is a 3-7 word task, so a title
+            # with many words is a model that ignored the task and answered
+            # the user's message instead ("I don't have context on X — that's
+            # not something I recognize..."). Truncating would store half an
+            # assistant blob as the session title, which is still an assistant
+            # blob — reject instead so the caller retries on the next exchange
+            # (maybe_auto_title fires for the first two exchanges).
+            # Port of can1357/oh-my-pi#7306.
+            if title is not None and len(title.split()) > _MAX_TITLE_WORDS:
+                logger.debug(
+                    "Rejecting answer-shaped title output (%d words > %d)",
+                    len(title.split()), _MAX_TITLE_WORDS,
+                )
+                return None
+            return title
+        logger.debug("Title generation failed: response truncated across 3 attempts")
+        return None
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.
         # Full detail at debug level for operators who need the stack.

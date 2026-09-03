@@ -525,11 +525,19 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key in ("primary_window", "secondary_window"):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        duration = window.get("limit_window_seconds")
+        label = (
+            "Session"
+            if duration == 18000
+            else "Weekly"
+            if duration == 604800
+            else "Unknown"
+        )
         windows.append(
             AccountUsageWindow(
                 label=label,

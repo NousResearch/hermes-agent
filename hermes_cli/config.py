@@ -2306,6 +2306,14 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
         return latest, latest
 
     if not isinstance(config, dict):
+        # A list/scalar root parses fine but is just as unusable as broken
+        # YAML: save_config() would refuse it later, after .env was already
+        # rewritten. Strict callers must see it up front too.
+        if raise_on_parse_error:
+            raise InvalidUserConfigError(
+                f"Cannot inspect {config_path}: config.yaml top-level value must be "
+                f"a mapping, got {type(config).__name__}"
+            )
         config = {}
     current = _coerce_config_version(config.get("_config_version"))
     return current, latest

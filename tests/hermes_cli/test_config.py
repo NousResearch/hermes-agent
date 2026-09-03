@@ -786,24 +786,34 @@ class TestConfigVersionDetection:
             assert load_config()["_config_version"] == DEFAULT_CONFIG["_config_version"]
             assert check_config_version() == (0, DEFAULT_CONFIG["_config_version"])
 
-    def test_strict_check_rejects_malformed_yaml(self, tmp_path):
+    _INVALID_CONFIG_CASES = [
+        pytest.param(b"model: [unterminated\n", "not valid YAML", id="malformed-yaml"),
+        pytest.param(b"- just_a_list\n", "must be a mapping", id="list-root"),
+    ]
+
+    @pytest.mark.parametrize("config_bytes, match", _INVALID_CONFIG_CASES)
+    def test_strict_check_rejects_invalid_config(self, tmp_path, config_bytes, match):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("model: [unterminated\n", encoding="utf-8")
+        config_path.write_bytes(config_bytes)
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(InvalidUserConfigError, match="not valid YAML"):
+            with pytest.raises(InvalidUserConfigError, match=match):
                 check_config_version(raise_on_parse_error=True)
+            # Tolerant callers keep the historical non-raising behavior.
+            check_config_version()
 
-    def test_migration_rejects_malformed_yaml_before_sanitizing_env(self, tmp_path):
+    @pytest.mark.parametrize("config_bytes, match", _INVALID_CONFIG_CASES)
+    def test_migration_rejects_invalid_config_before_sanitizing_env(
+        self, tmp_path, config_bytes, match
+    ):
         config_path = tmp_path / "config.yaml"
-        config_bytes = b"model: [unterminated\n"
         config_path.write_bytes(config_bytes)
         env_path = tmp_path / ".env"
         env_bytes = b"OPENAI_API_KEY=test-without-final-newline"
         env_path.write_bytes(env_bytes)
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(InvalidUserConfigError, match="not valid YAML"):
+            with pytest.raises(InvalidUserConfigError, match=match):
                 migrate_config(interactive=False, quiet=True)
 
         assert config_path.read_bytes() == config_bytes

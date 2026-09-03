@@ -182,6 +182,11 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
     mcp_tool._servers["resumed"] = server
     mcp_tool._server_error_counts.pop("resumed", None)
     mcp_tool._server_breaker_opened_at.pop("resumed", None)
+    # This test exercises the transport-rebuild plumbing itself, not the
+    # write-replay safety gate — mark the probe tool read-only so the
+    # session-expired retry is allowed to fire (see the write-tool
+    # non-replay coverage below for the opposite case).
+    mcp_tool._tool_read_only_hints["resumed"] = {"health": True}
     loop = mcp_tool._mcp_loop
     assert loop is not None
     run_future = asyncio.run_coroutine_threadsafe(
@@ -205,6 +210,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
         mcp_tool._servers.pop("resumed", None)
         mcp_tool._server_error_counts.pop("resumed", None)
         mcp_tool._server_breaker_opened_at.pop("resumed", None)
+        mcp_tool._tool_read_only_hints.pop("resumed", None)
 
 
 def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
@@ -272,6 +278,10 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     mcp_tool._server_breaker_opened_at["hindsight"] = (
         time.monotonic() - mcp_tool._CIRCUIT_BREAKER_COOLDOWN_SEC - 1.0
     )
+    # This test covers the reconnect-then-retry mechanics, not the write
+    # replay gate — "get_bank" is a read, so mark it read-only to allow
+    # the retry through (write-tool non-replay is covered separately).
+    mcp_tool._tool_read_only_hints["hindsight"] = {"get_bank": True}
 
     try:
         handler = _make_tool_handler("hindsight", "get_bank", 10.0)
@@ -283,6 +293,85 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
         mcp_tool._servers.pop("hindsight", None)
         mcp_tool._server_error_counts.pop("hindsight", None)
         mcp_tool._server_breaker_opened_at.pop("hindsight", None)
+        mcp_tool._tool_read_only_hints.pop("hindsight", None)
+
+
+def test_session_expired_write_tool_does_not_retry(monkeypatch, tmp_path):
+    """A write-capable tool (no readOnlyHint=true) must NOT be replayed
+    after a session-expired transport drop — the original call may have
+    already reached the remote server. The handler should reconnect the
+    transport but surface an "outcome unknown" error instead of guessing.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool import _make_tool_handler
+
+    mcp_tool._ensure_mcp_loop()
+    server = MagicMock()
+    server.name = "hindsight"
+    ready_flag = threading.Event()
+    ready_flag.set()
+
+    class _ReadyAdapter:
+        def is_set(self):
+            return ready_flag.is_set()
+
+        def clear(self):
+            ready_flag.clear()
+
+        def set(self):
+            ready_flag.set()
+
+    old_session = MagicMock()
+
+    async def _old_call(*a, **kw):
+        raise RuntimeError("Session terminated")
+
+    old_session.call_tool = _old_call
+    new_session = MagicMock()
+    new_call_count = {"n": 0}
+
+    async def _new_call(*a, **kw):
+        new_call_count["n"] += 1
+        result = MagicMock()
+        result.is_error = False
+        result.content = [MagicMock(type="text", text="should not be reached")]
+        result.structured_content = None
+        return result
+
+    new_session.call_tool = _new_call
+    server.session = old_session
+    server._ready = _ReadyAdapter()
+
+    class _ReconnectAdapter:
+        def set(self):
+            server.session = new_session
+            ready_flag.set()
+
+    server._reconnect_event = _ReconnectAdapter()
+    mcp_tool._servers["hindsight"] = server
+    mcp_tool._server_error_counts.pop("hindsight", None)
+    mcp_tool._server_breaker_opened_at.pop("hindsight", None)
+    # No readOnlyHint registered for "create_event" — fail-closed means
+    # write-capable, so the retry must be skipped.
+    mcp_tool._tool_read_only_hints["hindsight"] = {}
+
+    try:
+        handler = _make_tool_handler("hindsight", "create_event", 10.0)
+        parsed = json.loads(handler({}))
+        assert parsed.get("uncertain_outcome") is True, parsed
+        assert "error" in parsed, parsed
+        assert new_call_count["n"] == 0, (
+            "write-capable tool must not be replayed after session expiry"
+        )
+        # Transport was still reconnected even though the call wasn't replayed.
+        assert server.session is new_session
+    finally:
+        mcp_tool._servers.pop("hindsight", None)
+        mcp_tool._server_error_counts.pop("hindsight", None)
+        mcp_tool._server_breaker_opened_at.pop("hindsight", None)
+        mcp_tool._tool_read_only_hints.pop("hindsight", None)
 
 
 def test_session_expired_handler_returns_none_without_loop(monkeypatch):

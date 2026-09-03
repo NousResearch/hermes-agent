@@ -5503,6 +5503,8 @@ def _handle_session_expired_and_retry(
     exc: BaseException,
     retry_call,
     op_description: str,
+    *,
+    retryable: bool = True,
 ):
     """Trigger a transport reconnect and retry once on session expiry.
 
@@ -5514,18 +5516,33 @@ def _handle_session_expired_and_retry(
     and rebuild them, reusing the existing OAuth provider instance.
     See #13383.
 
+    ``retryable=False`` (callers pass this for non-read-only tools, per
+    each tool's discovery-time ``readOnlyHint``) skips the retry: a
+    session-expired error covers transport drops like a broken pipe or
+    closed stream, which can happen *after* a write already reached the
+    remote server but *before* its response made it back. Blindly
+    replaying ``retry_call`` in that window could duplicate the write
+    (e.g. a second calendar event). Reads are idempotent, so they keep
+    retrying automatically; writes instead surface an "outcome unknown"
+    error once the transport is reconnected, so the caller verifies
+    state before deciding whether to redo the operation.
+
     Args:
         server_name: Name of the MCP server that raised.
         exc: The exception from the failed call.
         retry_call: Zero-arg callable that re-runs the operation,
             returning the same JSON string format as the handler.
         op_description: Human-readable name of the operation (logs).
+        retryable: Whether replaying ``retry_call`` after reconnect is
+            safe. Defaults to True (read-path callers); non-read-only
+            ``tools/call`` invocations must pass False.
 
     Returns:
-        A JSON string if reconnect + retry was attempted and produced
-        a response, or ``None`` to fall through to the caller's
-        generic error path (not a session-expired error, no server
-        record, reconnect didn't ready in time, or retry also failed).
+        A JSON string if reconnect (+ retry, when retryable) was
+        attempted and produced a response, or ``None`` to fall through
+        to the caller's generic error path (not a session-expired
+        error, no server record, reconnect didn't ready in time, or
+        retry also failed).
     """
     if not _is_session_expired_error(exc):
         return None
@@ -5541,8 +5558,9 @@ def _handle_session_expired_and_retry(
 
     logger.info(
         "MCP server '%s': %s failed with session-expired error (%s); "
-        "signalling transport reconnect and retrying once.",
+        "signalling transport reconnect%s.",
         server_name, op_description, exc,
+        " and retrying once" if retryable else " (no replay — not read-only)",
     )
 
     # Trigger the same reconnect mechanism the OAuth recovery path
@@ -5559,6 +5577,23 @@ def _handle_session_expired_and_retry(
             server_name,
         )
         return None
+
+    if not retryable:
+        # The transport is healthy again, but we do not know whether the
+        # original write reached the remote server before the connection
+        # dropped. Replaying it here could duplicate a create/update/delete;
+        # surface that uncertainty instead of guessing.
+        _bump_server_error(server_name)
+        return tool_error(
+            f"MCP server '{server_name}': transport session expired during "
+            f"'{op_description}'. The outcome of that call is unknown — it "
+            f"may have completed on the remote server before the connection "
+            f"dropped. The transport has been reconnected, but this write "
+            f"was NOT retried. Verify current state (e.g. a read/list call) "
+            f"before deciding whether to redo it.",
+            uncertain_outcome=True,
+            server=server_name,
+        )
 
     try:
         result = retry_call()
@@ -6936,9 +6971,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Transport session expiry (#13383): same reconnect flow
             # but skips OAuth recovery because the access token is
             # still valid — only the server-side session is stale.
+            #
+            # Replay is only safe for tools the server declared
+            # readOnlyHint=True at discovery (fail-closed: unknown/missing
+            # hint means write-capable, per _annotation_read_only_hint) —
+            # a session-expired error can mean the write already reached
+            # the remote server before the connection dropped.
+            is_read_only_tool = (
+                _tool_read_only_hints.get(server_name, {}).get(tool_name) is True
+            )
             recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once,
                 f"tools/call {tool_name}",
+                retryable=is_read_only_tool,
             )
             if recovered is not None:
                 return recovered
@@ -6955,12 +7000,32 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     return _handler
 
 
+def _get_ready_server_for_read(server_name: str, tool_timeout: float):
+    """Resolve a connected server for a read-path call (resources/prompts).
+
+    Mirrors ``_make_tool_handler``'s session-readiness wait (#26892): a
+    call landing mid-reconnect saw ``server.session`` as ``None`` and the
+    protocol-level read handlers failed instantly instead of giving the
+    in-flight (re)connect a bounded chance to complete. Returns the server
+    once a live session is available, or ``None`` if it never arrives
+    within the bounded window.
+    """
+    server = _get_connected_server_for_call(server_name)
+    if not server:
+        return None
+    if not server.session:
+        _wait_for_server_session_ready(
+            server, timeout=min(5.0, float(tool_timeout or 5.0)),
+        )
+    return server if server.session else None
+
+
 def _make_list_resources_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists resources from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        server = _get_ready_server_for_read(server_name, tool_timeout)
+        if not server:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
@@ -7018,8 +7083,8 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        server = _get_ready_server_for_read(server_name, tool_timeout)
+        if not server:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         uri = args.get("uri")
@@ -7079,8 +7144,8 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that lists prompts from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        server = _get_ready_server_for_read(server_name, tool_timeout)
+        if not server:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         async def _call():
@@ -7140,8 +7205,8 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
-        server = _get_connected_server_for_call(server_name)
-        if not server or not server.session:
+        server = _get_ready_server_for_read(server_name, tool_timeout)
+        if not server:
             return tool_error(f"MCP server '{server_name}' is not connected")
 
         name = args.get("name")

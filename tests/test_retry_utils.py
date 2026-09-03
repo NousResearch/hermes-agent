@@ -142,6 +142,19 @@ def test_zai_overload_retry_ceiling_exceeds_short_attempts():
     assert last_attempt_with_backoff - short_attempts >= len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF)
 
 
+def test_zai_overload_detects_glm53_not_glm5v():
+    """Deployments pinned to glm-5.3 showed the old glm-5.2 substring
+    left 1305 overload on that ID as a 3-retry tombstone."""
+    err = _zai_overload_error()
+    coding = "https://api.z.ai/api/coding/paas/v4"
+    assert is_zai_coding_overload_error(base_url=coding, model="glm-5.3", error=err)
+    assert is_zai_coding_overload_error(base_url=coding, model="z-ai/glm-5.3", error=err)
+    assert is_zai_coding_overload_error(base_url=coding, model="glm-5.2", error=err)
+    assert not is_zai_coding_overload_error(
+        base_url=coding, model="glm-5v-turbo", error=err
+    )
+
+
 def test_zai_overload_ceiling_makes_long_tier_reachable(monkeypatch):
     """End-to-end over the attempt range the retry loop actually walks: with the
     extended ceiling, at least one attempt reaches the long-backoff tier and the

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import nullcontext
 from typing import Optional
@@ -222,6 +223,20 @@ def defer_background_mcp_discovery(*, logger, thread_name: str, delay: float) ->
     the late-binding refresh behave exactly as if it had been started eagerly.
     """
     global _mcp_discovery_deferred
+    # Desktop ``serve`` resolves and validates its environment toolsets in the
+    # TUI gateway. Reuse that exact result for process-level MCP spawning so an
+    # invalid env list and the agent schema cannot drift apart. Resolution
+    # uncertainty and an explicit empty schema fail closed for MCP processes.
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        try:
+            from tui_gateway.server import _load_enabled_toolsets
+
+            resolved_toolsets = _load_enabled_toolsets("desktop")
+            set_mcp_server_filter(
+                ["no_mcp"] if resolved_toolsets == [] else resolved_toolsets
+            )
+        except Exception:
+            set_mcp_server_filter(["no_mcp"])
     with _mcp_discovery_lock:
         if _mcp_discovery_started or _mcp_discovery_deferred is not None:
             return

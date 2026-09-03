@@ -12,6 +12,7 @@ import threading
 
 import hermes_cli.mcp_startup as mcp_startup
 import hermes_cli.web_server as web_server
+import tui_gateway.server as tui_server
 from tests.hermes_cli.test_dashboard_auth_gate import _stub_uvicorn_run
 
 
@@ -19,6 +20,9 @@ def _reset_discovery_state(monkeypatch):
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_deferred", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_server_filter", None)
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
 
 
 def test_desktop_serve_arms_mcp_discovery_only_after_ready_sentinel(monkeypatch):
@@ -68,3 +72,40 @@ def test_deferred_discovery_fires_once_and_is_idempotent(monkeypatch):
     mcp_startup._start_deferred_mcp_discovery_now()
     assert calls == ["t"]
     assert first is not None and mcp_startup._mcp_discovery_deferred is None
+
+
+def test_desktop_deferred_discovery_uses_resolved_toolset_filter(monkeypatch):
+    _reset_discovery_state(monkeypatch)
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setattr(
+        tui_server,
+        "_load_enabled_toolsets",
+        lambda _platform: ["terminal", "desktop_ui", "ivc_macbook_control"],
+    )
+
+    mcp_startup.defer_background_mcp_discovery(
+        logger=logging.getLogger("test"), thread_name="desktop", delay=60
+    )
+    timer = mcp_startup._mcp_discovery_deferred
+    assert mcp_startup.get_mcp_server_filter() == [
+        "terminal", "desktop_ui", "ivc_macbook_control"
+    ]
+    assert isinstance(timer, threading.Timer)
+    timer.cancel()
+
+
+def test_desktop_empty_or_failed_resolution_denies_mcp(monkeypatch):
+    for resolver in (
+        lambda _platform: [],
+        lambda _platform: (_ for _ in ()).throw(RuntimeError("boom")),
+    ):
+        _reset_discovery_state(monkeypatch)
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setattr(tui_server, "_load_enabled_toolsets", resolver)
+        mcp_startup.defer_background_mcp_discovery(
+            logger=logging.getLogger("test"), thread_name="desktop", delay=60
+        )
+        timer = mcp_startup._mcp_discovery_deferred
+        assert mcp_startup.get_mcp_server_filter() == ["no_mcp"]
+        assert isinstance(timer, threading.Timer)
+        timer.cancel()

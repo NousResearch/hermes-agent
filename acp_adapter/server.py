@@ -996,6 +996,39 @@ class HermesACPAgent(acp.Agent):
         return target_provider, new_model
 
     @staticmethod
+    def _build_prompt_response_usage(result: dict[str, Any], agent: Any) -> Usage | None:
+        """Build client-facing usage from the latest provider request.
+
+        ``run_conversation`` returns cumulative session counters.  Those are
+        appropriate for billing, but clients such as AionUi use
+        ``PromptResponse.usage.total_tokens`` as current context pressure and
+        divide it by the model context window.  Sending cumulative counters
+        therefore makes a healthy long-running session appear to exceed its
+        window (for example, 5.2M / 1M = 521.6%).
+
+        The conversation loop stores the latest provider response's canonical
+        usage in ``agent._last_turn_usage``.  Use only that request-sized
+        snapshot.  If a turn produced no provider usage (early failure or
+        interrupt), return ``None`` so the client keeps its previous valid
+        reading instead of replacing it with cumulative session totals.
+        """
+        last_usage = getattr(agent, "_last_turn_usage", None)
+        if isinstance(last_usage, dict) and any(
+            last_usage.get(key) is not None
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        ):
+            return Usage(
+                input_tokens=last_usage.get("prompt_tokens", 0) or 0,
+                output_tokens=last_usage.get("completion_tokens", 0) or 0,
+                total_tokens=last_usage.get("total_tokens", 0) or 0,
+                thought_tokens=last_usage.get("reasoning_tokens"),
+                cached_read_tokens=last_usage.get("cache_read_tokens"),
+                cached_write_tokens=last_usage.get("cache_write_tokens"),
+            )
+
+        return None
+
+    @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
         """Build ACP native context-usage data for clients like Zed.
 
@@ -2203,15 +2236,7 @@ class HermesACPAgent(acp.Agent):
                 session_id=session_id,
             )
 
-        usage = None
-        if any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
-            usage = Usage(
-                input_tokens=result.get("prompt_tokens", 0),
-                output_tokens=result.get("completion_tokens", 0),
-                total_tokens=result.get("total_tokens", 0),
-                thought_tokens=result.get("reasoning_tokens"),
-                cached_read_tokens=result.get("cache_read_tokens"),
-            )
+        usage = self._build_prompt_response_usage(result, state.agent)
 
         await self._send_usage_update(state)
 

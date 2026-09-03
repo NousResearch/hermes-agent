@@ -112,7 +112,8 @@ export async function listAllProfileSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  filter: SessionSourceFilter = {},
+  options: { signal?: AbortSignal } = {}
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -125,6 +126,7 @@ export async function listAllProfileSessions(
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+    ...(options.signal ? { signal: options.signal } : {}),
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
@@ -389,6 +391,41 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
   })
 }
 
+function abortError(): DOMException {
+  return new DOMException('Session transcript loading was aborted', 'AbortError')
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) {
+    return promise
+  }
+
+  if (signal.aborted) {
+    return Promise.reject(abortError())
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+
+    const onAbort = () => {
+      cleanup()
+      reject(abortError())
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      value => {
+        cleanup()
+        resolve(value)
+      },
+      error => {
+        cleanup()
+        reject(error)
+      }
+    )
+  })
+}
+
 // Reads another profile's transcript. For a remote profile Electron reroutes
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for
@@ -396,7 +433,13 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
+  page: {
+    limit?: number
+    offset?: number
+    order?: 'latest' | 'oldest'
+    includeCompacted?: boolean
+    signal?: AbortSignal
+  } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -426,7 +469,8 @@ export function getSessionMessages(
 
   return hermesApi<SessionMessagesResponse>({
     ...sessionScope,
-    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
+    path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
+    ...(page.signal ? { signal: page.signal } : {})
   })
 }
 
@@ -524,7 +568,7 @@ export function getOlderSessionMessages(
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { maxJsonChars?: number } = {}
+  options: { maxJsonChars?: number; signal?: AbortSignal } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
@@ -534,12 +578,24 @@ export async function getAllSessionMessages(
   let resolvedSessionId = id
 
   while (true) {
-    const page = await getSessionMessages(id, profile, {
-      limit: pageSize,
-      offset,
-      order: 'oldest',
-      includeCompacted: true
-    })
+    if (options.signal?.aborted) {
+      throw abortError()
+    }
+
+    const page = await abortable(
+      getSessionMessages(id, profile, {
+        limit: pageSize,
+        offset,
+        order: 'oldest',
+        includeCompacted: true,
+        signal: options.signal
+      }),
+      options.signal
+    )
+
+    if (options.signal?.aborted) {
+      throw abortError()
+    }
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length

@@ -26,6 +26,26 @@ export interface ArtifactLoadResult {
   failures: ArtifactLoadFailure[]
 }
 
+export interface ArtifactSessionCacheEntry {
+  artifactCount: number
+  artifacts: ArtifactRecord[]
+  characters: number
+  fingerprint: string
+}
+
+export type ArtifactSessionCache = Map<string, ArtifactSessionCacheEntry>
+
+interface ArtifactLoadOptions {
+  cache?: ArtifactSessionCache
+  scope?: string
+  signal?: AbortSignal
+  yieldToMainThread?: () => Promise<void>
+}
+
+const MAX_ARTIFACT_SESSION_CACHE_ENTRIES = 60
+const MAX_ARTIFACT_CACHE_ARTIFACTS = 2_000
+const MAX_ARTIFACT_CACHE_CHARACTERS = 1_000_000
+
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const MEDIA_RE = /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
@@ -431,22 +451,100 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
 
 export async function loadArtifactsForSessions(
   sessions: SessionInfo[],
-  loadMessages: (session: SessionInfo) => Promise<SessionMessage[]>
+  loadMessages: (session: SessionInfo, signal?: AbortSignal) => Promise<SessionMessage[]>,
+  options: ArtifactLoadOptions = {}
 ): Promise<ArtifactLoadResult> {
   const artifacts: ArtifactRecord[] = []
   const failures: ArtifactLoadFailure[] = []
+
+  const throwIfAborted = () => {
+    if (options.signal?.aborted) {
+      throw new DOMException('Artifact indexing was aborted', 'AbortError')
+    }
+  }
 
   // Keep only one transcript resident at a time. Recent sessions can each be
   // tens of megabytes, so loading the whole page concurrently can exhaust both
   // the Desktop renderer and a remote dashboard backend.
   for (const session of sessions) {
+    throwIfAborted()
+
+    const cacheKey = `${options.scope || ''}:${session.connection_id || ''}:${session.profile || ''}:${session.id}`
+
+    const fingerprint = JSON.stringify(session)
+
+    const cached = options.cache?.get(cacheKey)
+
+    if (!session.is_active && cached?.fingerprint === fingerprint) {
+      options.cache?.delete(cacheKey)
+      options.cache?.set(cacheKey, cached)
+      artifacts.push(...cached.artifacts)
+
+      continue
+    }
+
     try {
-      const messages = await loadMessages(session)
-      artifacts.push(...collectArtifactsForSession(session, messages))
+      const messages = await loadMessages(session, options.signal)
+      throwIfAborted()
+
+      const sessionArtifacts = collectArtifactsForSession(session, messages)
+      artifacts.push(...sessionArtifacts)
+
+      if (options.cache) {
+        options.cache.delete(cacheKey)
+
+        if (!session.is_active) {
+          const characters = JSON.stringify(sessionArtifacts).length
+
+          if (characters <= MAX_ARTIFACT_CACHE_CHARACTERS && sessionArtifacts.length <= MAX_ARTIFACT_CACHE_ARTIFACTS) {
+            options.cache.set(cacheKey, {
+              artifactCount: sessionArtifacts.length,
+              artifacts: sessionArtifacts,
+              characters,
+              fingerprint
+            })
+          }
+        }
+
+        let retainedArtifacts = 0
+        let retainedCharacters = 0
+
+        for (const entry of options.cache.values()) {
+          retainedArtifacts += entry.artifactCount
+          retainedCharacters += entry.characters
+        }
+
+        while (
+          options.cache.size > MAX_ARTIFACT_SESSION_CACHE_ENTRIES ||
+          retainedArtifacts > MAX_ARTIFACT_CACHE_ARTIFACTS ||
+          retainedCharacters > MAX_ARTIFACT_CACHE_CHARACTERS
+        ) {
+          const oldestKey = options.cache.keys().next().value
+
+          if (oldestKey === undefined) {
+            break
+          }
+
+          const oldest = options.cache.get(oldestKey)
+
+          options.cache.delete(oldestKey)
+          retainedArtifacts -= oldest?.artifactCount ?? 0
+          retainedCharacters -= oldest?.characters ?? 0
+        }
+      }
+
+      await options.yieldToMainThread?.()
+      throwIfAborted()
     } catch (error) {
+      if (options.signal?.aborted) {
+        throwIfAborted()
+      }
+
       failures.push({ error, session })
     }
   }
+
+  throwIfAborted()
 
   return { artifacts, failures }
 }

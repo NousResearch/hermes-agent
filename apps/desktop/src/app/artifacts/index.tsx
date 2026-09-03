@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
@@ -35,6 +36,8 @@ import { normalize } from '@/lib/text'
 import { fmtDayTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -47,8 +50,15 @@ import {
   type ArtifactFilter,
   artifactImageSrc,
   type ArtifactRecord,
+  type ArtifactSessionCache,
   loadArtifactsForSessions
 } from './artifact-utils'
+
+const artifactSessionCache: ArtifactSessionCache = new Map()
+
+function yieldToMainThread(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
 
 function formatArtifactTime(timestamp: number): string {
   return fmtDayTime.format(new Date(timestamp))
@@ -115,6 +125,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const { t } = useI18n()
   const a = t.artifacts
   const navigate = useNavigate()
+  const connection = useStore($connection)
+  const activeProfile = useStore($activeGatewayProfile)
   const [artifacts, setArtifacts] = useState<ArtifactRecord[] | null>(null)
   const [query, setQuery] = useState('')
 
@@ -125,23 +137,55 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [filePage, setFilePage] = useState(1)
 
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshEpoch, setRefreshEpoch] = useState(0)
   const refreshInFlightRef = useRef(false)
+  const refreshAbortRef = useRef<AbortController | null>(null)
+  const refreshRequestedRef = useRef(false)
 
   const refreshArtifacts = useCallback(async () => {
     if (refreshInFlightRef.current) {
+      refreshRequestedRef.current = true
+
       return
     }
 
+    refreshRequestedRef.current = false
     refreshInFlightRef.current = true
+    const controller = new AbortController()
+    refreshAbortRef.current = controller
     setRefreshing(true)
 
     try {
-      const sessions = (await listAllProfileSessions(30, 1)).sessions
+      const sessions = (
+        await listAllProfileSessions(30, 1, 'exclude', 'recent', 'all', {}, { signal: controller.signal })
+      ).sessions
 
       const { artifacts: nextArtifacts, failures } = await loadArtifactsForSessions(
         sessions,
-        async session => (await getAllSessionMessages(session.id, session.profile)).messages
+        async session =>
+          (
+            await getAllSessionMessages(session.id, {
+              connectionId: session.connection_id,
+              profile: session.profile
+            }, { signal: controller.signal })
+          ).messages,
+        {
+          cache: artifactSessionCache,
+          scope: [
+            connection?.connectionId || '',
+            connection?.mode || 'local',
+            connection?.baseUrl || '',
+            connection?.remoteIdentity || '',
+            connection?.profile || activeProfile || ''
+          ].join(':'),
+          signal: controller.signal,
+          yieldToMainThread
+        }
       )
+
+      if (controller.signal.aborted) {
+        return
+      }
 
       if (failures.length > 0) {
         const safeLimitFailures = failures.filter(({ error }) =>
@@ -169,19 +213,44 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
     } catch (err) {
+      if (controller.signal.aborted) {
+        return
+      }
+
       notifyError(err, a.failedLoad)
       setArtifacts([])
     } finally {
-      refreshInFlightRef.current = false
-      setRefreshing(false)
+      if (refreshAbortRef.current === controller) {
+        refreshInFlightRef.current = false
+        refreshAbortRef.current = null
+        setRefreshing(false)
+
+        if (refreshRequestedRef.current) {
+          refreshRequestedRef.current = false
+          setRefreshEpoch(current => current + 1)
+        }
+      }
     }
-  }, [a])
+  }, [
+    a,
+    connection?.baseUrl,
+    connection?.connectionId,
+    connection?.mode,
+    connection?.profile,
+    connection?.remoteIdentity,
+    activeProfile
+  ])
 
   useRefreshHotkey(refreshArtifacts)
 
   useEffect(() => {
+    void refreshEpoch
     void refreshArtifacts()
-  }, [refreshArtifacts])
+
+    return () => {
+      refreshAbortRef.current?.abort()
+    }
+  }, [refreshArtifacts, refreshEpoch])
 
   useEffect(() => {
     setImagePage(1)

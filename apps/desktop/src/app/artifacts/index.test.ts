@@ -345,6 +345,158 @@ ${payload}
 })
 
 describe('loadArtifactsForSessions', () => {
+  it('bounds retained session results and evicts the least recently used entry', async () => {
+    const cache = new Map()
+    const sessions = Array.from({ length: 61 }, (_, index) => makeSession({ id: `session-${index}` }))
+
+    await loadArtifactsForSessions(sessions, async () => [], { cache })
+
+    expect(cache).toHaveLength(60)
+    expect(cache.has(':::session-0')).toBe(false)
+    expect(cache.has(':::session-60')).toBe(true)
+  })
+
+  it('reuses cached per-session artifacts until the session fingerprint changes', async () => {
+    const cache = new Map()
+
+    const loadMessages = vi.fn(async (session: SessionInfo) => [
+      {
+        content: `https://example.com/${session.id}-${session.message_count}.png`,
+        role: 'assistant' as const,
+        timestamp: 2000
+      }
+    ])
+
+    const yieldToMainThread = vi.fn(async () => {})
+    const firstSession = makeSession({ id: 'cached-session', last_active: 1000, message_count: 1, profile: 'work' })
+
+    const first = await loadArtifactsForSessions([firstSession], loadMessages, { cache, yieldToMainThread })
+    const second = await loadArtifactsForSessions([{ ...firstSession }], loadMessages, { cache, yieldToMainThread })
+
+    const changed = await loadArtifactsForSessions(
+      [{ ...firstSession, last_active: 1001, message_count: 2 }],
+      loadMessages,
+      { cache, yieldToMainThread }
+    )
+
+    await loadArtifactsForSessions([{ ...firstSession }], loadMessages, {
+      cache,
+      scope: 'other-connection',
+      yieldToMainThread
+    })
+
+    expect(first.artifacts).toEqual(second.artifacts)
+    expect(changed.artifacts[0]?.value).toContain('cached-session-2.png')
+    expect(loadMessages).toHaveBeenCalledTimes(3)
+    expect(yieldToMainThread).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not share artifacts across registry connections with colliding session ids', async () => {
+    const cache = new Map()
+
+    const loadMessages = vi.fn(async (session: SessionInfo) => [
+      {
+        content: `https://example.com/${session.connection_id}.png`,
+        role: 'assistant' as const,
+        timestamp: 1
+      }
+    ])
+
+    const first = makeSession({ connection_id: 'gateway-a', id: 'shared-session' })
+    const second = makeSession({ connection_id: 'gateway-b', id: 'shared-session' })
+
+    const firstResult = await loadArtifactsForSessions([first], loadMessages, { cache, scope: 'window' })
+    const secondResult = await loadArtifactsForSessions([second], loadMessages, { cache, scope: 'window' })
+
+    expect(firstResult.artifacts[0]?.value).toContain('gateway-a.png')
+    expect(secondResult.artifacts[0]?.value).toContain('gateway-b.png')
+    expect(loadMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not reuse a partial transcript while a session is active', async () => {
+    const cache = new Map()
+    const activeSession = makeSession({ id: 'active-session', is_active: true })
+
+    const loadMessages = vi
+      .fn()
+      .mockResolvedValueOnce([{ content: 'https://example.com/first.png', role: 'assistant', timestamp: 1 }])
+      .mockResolvedValueOnce([{ content: 'https://example.com/second.png', role: 'assistant', timestamp: 2 }])
+
+    const first = await loadArtifactsForSessions([activeSession], loadMessages, { cache })
+    const second = await loadArtifactsForSessions([activeSession], loadMessages, { cache })
+
+    expect(first.artifacts[0]?.value).toContain('first.png')
+    expect(second.artifacts[0]?.value).toContain('second.png')
+    expect(loadMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retain an artifact entry that exceeds the cache character budget', async () => {
+    const cache = new Map()
+    const oversized = `https://example.com/${'a'.repeat(1_000_100)}.png`
+    const loadMessages = vi.fn(async () => [{ content: oversized, role: 'assistant' as const, timestamp: 1 }])
+    const source = makeSession({ id: 'oversized-artifact' })
+
+    await loadArtifactsForSessions([source], loadMessages, { cache })
+    await loadArtifactsForSessions([source], loadMessages, { cache })
+
+    expect(cache).toHaveLength(0)
+    expect(loadMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('passes the abort signal to transcript loads', async () => {
+    const controller = new AbortController()
+    let received: AbortSignal | undefined
+
+    const loadMessages = vi.fn(async (_session: SessionInfo, signal?: AbortSignal) => {
+      received = signal
+
+      return []
+    })
+
+    await loadArtifactsForSessions([makeSession()], loadMessages, { signal: controller.signal })
+
+    expect(received).toBe(controller.signal)
+  })
+
+  it('stops before the next transcript when the load is aborted', async () => {
+    const controller = new AbortController()
+
+    const loadMessages = vi.fn(async (session: SessionInfo) => {
+      controller.abort()
+
+      return [
+        {
+          content: `https://example.com/${session.id}.png`,
+          role: 'assistant' as const,
+          timestamp: 2000
+        }
+      ]
+    })
+
+    await expect(
+      loadArtifactsForSessions(
+        [makeSession({ id: 'session-1' }), makeSession({ id: 'session-2' })],
+        loadMessages,
+        { cache: new Map(), signal: controller.signal }
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(loadMessages).toHaveBeenCalledOnce()
+  })
+
+  it('does not publish a late non-abort failure after cancellation', async () => {
+    const controller = new AbortController()
+
+    const loadMessages = vi.fn(async () => {
+      controller.abort()
+      throw new Error('late transcript failure')
+    })
+
+    await expect(loadArtifactsForSessions([makeSession()], loadMessages, { signal: controller.signal })).rejects.toMatchObject({
+      name: 'AbortError'
+    })
+  })
+
   it('loads transcripts serially and continues after a session fails', async () => {
     const sessions = [
       makeSession({ id: 'session-1' }),

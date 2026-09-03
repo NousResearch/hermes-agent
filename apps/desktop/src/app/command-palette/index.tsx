@@ -652,12 +652,12 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
   const sessionsQuery = useQuery({
     queryKey: ['command-palette', 'sessions'],
-    queryFn: () => listAllProfileSessions(200, 1, 'exclude')
+    queryFn: ({ signal }) => listAllProfileSessions(200, 1, 'exclude', 'recent', 'all', {}, { signal })
   })
 
   const archivedQuery = useQuery({
     queryKey: ['command-palette', 'archived'],
-    queryFn: () => listAllProfileSessions(200, 0, 'only')
+    queryFn: ({ signal }) => listAllProfileSessions(200, 0, 'only', 'recent', 'all', {}, { signal })
   })
 
   // getServers is the shared choke point that also drops malformed (null/

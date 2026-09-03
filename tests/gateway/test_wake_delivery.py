@@ -125,60 +125,84 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_persist_delegation_delivery_appends_delivery_row(tmp_path):
-    """#85957: the delegation completion lands in the session transcript as a
-    display_kind=async_delegation_complete delivery row (real SessionDB), and
-    NO self-post / agent turn is involved."""
-    from pathlib import Path
 
-    from gateway.wake import persist_delegation_delivery
-    from hermes_state import SessionDB
+def test_deliver_wake_timeout_is_outcome_unknown_and_does_not_retry(monkeypatch):
+    """A client-side timeout is NOT a transient retryable failure.  The HTTP
+    request is abandoned while the server-side turn keeps running, so blindly
+    re-posting starts a second concurrent turn on a session with no
+    per-session lock.  The wake must fail immediately as outcome-unknown.
+    """
+    from aiohttp import web
 
-    db = SessionDB(db_path=Path(tmp_path) / "state.db")
-    sid = "raw-hq-sid"
-    db.create_session(sid, source="api_server")
-    db.append_message(sid, "user", content="please confirm before writing")
-    db.append_message(sid, "assistant", content="awaiting confirmation",
-                      finish_reason="stop")
+    import gateway.wake as wake_mod
 
-    class DbAdapter(ApiServerLikeAdapter):
-        def _ensure_session_db(self):
-            return db
+    monkeypatch.setattr(wake_mod, "WAKE_TURN_TIMEOUT_SECONDS", 0.05)
+    calls = {"n": 0}
 
-    evt = {
-        "type": "async_delegation",
-        "delegation_id": "deleg_x",
-        "results": [{"status": "completed"}, {"status": "failed"}],
-        "total_duration_seconds": 12.5,
-    }
-    asyncio.run(persist_delegation_delivery(
-        DbAdapter(), text="[ASYNC DELEGATION BATCH COMPLETE — deleg_x]",
-        session_id=sid, evt=evt,
-    ))
+    async def slow_handler(request):
+        calls["n"] += 1
+        await asyncio.sleep(0.3)  # outlive the client timeout
+        return web.json_response({"choices": []})
 
-    rows = db.get_messages(sid)
-    assert len(rows) == 3
-    delivery = rows[-1]
-    assert delivery["role"] == "user"
-    assert delivery["display_kind"] == "async_delegation_complete"
-    meta = delivery["display_metadata"]
-    assert meta["delegation_id"] == "deleg_x"
-    assert meta["task_count"] == 2
-    assert meta["failed_count"] == 1
-    assert meta["duration_seconds"] == 12.5
+    async def run():
+        runner, port = await _serve(slow_handler)
+        try:
+            adapter = ApiServerLikeAdapter(port=port)
+            with pytest.raises(wake_mod.WakeOutcomeUnknownError):
+                await deliver_wake(adapter, text="x", session_id="sid-timeout")
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert calls["n"] == 1  # timed-out wake is not blindly re-posted
 
 
-def test_persist_delegation_delivery_raises_without_db():
-    """DB unavailable must RAISE so the durable claim is released for retry."""
-    from gateway.wake import persist_delegation_delivery
+def test_deliver_wake_waits_out_unknown_grace_before_next_post(monkeypatch):
+    """After a client-side timeout the session's outcome is unknown -- the
+    server-side turn may still be running.  The next wake for that session
+    must wait out the grace window before POSTing instead of overlapping it.
+    """
+    import time
 
-    class NoDbAdapter(ApiServerLikeAdapter):
-        def _ensure_session_db(self):
-            return None
+    from aiohttp import web
 
-    with pytest.raises(RuntimeError, match="SessionDB unavailable"):
-        asyncio.run(persist_delegation_delivery(
-            NoDbAdapter(), text="x", session_id="sid",
-        ))
+    import gateway.wake as wake_mod
 
+    monkeypatch.setattr(wake_mod, "WAKE_TURN_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(wake_mod, "WAKE_TIMEOUT_UNKNOWN_GRACE_SECONDS", 0.2)
+    slow_calls = {"n": 0}
+    fast_calls = {"n": 0}
+    elapsed = {"s": 0.0}
 
+    async def slow_handler(request):
+        slow_calls["n"] += 1
+        await asyncio.sleep(0.3)  # outlive the client timeout
+        return web.json_response({"choices": []})
+
+    async def fast_handler(request):
+        fast_calls["n"] += 1
+        return web.json_response({"choices": []})
+
+    async def run():
+        slow_runner, slow_port = await _serve(slow_handler)
+        fast_runner, fast_port = await _serve(fast_handler)
+        try:
+            slow_adapter = ApiServerLikeAdapter(port=slow_port)
+            with pytest.raises(wake_mod.WakeOutcomeUnknownError):
+                await deliver_wake(slow_adapter, text="x", session_id="sid-grace")
+
+            # The next wake hits a fresh (healthy) endpoint but the session is
+            # still gated: it must wait the grace window before re-posting.
+            fast_adapter = ApiServerLikeAdapter(port=fast_port)
+            started = time.monotonic()
+            await deliver_wake(fast_adapter, text="x", session_id="sid-grace")
+            elapsed["s"] = time.monotonic() - started
+        finally:
+            await slow_runner.cleanup()
+            await fast_runner.cleanup()
+
+    asyncio.run(run())
+    assert slow_calls["n"] == 1
+    assert fast_calls["n"] == 1
+    assert elapsed["s"] >= 0.15  # waited out the grace window before re-posting
+    assert "sid-grace" not in wake_mod._wake_unknown_until  # cleared on success

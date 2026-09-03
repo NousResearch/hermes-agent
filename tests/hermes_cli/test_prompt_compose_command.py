@@ -59,3 +59,17 @@ def test_empty_buffer_does_not_seed(monkeypatch):
     s = _Stub()
     s._handle_prompt_compose_command("/prompt")
     assert s._pending_agent_seed is None
+
+
+def test_failed_editor_cancels_without_shell_fallback(monkeypatch, tmp_path):
+    """A failing editor cancels the compose; no shell fallback runs (#81364).
+
+    The old code retried through a shell with the raw $EDITOR string, so an
+    editor value containing shell metacharacters executed them. The new code
+    only ever launches argv and returns an empty buffer on failure.
+    """
+    marker = tmp_path / "pwned"
+    monkeypatch.setenv("EDITOR", f"definitely-not-an-editor; touch {marker}")
+    out = _Stub()._compose_in_editor("seed text")
+    assert out == ""
+    assert not marker.exists()

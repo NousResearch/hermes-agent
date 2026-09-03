@@ -1594,7 +1594,12 @@ def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
     try:
         proc = subprocess.run(
             [*_agent_browser_argv(browser_cmd), "--session", session_name, "get", "cdp-url"],
-            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            env=_build_browser_env(),
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("real-profile get cdp-url failed: %s", e)
@@ -1634,7 +1639,12 @@ def _agent_browser_close_session(session_name: str) -> None:
     try:
         subprocess.run(
             [*_agent_browser_argv(browser_cmd), "--session", session_name, "close"],
-            capture_output=True, text=True, timeout=15, env=_build_browser_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            env=_build_browser_env(),
         )
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("real-profile session close failed: %s", e)
@@ -1877,7 +1887,11 @@ def _real_profile_cdp() -> tuple:
         ]
         try:
             proc = subprocess.run(
-                argv, capture_output=True, text=True,
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=_get_open_command_timeout(first_open=True),
                 env=_build_browser_env(),
             )

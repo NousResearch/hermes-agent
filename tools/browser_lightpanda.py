@@ -144,7 +144,11 @@ def _binary_supports_http_cache(binary: str) -> bool:
     try:
         proc = subprocess.run(
             [binary, "help"],
-            capture_output=True, text=True, timeout=3.0,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3.0,
             stdin=subprocess.DEVNULL,
         )
         return _HTTP_CACHE_FLAG in ((proc.stdout or "") + (proc.stderr or ""))

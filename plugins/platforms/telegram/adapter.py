@@ -7870,6 +7870,17 @@ class TelegramAdapter(BasePlatformAdapter):
         "vip-domain":   ("vip-add.sh",         ["domain"], "✓ marked VIP domain",  True),
     }
 
+    # Gateway slash commands that a gmail-triage inline button may trigger
+    # in-process. Telegram never delivers a bot's own outgoing messages back to
+    # the bot, so a script that sends "/reset" cannot reach the command handler.
+    # These verbs instead reconstruct the caller's SessionSource from the
+    # callback metadata and route a synthetic MessageEvent straight into the
+    # runner's normal _handle_message pipeline (auth + command + busy-guard +
+    # session resolution all still apply).
+    _GT_COMMAND_DISPATCH = {
+        "reset": ("/reset", "✓ reset requested"),
+    }
+
     async def _handle_gmail_triage_callback(
         self,
         query,
@@ -7896,6 +7907,19 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=query_user_name,
         ):
             await query.answer(text="⛔ You are not authorized to act on this email.")
+            return
+
+        command_entry = self._GT_COMMAND_DISPATCH.get(verb)
+        if command_entry is not None:
+            await self._run_command_verb(
+                command_entry,
+                query,
+                caller_id=caller_id,
+                chat_id=query_chat_id,
+                chat_type=query_chat_type,
+                thread_id=query_thread_id,
+                user_name=query_user_name,
+            )
             return
 
         entry = self._GT_VERB_DISPATCH.get(verb)
@@ -7963,6 +7987,57 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.edit_message_text(text=appended, reply_markup=None)
         except Exception:
             pass
+
+    async def _run_command_verb(self, command_entry, query, *, caller_id, chat_id, chat_type, thread_id, user_name) -> None:
+        """Run a gateway slash command from a gmail-triage inline-button verb.
+
+        Reconstructs the caller's :class:`SessionSource` from the callback
+        metadata and routes a synthetic ``MessageEvent`` (text = the slash
+        command, e.g. ``/reset``) into the runner's normal
+        ``_handle_message`` pipeline, so authorization, command detection, the
+        busy-guard, and session-key resolution all apply exactly as they do for
+        a typed command. Script dispatch is untouched.
+        """
+        command_text, success_label = command_entry
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        handler = getattr(runner, "_handle_message", None)
+        if not callable(handler):
+            await query.answer(text="❌ gateway runner unavailable")
+            logger.error("[%s] command verb %s: no _handle_message on runner", self.name, command_text)
+            return
+
+        try:
+            from gateway.session import SessionSource
+
+            normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+            if normalized_chat_type == "private":
+                normalized_chat_type = "dm"
+            elif normalized_chat_type == "supergroup":
+                normalized_chat_type = "forum" if thread_id is not None else "group"
+
+            source = SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(chat_id or caller_id),
+                chat_type=normalized_chat_type,
+                user_id=str(caller_id or "").strip(),
+                user_name=str(user_name).strip() if user_name else None,
+                thread_id=str(thread_id) if thread_id is not None else None,
+            )
+        except Exception as exc:
+            await query.answer(text="❌ could not build session source")
+            logger.error("[%s] command verb %s: SessionSource build failed: %s", self.name, command_text, exc, exc_info=True)
+            return
+
+        event = MessageEvent(text=command_text, source=source, user_id=source.user_id, user_name=source.user_name)
+
+        await query.answer(text=success_label)
+        try:
+            await handler(event)
+        except Exception as exc:
+            logger.error("[%s] command verb %s: _handle_message raised: %s", self.name, command_text, exc, exc_info=True)
+        # The runner's own send path reports the command's real result; nothing
+        # to echo back here beyond the ack already given.
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.

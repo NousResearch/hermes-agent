@@ -388,3 +388,214 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
 
     assert terms == []
     assert result["matched"] == []
+
+
+# ── #101626: a lock claim is not a heartbeat ────────────────────────────────
+# `backend.lock.json` records that a Desktop client once claimed a PID. Only
+# that client retires the claim, and a client whose machine stops executing
+# (laptop asleep, waking for Power Nap and sleeping again) never does. The
+# claim then grants its SSH-isolated backend permanent immunity while the
+# backend keeps writing the HERMES_HOME the next backend is about to open.
+
+
+def _reap_with_claims(scanned, lock_owned, claim_disproved, terms):
+    live = {pid for pid, _ in scanned}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid in live:
+                return None
+            raise ProcessLookupError()
+        if sig == 15:
+            terms.append(pid)
+            live.discard(pid)
+            return None
+        if sig == 9:
+            live.discard(pid)
+            return None
+        return None
+
+    with (
+        patch(
+            "hermes_cli.dashboard_procs._scan_dashboard_processes",
+            return_value=scanned,
+        ),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+        patch("sys.platform", "darwin"),
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        return _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None,
+            signal_term=15,
+            signal_kill=9,
+            lock_owned_pids_fn=lambda: set(lock_owned),
+            process_age_seconds_fn=lambda _pid: 600.0,
+            claim_disproved_fn=claim_disproved,
+        )
+
+
+class _FakeConn:
+    def __init__(self, status):
+        self.status = status
+
+
+class _FakeProcess:
+    """Minimal psutil.Process stand-in for the claim-disproof probes."""
+
+    def __init__(self, *, ppid, age, cmdline, statuses):
+        import time as _time
+
+        self._ppid = ppid
+        self._create_time = _time.time() - age
+        self._cmdline = cmdline
+        self._statuses = statuses
+
+    def ppid(self):
+        return self._ppid
+
+    def create_time(self):
+        return self._create_time
+
+    def cmdline(self):
+        return self._cmdline
+
+    def net_connections(self, kind="inet"):
+        return [_FakeConn(status) for status in self._statuses]
+
+
+SSH_SERVE_CMD = (
+    "hermes serve --isolated --host 127.0.0.1 --port 0 "
+    "--ssh-session-token-file /home/h/.hermes/desktop-ssh/a/b.token "
+    "--ssh-owner-nonce 0123456789abcdef"
+)
+
+
+def test_reap_withdraws_immunity_from_a_disproved_claim():
+    """A sleeping laptop's claim keeps a second writer alive on our database."""
+    terms: list[int] = []
+    result = _reap_with_claims(
+        scanned=[(555, SSH_SERVE_CMD)],
+        lock_owned={555},
+        claim_disproved=lambda pid: pid == 555,
+        terms=terms,
+    )
+
+    assert set(result["matched"]) == {555}
+    assert set(terms) == {555}
+
+
+def test_reap_keeps_immunity_when_the_claim_is_not_disproved():
+    """Indeterminate or live: the claim stands, exactly as before (#78872)."""
+    terms: list[int] = []
+    result = _reap_with_claims(
+        scanned=[(555, SSH_SERVE_CMD)],
+        lock_owned={555},
+        claim_disproved=lambda _pid: False,
+        terms=terms,
+    )
+
+    assert result["matched"] == []
+    assert terms == []
+
+
+def test_reap_never_widens_when_the_claim_probe_raises():
+    """A probe that blows up must not be read as 'claim disproved'."""
+
+    def boom(_pid):
+        raise RuntimeError("psutil exploded")
+
+    terms: list[int] = []
+    result = _reap_with_claims(
+        scanned=[(555, SSH_SERVE_CMD)],
+        lock_owned={555},
+        claim_disproved=boom,
+        terms=terms,
+    )
+
+    assert result["matched"] == []
+    assert terms == []
+
+
+def test_claim_disproved_requires_the_same_hermes_home():
+    """#94032 inverse: a backend on another database is never a candidate."""
+    from hermes_cli.dashboard_procs import _lock_claim_is_disproved
+
+    with (
+        patch("sys.platform", "linux"),
+        patch(
+            "hermes_cli.dashboard_procs._hermes_home_for_pid",
+            return_value="/home/h/.hermes/profiles/other",
+        ),
+    ):
+        assert _lock_claim_is_disproved(555, self_home="/home/h/.hermes") is False
+
+
+def test_claim_disproved_is_false_when_the_home_is_unreadable():
+    from hermes_cli.dashboard_procs import _lock_claim_is_disproved
+
+    with (
+        patch("sys.platform", "linux"),
+        patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None),
+    ):
+        assert _lock_claim_is_disproved(555, self_home="/home/h/.hermes") is False
+
+
+def test_claim_disproved_spares_a_backend_with_an_established_client(tmp_path):
+    """A tunnel still carrying a client keeps its immunity."""
+    from hermes_cli.dashboard_procs import _lock_claim_is_disproved
+
+    home = str(tmp_path)
+    proc = _FakeProcess(
+        ppid=1,
+        age=6000.0,
+        cmdline=["hermes", "serve", "--isolated", "--host", "127.0.0.1", "--port", "0"],
+        statuses=["LISTEN", "ESTABLISHED"],
+    )
+
+    with (
+        patch("sys.platform", "linux"),
+        patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=home),
+        patch("psutil.Process", return_value=proc),
+    ):
+        assert _lock_claim_is_disproved(555, self_home=home) is False
+
+
+def test_claim_disproved_for_a_clientless_orphan_on_our_home(tmp_path):
+    """The #101626 shape: ppid 1, old, ephemeral, no client, our database."""
+    from hermes_cli.dashboard_procs import _lock_claim_is_disproved
+
+    home = str(tmp_path)
+    proc = _FakeProcess(
+        ppid=1,
+        age=6000.0,
+        cmdline=["hermes", "serve", "--isolated", "--host", "127.0.0.1", "--port", "0"],
+        statuses=["LISTEN"],
+    )
+
+    with (
+        patch("sys.platform", "linux"),
+        patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=home),
+        patch("psutil.Process", return_value=proc),
+    ):
+        assert _lock_claim_is_disproved(555, self_home=home) is True
+
+
+def test_claim_disproved_spares_a_fixed_port_operator_serve(tmp_path):
+    """An operator-managed `--port 9119` serve is not a Desktop ephemeral."""
+    from hermes_cli.dashboard_procs import _lock_claim_is_disproved
+
+    home = str(tmp_path)
+    proc = _FakeProcess(
+        ppid=1,
+        age=6000.0,
+        cmdline=["hermes", "serve", "--host", "127.0.0.1", "--port", "9119"],
+        statuses=["LISTEN"],
+    )
+
+    with (
+        patch("sys.platform", "linux"),
+        patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=home),
+        patch("psutil.Process", return_value=proc),
+    ):
+        assert _lock_claim_is_disproved(555, self_home=home) is False

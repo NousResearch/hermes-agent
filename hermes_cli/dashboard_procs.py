@@ -954,6 +954,80 @@ def _process_age_seconds(pid: int) -> float:
     return max(0.0, _time.time() - _psutil.Process(pid).create_time())
 
 
+def _lock_claim_is_disproved(
+    pid: int,
+    *,
+    self_home: str | None = None,
+    min_age_seconds: float = _REAP_MIN_AGE_SECONDS,
+) -> bool:
+    """True only when a lock claim is *proven* not to describe a live backend.
+
+    ``backend.lock.json`` records that a Desktop client once claimed this PID.
+    It carries no liveness for the claimant, and only the claimant retires it.
+    A client whose machine stops executing — a laptop asleep in a bag, waking
+    for Power Nap and sleeping again (#101626) — never retires anything, so
+    the claim grants its backend permanent immunity from the reap below. The
+    backend keeps writing the same ``state.db`` this process is about to open,
+    and because immunity is granted per claim while ``HERMES_HOME`` is shared,
+    several claimed backends can hold one database at once.
+
+    Withdrawing immunity needs a proof, not a timeout. Reuse the one the
+    state-repair path already trusts for exactly this shape,
+    ``hermes_state._is_inactive_orphan_desktop_holder``: orphaned under init,
+    older than the startup grace, Desktop ephemeral spawn shape, and no
+    ESTABLISHED socket — a backend whose tunnel still carries a client keeps
+    its immunity. Narrowed further to an exact ``HERMES_HOME`` match, so a
+    backend on a *different* database is never a candidate (#94032).
+
+    Every probe fails closed: anything unreadable or unexpected leaves the
+    claim standing, exactly like the reap's other liveness probes.
+    """
+    if sys.platform == "win32":
+        return False
+
+    try:
+        import time as _time
+
+        import psutil as _psutil
+
+        from hermes_state import _is_inactive_orphan_desktop_holder
+    except Exception:
+        return False
+
+    try:
+        candidate_home = _hermes_home_for_pid(pid)
+    except Exception:
+        return False
+    if not candidate_home:
+        return False
+
+    try:
+        own_home = Path(self_home) if self_home else _hermes_home_dir()
+        if (
+            Path(candidate_home).expanduser().resolve()
+            != own_home.expanduser().resolve()
+        ):
+            return False
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+    try:
+        process = _psutil.Process(pid)
+        return bool(
+            _is_inactive_orphan_desktop_holder(
+                ppid=process.ppid(),
+                age_seconds=max(0.0, _time.time() - process.create_time()),
+                min_age_seconds=min_age_seconds,
+                ephemeral_backend=_is_ephemeral_port_zero_backend(process.cmdline()),
+                connection_statuses=[
+                    conn.status for conn in process.net_connections(kind="inet")
+                ],
+            )
+        )
+    except Exception:
+        return False
+
+
 def _reap_orphaned_desktop_local_serves(
     *,
     reason: str = "orphaned desktop-local hermes serve",
@@ -962,6 +1036,7 @@ def _reap_orphaned_desktop_local_serves(
     sleep_fn=None,
     lock_owned_pids_fn=None,
     process_age_seconds_fn=None,
+    claim_disproved_fn=None,
 ) -> dict[str, list]:
     """Kill leftover Desktop-local ``hermes serve`` backends with no parent.
 
@@ -982,7 +1057,10 @@ def _reap_orphaned_desktop_local_serves(
     - never a PID a valid ``backend.lock.json`` claims as its owner — that is
       a legitimately lock-owned backend, *including SSH remote backends started
       by another client/machine* which legitimately sit at ppid 1 after sshd
-      exits. Killing those is a production incident, not cleanup.
+      exits. Killing those is a production incident, not cleanup. The one
+      exception is a claim this host can positively disprove
+      (``_lock_claim_is_disproved``): an inactive orphan on our own
+      ``HERMES_HOME``, i.e. a second writer on the database we are opening.
     - never fixed-port remote serves (e.g. ``--port 9119``)
     - never a candidate younger than ``_REAP_MIN_AGE_SECONDS`` (or whose age
       cannot be determined). The Desktop client writes ``backend.lock.json``
@@ -1006,6 +1084,8 @@ def _reap_orphaned_desktop_local_serves(
         lock_owned_pids_fn = _lock_owned_serve_pids
     if process_age_seconds_fn is None:
         process_age_seconds_fn = _process_age_seconds
+    if claim_disproved_fn is None:
+        claim_disproved_fn = _lock_claim_is_disproved
 
     if sys.platform == "win32":
         # Windows desktop uses taskkill tree teardown; orphan scan here is POSIX.
@@ -1021,11 +1101,36 @@ def _reap_orphaned_desktop_local_serves(
     # Spare every PID a valid backend.lock.json owns — SSH remote backends
     # started by other clients/machines are legitimate, lock-owned owners even
     # though they are orphaned (ppid 1) on this host. (#78872 regression)
+    #
+    # A claim is not a heartbeat, though: only the claiming client retires it,
+    # and a client that stops executing never does (#101626). Immunity is
+    # withdrawn from the PIDs whose claim this host can positively disprove —
+    # an inactive orphan on our own HERMES_HOME, i.e. a second writer on the
+    # database we are about to open. Everything else stays spared.
+    disowned: set[int] = set()
     try:
-        exclude |= set(lock_owned_pids_fn())
+        lock_owned = set(lock_owned_pids_fn())
     except Exception:
         # Best-effort: never let lock scanning block or widen the reap.
-        pass
+        lock_owned = set()
+    for pid in lock_owned:
+        try:
+            if claim_disproved_fn(pid):
+                disowned.add(pid)
+        except Exception:
+            # An indeterminate probe leaves the claim standing.
+            continue
+    if disowned:
+        # #101626 asks for the missing line: until now an orphan could hold
+        # the database with nothing anywhere saying so.
+        try:
+            print(
+                "⟲ Lock-claimed backend(s) hold this HERMES_HOME with no "
+                f"client and no live owner: {sorted(disowned)} — reaping."
+            )
+        except Exception:
+            pass
+    exclude |= lock_owned - disowned
 
     try:
         scanned = _scan_dashboard_processes(exclude_pids=exclude)
@@ -1036,7 +1141,7 @@ def _reap_orphaned_desktop_local_serves(
     # exclude PIDs, but a lock file may have been written between the scan and
     # now. Defense in depth — never kill a freshly-claimed owner.
     try:
-        owned_now = set(lock_owned_pids_fn())
+        owned_now = set(lock_owned_pids_fn()) - disowned
     except Exception:
         owned_now = set()
 

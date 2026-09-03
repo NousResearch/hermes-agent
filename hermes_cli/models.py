@@ -7035,6 +7035,23 @@ def fetch_ollama_cloud_models(
     return []
 
 
+def _is_version_only_difference(requested: str, candidate: str) -> bool:
+    """True when two model ids differ only by version digits (see #101975).
+
+    A newly released model (``gemini-3.8-flash``) is extremely close by
+    difflib ratio to its predecessor (``gemini-3.6-flash``), but
+    auto-correcting silently swaps pricing, context and capabilities — the
+    user's explicit version choice must be respected. Genuine typos
+    (missing dash, transposed letters) change non-digit characters and must
+    still auto-correct.
+    """
+    r = (requested or "").strip().lower()
+    c = (candidate or "").strip().lower()
+    if not r or not c or r == c:
+        return False
+    return re.sub(r"[0-9]+", "#", r) == re.sub(r"[0-9]+", "#", c)
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
@@ -7391,12 +7408,23 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
-            # Do not auto-correct uncataloged models — see #101975.
+            # Never auto-correct a version-only difference — see #101975.
             # A newly released model (e.g. gemini-3.8-flash) is not yet in the
-            # curated list but is valid on the provider API. Auto-correcting it
-            # to an older catalog entry (gemini-3.6-flash) silently changes
-            # pricing, context and capabilities. Accept the requested model
-            # as-is with a warning and offer close matches as suggestions.
+            # curated list but is valid on the provider API, and it is
+            # extremely close by difflib ratio to its predecessor
+            # (gemini-3.6-flash). Auto-correcting it silently swaps pricing,
+            # context and capabilities. Genuine typos (missing dash,
+            # transposed letters) change non-digit characters and must still
+            # auto-correct below.
+            auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
+            if auto and not _is_version_only_difference(requested_for_lookup, auto[0]):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
             suggestions = get_close_matches(requested_for_lookup, catalog_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -7618,10 +7646,20 @@ def validate_requested_model(
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
 
-            # Do not auto-correct unlisted models — see #101975.
+            # Never auto-correct a version-only difference — see #101975.
             # The live /v1/models listing may lag a newly released model
-            # (e.g. gemini-3.8-flash). Auto-correcting to a catalog entry
-            # silently swaps pricing/context. Accept as-is with suggestions.
+            # (e.g. gemini-3.8-flash). Genuine typos still auto-correct.
+            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
+            if auto and not _is_version_only_difference(requested_for_lookup, auto[0]):
+                corrected = _with_preset_suffix(auto[0])
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": corrected,
+                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
+                }
+
             suggestions = get_close_matches(
                 requested_for_lookup, api_models, n=3, cutoff=0.5
             )

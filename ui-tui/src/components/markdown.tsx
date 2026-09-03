@@ -219,11 +219,15 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     return null
   }
 
-  const cellDisplayWidth = (raw: string) => stringWidth(stripInlineMarkup(raw))
+  // Cell text for rendering AND width measurement: strip markdown delimiters,
+  // then convert TeX notation to Unicode so math in cells renders like it does
+  // in paragraphs ($\to$ → →) and its display width matches what's drawn.
+  const cellText = (raw: string) => texToUnicode(stripInlineMarkup(raw))
+  const cellDisplayWidth = (raw: string) => stringWidth(cellText(raw))
 
   // Minimum width: longest word in a cell (to avoid breaking words)
   const minCellWidth = (raw: string) => {
-    const text = stripInlineMarkup(raw)
+    const text = cellText(raw)
     const words = text.split(/\s+/).filter(w => w.length > 0)
 
     if (words.length === 0) {
@@ -333,7 +337,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   // Word-wrap plain text to fit within `width` display columns.
   // Operates on stripped text for correct width measurement.
   const wrapCell = (raw: string, width: number, hard: boolean): string[] => {
-    const text = stripInlineMarkup(raw)
+    const text = cellText(raw)
 
     if (width <= 0) {
       return [text]
@@ -391,13 +395,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
   // When wrapping isn't needed, build single-line strings per row.
   // All cells render as plain text via stripInlineMarkup.
+  // NOTE: Now uses cellText helper to include TeX $	o$ Unicode conversion.
   // TODO: follow-up — format to ANSI then wrap with wrapAnsi for inline markdown preservation.
   // See free-code/src/components/MarkdownTable.tsx L44-L62 for approach.
   if (!needsWrap) {
     const buildRowString = (row: string[]): string =>
       row
         .map((cell, ci) => {
-          const text = stripInlineMarkup(cell)
+          const text = cellText(cell)
           const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(text)))
           const gap = ci < numCols - 1 ? '  ' : ''
 
@@ -437,10 +442,10 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
       let line = ''
 
       for (let ci = 0; ci < numCols; ci++) {
-        const cl = cellLines[ci] ?? ['']
-        const cellText = li < cl.length ? cl[li]! : ''
-        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(cellText)))
-        line += cellText + pad
+        const colLines = cellLines[ci] ?? ['']
+        const lineContent = li < colLines.length ? colLines[li]! : ''
+        const pad = ' '.repeat(Math.max(0, columnWidths[ci]! - stringWidth(lineContent)))
+        line += lineContent + pad
 
         if (ci < numCols - 1) {
           line += '  '
@@ -485,9 +490,10 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
       return (
         <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
           <Text bold color={t.color.accent} wrap="wrap-trim">
-            {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(' · ')}
+            {normalizedRows[0]!.map(h => cellText(h)).join(' · ')}
           </Text>
         </Box>
+    // NOTE: Updated vertical fallback to use cellText for TeX support.
       )
     }
 
@@ -506,14 +512,15 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
             ) : null}
             {headers.map((header, ci) => {
               const cell = row[ci] ?? ''
-              const label = stripInlineMarkup(header) || `Col ${ci + 1}`
+              // Use cellText for consistent TeX $	o$ Unicode conversion
+              const label = cellText(header) || `Col ${ci + 1}`
 
               return (
                 <Text key={ci} wrap="wrap-trim">
                   <Text bold color={t.color.accent}>
                     {label}:
                   </Text>{' '}
-                  {stripInlineMarkup(cell)}
+                  {cellText(cell)}
                 </Text>
               )
             })}

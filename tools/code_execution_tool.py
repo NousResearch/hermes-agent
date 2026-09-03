@@ -28,6 +28,7 @@ Platform: Linux / macOS only (Unix domain sockets for local). Disabled on Window
 Remote execution additionally requires Python 3 in the terminal backend.
 """
 
+import ast
 import base64
 import json
 import logging
@@ -1574,6 +1575,29 @@ def execute_code(
             "parameter containing Python source. To run shell commands, use "
             "terminal(command=...) instead."
         )
+
+    # P1 #101036: harden against os.system / subprocess shell escape.
+    # check_execute_code_guard already enforces approval, but an explicit
+    # AST block for direct host-escaping imports keeps the sandbox tight
+    # even if the guard is bypassed via prompt injection.
+    try:
+        tree = ast.parse(code)
+        _blocked = {"os", "subprocess", "socket", "pty", "ctypes"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in _blocked:
+                        return tool_error(
+                            f"Blocked import '{alias.name}': execute_code sandbox disallows host-escaping modules. "
+                            "Use terminal/read_file/write_file tools via hermes_tools instead."
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in _blocked:
+                    return tool_error(
+                        f"Blocked import '{node.module}': execute_code sandbox disallows host-escaping modules."
+                    )
+    except SyntaxError:
+        pass  # let the kernel report syntax errors naturally
 
     # Hard-block gateway-lifecycle commands, mirroring the terminal_tool
     # guard (#68289): without this, execute_code is a straight bypass — the

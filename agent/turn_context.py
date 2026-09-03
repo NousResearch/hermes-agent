@@ -707,7 +707,7 @@ def _memory_turn_start_and_prefetch(agent: Any, original_user_message: Any) -> s
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:

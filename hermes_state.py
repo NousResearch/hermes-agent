@@ -6844,8 +6844,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         databases (65K+ pages) due to the exclusive-lock I/O pressure
         from checkpointing thousands of frames at once (issue #45383).
         """
-        if self._db_corrupt:
-            return  # quarantined: never checkpoint over a damaged image
+        if self._db_corrupt or self._db_replaced or self._db_wal_generation_lost:
+            # Quarantined (structural corruption), or the file/WAL generation
+            # under this path is no longer the one this handle opened: never
+            # checkpoint over a damaged or foreign image.
+            return
         try:
             with self._lock:
                 result = self._conn.execute(
@@ -16931,6 +16934,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Returns the number of FTS indexes that were optimized (0 if the
         merge step failed or no FTS tables exist).
         """
+        # A quarantined/replaced/split-generation handle must never run a
+        # full-file rewrite: VACUUM would read every page of a structurally
+        # damaged or foreign image and commit the result back to disk,
+        # turning a contained, diagnosable corruption into an amplified,
+        # unrecoverable one. Same guard _execute_write uses on every write.
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         # Merge FTS5 segments before VACUUM so the freed pages are returned
         # to the OS in the same pass. optimize_fts() manages its own lock.
         optimized = 0

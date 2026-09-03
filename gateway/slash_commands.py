@@ -3404,6 +3404,52 @@ class GatewaySlashCommandsMixin:
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
+        elif args.startswith("transcribe"):
+            # /voice transcribe on|off — "on" makes the bot a passive
+            # stenographer: VC speech is transcribed (routed per the
+            # transcripts destination) but never dispatched to the agent.
+            # Typed messages still reach the agent normally.
+            sub = args[len("transcribe"):].strip()
+            prefs = self._voice_transcript_prefs.setdefault(voice_key, {})
+            if sub in {"on", "only"}:
+                prefs["to_agent"] = False
+                self._save_voice_transcript_prefs()
+                return t("gateway.voice.transcribe_on")
+            elif sub == "off":
+                prefs["to_agent"] = True
+                self._save_voice_transcript_prefs()
+                return t("gateway.voice.transcribe_off")
+            _, _, to_agent = self._voice_transcript_settings(voice_key)
+            state = (
+                t("gateway.voice.label_transcribe_on")
+                if not to_agent
+                else t("gateway.voice.label_transcribe_off")
+            )
+            return t("gateway.voice.transcribe_status", state=state)
+        elif args.startswith("transcripts"):
+            # /voice transcripts channel|file|both — where VC transcripts go.
+            sub = args[len("transcripts"):].strip()
+            prefs = self._voice_transcript_prefs.setdefault(voice_key, {})
+            if sub in {"channel", "file", "both"}:
+                prefs["destination"] = sub
+                self._save_voice_transcript_prefs()
+                if sub == "channel":
+                    return t("gateway.voice.transcripts_channel")
+                _, transcript_dir, _ = self._voice_transcript_settings(voice_key)
+                key = (
+                    "gateway.voice.transcripts_file"
+                    if sub == "file"
+                    else "gateway.voice.transcripts_both"
+                )
+                return t(key, dir=transcript_dir)
+            destination, transcript_dir, _ = self._voice_transcript_settings(
+                voice_key
+            )
+            return t(
+                "gateway.voice.transcripts_status",
+                destination=destination,
+                dir=transcript_dir,
+            )
         elif args == "status":
             mode = self._voice_mode.get(voice_key, "off")
             labels = {
@@ -3411,6 +3457,16 @@ class GatewaySlashCommandsMixin:
                 "voice_only": t("gateway.voice.label_voice_only"),
                 "all": t("gateway.voice.label_all"),
             }
+            destination, transcript_dir, to_agent = self._voice_transcript_settings(
+                voice_key
+            )
+            transcript_line = t(
+                "gateway.voice.status_transcripts",
+                destination=destination,
+                state=t("gateway.voice.label_transcribe_on")
+                if not to_agent
+                else t("gateway.voice.label_transcribe_off"),
+            )
             # Append voice channel info if connected
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
@@ -3424,8 +3480,13 @@ class GatewaySlashCommandsMixin:
                     for m in info["members"]:
                         status = t("gateway.voice.speaking") if m.get("is_speaking") else ""
                         lines.append(t("gateway.voice.status_member", name=m['display_name'], status=status))
+                    lines.append(transcript_line)
                     return "\n".join(lines)
-            return t("gateway.voice.status_mode", label=labels.get(mode, mode))
+            return (
+                t("gateway.voice.status_mode", label=labels.get(mode, mode))
+                + "\n"
+                + transcript_line
+            )
         else:
             # Toggle: off → on, on/all → off
             current = self._voice_mode.get(voice_key, "off")

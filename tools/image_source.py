@@ -120,7 +120,10 @@ async def resolve_image_source(
     # Everything else is a filesystem path — including bare relative names
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
-    p = Path(os.path.expanduser(candidate))
+    # Preserve the original path string for non-local backends; converting a
+    # POSIX container path to Path on Windows changes its separators.
+    expanded_candidate = os.path.expanduser(candidate)
+    p = Path(expanded_candidate)
     # Confinement decision (see module docstring). Under a non-local backend
     # a path is host-readable ONLY if it lands in a media cache (after
     # translating a container-visible cache path back to its host mount);
@@ -153,7 +156,7 @@ async def resolve_image_source(
     # Not a permitted host read (or the host file is absent) -> read the
     # bytes inside the sandbox. Under a sandbox this reads the container's
     # filesystem, never the host's.
-    return await _resolve_container_fallback(p, ctx, s, permitted)
+    return await _resolve_container_fallback(expanded_candidate, ctx, s, permitted)
 
 
 def _resolve_data_url(s: str) -> tuple[bytes, str]:
@@ -302,7 +305,7 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
 
 
 async def _resolve_container_fallback(
-    p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)
+    p: str | Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)
 ) -> ResolvedImage:
     """Read the image bytes inside the sandbox (fail-closed when none exists).
 

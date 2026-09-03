@@ -94,6 +94,7 @@ import {
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
+  openFolderAsProject,
   openProjectCreate,
   refreshProjects,
   refreshProjectTree,
@@ -1778,25 +1779,48 @@ export function ChatSidebar({
                     ) : (
                       <>
                         {!showAllProfiles ? (
-                          <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
-                            <Button
-                              aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
-                              className={HEADER_ACTION_BTN}
-                              onClick={event => {
-                                event.stopPropagation()
-
-                                if (agentsGrouped) {
-                                  openProjectCreate()
-                                } else {
-                                  onNewSessionInWorkspace(null)
-                                }
-                              }}
-                              size="icon-xs"
-                              variant="ghost"
+                          <>
+                            <Tip
+                              label={
+                                <TipKeybindLabel
+                                  actionId="workspace.openFolder"
+                                  text={t.keybinds.actions['workspace.openFolder']}
+                                />
+                              }
                             >
-                              <Codicon name="add" size="0.75rem" />
-                            </Button>
-                          </Tip>
+                              <Button
+                                aria-label={t.keybinds.actions['workspace.openFolder']}
+                                className={HEADER_ACTION_BTN}
+                                onClick={event => {
+                                  event.stopPropagation()
+                                  void openFolderAsProject()
+                                }}
+                                size="icon-xs"
+                                variant="ghost"
+                              >
+                                <Codicon name="folder-opened" size="0.75rem" />
+                              </Button>
+                            </Tip>
+                            <Tip label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}>
+                              <Button
+                                aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
+                                className={HEADER_ACTION_BTN}
+                                onClick={event => {
+                                  event.stopPropagation()
+
+                                  if (agentsGrouped) {
+                                    openProjectCreate()
+                                  } else {
+                                    onNewSessionInWorkspace(null)
+                                  }
+                                }}
+                                size="icon-xs"
+                                variant="ghost"
+                              >
+                                <Codicon name="add" size="0.75rem" />
+                              </Button>
+                            </Tip>
+                          </>
                         ) : null}
                         <div className="grid size-6 place-items-center">
                           <SidebarFilterMenu className={HEADER_NAV_BTN} />

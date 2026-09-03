@@ -34,6 +34,8 @@ export interface StatusbarMenuItem {
   id: string
   icon?: ReactNode
   label: string
+  /** Keybind action id — when set, renders a keybinding hint on the right of the menu item. */
+  actionId?: string
   className?: string
   disabled?: boolean
   hidden?: boolean
@@ -217,6 +219,12 @@ function StatusbarHideHint() {
  *  re-rendered every other item in the bar — measured at 1,446 wasted renders
  *  of 2,174 during a five-tab streaming run. `navigate` is stable for the
  *  router's lifetime, so item identity is the only real input. */
+function StatusbarMenuItemHint({ actionId }: { actionId?: string }) {
+  const hint = useKeybindHint(actionId ?? '')
+
+  return hint ? <span className="ml-auto pl-2 text-(--ui-text-quaternary) text-[0.6875rem]">{hint}</span> : null
+}
+
 const StatusbarItemView = memo(function StatusbarItemView({
   item,
   navigate
@@ -301,11 +309,13 @@ const StatusbarItemView = memo(function StatusbarItemView({
                       >
                         {menuItem.icon}
                         <span className="truncate">{menuItem.label}</span>
+                        {menuItem.actionId && <StatusbarMenuItemHint actionId={menuItem.actionId} />}
                       </a>
                     ) : (
                       <>
                         {menuItem.icon}
                         <span className="truncate">{menuItem.label}</span>
+                        {menuItem.actionId && <StatusbarMenuItemHint actionId={menuItem.actionId} />}
                       </>
                     )}
                   </DropdownMenuItem>

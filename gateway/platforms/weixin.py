@@ -1839,6 +1839,7 @@ class WeixinAdapter(BasePlatformAdapter):
     ) -> None:
         """Send a text chunk while holding the adapter-wide outbound text gate."""
         last_error: Optional[Exception] = None
+        is_rate_limited = False
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
             if self._rate_limit_cooldown_remaining() > 0:

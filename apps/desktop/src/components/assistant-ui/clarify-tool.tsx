@@ -943,12 +943,10 @@ function BatchQuestionBlock({
 const emptyStage = { choices: [] as string[], draft: '' }
 
 /** Live batch card: all questions at once, staged locally, ONE confirm.
- * Picks and drafts stay in component state — nothing reaches the server
- * until every question has a staged answer and the user presses the single
- * "Confirm and continue" button, which sends the per-question locks
- * back-to-back and completes the batch. Staged answers stay editable up to
- * that moment. The per-question wire protocol is unchanged (the TUI/CLI
- * still lock incrementally); this card just batches its locks at the end. */
+ * Choice clicks flush a defer_complete lock so the server holds the answer
+ * across reconnect / interrupt. Confirm sends the same locks without the
+ * defer flag and releases the waiter. Drafts still wait for Confirm.
+ * Staged answers stay editable up to Confirm (update-in-place). */
 function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => void; request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -1027,6 +1025,27 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   const answeredCount = questions.filter(q => stagedAnswer(q) !== null).length
   const allStaged = answeredCount === questions.length
 
+  const lockQuestion = useCallback(
+    async (question: ClarifyQuestion, answer: string, deferComplete: boolean) => {
+      if (!request || !gateway) {
+        return
+      }
+
+      await requestForOwnedSession<{ ok?: boolean }>(
+        request.sessionId,
+        gateway.request.bind(gateway) as typeof gateway.request,
+        'clarify.respond',
+        {
+          answer,
+          ...(deferComplete ? { defer_complete: true } : {}),
+          question_id: question.qid,
+          request_id: request.requestId
+        }
+      )
+    },
+    [gateway, request]
+  )
+
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
       notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
@@ -1048,16 +1067,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       for (const question of questions) {
         const answer = stagedAnswer(question)
 
-        await requestForOwnedSession<{ ok?: boolean }>(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.respond',
-          {
-            answer: answer ?? '',
-            question_id: question.qid,
-            request_id: request.requestId
-          }
-        )
+        await lockQuestion(question, answer ?? '', false)
       }
 
       triggerHaptic('submit')
@@ -1068,21 +1078,40 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
+  }, [copy, gateway, lockQuestion, onAnswered, questions, request, stagedAnswer])
 
-  const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
-    setStaged(current => {
-      const stage = current[question.qid] ?? emptyStage
+  const toggleChoice = useCallback(
+    (question: ClarifyQuestion, choice: string) => {
+      let lockedAnswer: string | null = null
 
-      const next = question.multiSelect
-        ? stage.choices.includes(choice)
-          ? stage.choices.filter(value => value !== choice)
-          : [...stage.choices, choice]
-        : [choice]
+      setStaged(current => {
+        const stage = current[question.qid] ?? emptyStage
 
-      return { ...current, [question.qid]: { choices: next, draft: '' } }
-    })
-  }, [])
+        const next = question.multiSelect
+          ? stage.choices.includes(choice)
+            ? stage.choices.filter(value => value !== choice)
+            : [...stage.choices, choice]
+          : [choice]
+
+        lockedAnswer = question.multiSelect
+          ? next.length > 0
+            ? JSON.stringify(next.map(bareChoice))
+            : null
+          : next[0]
+            ? bareChoice(next[0])
+            : null
+
+        return { ...current, [question.qid]: { choices: next, draft: '' } }
+      })
+
+      if (lockedAnswer) {
+        void lockQuestion(question, lockedAnswer, true).catch(() => {
+          // Confirm retries; a missed incremental lock must not block the card.
+        })
+      }
+    },
+    [lockQuestion]
+  )
 
   const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
     setStaged(current => ({ ...current, [question.qid]: { choices: [], draft: value } }))

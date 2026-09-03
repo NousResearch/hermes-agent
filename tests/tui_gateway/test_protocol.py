@@ -496,6 +496,51 @@ def test_clarify_batch_cancel_all_returns_empty(server):
     assert box["answer"] == ""
 
 
+def test_clarify_batch_defer_complete_keeps_waiter_open(server):
+    """Desktop incremental locks must not release the tool until Confirm."""
+    thread, box, rid = _drain_batch_block(server, ["q0"])
+
+    first = server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {
+            "request_id": rid,
+            "question_id": "q0",
+            "answer": "Tea",
+            "defer_complete": True,
+        },
+    })
+    assert first["result"]["status"] == "ok"
+    assert first["result"]["remaining"] == []
+    assert thread.is_alive()
+
+    server.handle_request({
+        "id": "a2", "method": "clarify.respond",
+        "params": {"request_id": rid, "question_id": "q0", "answer": "Tea"},
+    })
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert json.loads(box["answer"]) == {"answers": {"q0": "Tea"}}
+
+
+def test_clarify_batch_interrupt_keeps_locked_answers(server):
+    """session.interrupt / WS reap must not cancel-all a batch with locks."""
+    thread, box, rid = _drain_batch_block(server, ["q0", "q1"], timeout=5)
+
+    server.handle_request({
+        "id": "a1", "method": "clarify.respond",
+        "params": {
+            "request_id": rid,
+            "question_id": "q0",
+            "answer": "Tea",
+            "defer_complete": True,
+        },
+    })
+    server._clear_pending("s1")
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert json.loads(box["answer"]) == {"answers": {"q0": "Tea"}}
+
+
 def test_clarify_batch_late_question_respond_is_idempotent(server):
     response = server.handle_request({
         "id": "late", "method": "clarify.respond",

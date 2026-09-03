@@ -5089,7 +5089,12 @@ def _clear_pending(sid: str | None = None) -> None:
     with _prompt_lock:
         for rid, (owner_sid, ev) in list(_pending.items()):
             if sid is None or owner_sid == sid:
-                _answers[rid] = ""
+                # Writing "" into _answers is the Skip/cancel-all signal.
+                # Interrupt and WS-orphan reaps must not use that path for
+                # batch clarify — it discards per-qid locks and the tool
+                # returns empty user_response with interrupted_by_user.
+                if rid not in _batch_clarify:
+                    _answers[rid] = ""
                 ev.set()
 
 
@@ -14570,7 +14575,11 @@ def _respond(rid, params, key, *, allow_expired=False):
             remaining = [
                 qid for qid in batch["qids"] if qid not in batch["answers"]
             ]
-            if not remaining:
+            # Desktop stages locks incrementally (defer_complete) so a WS drop
+            # / interrupt can still return the clicked answers. Confirm omits
+            # the flag and releases the waiter when every qid is locked.
+            defer_complete = bool(params.get("defer_complete"))
+            if not remaining and not defer_complete:
                 ev.set()
             return _ok(rid, {"status": "ok", "remaining": remaining})
         _answers[r] = params.get(key, "")

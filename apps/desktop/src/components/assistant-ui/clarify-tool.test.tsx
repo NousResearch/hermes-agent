@@ -623,15 +623,22 @@ describe('ClarifyTool batch card', () => {
 
     expect((confirm as HTMLButtonElement).disabled).toBe(true)
 
-    // Staging a pick sends NOTHING to the server.
+    // Choice clicks flush a defer_complete lock; drafts stay local until Confirm.
     fireEvent.click(screen.getByRole('button', { name: /red/ }))
     expect(screen.getByText('1 of 2 answered')).toBeTruthy()
-    expect(request).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'red',
+        defer_complete: true,
+        question_id: 'q0',
+        request_id: 'request-batch'
+      })
+    })
     expect((confirm as HTMLButtonElement).disabled).toBe(true)
 
     fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
     expect(screen.getByText('2 of 2 answered')).toBeTruthy()
-    expect(request).not.toHaveBeenCalled()
+    expect(request).toHaveBeenCalledTimes(1)
     expect((confirm as HTMLButtonElement).disabled).toBe(false)
   })
 
@@ -643,14 +650,20 @@ describe('ClarifyTool batch card', () => {
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledTimes(2)
+      expect(request).toHaveBeenCalledTimes(3)
     })
     expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
       answer: 'red',
+      defer_complete: true,
       question_id: 'q0',
       request_id: 'request-batch'
     })
     expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(3, 'clarify.respond', {
       answer: 'packet',
       question_id: 'q1',
       request_id: 'request-batch'
@@ -666,11 +679,17 @@ describe('ClarifyTool batch card', () => {
     fireEvent.submit(document.querySelector('form') as HTMLFormElement)
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledTimes(2)
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'blue',
+        question_id: 'q0',
+        request_id: 'request-batch'
+      })
     })
-    // The re-pick won: blue, not red.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
-      answer: 'blue',
+    // The re-pick won on Confirm (no defer flag). Incremental red/blue
+    // locks may also have flushed with defer_complete.
+    expect(request).toHaveBeenCalledWith('clarify.respond', {
+      answer: 'red',
+      defer_complete: true,
       question_id: 'q0',
       request_id: 'request-batch'
     })
@@ -813,11 +832,18 @@ describe('ClarifyTool owner routing', () => {
     fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
 
     await waitFor(() => {
-      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(2)
+      expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledTimes(3)
     })
-    // The LAST lock resolves the blocked tool, so order is load-bearing.
-    expectOwnerCall(1, { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expectOwnerCall(2, { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    // Incremental lock first; Confirm re-sends without defer so the waiter
+    // releases. The LAST non-defer lock still resolves the blocked tool.
+    expectOwnerCall(1, {
+      answer: 'red',
+      defer_complete: true,
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expectOwnerCall(2, { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
+    expectOwnerCall(3, { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
     expect(ambient).not.toHaveBeenCalled()
   })
 

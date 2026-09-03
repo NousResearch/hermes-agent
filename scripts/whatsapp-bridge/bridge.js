@@ -30,7 +30,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedSenderWithAlt, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
 import {
@@ -544,6 +544,12 @@ async function startSocket() {
 
       const chatId = msg.key.remoteJid;
       const senderId = msg.key.participant || chatId;
+      // Baileys v7 sends the phone-number twin of a LID sender here: group
+      // messages carry key.participantAlt, DMs carry key.remoteJidAlt. Keep
+      // it for allowlist fallback when no lid-mapping file exists (#72529).
+      const senderAltId = normalizeWhatsAppId(
+        msg.key.participant ? (msg.key.participantAlt || '') : (msg.key.remoteJidAlt || '')
+      );
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
       emitDebugEvent({
@@ -646,13 +652,14 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedSenderWithAlt(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
               reason: 'allowlist_mismatch',
               chatId,
               senderId,
+              senderAltId,
             }));
           } catch {}
           continue;

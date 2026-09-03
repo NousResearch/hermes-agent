@@ -1,20 +1,47 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 from agent.usage_pricing import (
     CanonicalUsage,
-    format_cost_label,
+    _OFFICIAL_DOCS_PRICING,
     estimate_usage_cost,
+    format_cost_label,
     get_pricing_entry,
     normalize_usage,
     resolve_billing_route,
 )
-from decimal import Decimal
 
 
 
 
 
 
+
+
+def test_gpt_56_terra_luna_july_30_reprice():
+    """Terra/Luna carry the 2026-07-30 repriced rates; Sol is unchanged.
+
+    OpenAI cut Luna 80% ($1/$6 -> $0.20/$1.20) and Terra 20%
+    ($2.50/$15 -> $2/$12) on 2026-07-30. Pin the new rates, the cache
+    multiplier structure (read = 0.1x input, write = 1.25x input), and
+    that the "-pro" aliases keep resolving to the repriced base entries.
+    """
+    expected = {
+        "gpt-5.6-sol": (Decimal("5.00"), Decimal("30.00")),
+        "gpt-5.6-terra": (Decimal("2.00"), Decimal("12.00")),
+        "gpt-5.6-luna": (Decimal("0.20"), Decimal("1.20")),
+    }
+    for model, (rate_in, rate_out) in expected.items():
+        entry = get_pricing_entry(model, provider="openai")
+        assert entry is not None, model
+        assert entry.input_cost_per_million == rate_in, model
+        assert entry.output_cost_per_million == rate_out, model
+        assert entry.cache_read_cost_per_million == rate_in * Decimal("0.1"), model
+        assert entry.cache_write_cost_per_million == rate_in * Decimal("1.25"), model
+        # "-pro" variants bill at the same per-token rates as the base tier.
+        assert _OFFICIAL_DOCS_PRICING[("openai", f"{model}-pro")] is _OFFICIAL_DOCS_PRICING[
+            ("openai", model)
+        ], model
 
 
 def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():

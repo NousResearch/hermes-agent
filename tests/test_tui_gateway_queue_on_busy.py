@@ -117,6 +117,7 @@ def test_external_queue_drain_uses_reconnected_owner_and_stays_in_process(monkey
     session = _session(
         running=False,
         transport=new_owner,
+        attached_images=["/private/staged-image.png"],
         queued_prompt={
             "text": "wake",
             "transport": old_owner,
@@ -136,7 +137,11 @@ def test_external_queue_drain_uses_reconnected_owner_and_stays_in_process(monkey
         server,
         "_run_prompt_submit",
         lambda *_args, **kwargs: dispatched.append(
-            (session["transport"], kwargs["external_submission_id"])
+            (
+                session["transport"],
+                kwargs["external_submission_id"],
+                kwargs["image_paths"],
+            )
         ),
     )
     server.register_live_transport(new_owner)
@@ -145,7 +150,8 @@ def test_external_queue_drain_uses_reconnected_owner_and_stays_in_process(monkey
     finally:
         server.unregister_live_transport(new_owner)
 
-    assert dispatched == [(new_owner, "gas-city-request-1")]
+    assert dispatched == [(new_owner, "gas-city-request-1", [])]
+    assert session["attached_images"] == ["/private/staged-image.png"]
 
 
 def test_external_queue_drain_records_correlated_error_without_live_owner(monkeypatch):
@@ -987,6 +993,33 @@ def test_drain_preserves_queued_prompt_when_session_is_closing(monkeypatch):
     assert session["running"] is False
 
 
+def test_drain_closing_session_records_terminal_external_result(monkeypatch):
+    failures = []
+    session = _session(
+        _closing=True,
+        queued_prompt={
+            "text": "external wake",
+            "transport": object(),
+            "external_submission_id": "gas-city-request-1",
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *args: failures.append(args),
+    )
+
+    assert server._drain_queued_prompt("r1", "sid", session) is False
+    assert failures == [
+        (
+            "sid",
+            "gas-city-request-1",
+            "External turn cancelled because the session closed before it started",
+        )
+    ]
+    assert session["queued_prompt"] is None
+
+
 def test_drain_releases_running_on_dispatch_failure(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("dispatch failed")
@@ -996,6 +1029,109 @@ def test_drain_releases_running_on_dispatch_failure(monkeypatch):
     assert server._drain_queued_prompt("r1", "sid", session) is True
     # Failure must not leave the session wedged as running.
     assert session["running"] is False
+
+
+def test_external_drain_records_terminal_result_on_dispatch_failure(monkeypatch):
+    owner = object()
+    failures = []
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("dispatch failed")),
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *args: failures.append(args),
+    )
+    session = _session(
+        transport=owner,
+        queued_prompt={
+            "text": "wake",
+            "transport": object(),
+            "external_submission_id": "gas-city-request-1",
+        },
+    )
+    server.register_live_transport(owner)
+    try:
+        assert server._drain_queued_prompt("r1", "sid", session) is True
+    finally:
+        server.unregister_live_transport(owner)
+
+    assert session["running"] is False
+    assert failures == [
+        (
+            "sid",
+            "gas-city-request-1",
+            "External turn failed before dispatch completed",
+        )
+    ]
+
+
+def test_interrupt_records_terminal_result_for_accepted_external_queue(monkeypatch):
+    failures = []
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *args: failures.append(args),
+    )
+    session = _session(
+        queued_prompt={
+            "text": "wake",
+            "transport": object(),
+            "external_submission_id": "gas-city-request-1",
+        },
+    )
+
+    assert server._interrupt_session_turn("sid", session) is False
+    assert failures == [
+        (
+            "sid",
+            "gas-city-request-1",
+            "External turn cancelled before it started",
+        )
+    ]
+    assert session["queued_prompt"] is None
+
+
+def test_external_drain_records_terminal_result_when_generation_cancels_claim(monkeypatch):
+    owner = object()
+    failures = []
+    session = _session(
+        transport=owner,
+        queued_prompt={
+            "text": "wake",
+            "transport": object(),
+            "external_submission_id": "gas-city-request-1",
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "is_live_transport",
+        lambda _transport: session.__setitem__("_queued_prompt_generation", 1) or True,
+    )
+    monkeypatch.setattr(
+        server,
+        "_emit_external_queue_failure",
+        lambda *args: failures.append(args),
+    )
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+    )
+
+    assert server._drain_queued_prompt("r1", "sid", session) is True
+    assert failures == [
+        (
+            "sid",
+            "gas-city-request-1",
+            "External turn cancelled before dispatch",
+        )
+    ]
+    assert session["queued_prompt"] is None
 
 
 def test_drain_does_not_dispatch_a_prompt_cancelled_after_claim(monkeypatch):

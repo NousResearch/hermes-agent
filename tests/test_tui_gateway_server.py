@@ -2034,6 +2034,35 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     assert resp.get("result") != {"voice_stopped": True}
 
 
+def test_external_prompt_never_triggers_typed_voice_stop(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.voice_mode",
+        types.SimpleNamespace(
+            is_voice_stop_phrase=lambda _text: (_ for _ in ()).throw(
+                AssertionError("external prompts must bypass the voice stop matcher")
+            )
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    resp = server.dispatch(
+        {
+            "id": "external-stop",
+            "method": "prompt.submit",
+            "params": {
+                "session_id": "missing-sid",
+                "text": "stop",
+                "preserve_session_transport": True,
+                "external_submission_id": "gas-city-request-1",
+            },
+        }
+    )
+
+    assert resp.get("result") != {"voice_stopped": True}
+    assert os.environ["HERMES_VOICE"] == "1"
+
+
 def test_prompt_submit_longer_text_not_consumed_in_voice_mode(monkeypatch):
     """"stop the build" while voice is on must reach the agent path."""
     monkeypatch.setitem(

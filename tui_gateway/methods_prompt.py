@@ -295,6 +295,28 @@ def _(rid, params: dict) -> dict:
     # client renders it as a bubble. Whitelisted to "hidden" — display_kind
     # is a DB-only sidecar and this RPC must not mint arbitrary kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    preserve_session_transport = params.get("preserve_session_transport") is True
+    external_submission_id = params.get("external_submission_id")
+    if preserve_session_transport != (external_submission_id is not None):
+        return _err(
+            rid,
+            -32602,
+            "preserve_session_transport and external_submission_id must be supplied together",
+        )
+    if external_submission_id is not None and (
+        not isinstance(external_submission_id, str)
+        or not external_submission_id
+        or len(external_submission_id) > 128
+        or any(
+            not (character.isascii() and (character.isalnum() or character in ".:_-"))
+            for character in external_submission_id
+        )
+    ):
+        return _err(
+            rid,
+            -32602,
+            "external_submission_id must be 1-128 ASCII letters, digits, '.', ':', '_' or '-'",
+        )
     # Typed bare stop phrase while backend voice mode is active ends the
     # voice chat instead of sending "stop" to the agent — the typed twin of
     # the spoken stop phrase (PR #73106), applied at the ONE server-side
@@ -302,7 +324,7 @@ def _(rid, params: dict) -> dict:
     # being ON: typed "stop" outside a voice chat is a normal message.
     # (The desktop's voice conversation is renderer-owned and never flips
     # the backend flag, so it handles its own typed stop client-side.)
-    if isinstance(text, str) and _voice_mode_enabled():
+    if external_submission_id is None and isinstance(text, str) and _voice_mode_enabled():
         try:
             from tools.voice_mode import is_voice_stop_phrase
 
@@ -335,28 +357,6 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    preserve_session_transport = params.get("preserve_session_transport") is True
-    external_submission_id = params.get("external_submission_id")
-    if preserve_session_transport != (external_submission_id is not None):
-        return _err(
-            rid,
-            -32602,
-            "preserve_session_transport and external_submission_id must be supplied together",
-        )
-    if external_submission_id is not None and (
-        not isinstance(external_submission_id, str)
-        or not external_submission_id
-        or len(external_submission_id) > 128
-        or any(
-            not (character.isascii() and (character.isalnum() or character in ".:_-"))
-            for character in external_submission_id
-        )
-    ):
-        return _err(
-            rid,
-            -32602,
-            "external_submission_id must be 1-128 ASCII letters, digits, '.', ':', '_' or '-'",
-        )
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None

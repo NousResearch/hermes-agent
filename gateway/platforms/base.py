@@ -2376,14 +2376,19 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
 class CachedMedia:
     """Result of caching one attachment's bytes."""
 
-    path: str                 # absolute cache path, agent-visible (sandbox-translated)
+    path: str                 # absolute cache path, HOST side (not translated)
     media_type: str           # MIME type recorded on the MessageEvent
     kind: str                 # "image" | "video" | "audio" | "document"
     display_name: str         # human-readable name for transcript notes
 
     def context_note(self) -> str:
         """One-line transcript annotation pointing the agent at the file."""
-        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return (
+            f"[{self.kind} '{self.display_name}' saved at: "
+            f"{to_agent_visible_cache_path(self.path)}]"
+        )
 
 
 def _resolve_media_ext(filename: str, mime_type: str) -> str:
@@ -2421,9 +2426,15 @@ def cache_media_bytes(
     document and surfaced to the agent (arbitrary types get
     ``application/octet-stream``); only images that fail validation
     (``cache_image_from_bytes`` raises ValueError) return None.
-    """
-    from tools.credential_files import to_agent_visible_cache_path
 
+    The returned path is the HOST path, matching every other inbound cache
+    primitive (``cache_image_from_bytes`` and friends). Translating to the
+    sandbox coordinate here used to make ``event.media_urls`` a mixed-format
+    field — photos host-form, documents container-form — with no marker saying
+    which was which, and it baked a mount table resolved outside the routed
+    profile's scope into the path (#101134). Sandbox translation now happens
+    once, at the point of use, under the scope that owns the turn.
+    """
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
@@ -2443,18 +2454,18 @@ def cache_media_bytes(
         except ValueError:
             return None
         out_mime = mime if mime.startswith("image/") else SUPPORTED_IMAGE_DOCUMENT_TYPES.get(img_ext, "image/jpeg")
-        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "image", display)
+        return CachedMedia(path, out_mime, "image", display)
 
     if is_video:
         vid_ext = ext if ext in SUPPORTED_VIDEO_TYPES else ".mp4"
         path = cache_video_from_bytes(data, ext=vid_ext)
-        return CachedMedia(to_agent_visible_cache_path(path), SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
+        return CachedMedia(path, SUPPORTED_VIDEO_TYPES.get(vid_ext, "video/mp4"), "video", display)
 
     if is_audio:
         aud_ext = ext if ext in _AUDIO_EXTS else ".ogg"
         path = cache_audio_from_bytes(data, ext=aud_ext)
         out_mime = mime if mime.startswith("audio/") else _AUDIO_MIME_TYPES[aud_ext]
-        return CachedMedia(to_agent_visible_cache_path(path), out_mime, "audio", display)
+        return CachedMedia(path, out_mime, "audio", display)
 
     # Any other file type is cached and surfaced to the agent as a local path
     # so it can be inspected with terminal / read_file / etc. Authorization to
@@ -2469,7 +2480,7 @@ def cache_media_bytes(
         out_mime = SUPPORTED_DOCUMENT_TYPES[ext]
     else:
         out_mime = mime if mime else "application/octet-stream"
-    return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+    return CachedMedia(path, out_mime, "document", display or fallback_name)
 
 
 async def cache_media_bytes_async(

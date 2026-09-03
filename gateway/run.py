@@ -20519,6 +20519,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         list is empty, the ``_enrich_message_with_vision`` text path has
         already run and images are represented in-text.
         """
+        # Inbound attachments were cached by the adapter before profile
+        # routing picked this turn's profile, so under multiplexing they can
+        # sit in the process home's cache while this scope -- and the sandbox
+        # mounts built from it -- point at the profile's own cache (#101134).
+        # Move them here, before vision / STT / the document notes below
+        # read media_urls.
+        from gateway.inbound_media_scope import rehome_event_media
+
+        rehome_event_media(event)
+
         history = history or []
         _pending_stt_prepared = hasattr(event, "_gateway_pending_stt_text")
         message_text = (
@@ -20762,6 +20772,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Translate host cache path to in-container path if running under Docker backend.
                 # This ensures the agent receives a path it can open inside its sandbox, as the
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
+                # Both halves resolve get_hermes_home(), so this must stay inside the routed
+                # profile's scope AND the bytes must already have been moved into that profile's
+                # cache by rehome_event_media() above -- otherwise the mount table and the file
+                # disagree and the sandbox path names an empty directory (#101134).
                 agent_path = to_agent_visible_cache_path(path)
 
                 inline_flags = getattr(event, "media_text_inlined", None) or []

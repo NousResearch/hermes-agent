@@ -457,18 +457,25 @@ _CACHE_DIRS: list[tuple[str, str]] = [
 
 def get_cache_directory_mounts(
     container_base: str = "/root/.hermes",
+    home: Optional[Path] = None,
 ) -> List[Dict[str, str]]:
     """Return mount entries for each cache directory that exists on disk.
 
     Used by Docker to create bind mounts.  Each entry has ``host_path`` and
     ``container_path`` keys.  The host path is resolved via
     ``get_hermes_dir()`` for backward compatibility with old directory layouts.
+
+    ``home`` names an explicit Hermes home instead of the ambient one.  A
+    multiplexed gateway holds two homes at once — the process/launch home the
+    platform adapters cached into and the routed profile's home the turn runs
+    under — and needs both tables in the same call stack to move inbound
+    attachments between them (see ``gateway.inbound_media_scope``).
     """
     from hermes_constants import get_hermes_dir
 
     mounts: List[Dict[str, str]] = []
     for new_subpath, old_name in _CACHE_DIRS:
-        host_dir = get_hermes_dir(new_subpath, old_name)
+        host_dir = get_hermes_dir(new_subpath, old_name, home=home)
         if not host_dir.is_dir():
             # Create missing staging dirs instead of skipping them: Docker
             # snapshots this mount list at container CREATION, so a dir that

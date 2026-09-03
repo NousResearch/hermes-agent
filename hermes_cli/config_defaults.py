@@ -3152,6 +3152,13 @@ DEFAULT_CONFIG = {
         # to pin /model to the providers you actually cycle through.
         # Example: ["deepseek", "openrouter"]
         "picker_providers": [],
+        # Quick-switch allow-list mirroring the desktop model pill's
+        # "Edit models..." selection (localStorage hermes.desktop.visible-
+        # models). When non-empty, chat-surface /model pickers show ONLY
+        # these models (formatted "<provider>::<model-id>"), grouped under
+        # their providers — the same set the desktop pill offers.
+        # Example: ["deepseek::deepseek-v4-flash", "openrouter::google/gemini-3.5-flash"]
+        "quick_switch_models": [],
     },
 
     # Per-model metadata overrides — manually declare context_window,

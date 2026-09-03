@@ -2950,6 +2950,48 @@ def _collect_authed_provider_slugs(
     return [s for s in slugs if s != "nous"]
 
 
+def _apply_quick_switch_filter(
+    rows: List[dict], quick_switch_models: list | None
+) -> List[dict]:
+    """Keep only the models named in ``quick_switch_models`` ("<provider>::<model>").
+
+    Rows whose provider is not named are dropped; within a kept provider,
+    models not in the allow-list are removed. Entries that no longer exist in
+    the provider's catalog drop out silently. ``None`` / empty passes rows
+    through unchanged.
+    """
+    if not quick_switch_models:
+        return rows
+    qs_by_slug: dict[str, list[str]] = {}
+    for entry in quick_switch_models:
+        if not isinstance(entry, str) or "::" not in entry:
+            continue
+        slug, _, model_id = entry.partition("::")
+        slug = slug.strip().lower()
+        model_id = model_id.strip()
+        if slug and model_id:
+            qs_by_slug.setdefault(slug, []).append(model_id)
+    narrowed: List[dict] = []
+    for row in rows:
+        slug = str(row.get("slug", "")).strip().lower()
+        wanted = qs_by_slug.get(slug)
+        if wanted is None:
+            continue
+        kept = [m for m in (row.get("models") or []) if m in wanted]
+        if not kept:
+            # The user explicitly named these models ("provider::model") — keep
+            # them even when the row's curated/live list does not carry them
+            # (e.g. a model that exists on the provider but is not in the
+            # curated picker snapshot). The named provider row exists, so the
+            # model is selectable through it.
+            kept = list(wanted)
+        row = dict(row)
+        row["models"] = kept
+        row["total_models"] = len(kept)
+        narrowed.append(row)
+    return narrowed
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2966,6 +3008,7 @@ def list_authenticated_providers(
     excluded_providers: list | None = None,
     explicit_only: bool = False,
     picker_providers: list | None = None,
+    quick_switch_models: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -4357,6 +4400,8 @@ def list_authenticated_providers(
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
+    results = _apply_quick_switch_filter(results, quick_switch_models)
+
     if picker_providers:
         # Hard allow-list: when the user names specific providers, the picker
         # shows only those (plus the current provider as a safety net so the
@@ -4437,6 +4482,7 @@ def list_picker_providers(
     excluded_providers: list | None = None,
     explicit_only: bool = False,
     picker_providers: list | None = None,
+    quick_switch_models: list | None = None,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -4492,5 +4538,9 @@ def list_picker_providers(
         if not has_models and not is_custom_endpoint:
             continue
         filtered.append(p)
+
+    # Quick-switch narrowing must run AFTER the OpenRouter live-catalog swap
+    # above (that swap would otherwise re-expand the row to the full list).
+    filtered = _apply_quick_switch_filter(filtered, quick_switch_models)
 
     return filtered

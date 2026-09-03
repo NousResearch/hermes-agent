@@ -169,6 +169,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { ensureKanbanDispatcherReady } from './dispatcher-readiness'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -13033,6 +13034,9 @@ async function startHermes() {
         `Local Hermes backend is HTTP-reachable but the WebSocket (/api/ws) rejected the session token: ${wsProbe.reason}`
       )
     }
+
+    await advanceBootProgress('backend.dispatcher', 'Verifying Kanban dispatcher readiness', 92)
+    await ensureKanbanDispatcherReady(baseUrl, authToken, fetchJson)
 
     updateBootProgress({
       phase: 'backend.ready',

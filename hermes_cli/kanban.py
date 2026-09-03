@@ -133,6 +133,89 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+def _dispatcher_readiness(hermes_home: Optional[Path] = None) -> dict[str, Any]:
+    """Return strict, machine-readable gateway dispatcher readiness.
+
+    Unlike the legacy CLI warning wrapper below, uncertainty is not treated as
+    ready.  Startup/readiness gates use this strict result so a dashboard-only
+    ``hermes serve`` process cannot silently strand assigned ready work.
+    """
+    try:
+        from gateway.status import resolve_gateway_liveness  # type: ignore
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": None,
+            "message": f"Gateway dispatcher readiness could not be verified: {exc}",
+        }
+    try:
+        liveness = resolve_gateway_liveness(
+            profile_dir=hermes_home, use_cache=False
+        )
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": None,
+            "message": f"Gateway dispatcher readiness probe failed: {exc}",
+        }
+    if liveness.probe_error:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": liveness.pid,
+            "message": "Gateway dispatcher readiness probe returned an unreadable state",
+        }
+
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
+    except Exception as exc:
+        return {
+            "status": "unknown",
+            "ready": False,
+            "gateway_pid": liveness.pid,
+            "message": f"Kanban dispatcher configuration could not be read: {exc}",
+        }
+
+    pid = liveness.pid
+    if pid and dispatch_on:
+        return {
+            "status": "ready",
+            "ready": True,
+            "gateway_pid": pid,
+            "message": f"gateway pid={pid}, dispatch enabled",
+        }
+    if pid:
+        return {
+            "status": "disabled",
+            "ready": False,
+            "gateway_pid": pid,
+            "message": (
+                "Gateway is running but kanban.dispatch_in_gateway=false in "
+                "config.yaml — the task will sit in 'ready' until you flip it "
+                "back on and restart the gateway, OR run the legacy "
+                "standalone daemon (`hermes kanban daemon --force`)."
+            ),
+        }
+    return {
+        "status": "offline",
+        "ready": False,
+        "gateway_pid": None,
+        "message": (
+            "No gateway is running — the task will sit in 'ready' until you "
+            "start it. Run:\n"
+            "    hermes gateway start\n"
+            "The gateway hosts an embedded dispatcher (tick interval 60s by "
+            "default); your task will be picked up on the next tick after "
+            "the gateway comes up."
+        ),
+    }
+
+
 def _check_dispatcher_presence(
     hermes_home: Optional[Path] = None,
 ) -> tuple[bool, str]:
@@ -158,55 +241,13 @@ def _check_dispatcher_presence(
     against a perfectly healthy profile gateway (#71211). CLI callers leave
     it ``None`` and keep the existing process-level behavior.
     """
-    try:
-        from gateway.status import resolve_gateway_liveness  # type: ignore
-    except Exception:
-        return (True, "")  # can't probe — silent
-    try:
-        # Same shared ladder the dashboard status endpoints use, so a
-        # PID-file-less (launch-service-managed) or cross-container gateway
-        # is not misreported as absent. use_cache=False: this is a one-shot
-        # CLI/create-time probe, not a polling loop, and it must observe the
-        # gateway's state right now rather than a cached snapshot.
-        liveness = resolve_gateway_liveness(
-            profile_dir=hermes_home, use_cache=False
-        )
-    except Exception:
-        return (True, "")  # probe errored — silent
-    if liveness.probe_error:
-        # The resolver swallows per-rung failures so status endpoints never
-        # 500. This caller must still fail OPEN: an unreadable probe means
-        # "can't tell", not "no gateway", and warning on it cries wolf.
+    readiness = _dispatcher_readiness(hermes_home=hermes_home)
+    if readiness["status"] == "unknown":
+        # Preserve the established create-time warning behavior: uncertainty
+        # must not emit a false warning. Strict startup callers use the typed
+        # function directly and fail closed instead.
         return (True, "")
-    pid = liveness.pid
-
-    # Even if the gateway is up, dispatch_in_gateway may be off.
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        dispatch_on = bool(cfg.get("kanban", {}).get("dispatch_in_gateway", True))
-    except Exception:
-        dispatch_on = True  # can't tell — assume default
-
-    if pid and dispatch_on:
-        return (True, f"gateway pid={pid}, dispatch enabled")
-    if pid and not dispatch_on:
-        return (
-            False,
-            "Gateway is running but kanban.dispatch_in_gateway=false in "
-            "config.yaml — the task will sit in 'ready' until you flip it "
-            "back on and restart the gateway, OR run the legacy "
-            "standalone daemon (`hermes kanban daemon --force`)."
-        )
-    return (
-        False,
-        "No gateway is running — the task will sit in 'ready' until you "
-        "start it. Run:\n"
-        "    hermes gateway start\n"
-        "The gateway hosts an embedded dispatcher (tick interval 60s by "
-        "default); your task will be picked up on the next tick after "
-        "the gateway comes up."
-    )
+    return (bool(readiness["ready"]), str(readiness["message"]))
 
 
 # ---------------------------------------------------------------------------

@@ -57,6 +57,15 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/dispatcher-readiness")
+def get_dispatcher_readiness():
+    """Strict readiness for the gateway-owned Kanban dispatcher."""
+    from hermes_cli.kanban import _dispatcher_readiness
+    from hermes_constants import get_hermes_home
+
+    return _dispatcher_readiness(hermes_home=get_hermes_home())
+
+
 # ---------------------------------------------------------------------------
 # Auth helper — WebSocket only (HTTP routes live behind the dashboard's
 # existing plugin-bypass; this is documented above).

@@ -33,6 +33,11 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # Per-root-conversation Git worktree isolation. ``None`` is a deliberate
+    # default-only sentinel: deep merge replaces it with a user top-level
+    # mapping, while the policy resolver can still honor a legacy desktop
+    # block when no top-level policy was configured.
+    "conversation_worktree": None,
     "session": {
         # Per-terminal `hermes -c`: each CLI session drops a breadcrumb file
         # under $HERMES_HOME/terminal-sessions/<terminal-id>, and a bare
@@ -43,6 +48,11 @@ DEFAULT_CONFIG = {
         "terminal_continue": True,
     },
     "agent": {
+        # Canonical per-profile reasoning depth. Runtime construction, gateway
+        # /reasoning persistence, and Kanban overrides all read this path.
+        # Keeping it in DEFAULT_CONFIG also makes `hermes config set` validate
+        # the key instead of incorrectly warning that the setting may be inert.
+        "reasoning_effort": "none",
         # Unlimited by default. The agent turn cap caused more problems than
         # it solved (silent mid-task truncation). null = unlimited; set a
         # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
@@ -237,6 +247,18 @@ DEFAULT_CONFIG = {
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",
+        # Guarded prompt profile — opt-in, exact provider/model route pairs
+        # only. It replaces redundant long-form coaching with a compact
+        # worktree/verification contract and renders skills names-only. The
+        # task-completion, configured tool-use enforcement, and env-gated
+        # Kanban worker protocol remain load-bearing in this mode.
+        # Requires coding_context: focus and a coding workspace. It is safe to
+        # list local Ollama and Copilot routes together because matching is by
+        # pair, not independent provider/model allowlists.
+        "guarded_prompt_mode": {
+            "enabled": False,
+            "routes": [],
+        },
         # Standing operator instructions for the coding posture. A string (or
         # list of strings) appended to the coding brief as an extra stable
         # system block — pin project-wide workflow rules here instead of editing
@@ -525,6 +547,9 @@ DEFAULT_CONFIG = {
         # Opt-in egress lockdown for Docker terminal sessions. When false,
         # Docker runs with --network=none so commands cannot reach the network.
         "docker_network": True,
+        # Suppress automatic credential, skill, cache, and egress-proxy mounts.
+        # Required for secure remote-model task containers; default off for compatibility.
+        "docker_isolate_host_data": False,
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
         # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently
         # breaks Chromium/Playwright and PyTorch DataLoader workers; tmpfs is
@@ -1309,6 +1334,17 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+        },
+        # Short, tool-free classifier used by explicitly opted-in specialist
+        # task routing. Invalid/unavailable results always fall back to chat.
+        "specialist_router": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 12,
+            "extra_body": {},
+            "reasoning_effort": "none",
         },
         # Kanban decomposer — decomposes a triage task into a graph of
         # child tasks routed to specialist profiles by description.
@@ -2107,6 +2143,13 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Read-only shared learning catalog used by the learning graph. This does
+    # not alter prompt memory or make referenced skills executable.
+    "learning": {
+        "vault_dir": "",
+        "shared_catalog_enabled": False,
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
@@ -2470,6 +2513,14 @@ DEFAULT_CONFIG = {
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        # Disabled by default. When enabled, only high-confidence bounded
+        # task requests create a subscribed Kanban card; all other messages
+        # retain the ordinary chat path.
+        "specialist_routing": {
+            "enabled": False,
+            "confidence_threshold": 0.80,
+            "timeout_seconds": 12,
+        },
         "missed_message_backfill": {
             "enabled": False,             # Replay missed Discord messages after reconnect/startup
             "channels": "",               # Comma-separated channel IDs; empty uses free_response_channels
@@ -2911,6 +2962,11 @@ DEFAULT_CONFIG = {
         # the assigned profile with the bundled sdlc-review skill. Disable for
         # boards where every review is performed manually from the dashboard.
         "review_dispatch": True,
+        # Installed independent profile used when the stop guard has useful
+        # evidence but a worker exhausts its terminal-transition nudges. Empty
+        # keeps the handoff disabled rather than creating reviewerless review
+        # cards that route back to the implementer and wait for a human verdict.
+        "reviewer_profile": "",
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
@@ -2923,6 +2979,28 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Deterministic worker-log supervisor. Enabled by default so confirmed
+        # no-progress loops cannot consume a worker indefinitely. Blank routes
+        # inherit fallback_profile, then the configured orchestrator/default
+        # assignee, then the active profile. Explicit category routes win.
+        "worker_watchdog": {
+            "enabled": True,
+            "grace_seconds": 600,
+            "log_tail_bytes": 262144,
+            "repeat_threshold": 3,
+            "compaction_threshold": 3,
+            "reasoning_repeat_threshold": 3,
+            "min_reasoning_chars": 120,
+            "max_recovery_attempts": 2,
+            "repair_max_runtime_seconds": 1200,
+            "fallback_profile": "",
+            "repair_profiles": {
+                "tool_failure_loop": "",
+                "compaction_loop": "",
+                "provider_stall_loop": "",
+                "reasoning_loop": "",
+            },
+        },
         # Profile assigned to the root/orchestration task after Triage
         # decomposition. When unset, falls back to the default profile (the
         # one `hermes` launches with no -p flag). This does not control the
@@ -2955,6 +3033,32 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
+        # Optional profile-specific caps. Values intersect with the global
+        # per-profile cap when both are configured. This lets local-model or
+        # other resource-heavy profiles stay at 1-2 workers without reducing
+        # concurrency for cloud-backed profiles.
+        "max_in_progress_by_profile": {},
+        # Generic strict-runtime resource reservation. Disabled until the
+        # operator supplies exact project roots. When enabled, the dispatcher
+        # read-only scans process argv + cwd on every tick and lowers the
+        # global cap only for an exact configured root/entrypoint match. An
+        # unreadable scan fails safe to the protected cap; no process is ever
+        # started, stopped, or signalled by this guard.
+        "priority_runtime_guard": {
+            "enabled": False,
+            "project_roots": [],
+            "entrypoints": ["main.py"],
+            # Measured performance lane used when the portable memory sampler
+            # cannot derive a cap. An explicit kanban.max_in_progress still
+            # wins, and an available lower memory-derived cap stays in force.
+            "normal_max_in_progress": 8,
+            # Strict paper runtime retains three workers while reserving the
+            # rest of the measured workstation lane for the runtime.
+            "max_in_progress": 3,
+            # A main.py launched from a verified linked worktree has the same
+            # resource priority as one launched from the configured root.
+            "include_linked_worktrees": True,
+        },
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or

@@ -32,7 +32,12 @@ async def _fire_post_delivery_cb(cb):
     result = cb()
     if _inspect.isawaitable(result):
         await result
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+)
 from gateway.session import SessionSource
 
 
@@ -52,6 +57,8 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
         self.sent = []
         self.edits = []
         self.deleted = []
+        self.delete_success = True
+        self.fail_final_response = False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -68,7 +75,10 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
         self.sent.append(
             {"chat_id": chat_id, "content": content, "message_id": mid, "metadata": metadata}
         )
-        return SendResult(success=True, message_id=mid)
+        return SendResult(
+            success=not (self.fail_final_response and content == "done-1"),
+            message_id=mid,
+        )
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content})
@@ -76,7 +86,7 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
 
     async def delete_message(self, chat_id, message_id) -> bool:
         self.deleted.append({"chat_id": chat_id, "message_id": str(message_id)})
-        return True
+        return self.delete_success
 
     async def send_typing(self, chat_id, metadata=None) -> None:
         return None
@@ -141,6 +151,53 @@ class FailingAgent:
             "failed": True,
             "error": "simulated provider failure",
         }
+
+
+class QueuedProgressAgent:
+    """Records whether the first turn's cleanup ran before turn two starts."""
+
+    adapter: CleanupCaptureAdapter | None = None
+    runner = None
+    replacement: CleanupCaptureAdapter | None = None
+    run_count = 0
+    deleted_before_followup: int | None = None
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).run_count += 1
+        if type(self).run_count == 2:
+            adapter = type(self).replacement or type(self).adapter
+            assert adapter is not None
+            type(self).deleted_before_followup = len(adapter.deleted)
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+            time.sleep(0.5)
+        if type(self).run_count == 1 and type(self).replacement is not None:
+            runner = type(self).runner
+            replacement = type(self).replacement
+            adapter = type(self).adapter
+            assert runner is not None
+            assert replacement is not None
+            assert adapter is not None
+            replacement._pending_messages.update(adapter._pending_messages)
+            adapter._pending_messages.clear()
+            runner.adapters[Platform.TELEGRAM] = replacement
+        return {
+            "final_response": f"done-{type(self).run_count}",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PendingSteerAgent(QueuedProgressAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        result = super().run_conversation(message, conversation_history, task_id)
+        if type(self).run_count == 1:
+            result["pending_steer"] = "steered follow-up"
+        return result
 
 
 def _make_runner(adapter):
@@ -253,10 +310,15 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
+@pytest.mark.parametrize("delete_success", [True, False])
+async def test_cleanup_chains_with_existing_callback(
+    monkeypatch, tmp_path, caplog, delete_success
+):
     """When a bg-review-style callback is already registered, the cleanup
     callback chains with it — both fire, neither clobbers the other."""
+    caplog.set_level("INFO", logger="gateway.run")
     adapter = CleanupCaptureAdapter()
+    adapter.delete_success = delete_success
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
@@ -286,12 +348,135 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     cb = adapter.pop_post_delivery_callback(session_key)
     assert callable(cb)
     await _fire_post_delivery_cb(cb)
-    for _ in range(20):
-        await asyncio.sleep(0.01)
-        if adapter.deleted:
-            break
 
-    # Both effects land: the pre-existing callback fires AND the cleanup
-    # deletes at least one progress bubble.
+    # The callback is the completion boundary used before an in-band queued
+    # follow-up starts. It must not escape into an unobserved background future.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+    expected_summary = (
+        "requested=1 deleted=1 failed=0"
+        if delete_success
+        else "requested=1 deleted=0 failed=1"
+    )
+    assert expected_summary in caplog.text
+    if not delete_success:
+        assert "returned_false" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_adapter", [False, True])
+async def test_queued_followup_waits_for_prior_progress_cleanup(
+    monkeypatch, tmp_path, caplog, replace_adapter
+):
+    caplog.set_level("INFO", logger="gateway.run")
+    adapter = CleanupCaptureAdapter()
+    replacement = CleanupCaptureAdapter() if replace_adapter else None
+    QueuedProgressAgent.adapter = adapter
+    QueuedProgressAgent.runner = None
+    QueuedProgressAgent.replacement = replacement
+    QueuedProgressAgent.run_count = 0
+    QueuedProgressAgent.deleted_before_followup = None
+    runner = _make_runner(adapter)
+    QueuedProgressAgent.runner = runner
+    gateway_run = _install_fakes(monkeypatch, QueuedProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:dm:-1001"
+    adapter._pending_messages[session_key] = MessageEvent(
+        text="queued follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="queued-1",
+    )
+
+    result = await runner._run_agent(
+        message="first turn",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-queued-cleanup",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done-2"
+    assert QueuedProgressAgent.run_count == 2
+    assert QueuedProgressAgent.deleted_before_followup == 1, caplog.text
+
+    callback = adapter.pop_post_delivery_callback(session_key)
+    assert callable(callback)
+    await _fire_post_delivery_cb(callback)
+    live_adapter = replacement or adapter
+    assert len(live_adapter.deleted) >= 2
+
+
+@pytest.mark.asyncio
+async def test_failed_first_delivery_defers_cleanup_and_queued_followup(
+    monkeypatch, tmp_path
+):
+    adapter = CleanupCaptureAdapter()
+    adapter.fail_final_response = True
+    QueuedProgressAgent.adapter = adapter
+    QueuedProgressAgent.runner = None
+    QueuedProgressAgent.replacement = None
+    QueuedProgressAgent.run_count = 0
+    QueuedProgressAgent.deleted_before_followup = None
+    runner = _make_runner(adapter)
+    QueuedProgressAgent.runner = runner
+    gateway_run = _install_fakes(monkeypatch, QueuedProgressAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:dm:-1001"
+    queued_event = MessageEvent(
+        text="queued follow-up",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="queued-1",
+    )
+    adapter._pending_messages[session_key] = queued_event
+
+    result = await runner._run_agent(
+        message="first turn",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-delivery-failure",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done-1"
+    assert QueuedProgressAgent.run_count == 1
+    assert adapter.deleted == []
+    assert adapter._pending_messages[session_key] is queued_event
+
+
+@pytest.mark.asyncio
+async def test_failed_first_delivery_preserves_pending_steer(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter()
+    adapter.fail_final_response = True
+    PendingSteerAgent.adapter = adapter
+    PendingSteerAgent.runner = None
+    PendingSteerAgent.replacement = None
+    PendingSteerAgent.run_count = 0
+    PendingSteerAgent.deleted_before_followup = None
+    runner = _make_runner(adapter)
+    PendingSteerAgent.runner = runner
+    gateway_run = _install_fakes(monkeypatch, PendingSteerAgent, cleanup_on=True)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:dm:-1001"
+    result = await runner._run_agent(
+        message="first turn",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-steer-delivery-failure",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done-1"
+    assert PendingSteerAgent.run_count == 1
+    assert adapter.deleted == []
+    assert adapter._pending_messages[session_key].text == "steered follow-up"

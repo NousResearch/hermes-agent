@@ -6,6 +6,7 @@ from hermes_cli.cli_output import line_input
 import math
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
@@ -604,11 +605,116 @@ def auth_remove_command(args) -> None:
         print(line)
 
 
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except Exception:
+        return left == right
+
+
+def _iter_known_profile_homes() -> list[tuple[str, Path]]:
+    """Return the default and valid named profile homes without metadata scans."""
+    from hermes_constants import get_default_hermes_root
+
+    default_home = get_default_hermes_root()
+    targets: list[tuple[str, Path]] = [("default", default_home)]
+    profiles_root = default_home / "profiles"
+    try:
+        entries = sorted(profiles_root.iterdir()) if profiles_root.is_dir() else ()
+    except OSError:
+        return targets
+
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    for entry in entries:
+        if not entry.is_dir() or entry.name == "default":
+            continue
+        try:
+            name = normalize_profile_name(entry.name)
+            validate_profile_name(name)
+        except ValueError:
+            continue
+        targets.append((name, entry))
+    return targets
+
+
+def _label_for_profile_home(
+    home: Path,
+    known_homes: list[tuple[str, Path]],
+) -> str:
+    for name, known_home in known_homes:
+        if _same_path(home, known_home):
+            return name
+    return "current"
+
+
+def _auth_reset_targets(
+    *,
+    include_all_profiles: bool,
+    current_profile_only: bool,
+) -> list[tuple[str, Path]]:
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+
+    current_home = get_hermes_home()
+    default_home = get_default_hermes_root()
+    known_homes = _iter_known_profile_homes()
+    candidates = [
+        (_label_for_profile_home(current_home, known_homes), current_home),
+    ]
+    if not current_profile_only:
+        # Named profiles can read a provider from the root fallback. Reset that
+        # store too, but never copy its credentials into the profile-local file.
+        candidates.append(("default", default_home))
+        if include_all_profiles:
+            candidates.extend(known_homes)
+
+    deduped: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for name, home in candidates:
+        try:
+            key = str(home.resolve(strict=False))
+        except Exception:
+            key = str(home)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((name, home))
+    return deduped
+
+
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    pool = load_pool(provider)
-    count = pool.reset_statuses()
-    print(f"Reset status on {count} {provider} credentials")
+    from hermes_constants import get_default_hermes_root, get_hermes_home
+
+    current_profile_only = bool(getattr(args, "current_profile_only", False))
+    include_all_profiles = bool(getattr(args, "all_profiles", False)) or (
+        _same_path(get_hermes_home(), get_default_hermes_root())
+        and not current_profile_only
+    )
+
+    results: list[tuple[str, int]] = []
+    total = 0
+    for name, home in _auth_reset_targets(
+        include_all_profiles=include_all_profiles,
+        current_profile_only=current_profile_only,
+    ):
+        count = auth_mod.reset_credential_pool_statuses(
+            provider,
+            auth_file=home / "auth.json",
+        )
+        results.append((name, count))
+        total += count
+
+    if len(results) <= 1:
+        print(f"Reset status on {total} {provider} credentials")
+        return
+
+    touched = ", ".join(f"{name}:{count}" for name, count in results if count)
+    suffix = f" ({touched})" if touched else ""
+    print(
+        f"Reset status on {total} {provider} credentials "
+        f"across {len(results)} profiles{suffix}"
+    )
 
 
 def auth_status_command(args) -> None:

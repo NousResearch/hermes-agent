@@ -345,3 +345,66 @@ class TestInitAgentDoesNotMutatePluginSingleton:
         assert not re.search(
             r"_selected_engine\s*=\s*_candidate\b", src
         ), "found the #42449 bug-shape alias `_selected_engine = _candidate`"
+
+
+class TestSessionTransitionPassesHermesHome:
+    """`hermes_home` must reach on_session_start on BOTH lifecycle paths.
+
+    agent/agent_init.py passes it when it opens the first session on an
+    engine. run_agent.py::_transition_context_engine_session did not, so an
+    engine that resolves per-profile storage from `hermes_home` was told once
+    at init and never again — every later transition left it bound to whatever
+    home it happened to see first.
+    """
+
+    class _Recorder:
+        name = "recorder"
+        context_length = 128000
+
+        def __init__(self):
+            self.starts = []
+
+        def on_session_start(self, session_id, **kwargs):
+            self.starts.append(kwargs)
+
+        def on_session_reset(self):
+            pass
+
+    class _StubAgent:
+        def __init__(self, engine):
+            from run_agent import AIAgent
+            self.context_compressor = engine
+            self.session_id = "S2"
+            self.platform = None
+            self.model = "m"
+            self._gateway_session_key = "C1"
+            self._transition = AIAgent._transition_context_engine_session
+
+    def test_transition_passes_hermes_home(self):
+        engine = self._Recorder()
+        agent = self._StubAgent(engine)
+        agent._transition(
+            agent,
+            old_session_id="S1",
+            new_session_id="S2",
+            previous_messages=[],
+        )
+        assert engine.starts, "on_session_start was not called"
+        assert "hermes_home" in engine.starts[-1], (
+            "the session-transition path must pass hermes_home, the same key "
+            "agent_init passes on first session start"
+        )
+        assert engine.starts[-1]["hermes_home"]
+
+    def test_caller_supplied_hermes_home_wins(self):
+        """A profile-aware caller must be able to override the default."""
+        engine = self._Recorder()
+        agent = self._StubAgent(engine)
+        agent._transition(
+            agent,
+            old_session_id="S1",
+            new_session_id="S2",
+            previous_messages=[],
+            hermes_home="/tmp/explicit-profile-home",
+        )
+        assert engine.starts[-1]["hermes_home"] == "/tmp/explicit-profile-home"

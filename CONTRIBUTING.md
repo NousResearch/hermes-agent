@@ -214,67 +214,91 @@ pytest tests/ -v
 
 ## Project Structure
 
+> File counts shift constantly — treat this as a map of the load-bearing entry points, not an exhaustive tree. The canonical source is the filesystem.
+
 ```
 hermes-agent/
-├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
-├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
-├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
+├── run_agent.py              # AIAgent class — chat()/run_conversation() entry points (~12k LOC)
+├── cli.py                    # HermesCLI — classic interactive REPL (prompt_toolkit)
+├── model_tools.py            # Tool schema assembly + handle_function_call dispatch
+├── toolsets.py               # Toolset definitions, _HERMES_CORE_TOOLS
+├── hermes_state.py           # SQLite session database (FTS5 full-text search, session titles)
+├── hermes_constants.py       # get_hermes_home()/display_hermes_home() — profile-aware paths
+├── hermes_logging.py         # setup_logging() — agent/errors/gateway logs (profile-aware)
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
+├── mcp_serve.py              # MCP server entry point
 │
-├── agent/                    # Agent internals (extracted modules)
-│   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
+├── agent/                    # Agent internals (~170 modules)
+│   ├── conversation_loop.py      # run_conversation() — the actual agent loop
+│   ├── prompt_builder.py         # System prompt assembly (identity, skills, context, memory)
+│   ├── tool_executor.py          # Per-tool execution + guardrails
+│   ├── turn_finalizer.py         # End-of-turn finalization
 │   ├── context_compressor.py     # Auto-summarization when approaching context limits
-│   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
-│   ├── display.py                # KawaiiSpinner, tool progress formatting
-│   ├── model_metadata.py         # Model context lengths, token estimation
-│   └── trajectory.py             # Trajectory saving helpers
+│   ├── memory_manager.py         # Memory orchestration over memory_provider.py (ABC)
+│   ├── auxiliary_client.py       # Side-LLM clients (summarization, vision, titles, ...)
+│   ├── model_metadata.py         # Model context lengths, capability resolution
+│   ├── secret_scope.py           # Profile-scoped secret reads (multiplex profiles)
+│   ├── reasoning_effort.py       # Reasoning-effort clamping per wire format
+│   ├── curator.py                # Skill lifecycle maintenance
+│   └── ... (display.py, trajectory.py, provider adapters, TTS/STT/video registries)
 │
-├── hermes_cli/               # CLI command implementations
+├── hermes_cli/              # CLI command implementations
 │   ├── main.py                   # Entry point, argument parsing, command dispatch
-│   ├── config.py                 # Config management, migration, env var definitions
+│   ├── _parser.py                # Top-level parser skeleton
+│   ├── subcommands/              # Per-command parsers (model, dashboard, logs, ...)
+│   ├── config.py                 # Config loaders + migrations
+│   ├── config_defaults.py        # DEFAULT_CONFIG + OPTIONAL_ENV_VARS (canonical)
 │   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal
-│   ├── models.py                 # OpenRouter model selection lists
-│   ├── banner.py                 # Welcome banner, ASCII art
-│   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
-│   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
-│   ├── doctor.py                 # Diagnostics
-│   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-│   └── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── commands.py               # Central slash-command registry (COMMAND_REGISTRY)
+│   ├── plugins.py                # PluginManager (hooks, ctx, plugin CLI subcommands)
+│   ├── profiles.py               # Profile storage/operations
+│   ├── tools_config.py           # `hermes tools` curses UI
+│   ├── cron.py / gateway.py / kanban.py / curator.py / web_server.py / pty_bridge.py
+│   └── skin_engine.py            # Data-driven skin/theme engine
 │
-├── tools/                    # Tool implementations (self-registering)
-│   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
-│   ├── approval.py               # Dangerous command detection + per-session approval
+├── tools/                    # Tool implementations — self-register via tools/registry.py
+│   ├── registry.py               # register()/dispatch + check_fn availability
+│   ├── approval.py               # Dangerous-command detection + approval
 │   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
 │   ├── file_operations.py        # read_file, write_file, search, patch, etc.
-│   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
+│   ├── web_tools.py              # web_search, web_extract
 │   ├── vision_tools.py           # Image analysis via multimodal models
-│   ├── delegate_tool.py          # Subagent spawning and parallel task execution
+│   ├── delegate_tool.py          # Subagent spawning + parallel tasks
 │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
-│   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
-│   ├── cronjob_tools.py          # Scheduled task management
+│   ├── session_search_tool.py    # FTS5 search over past conversations
+│   ├── cronjob_tools.py          # Scheduled-task management
 │   ├── skill_tools.py            # Skill search, load, manage
+│   ├── terminal_scope.py         # Per-profile TERMINAL_* policy projection
 │   └── environments/             # Terminal execution backends
-│       ├── base.py                   # BaseEnvironment ABC
-│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
+│       ├── base.py               # BaseEnvironment ABC
+│       └── local, docker, ssh, singularity, modal, daytona, vercel
 │
-├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
-│   ├── config.py                 # Platform configuration resolution
+├── gateway/                  # Messaging gateway (server side)
+│   ├── run.py                    # GatewayRunner — lifecycle, routing, session dispatch
 │   ├── session.py                # Session store, context prompts, reset policies
-│   └── platforms/                # Platform adapters
-│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+│   ├── config.py / status.py / platform_registry.py / slash_commands.py ...
+│   └── platforms/                # Core adapters (api_server, signal, webhook, weixin, ...)
 │
-├── scripts/                  # Installer and bridge scripts
-│   ├── install.sh                # Linux/macOS installer
-│   ├── install.ps1               # Windows PowerShell installer
-│   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
+├── plugins/                  # Plugin system + bundled plugins
+│   ├── platforms/                # Platform adapters (telegram, discord, slack, whatsapp, ...)
+│   ├── model-providers/          # Inference backend profiles (openrouter, anthropic, custom, ...)
+│   ├── memory/                   # Memory-provider plugins (closed set — new ones ship standalone)
+│   ├── kanban/                   # Multi-agent kanban board + workers
+│   └── ... (image_gen, video_gen, context_engine, observability, cron_providers)
+│
+├── providers/                # ProviderProfile base + lazy discovery
+├── cron/                     # Scheduler (scheduler.py, jobs.py)
+├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
+├── scripts/                  # install.sh / install.ps1 / run_tests.sh / CI helpers
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
-├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
-├── tests/                    # Test suite
+├── optional-skills/          # Official optional skills (discoverable via hub, not active by default)
+├── tests/ + tests-js/        # Pytest suite / vitest (TS) suites
+│
+├── ui-tui/                   # Ink (React) TUI — `hermes --tui`
+├── tui_gateway/              # Python JSON-RPC backend for the TUI
+├── apps/                     # Electron desktop app + shared packages
+├── web/                      # Dashboard web frontend
 ├── website/                  # Documentation site (hermes-agent.nousresearch.com)
 │
 ├── cli-config.yaml.example   # Example configuration (copied to ~/.hermes/config.yaml)
@@ -302,7 +326,7 @@ hermes-agent/
 ### Core Loop
 
 ```
-User message → AIAgent._run_agent_loop()
+User message → AIAgent.run_conversation()  (agent/conversation_loop.py)
   ├── Build system prompt (prompt_builder.py)
   ├── Build API kwargs (model, messages, tools, reasoning config)
   ├── Call LLM (OpenAI-compatible API)

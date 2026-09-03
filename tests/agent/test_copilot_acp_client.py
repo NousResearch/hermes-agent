@@ -6,6 +6,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -54,6 +55,108 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         )
         self.assertEqual(chunks[1].choices, [])
 
+    def test_stream_emits_text_before_prompt_completes(self) -> None:
+        release_prompt = threading.Event()
+
+        def _run_prompt(
+            _prompt,
+            *,
+            timeout_seconds,
+            model,
+            text_delta_callback,
+            reasoning_delta_callback,
+        ):
+            self.assertEqual(model, "copilot-acp")
+            text_delta_callback("Hello ")
+            release_prompt.wait(timeout=2)
+            text_delta_callback("world")
+            return "Hello world", ""
+
+        with patch.object(self.client, "_run_prompt", side_effect=_run_prompt):
+            stream = self.client._create_chat_completion(
+                model="copilot-acp",
+                messages=[{"role": "user", "content": "say hello"}],
+                stream=True,
+            )
+            iterator = iter(stream)
+            first = next(iterator)
+            self.assertEqual(first.choices[0].delta.content, "Hello ")
+            self.assertTrue(stream._worker.is_alive())
+            release_prompt.set()
+            chunks = list(iterator)
+
+        text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in [first, *chunks]
+            if chunk.choices
+        )
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(chunks[-2].choices[0].finish_reason, "stop")
+        self.assertEqual(chunks[-1].choices, [])
+
+    def test_stream_separates_reasoning_and_suppresses_split_tool_payload(self) -> None:
+        tool_json = (
+            '{"id":"call_read","type":"function",'
+            '"function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}}'
+        )
+        response_parts = [
+            "Checking. ",
+            "<tool_",
+            "call>",
+            tool_json[:35],
+            tool_json[35:],
+            "</tool_",
+            "call>",
+        ]
+
+        def _run_prompt(
+            _prompt,
+            *,
+            timeout_seconds,
+            model,
+            text_delta_callback,
+            reasoning_delta_callback,
+        ):
+            self.assertEqual(model, "copilot-acp")
+            reasoning_delta_callback("Need the file first.")
+            for part in response_parts:
+                text_delta_callback(part)
+            return "".join(response_parts), "Need the file first."
+
+        with patch.object(self.client, "_run_prompt", side_effect=_run_prompt):
+            chunks = list(
+                self.client._create_chat_completion(
+                    model="copilot-acp",
+                    messages=[{"role": "user", "content": "read README.md"}],
+                    stream=True,
+                )
+            )
+
+        visible_text = "".join(
+            chunk.choices[0].delta.content or ""
+            for chunk in chunks
+            if chunk.choices
+        )
+        reasoning = "".join(
+            chunk.choices[0].delta.reasoning_content or ""
+            for chunk in chunks
+            if chunk.choices
+        )
+        self.assertEqual(visible_text, "Checking. ")
+        self.assertEqual(reasoning, "Need the file first.")
+        self.assertNotIn("tool_call", visible_text)
+        self.assertNotIn("read_file", visible_text)
+
+        final = chunks[-2]
+        self.assertEqual(final.choices[0].finish_reason, "tool_calls")
+        tool_delta = final.choices[0].delta.tool_calls[0]
+        self.assertEqual(tool_delta.id, "call_read")
+        self.assertEqual(tool_delta.function.name, "read_file")
+        self.assertEqual(
+            json.loads(tool_delta.function.arguments),
+            {"path": "README.md"},
+        )
+
 
     def _dispatch(self, message: dict, *, cwd: str) -> dict:
         process = _FakeProcess()
@@ -75,7 +178,10 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             secret_file = root / "config.env"
-            secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012")
+            secret_file.write_text(
+                "OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012",
+                encoding="utf-8",
+            )
 
             # agent.redact snapshots HERMES_REDACT_SECRETS at import time into
             # _REDACT_ENABLED, so patching os.environ is a no-op. Flip the

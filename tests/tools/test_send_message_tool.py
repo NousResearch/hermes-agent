@@ -1562,9 +1562,18 @@ class _FakeSignalHttp:
         item = self.responses.pop(0)
         if isinstance(item, BaseException):
             raise item
+        if isinstance(item, dict) and "error" in item:
+            status_code = item.get("_status", 400)
+            data = item
+        else:
+            status_code = item.get("_status", 201) if isinstance(item, dict) else 201
+            data = item if isinstance(item, dict) else {"timestamp": "1"}
         resp = SimpleNamespace(
+            status_code=status_code,
+            content=b"{}",
+            text="",
             raise_for_status=lambda: None,
-            json=lambda data=item: data,
+            json=lambda data=data: data,
         )
         return resp
 
@@ -1607,7 +1616,7 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
 
 class TestSendSignalChunking:
     def test_text_only_single_rpc(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -1622,18 +1631,335 @@ class TestSendSignalChunking:
         assert result["platform"] == "signal"
         assert result["chat_id"].endswith("4321")
         assert len(fake.calls) == 1
-        params = fake.calls[0]["payload"]["params"]
-        assert params["message"] == "hello"
-        assert "attachments" not in params
-        assert "textStyle" not in params
-        assert "textStyles" not in params
+        assert fake.calls[0]["url"].endswith("/v2/send")
+        body = fake.calls[0]["payload"]
+        assert body["message"] == "hello"
+        assert body["number"] == "+15551234567"
+        assert body["recipients"] == ["+15557654321"]
+        assert "base64_attachments" not in body
+        assert "text_mode" not in body
 
+    def test_text_only_markdown_uses_styled_mode(self, monkeypatch):
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "**hello**",
+            )
+        )
+
+        assert result["success"] is True
+        body = fake.calls[0]["payload"]
+        # /v2/send styled mode carries the raw markdown; the REST API
+        # computes the body ranges server-side (no textStyle params).
+        assert body["message"] == "**hello**"
+        assert body["text_mode"] == "styled"
+
+    def test_text_only_multiple_styles_use_styled_mode(self, monkeypatch):
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "**bold** and *italic*",
+            )
+        )
+
+        assert result["success"] is True
+        body = fake.calls[0]["payload"]
+        assert body["message"] == "**bold** and *italic*"
+        assert body["text_mode"] == "styled"
+
+    def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
+        """33 attachments → 2 batches; text only on first batch. Batch 1
+        only needs 1 token and 18 remain after batch 0, so no sleep."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+        )
+
+        paths = []
+        for i in range(33):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"timestamp": "1"},   # batch 0
+            {"timestamp": "2"},   # batch 1
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "Caption goes here",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 2
+        assert len(sleep_calls) == 0
+
+        first = fake.calls[0]["payload"]
+        assert first["message"] == "Caption goes here"
+        assert len(first["base64_attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "text_mode" not in first
+
+        second = fake.calls[1]["payload"]
+        assert second["message"] == ""  # caption only on batch 0
+        assert len(second["base64_attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "text_mode" not in second
+
+    def test_caption_styles_only_apply_to_first_attachment_batch(self, tmp_path, monkeypatch):
+        from gateway.platforms.signal_rate_limit import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        paths = []
+        for i in range(33):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"timestamp": "1"},
+            {"timestamp": "2"},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "group:abc123",
+                "**Bold** and *italic*",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "group:***"
+        first = fake.calls[0]["payload"]
+        assert first["recipients"] == ["group.abc123"]
+        assert first["message"] == "**Bold** and *italic*"
+        assert first["text_mode"] == "styled"
+        assert len(first["base64_attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        second = fake.calls[1]["payload"]
+        assert second["recipients"] == ["group.abc123"]
+        assert second["message"] == ""
+        assert len(second["base64_attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert "text_mode" not in second
+
+    def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
+        """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
+        than the 18 remaining after batch 0 — 56s wait crossing the 10s
+        notice threshold."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+            SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
+            SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
+        )
+
+        paths = []
+        for i in range(64):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"timestamp": "1"},   # batch 0
+            {"timestamp": "99"},  # pacing notice
+            {"timestamp": "2"},   # batch 1
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 3
+        notice = fake.calls[1]["payload"]
+        assert "More images coming" in notice["message"]
+        assert "base64_attachments" not in notice
+        # Batch 1 deficit: 32 - (50 - 32) = 14 tokens × 4s = 56s
+        expected = (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG
+            - (SIGNAL_RATE_LIMIT_BUCKET_CAPACITY - SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+        ) * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+        assert sleep_calls == [pytest.approx(expected, abs=1.0)]
+
+    def test_429_with_retry_after_drives_exact_backoff(self, tmp_path, monkeypatch):
+        """signal-cli ≥ v0.14.3 surfaces Retry-After under
+        error.data.response.results[*].retryAfterSeconds. The scheduler
+        calibrates its refill rate from that value; the retry of n=1
+        sleeps the per-token interval."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {
+                "error": {
+                    "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                    "message": "Failed to send message due to rate limiting",
+                    "data": {
+                        "response": {
+                            "timestamp": 0,
+                            "results": [
+                                {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 42},
+                            ],
+                        }
+                    },
+                }
+            },
+            {"timestamp": "7"},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 2  # initial + retry
+        assert sleep_calls == [pytest.approx(42.0, abs=1.0)]
+
+    def test_429_without_retry_after_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Older signal-cli (< v0.14.3) doesn't surface Retry-After.
+        The scheduler keeps its default rate (1 token / 4s)."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {"error": {"message": "Failed: [429] Rate Limited"}},
+            {"timestamp": "7"},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert sleep_calls == [pytest.approx(SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER, abs=1.0)]
+
+    def test_429_retry_exhaust_continues_to_next_batch(self, tmp_path, monkeypatch):
+        """Both attempts on batch 0 fail; batch 1 still gets a chance.
+        The scheduler's natural pacing (no more cooldown gate) lets the
+        second batch through after its acquire wait."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+
+        paths = []
+        for i in range(33):  # forces 2 batches
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        rate_limit_err = {
+            "error": {
+                "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                "message": "Failed to send message due to rate limiting",
+                "data": {
+                    "response": {
+                        "timestamp": 0,
+                        "results": [
+                            {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 4},
+                        ],
+                    }
+                },
+            }
+        }
+
+        fake = _FakeSignalHttp([
+            rate_limit_err,                  # batch 0, attempt 1
+            rate_limit_err,                  # batch 0, attempt 2 (exhaust)
+            {"timestamp": "9"},    # batch 1 succeeds
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "many",
+                media_files=paths,
+            )
+        )
+
+        # Partial success: batch 0 lost but batch 1 went through.
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("rate-limited" in w for w in result["warnings"])
+        # 2 attempts on batch 0 + 1 successful batch 1 = 3 calls
+        assert len(fake.calls) == 3
+
+    def test_non_rate_limit_error_returns_immediately(self, tmp_path, monkeypatch):
+        """A non-429 RPC error should not retry — it returns an error result."""
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {"error": {"message": "UntrustedIdentityException"}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert "error" in result
+        assert "UntrustedIdentityException" in result["error"]
+        assert len(fake.calls) == 1  # no retry on non-429
 
     def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
         good = tmp_path / "ok.png"
         good.write_bytes(b"\x89PNG" + b"\x00" * 16)
 
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        fake = _FakeSignalHttp([{"timestamp": "1"}])
         _install_signal_http(monkeypatch, fake)
 
         result = asyncio.run(
@@ -1648,8 +1974,8 @@ class TestSendSignalChunking:
         assert result["success"] is True
         assert "warnings" in result
         # Only the existing file made it into the RPC
-        params = fake.calls[0]["payload"]["params"]
-        assert len(params["attachments"]) == 1
+        body = fake.calls[0]["payload"]
+        assert len(body["base64_attachments"]) == 1
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

@@ -6,12 +6,12 @@ description: "通过 signal-cli 守护进程将 Hermes Agent 设置为 Signal �
 
 # Signal 配置
 
-Hermes 通过以 HTTP 模式运行的 [signal-cli](https://github.com/AsamK/signal-cli) 守护进程连接到 Signal。适配器通过 SSE（Server-Sent Events，服务器推送事件）实时接收消息，并通过 JSON-RPC 发送响应。
+Hermes 通过 [signal-cli](https://github.com/AsamK/signal-cli) 连接到 Signal，通常经由 [bbernhard/signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) 容器（`MODE=json-rpc`）。适配器通过 WebSocket（`/v1/receive/<number>`）实时接收消息，并通过 REST API（`/v2/send`、表情回应、附件及相关路由）发送响应。
 
 Signal 是隐私保护最完善的主流即时通讯工具——默认端对端加密、开源协议、极少的元数据收集。这使其非常适合对安全性要求较高的 Agent 工作流。
 
-:::info 无需新增 Python 依赖
-Signal 适配器使用 `httpx`（已是 Hermes 的核心依赖）进行所有通信，无需安装额外的 Python 包。你只需在外部安装 signal-cli。
+:::info Python 依赖
+Signal 适配器使用 `httpx`（已是 Hermes 的核心依赖）发送出站 REST 请求，并使用 `aiohttp`（包含在 `[messaging]` extra 中）运行入站 WebSocket 监听器。你需要在 signal-cli-rest-api v0.99+ 之后运行 signal-cli ≥ **0.14.5**。
 :::
 
 ---
@@ -58,22 +58,29 @@ signal-cli link -n "HermesAgent"
 
 ---
 
-## 第二步：启动 signal-cli 守护进程
+## 第二步：启动 signal-cli-rest-api
+
+推荐使用 `MODE=json-rpc` 的 Docker 镜像：
 
 ```bash
-# 将 +1234567890 替换为你的 Signal 手机号（E.164 格式）
-signal-cli --account +1234567890 daemon --http 127.0.0.1:8080
+docker run -d --name signal-api \
+  -p 127.0.0.1:8080:8080 \
+  -e MODE=json-rpc \
+  -v $HOME/.local/share/signal-cli:/home/.local/share/signal-cli \
+  bbernhard/signal-cli-rest-api:latest
 ```
 
-:::tip
-保持此进程在后台运行。你可以使用 `systemd`、`tmux`、`screen`，或将其作为服务运行。
+:::caution signal-cli 版本
+请使用 **signal-cli 0.14.5 或更新版本**。较旧的版本（包括 0.14.3）可能无法解密入站消息（`getServerGuid must not be null`）。在 Apple Silicon 上，由于原生 Linux arm64 0.14.5 构建并不总是可用，你可能需要设置 `platform: linux/amd64`。
 :::
+
+在较旧的环境中也可以运行原生守护进程（`signal-cli --account +1234567890 daemon --http 127.0.0.1:8080`），但当前 Hermes 面向 signal-cli-rest-api v0.99+。
 
 验证是否正在运行：
 
 ```bash
-curl http://127.0.0.1:8080/api/v1/check
-# 应返回：{"versions":{"signal-cli":...}}
+curl http://127.0.0.1:8080/v1/about
+# 应返回 signal-cli-rest-api 和 signal-cli 的版本信息
 ```
 
 ---
@@ -140,6 +147,18 @@ sudo hermes gateway install --system   # 仅 Linux：开机自启系统服务
 | 未设置（默认） | 忽略所有群组消息，机器人仅响应私信。 |
 | 设置群组 ID | 仅监听列出的群组（如 `groupId1,groupId2`）。 |
 | 设置为 `*` | 机器人在其所在的任意群组中均会响应。 |
+
+### 群组中的 @提及门控
+
+设置 `SIGNAL_REQUIRE_MENTION=true`（或在平台配置中设置 `require_mention: true`）后，机器人只回应 @提及了其账号的群组消息。检查同时接受提及元数据中的电话号码和 Signal UUID（ACI）——现代 Signal 客户端往往只发送 UUID 而省略号码。
+
+**关联设备账号：** 当 Hermes 以关联设备方式接入你自己的 Signal 账号时，机器人与你共用同一个电话号码，没有独立身份，因此无法被真正 @提及。此时可以设置一个纯文本触发词：
+
+```bash
+SIGNAL_TRIGGER_ALIAS=hermes    # 不区分大小写；任何包含该词的群组消息都会通过提及门控
+```
+
+触发词与真正的 @提及可以同时使用——满足其一即可。
 
 ---
 
@@ -211,9 +230,9 @@ Signal 单条消息上限为 **8,000 字符**。Hermes 会自动将更长的回�
 
 ### 健康监控
 
-适配器监控 SSE 连接，并在以下情况自动重连：
-- 连接断开（指数退避：2s → 60s）
-- 120 秒内无任何活动（向 signal-cli 发送 ping 以验证连通性）
+传输层的恢复由 WebSocket 协议自身处理：适配器每 30 秒发送一次 WS ping，若未收到 pong 则断开连接并触发重连（指数退避：2s → 60s）。
+
+另外，一个存活监控器每 30 秒观察一次接收路径，并在 300 秒内没有任何应用层活动时记录日志。仅有应用层空闲**不会**触发重连——安静的会话本来就可能长时间无消息，而心跳机制已经能检测到失效的传输连接。监控器还会记录最近一条已分发入站消息的时间戳（在 `gateway_state.json` 中以 `last_inbound_message_at` 暴露），供外部看门狗检测"已连接但静默不投递"的守护进程。
 
 ---
 

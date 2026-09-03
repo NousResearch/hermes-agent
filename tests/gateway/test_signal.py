@@ -556,6 +556,133 @@ def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
     }
 
 
+def _make_group_envelope(sender: str, text: str, mentions: list, group_id: str = "grp1") -> dict:
+    """Build a minimal signal-cli group envelope with @mention metadata."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": [],
+                "mentions": mentions,
+                "groupInfo": {"groupId": group_id, "type": "DELIVER"},
+            },
+        }
+    }
+
+
+class TestSignalGroupMentionFilter:
+    """require_mention gate: UUID-only mention metadata and trigger alias (#65071).
+
+    Modern Signal clients only carry the UUID (ACI) in @mention metadata —
+    ``number`` is often empty, always so for linked-device accounts. The gate
+    must compare against the bot's cached UUID, and a configurable plaintext
+    trigger alias must bypass the gate for linked accounts that can never
+    receive a real @mention.
+    """
+
+    BOT = "+15551234567"
+    BOT_UUID = "3eb65f7a-6a00-4263-a72c-280a262aa28b"
+    OTHER_UUID = "b2187174-cd8e-4bb5-9f7f-dd6d6890d9e7"
+
+    async def _dispatch(self, monkeypatch, envelope, *, cache_bot_uuid=True, **extra):
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            account=self.BOT,
+            group_allowed="*",
+            require_mention=True,
+            **extra,
+        )
+        if cache_bot_uuid:
+            # Populated in production by syncMessage echoes / contact sync.
+            adapter._remember_recipient_identifiers(self.BOT, self.BOT_UUID)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        await adapter._handle_envelope(envelope)
+        return dispatched
+
+    @pytest.mark.asyncio
+    async def test_uuid_only_mention_matches_cached_bot_uuid(self, monkeypatch):
+        """Mention metadata with UUID but no number must pass the gate (#65071)."""
+        envelope = _make_group_envelope(
+            "+15559876543",
+            "\uFFFC hello bot",
+            [{"start": 0, "length": 1, "uuid": self.BOT_UUID}],
+        )
+        dispatched = await self._dispatch(monkeypatch, envelope)
+        assert dispatched, "UUID-only @mention of the bot was dropped by require_mention"
+
+    @pytest.mark.asyncio
+    async def test_number_mention_still_matches(self, monkeypatch):
+        envelope = _make_group_envelope(
+            "+15559876543",
+            "\uFFFC hello bot",
+            [{"start": 0, "length": 1, "number": self.BOT, "uuid": self.BOT_UUID}],
+        )
+        dispatched = await self._dispatch(monkeypatch, envelope)
+        assert dispatched
+
+    @pytest.mark.asyncio
+    async def test_foreign_uuid_mention_is_dropped(self, monkeypatch):
+        """A mention of someone else must not pass the gate."""
+        envelope = _make_group_envelope(
+            "+15559876543",
+            "\uFFFC take a look",
+            [{"start": 0, "length": 1, "uuid": self.OTHER_UUID}],
+        )
+        dispatched = await self._dispatch(monkeypatch, envelope)
+        assert not dispatched
+
+    @pytest.mark.asyncio
+    async def test_uuid_mention_without_cache_is_dropped(self, monkeypatch):
+        """Before the bot's UUID is learned, a UUID-only mention can't match."""
+        envelope = _make_group_envelope(
+            "+15559876543",
+            "\uFFFC hello",
+            [{"start": 0, "length": 1, "uuid": self.BOT_UUID}],
+        )
+        dispatched = await self._dispatch(monkeypatch, envelope, cache_bot_uuid=False)
+        assert not dispatched
+
+    @pytest.mark.asyncio
+    async def test_trigger_alias_bypasses_gate(self, monkeypatch):
+        """trigger_alias lets linked-device accounts respond without a real @mention."""
+        envelope = _make_group_envelope("+15559876543", "Hey Hermes, what time is it?", [])
+        dispatched = await self._dispatch(monkeypatch, envelope, trigger_alias="hermes")
+        assert dispatched, "trigger alias did not bypass the mention gate"
+
+    @pytest.mark.asyncio
+    async def test_trigger_alias_is_case_insensitive(self, monkeypatch):
+        envelope = _make_group_envelope("+15559876543", "HERMES ping", [])
+        dispatched = await self._dispatch(monkeypatch, envelope, trigger_alias="Hermes")
+        assert dispatched
+
+    @pytest.mark.asyncio
+    async def test_no_alias_no_mention_is_dropped(self, monkeypatch):
+        envelope = _make_group_envelope("+15559876543", "just chatting", [])
+        dispatched = await self._dispatch(monkeypatch, envelope)
+        assert not dispatched
+
+    @pytest.mark.asyncio
+    async def test_alias_from_env_var(self, monkeypatch):
+        """SIGNAL_TRIGGER_ALIAS env var configures the alias when extra doesn't."""
+        monkeypatch.setenv("SIGNAL_TRIGGER_ALIAS", "jarvis")
+        envelope = _make_group_envelope("+15559876543", "ok jarvis do it", [])
+        dispatched = await self._dispatch(monkeypatch, envelope)
+        assert dispatched
+
+
 class TestSignalInboundMessageTypeClassification:
     """_handle_envelope must set MessageType.DOCUMENT for application/* and text/* attachments.
 
@@ -831,6 +958,30 @@ class TestSignalSendResultValidation:
         result = await adapter.send(chat_id="+155****4567", content="hello")
         assert result.success is False
         assert result.error == "Some connection error"
+
+    @pytest.mark.asyncio
+    async def test_rpc_raises_rate_limit_on_429_error_body(self, monkeypatch):
+        """signal-cli-rest-api surfaces rate limits as an HTTP error with a
+        string body (not JSON-RPC result.results), e.g.
+        {"error": "... RateLimitException ... Retry after N seconds"}."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.json.return_value = {
+            "error": (
+                "Failed to send message: RateLimitException — "
+                "Retry after 15 seconds"
+            ),
+        }
+        mock_client.post = AsyncMock(return_value=mock_response)
+        adapter.client = mock_client
+
+        from gateway.platforms.signal_rate_limit import SignalRateLimitError
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {"recipient": ["+155****4567"]}, raise_on_rate_limit=True)
+
+        assert exc_info.value.retry_after == 15
 
 
 # ---------------------------------------------------------------------------
@@ -1459,3 +1610,134 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# Receive-path liveness stamp (#40199)
+# ---------------------------------------------------------------------------
+
+class TestSignalInboundLivenessStamp:
+    """_last_inbound_message must reflect ONLY real dispatched user messages.
+
+    Regression guard for the keepalive/daemon-health conflation the v0.99
+    transport rewrite removed: decryption failures, contentless envelopes,
+    sync-only events, and transport-level frames (receipts, typing) must NOT
+    advance the liveness stamp, while a genuinely dispatched message must —
+    and must also persist last_inbound_message_at for operators.
+    """
+
+    def _adapter_with_capture(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        dispatched = []
+
+        async def fake_handle(event):
+            dispatched.append(event)
+
+        adapter.handle_message = fake_handle
+
+        status_writes = []
+
+        def fake_status_write(context, **kwargs):
+            status_writes.append({"context": context, **kwargs})
+
+        adapter._write_runtime_status_safe = fake_status_write
+        return adapter, dispatched, status_writes
+
+    @pytest.mark.asyncio
+    async def test_real_message_stamps_and_persists(self, monkeypatch):
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+        assert adapter._last_inbound_message == 0.0
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {"message": "hello"},
+            }
+        })
+
+        assert len(dispatched) == 1
+        assert adapter._last_inbound_message > 0.0
+        inbound_writes = [w for w in status_writes if "last_inbound_message_at" in w]
+        assert len(inbound_writes) == 1
+        assert inbound_writes[0]["last_inbound_message_at"]
+
+    @pytest.mark.asyncio
+    async def test_decryption_exception_does_not_stamp(self, monkeypatch):
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "exception": {
+                "type": "ProtocolNoSessionException",
+                "message": "no session with +15550001111",
+            },
+            "envelope": {"sourceNumber": "+15550001111"},
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []
+
+    @pytest.mark.asyncio
+    async def test_contentless_envelope_does_not_stamp(self, monkeypatch):
+        """Profile-key updates etc. carry a dataMessage wrapper but no content."""
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "timestamp": 1000000000,
+                "dataMessage": {"message": ""},
+            }
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []
+
+    @pytest.mark.asyncio
+    async def test_sync_only_envelope_does_not_stamp(self, monkeypatch):
+        """Sync events that aren't Note-to-Self (read receipts) are filtered."""
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "timestamp": 1000000000,
+                "syncMessage": {
+                    "readMessages": [
+                        {"sender": "+15550001111", "timestamp": 999999999},
+                    ],
+                },
+            }
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []
+
+    @pytest.mark.asyncio
+    async def test_transport_frames_do_not_stamp(self, monkeypatch):
+        """Receipt/typing envelopes prove the transport is alive, not that
+        user messages are being delivered — they must not touch the stamp."""
+        adapter, dispatched, status_writes = self._adapter_with_capture(monkeypatch)
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "timestamp": 1000000000,
+                "receiptMessage": {"when": 1000000000, "isDelivery": True},
+            }
+        })
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "timestamp": 1000000001,
+                "typingMessage": {"action": "STARTED"},
+            }
+        })
+
+        assert dispatched == []
+        assert adapter._last_inbound_message == 0.0
+        assert status_writes == []

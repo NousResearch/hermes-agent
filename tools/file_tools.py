@@ -845,7 +845,8 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
 
 
 def _request_protected_instruction_approval(
-        reasons: list[str], task_id: str = "default") -> str | None:
+        reasons: list[str], task_id: str = "default",
+        preview: str | None = None) -> str | None:
     """Ask the human to approve a write to protected instruction file(s).
 
     Returns ``None`` when approved, or a BLOCKED error string. This gate
@@ -860,7 +861,7 @@ def _request_protected_instruction_approval(
         "These files steer future agent behavior; approval is always "
         "required (not bypassed by auto-approve)."
     )
-    display = f"<write to {targets}>"
+    display = preview or f"<write to {targets}>"
     blocked = (
         f"BLOCKED: write to protected agent-instruction file(s) ({targets}) "
         "{why} The user has NOT consented to this write. Do NOT retry it or "
@@ -944,7 +945,8 @@ def _request_protected_instruction_approval(
 
 
 def _check_protected_instruction_write(paths: list[str],
-                                       task_id: str = "default") -> str | None:
+                                       task_id: str = "default",
+                                       preview: str | None = None) -> str | None:
     """Gate a write/patch touching protected instruction files.
 
     Returns ``None`` when no target is protected or the human approved;
@@ -965,7 +967,32 @@ def _check_protected_instruction_write(paths: list[str],
             reasons.append(reason)
     if not reasons:
         return None
-    return _request_protected_instruction_approval(reasons, task_id)
+    return _request_protected_instruction_approval(reasons, task_id, preview=preview)
+
+
+def _protected_instruction_write_preview(path: str, content: str) -> str:
+    """Build the approval preview for a direct text write."""
+    return f"write_file {path}\n{content}"
+
+
+def _protected_instruction_patch_preview(
+    *,
+    mode: str,
+    path: str | None = None,
+    old_string: str | None = None,
+    new_string: str | None = None,
+    patch: str | None = None,
+) -> str:
+    """Build the approval preview for a patch touching protected files."""
+    if mode == "patch" and patch:
+        return patch
+    if path is None:
+        return "<patch protected instruction file>"
+    return (
+        f"patch replace {path}\n"
+        f"--- old_string ---\n{old_string or ''}\n"
+        f"--- new_string ---\n{new_string or ''}"
+    )
 
 
 def _check_approval_required_write(paths: list[str],
@@ -2256,7 +2283,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     binary_doc_err = _check_binary_document_write(path, task_id)
     if binary_doc_err:
         return tool_error(binary_doc_err)
-    protected_err = _check_protected_instruction_write([path], task_id)
+    protected_err = _check_protected_instruction_write(
+        [path],
+        task_id,
+        preview=_protected_instruction_write_preview(path, content),
+    )
     if protected_err:
         return tool_error(protected_err)
     approval_err = _check_approval_required_write([path], task_id)
@@ -2406,7 +2437,17 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             return tool_error(binary_doc_err)
     # One approval prompt for the whole patch: a single protected file gates
     # the ENTIRE patch (deny applies nothing — see the helper's docstring).
-    protected_err = _check_protected_instruction_write(_paths_to_check, task_id)
+    protected_err = _check_protected_instruction_write(
+        _paths_to_check,
+        task_id,
+        preview=_protected_instruction_patch_preview(
+            mode=mode,
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            patch=patch,
+        ),
+    )
     if protected_err:
         return tool_error(protected_err)
     approval_err = _check_approval_required_write(_paths_to_check, task_id)

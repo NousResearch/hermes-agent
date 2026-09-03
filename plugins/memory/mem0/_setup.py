@@ -221,14 +221,33 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
 
 
 def _save_mem0_json(hermes_home: str, data: dict) -> None:
-    """Merge-write to mem0.json."""
+    """Merge-write to mem0.json.
+
+    The merge is only a merge while the existing file can be read. Swallowing
+    a read failure left ``existing`` empty and turned the write into a full
+    replacement, so a mem0.json that merely carried a UTF-8 BOM (any GUI
+    editor) lost every key this call does not set — ``api_key`` and ``host``
+    among them. Read BOM-tolerantly, and if the file exists but still cannot
+    be parsed, refuse the write instead of overwriting settings we could not
+    read.
+    """
     config_path = Path(hermes_home) / "mem0.json"
-    existing = {}
+    existing: dict = {}
     if config_path.exists():
         try:
-            existing = json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+            loaded = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"{config_path} exists but could not be read ({exc}); refusing "
+                "to overwrite it. Fix or move the file, then re-run setup — "
+                "your current settings are untouched."
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(
+                f"{config_path} does not contain a JSON object; refusing to "
+                "overwrite it. Fix or move the file, then re-run setup."
+            )
+        existing = loaded
     existing.update(data)
     config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
 

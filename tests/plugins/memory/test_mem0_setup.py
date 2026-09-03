@@ -253,3 +253,80 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+class TestMem0JsonMergeWrite:
+    """The merge-write must never turn into a full replacement.
+
+    _save_mem0_json reads mem0.json, updates it, and writes the whole file
+    back. Swallowing the read left `existing` empty, so every key the call
+    does not set was dropped — api_key and host among them.
+    """
+
+    @staticmethod
+    def _save(home, data):
+        from plugins.memory.mem0._setup import _save_mem0_json
+
+        _save_mem0_json(str(home), data)
+
+    def test_bom_prefixed_config_keeps_untouched_keys(self, tmp_path):
+        import json
+
+        original = {
+            "mode": "platform",
+            "api_key": "sk-user-key",
+            "host": "https://mem0.example",
+            "custom": {"keep": "me"},
+        }
+        path = tmp_path / "mem0.json"
+        path.write_bytes(b"\xef\xbb\xbf" + json.dumps(original, indent=2).encode())
+
+        self._save(tmp_path, {"mode": "oss", "agent_id": "hermes"})
+
+        after = json.loads(path.read_text(encoding="utf-8-sig"))
+        assert after["api_key"] == "sk-user-key"
+        assert after["host"] == "https://mem0.example"
+        assert after["custom"] == {"keep": "me"}
+        assert after["mode"] == "oss"
+        assert after["agent_id"] == "hermes"
+
+    def test_unreadable_config_is_not_overwritten(self, tmp_path):
+        import pytest as _pytest
+
+        path = tmp_path / "mem0.json"
+        path.write_text("{ truncated", encoding="utf-8")
+
+        with _pytest.raises(RuntimeError):
+            self._save(tmp_path, {"mode": "oss"})
+
+        assert path.read_text(encoding="utf-8") == "{ truncated"
+
+    def test_non_object_config_is_not_overwritten(self, tmp_path):
+        import pytest as _pytest
+
+        path = tmp_path / "mem0.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+
+        with _pytest.raises(RuntimeError):
+            self._save(tmp_path, {"mode": "oss"})
+
+        assert path.read_text(encoding="utf-8") == "[1, 2, 3]"
+
+    def test_missing_file_is_created(self, tmp_path):
+        import json
+
+        self._save(tmp_path, {"mode": "oss", "user_id": "alice"})
+
+        after = json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
+        assert after == {"mode": "oss", "user_id": "alice"}
+
+    def test_plain_config_merges_normally(self, tmp_path):
+        import json
+
+        path = tmp_path / "mem0.json"
+        path.write_text(json.dumps({"api_key": "k", "mode": "platform"}), encoding="utf-8")
+
+        self._save(tmp_path, {"mode": "oss"})
+
+        after = json.loads(path.read_text(encoding="utf-8"))
+        assert after == {"api_key": "k", "mode": "oss"}

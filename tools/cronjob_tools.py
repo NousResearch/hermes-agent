@@ -25,15 +25,6 @@ logger = logging.getLogger(__name__)
 # uses 30s) — comfortably below the 1800s default HERMES_AGENT_TIMEOUT.
 _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 
-# Hard ceiling on how long the heartbeat keeps the parent watchdog at bay.
-# The child cron run has its own inactivity watchdog (HERMES_CRON_TIMEOUT,
-# default 600s) that bounds a wedged job, but with HERMES_CRON_TIMEOUT=0
-# (explicit "unlimited") a truly hung run_one_job would otherwise mask the
-# gateway watchdog forever — pre-#76502 the parent was at least reaped at
-# ~1800s. After this ceiling the heartbeat stops and the gateway watchdog
-# regains authority over the turn.
-_CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
-
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -1070,16 +1061,6 @@ def _run_claimed_job(
                 started = time.monotonic()
                 while not _heartbeat_stop.wait(_CRON_RUN_HEARTBEAT_INTERVAL):
                     elapsed = time.monotonic() - started
-                    if elapsed > _CRON_RUN_HEARTBEAT_CEILING:
-                        # Stop masking the gateway watchdog — a run this long
-                        # with an unlimited child watchdog is likely wedged.
-                        logger.warning(
-                            "cronjob run heartbeat ceiling reached for job "
-                            "'%s' (%.0fs) — stopping heartbeat; gateway "
-                            "watchdog regains authority",
-                            job_name, elapsed,
-                        )
-                        return
                     try:
                         activity_cb(
                             f"cronjob: running job '{job_name}' ({int(elapsed)}s elapsed)"

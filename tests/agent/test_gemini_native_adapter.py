@@ -675,3 +675,311 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+# ---------------------------------------------------------------------------
+# Parallel function call slot tests
+# ---------------------------------------------------------------------------
+
+
+def _fc_event(*calls):
+    """Build a native Gemini SSE event carrying one functionCall part per call.
+
+    Deliberately id-less: this is the shape Gemini 2.5 produces, and it is what
+    exercises the value-based fallback. Tests for the id-carrying path build
+    their events with ``_live_fc_event``.
+    """
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": name, "args": args}}
+                        for name, args in calls
+                    ]
+                }
+            }
+        ]
+    }
+
+
+def _accumulate(events):
+    """Replay events through translate_stream_event the way the streaming loop
+    in ``_stream_completion`` does, and return {index: concatenated arguments}."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices: dict = {}
+    acc: dict = {}
+    for event in events:
+        for chunk in translate_stream_event(
+            event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+        ):
+            delta = chunk.choices[0].delta.tool_calls[0]
+            acc[delta.index] = acc.get(delta.index, "") + (delta.function.arguments or "")
+    return acc
+
+
+def test_same_tool_called_twice_across_events_gets_distinct_slots():
+    """``call_key`` is built from ``part_index``, which restarts at 0 on every
+    stream event. Two *different* calls to the same tool arriving in separate
+    events therefore hash to the same key and used to share one slot, so their
+    arguments were emitted under the same index and concatenated downstream
+    into unparseable JSON (`{"query": "A"}{"query": "B"}`)."""
+    import json
+
+    acc = _accumulate(
+        [
+            _fc_event(("web_search", {"query": "A"})),
+            _fc_event(("web_search", {"query": "B"})),
+        ]
+    )
+
+    assert len(acc) == 2, acc
+    assert sorted(json.loads(v)["query"] for v in acc.values()) == ["A", "B"]
+
+
+def test_three_calls_to_same_tool_across_events_each_get_a_slot():
+    """The collision compounds: every extra call lands in the same slot."""
+    import json
+
+    acc = _accumulate(
+        [
+            _fc_event(("write_file", {"path": "a"})),
+            _fc_event(("write_file", {"path": "b"})),
+            _fc_event(("write_file", {"path": "c"})),
+        ]
+    )
+
+    assert len(acc) == 3, acc
+    assert sorted(json.loads(v)["path"] for v in acc.values()) == ["a", "b", "c"]
+
+
+def test_parallel_calls_in_one_event_keep_working():
+    """Regression guard: same-event parallel calls already worked, because each
+    part gets its own ``part_index``. This is also the tell that the collision
+    is Hermes-side — if the model were concatenating, this would fail too."""
+    acc = _accumulate([_fc_event(("web_search", {"query": "A"}), ("web_search", {"query": "B"}))])
+
+    assert len(acc) == 2, acc
+
+
+def test_different_tools_across_events_keep_working():
+    """Regression guard: distinct tool names never collided, since ``name`` is
+    part of ``call_key``."""
+    acc = _accumulate(
+        [
+            _fc_event(("read_file", {"path": "a"})),
+            _fc_event(("write_file", {"path": "b"})),
+        ]
+    )
+
+    assert len(acc) == 2, acc
+
+
+def test_identical_resend_is_still_deduplicated_into_one_slot():
+    """Regression guard for the existing dedup path: an identical resend of the
+    same part is the same call, not a new one, and must not open a slot."""
+    acc = _accumulate(
+        [
+            _fc_event(("web_search", {"query": "A"})),
+            _fc_event(("web_search", {"query": "A"})),
+        ]
+    )
+
+    assert len(acc) == 1, acc
+    assert acc[0] == '{"query": "A"}'
+
+
+def test_resend_of_the_second_call_reuses_its_collision_created_slot():
+    """A slot opened by the collision must stay reachable. Replaying ``[A, B,
+    B]``, the resent B starts its lookup from the shared key, whose arguments
+    are A's, so it has to be matched against the slot B already opened instead
+    of opening a third one and duplicating the call."""
+    import json
+
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices: dict = {}
+    deltas = []
+    for event in [
+        _fc_event(("web_search", {"query": "A"})),
+        _fc_event(("web_search", {"query": "B"})),
+        _fc_event(("web_search", {"query": "B"})),
+    ]:
+        for chunk in translate_stream_event(
+            event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices
+        ):
+            deltas.append(chunk.choices[0].delta.tool_calls[0])
+
+    assert len(tool_call_indices) == 2, tool_call_indices
+    assert [d.index for d in deltas] == [0, 1, 1]
+    # The resend carries no new arguments and keeps the id of the call it repeats.
+    assert deltas[2].function.arguments == ""
+    assert deltas[2].id == deltas[1].id
+    assert [json.loads(d.function.arguments)["query"] for d in deltas[:2]] == ["A", "B"]
+
+
+def test_partial_json_arguments_keep_accumulating_in_one_slot():
+    """The `json.loads` guard is what keeps a genuinely partial argument string
+    in its slot: a half-sent object does not parse, so it is treated as a
+    continuation rather than as a new call. The native path always serializes a
+    complete dict, so this exercises the guard directly on the accumulator
+    state to keep the protective behaviour pinned."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices: dict = {}
+    translate_stream_event(
+        _fc_event(("search", {"q": "A"})),
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+    # Simulate an incomplete payload already sitting in the slot.
+    slot = next(iter(tool_call_indices.values()))
+    slot["last_arguments"] = '{"q": "A'
+
+    translate_stream_event(
+        _fc_event(("search", {"q": "AB"})),
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+
+    assert len(tool_call_indices) == 1, "incomplete JSON must not open a new slot"
+
+
+def _live_fc_event(name, args, *, call_id, thought_signature=None):
+    """Build the event shape native Gemini 3 traffic actually produces: one
+    ``functionCall`` part per event, carrying the id the model assigned it, and
+    a ``thoughtSignature`` sibling on the first call only."""
+    part = {"functionCall": {"name": name, "args": args, "id": call_id}}
+    if thought_signature is not None:
+        part["thoughtSignature"] = thought_signature
+    return {"candidates": [{"content": {"parts": [part]}}]}
+
+
+def test_signed_first_call_then_unsigned_calls_each_get_their_own_slot():
+    """Replay of a capture from the native endpoint, in the shape real traffic
+    has: three sequential calls to one tool, and only the first part carries a
+    ``thoughtSignature``.
+
+    That asymmetry is why the defect looks intermittent.
+    ``thought_signature`` is part of ``call_key``, so the signed call is
+    disambiguated by accident: a two-call capture replays cleanly even on the
+    unfixed adapter, and the collision only begins with the *second unsigned*
+    call. Synthetic events carrying no signature at all collide one call
+    earlier, so they reproduce a different arrangement of the same bug -- this
+    sequence is the one the reporter hit. On the unfixed adapter it yields two
+    slots, with ``{"query": "weather in Lisbon"}{"query": "weather in Porto"}``
+    concatenated under the second.
+    """
+    import json
+
+    from agent.gemini_native_adapter import translate_stream_event
+
+    events = [
+        _live_fc_event(
+            "web_search",
+            {"query": "weather in Madrid"},
+            call_id="call_371934",
+            # Truncated; the captured signature is ~1.5 kB.
+            thought_signature="Ep8JCpwJARFNMg9geVAyMFMIa5ND0OFd",
+        ),
+        _live_fc_event("web_search", {"query": "weather in Lisbon"}, call_id="call_371938"),
+        _live_fc_event("web_search", {"query": "weather in Porto"}, call_id="call_371942"),
+    ]
+
+    tool_call_indices: dict = {}
+    deltas = []
+    for event in events:
+        for chunk in translate_stream_event(
+            event, model="gemini-3.5-flash", tool_call_indices=tool_call_indices
+        ):
+            deltas.append(chunk.choices[0].delta.tool_calls[0])
+
+    assert len(tool_call_indices) == 3, tool_call_indices
+    assert [d.index for d in deltas] == [0, 1, 2]
+    assert [json.loads(d.function.arguments)["query"] for d in deltas] == [
+        "weather in Madrid",
+        "weather in Lisbon",
+        "weather in Porto",
+    ]
+    # Each slot keeps the id the model assigned to the call that opened it.
+    assert [d.id for d in deltas] == ["call_371934", "call_371938", "call_371942"]
+
+
+def test_calls_with_equal_arguments_but_distinct_ids_get_distinct_slots():
+    """Two calls to one tool with byte-identical arguments and different
+    provider ids are two calls, not a resend.
+
+    Value equality cannot tell them apart -- the second payload is a prefix of
+    the first, which is what a resend looks like -- so on an adapter that keys
+    slots by value the second call is erased and rewritten as an empty delta on
+    the first. The provider id is the only discriminator available, so it wins
+    whenever the model supplies one.
+    """
+    import json
+
+    from agent.gemini_native_adapter import translate_stream_event
+
+    events = [
+        _live_fc_event("web_search", {"query": "A"}, call_id="call_1"),
+        _live_fc_event("web_search", {"query": "A"}, call_id="call_2"),
+    ]
+
+    tool_call_indices: dict = {}
+    deltas = []
+    for event in events:
+        for chunk in translate_stream_event(
+            event, model="gemini-3.5-flash", tool_call_indices=tool_call_indices
+        ):
+            deltas.append(chunk.choices[0].delta.tool_calls[0])
+
+    assert len(tool_call_indices) == 2, tool_call_indices
+    assert [d.index for d in deltas] == [0, 1]
+    assert [d.id for d in deltas] == ["call_1", "call_2"]
+    # Both slots carry the full argument payload; neither is emptied as a resend.
+    assert [json.loads(d.function.arguments) for d in deltas] == [
+        {"query": "A"},
+        {"query": "A"},
+    ]
+
+
+def test_repeated_provider_id_is_one_slot_even_when_the_signature_drifts():
+    """The same provider id arriving again is the same call, and a
+    ``thoughtSignature`` that appears, changes or disappears between events
+    does not split it.
+
+    Only the first call of a turn carries a signature, so the signature drifts
+    across the events of a stream by design. Keying an id-carrying call by
+    ``(name, id)`` alone keeps it in one slot; the repeat is emitted as an empty
+    argument delta, the way a resend should be.
+    """
+    from agent.gemini_native_adapter import translate_stream_event
+
+    events = [
+        _live_fc_event(
+            "web_search",
+            {"query": "A"},
+            call_id="call_1",
+            thought_signature="Ep8JCpwJARFNMg9geVAyMFMIa5ND0OFd",
+        ),
+        _live_fc_event("web_search", {"query": "A"}, call_id="call_1"),
+        _live_fc_event(
+            "web_search",
+            {"query": "A"},
+            call_id="call_1",
+            thought_signature="ZZZZZZZZdifferentsignatureZZZZZZ",
+        ),
+    ]
+
+    tool_call_indices: dict = {}
+    deltas = []
+    for event in events:
+        for chunk in translate_stream_event(
+            event, model="gemini-3.5-flash", tool_call_indices=tool_call_indices
+        ):
+            deltas.append(chunk.choices[0].delta.tool_calls[0])
+
+    assert len(tool_call_indices) == 1, tool_call_indices
+    assert [d.index for d in deltas] == [0, 0, 0]
+    assert [d.id for d in deltas] == ["call_1", "call_1", "call_1"]
+    assert [d.function.arguments for d in deltas] == ['{"query": "A"}', "", ""]

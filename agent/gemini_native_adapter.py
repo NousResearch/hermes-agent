@@ -899,6 +899,25 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
                 yield payload
 
 
+def _tool_call_slot_accepts(slot: Dict[str, Any], args_str: str) -> bool:
+    """Whether ``args_str`` belongs to an existing streaming tool call slot.
+
+    Only used for events that carry no provider call id. A continuation extends
+    the arguments already accumulated in the slot and a resend repeats them
+    verbatim, so both are prefix matches. A slot still holding half-sent JSON is
+    mid-stream and keeps whatever follows it. Anything else arriving after a
+    complete JSON object is a different call.
+    """
+    previous = str(slot.get("last_arguments") or "")
+    if not previous or args_str.startswith(previous):
+        return True
+    try:
+        json.loads(previous)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return True
+    return False
+
+
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
@@ -923,23 +942,52 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
             except (TypeError, ValueError):
                 args_str = "{}"
             thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps(
-                {
-                    "part_index": part_index,
-                    "name": name,
-                    "thought_signature": thought_signature,
-                },
-                sort_keys=True,
-            )
-            slot = tool_call_indices.get(call_key)
+            provider_call_id = str(fc["id"]) if isinstance(fc.get("id"), str) and fc.get("id") else ""
+            if provider_call_id:
+                # Gemini 3 assigns one id per tool call, so it is the
+                # authoritative slot identity: two calls that differ only by id
+                # are two calls even when their arguments are equal, and the
+                # same id arriving again is the same call. ``part_index`` and
+                # the thought signature are deliberately left out of the key --
+                # both drift across events of one call (only the first call of
+                # a turn carries a signature), and neither distinguishes calls
+                # the id already separates.
+                call_key = json.dumps(
+                    {"name": name, "provider_call_id": provider_call_id},
+                    sort_keys=True,
+                )
+                slot = tool_call_indices.get(call_key)
+            else:
+                # Gemini 2.5 sends no call id. ``part_index`` restarts at 0 on
+                # every stream event, so two *different* calls to the same tool
+                # arriving in separate events collide on one slot and their
+                # arguments get concatenated into unparseable JSON. Fall back to
+                # telling them apart by value: each call gets its own slot, and
+                # the slots opened that way stay reachable, so a later
+                # continuation or resend still lands on the one it opened
+                # instead of allocating yet another.
+                call_key = json.dumps(
+                    {
+                        "part_index": part_index,
+                        "name": name,
+                        "thought_signature": thought_signature,
+                    },
+                    sort_keys=True,
+                )
+                slot = tool_call_indices.get(call_key)
+                if slot is not None and not _tool_call_slot_accepts(slot, args_str):
+                    slot = None
+                    for previous_key, previous_slot in tool_call_indices.items():
+                        if previous_key.startswith(f"{call_key}#") and _tool_call_slot_accepts(previous_slot, args_str):
+                            call_key = previous_key
+                            slot = previous_slot
+                            break
+                    if slot is None:
+                        call_key = f"{call_key}#{len(tool_call_indices)}"
             if slot is None:
                 slot = {
                     "index": len(tool_call_indices),
-                    "id": (
-                        str(fc["id"])
-                        if isinstance(fc.get("id"), str) and fc.get("id")
-                        else f"call_{uuid.uuid4().hex[:12]}"
-                    ),
+                    "id": provider_call_id or f"call_{uuid.uuid4().hex[:12]}",
                     "last_arguments": "",
                 }
                 tool_call_indices[call_key] = slot

@@ -1634,9 +1634,18 @@ def build_turn_context(
             # Backfill it onto the freshly-inserted row directly. Rotation
             # mode needs nothing here: its compacted copies flush to the
             # child session after this stamp.
-            if _preflight_compressed and bool(
-                getattr(agent, "_last_compaction_in_place", False)
-            ):
+            #
+            # The same loss happens WITHOUT compaction on the CLI path
+            # (#102194): the staged input may already have been written and
+            # marked _db_persisted by an earlier close flush, so the crash
+            # persist below skips it the same way. Backfill whenever the row
+            # is known-persisted. The content match inside
+            # set_latest_user_api_content is the guard: nothing is written
+            # unless the newest active user row is this message.
+            if (
+                _preflight_compressed
+                and bool(getattr(agent, "_last_compaction_in_place", False))
+            ) or bool(_turn_user_msg.get("_db_persisted")):
                 _db = getattr(agent, "_session_db", None)
                 if _db is not None:
                     try:
@@ -1647,8 +1656,7 @@ def build_turn_context(
                         )
                     except Exception:
                         logger.warning(
-                            "in-place compaction api_content backfill failed "
-                            "for session=%s",
+                            "api_content backfill failed for session=%s",
                             agent.session_id or "none",
                             exc_info=True,
                         )

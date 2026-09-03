@@ -13631,6 +13631,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         every compacted dict — without this backfill the stamped sidecar would
         never land in the DB and any reload would replay clean content,
         re-introducing the prompt-cache divergence the sidecar exists to close.
+        The same applies when a close flush persisted the staged CLI input
+        before the stamp (#102194): the message carries ``_db_persisted`` and
+        is skipped the same way.
 
         The ``content`` match is a defensive guard: if the newest active user
         row is not the message the caller stamped (racing rewrite, unexpected

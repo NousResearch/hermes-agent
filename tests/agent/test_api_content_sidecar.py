@@ -25,6 +25,7 @@ import tempfile
 import threading
 import types
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -192,6 +193,8 @@ class _FakeAgent:
         # Captures the user message's api_content at persist time, proving
         # the stamp lands BEFORE the early persist writes the row.
         self.api_content_at_persist = "<unset>"
+        self._session_db: Any = None
+        self._pending_cli_user_message: Any = None
 
     def _ensure_db_session(self):
         pass
@@ -640,6 +643,86 @@ class TestPrologueMoaAndInPlaceBackfill:
         agent._session_db.set_latest_user_api_content.assert_called_once_with(
             "sess-1", "hello", "hello\n\nPLUGIN-CTX"
         )
+
+
+class TestPrePersistedRowBackfill:
+    """#102194: the CLI close flush may write+mark the staged input BEFORE
+    the prologue stamps the sidecar. The crash persist then identity-skips
+    the marked message and the stamp would never reach the DB — the prologue
+    must backfill it onto the existing row."""
+
+    def _open(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", source="cli")
+        return db
+
+    def test_marked_message_backfills_sidecar_into_db(self, tmp_path):
+        db = self._open(tmp_path)
+        try:
+            # Earlier close flush wrote the clean staged input.
+            db.append_message("s1", "user", content="hello")
+            agent = _FakeAgent()
+            agent.session_id = "s1"
+            agent._session_db = db
+            agent._pending_cli_user_message = {
+                "role": "user",
+                "content": "hello",
+                "_db_persisted": True,
+            }
+            with patch(
+                "hermes_cli.plugins.invoke_hook",
+                return_value=[{"context": "PLUGIN-CTX"}],
+            ):
+                ctx = _build(agent)
+            msg = ctx.messages[ctx.current_turn_user_idx]
+            assert msg["api_content"] == "hello\n\nPLUGIN-CTX"
+            # The pre-existing row — skipped by the crash persist — now
+            # carries the exact sent bytes for verbatim replay.
+            msgs = db.get_messages_as_conversation("s1")
+            assert msgs[-1]["api_content"] == "hello\n\nPLUGIN-CTX"
+        finally:
+            db.close()
+
+    def test_unmarked_message_skips_backfill(self):
+        """No pre-existing row: the crash persist below writes the stamped
+        row itself, so no backfill may fire (it could otherwise stamp an
+        older, identical row)."""
+        agent = _FakeAgent()
+        agent._session_db = MagicMock()
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "PLUGIN-CTX"}],
+        ):
+            ctx = _build(agent)
+        assert (
+            ctx.messages[ctx.current_turn_user_idx]["api_content"]
+            == "hello\n\nPLUGIN-CTX"
+        )
+        agent._session_db.set_latest_user_api_content.assert_not_called()
+
+    def test_backfill_guard_leaves_mismatched_row_alone(self, tmp_path):
+        """The content match is the guard: when the newest row is not this
+        message, nothing is written."""
+        db = self._open(tmp_path)
+        try:
+            db.append_message("s1", "user", content="something-else")
+            agent = _FakeAgent()
+            agent.session_id = "s1"
+            agent._session_db = db
+            agent._pending_cli_user_message = {
+                "role": "user",
+                "content": "hello",
+                "_db_persisted": True,
+            }
+            with patch(
+                "hermes_cli.plugins.invoke_hook",
+                return_value=[{"context": "PLUGIN-CTX"}],
+            ):
+                _build(agent)
+            msgs = db.get_messages_as_conversation("s1")
+            assert "api_content" not in msgs[0]
+        finally:
+            db.close()
 
 
 class TestSetLatestUserApiContent:

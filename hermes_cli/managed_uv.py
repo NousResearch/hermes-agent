@@ -879,7 +879,13 @@ def _stage_candidate_venv(
     project_root: Path,
     generation: Path,
     python: Path,
-) -> Path | None:
+) -> tuple[Path | None, str]:
+    """Build a relocatable candidate venv and smoke-test it.
+
+    Returns ``(path, "")`` on success, or ``(None, detail)`` on failure so
+    callers can distinguish dependency-sync failures from import smoke
+    failures (#75655).
+    """
     runtime_root = project_root / _RUNTIME_DIR_NAME
     token = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     candidate = runtime_root / f"venv-candidate-{token}"
@@ -920,12 +926,12 @@ def _stage_candidate_venv(
             (created.stderr or created.stdout or "").strip(),
         )
         _remove_tree(candidate, boundary=runtime_root)
-        return None
+        return None, "replacement environment venv creation failed"
 
     if not (project_root / "uv.lock").is_file():
         logger.warning("candidate dependency sync refused: uv.lock is missing")
         _remove_tree(candidate, boundary=runtime_root)
-        return None
+        return None, "replacement environment dependency sync refused: uv.lock is missing"
     # Locked sync must see project [tool.uv] exclude-newer; --no-config /
     # UV_NO_CONFIG drops it and uv 0.12+ refuses --locked.
     sync_env = dict(env)
@@ -947,14 +953,18 @@ def _stage_candidate_venv(
     if synced.returncode != 0:
         logger.warning("candidate dependency sync failed (rc=%d)", synced.returncode)
         _remove_tree(candidate, boundary=runtime_root)
-        return None
+        return None, "replacement environment dependency sync failed (uv sync --locked)"
 
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
         logger.warning("candidate venv smoke failed: %s", detail)
         _remove_tree(candidate, boundary=runtime_root)
-        return None
-    return candidate
+        return (
+            None,
+            "replacement environment did not pass dependency and import smoke tests"
+            + (f": {detail}" if detail else ""),
+        )
+    return candidate, ""
 
 
 def _rename_with_retry(source: Path, destination: Path) -> None:
@@ -1430,7 +1440,7 @@ def repair_vulnerable_runtime(
             )
         generation, python, candidate_info = provisioned
 
-        candidate = _stage_candidate_venv(
+        candidate, stage_detail = _stage_candidate_venv(
             uv_bin,
             project_root=root,
             generation=generation,
@@ -1440,7 +1450,8 @@ def repair_vulnerable_runtime(
             _remove_tree(generation, boundary=managed_python_install_dir(root))
             return RuntimeRepairResult(
                 "failed",
-                "replacement environment did not pass dependency and import smoke tests",
+                stage_detail
+                or "replacement environment did not pass dependency and import smoke tests",
                 sqlite_before=current.sqlite_version_string,
                 sqlite_after=candidate_info.sqlite_version_string,
             )

@@ -1145,9 +1145,18 @@ class HermesACPAgent(acp.Agent):
                         "env": {item.name: item.value for item in server.env},
                     }
                 else:
+                    # McpServerHttp and McpServerSse share the url/headers shape, so
+                    # the transport has to be carried explicitly: the registrar
+                    # (tools/mcp_tool.py) picks the SSE client only when
+                    # config["transport"] == "sse", and an unmarked SSE server is
+                    # contacted as streamable-HTTP — the handshake fails, silently.
+                    # Both branches are marked so this does not depend on the
+                    # registrar's default for unmarked url servers; "sse"/"http" are
+                    # its own transport names (see mcp_tool.get_mcp_server_status).
                     config = {
                         "url": server.url,
                         "headers": {item.name: item.value for item in server.headers},
+                        "transport": "sse" if isinstance(server, McpServerSse) else "http",
                     }
                 config_map[name] = config
 

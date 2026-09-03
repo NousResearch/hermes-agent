@@ -189,6 +189,37 @@ class TestSendFinalization:
         client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_leading_newline_first_frame_still_seals(self):
+        """The consumer's first frame for a segment can start with newlines
+        (e.g. ``"\n\n**11"``) while the turn-final text handed to send() is
+        stripped. Finalization must still recognise the stream as its own —
+        otherwise send() falls through to chat.postMessage (a duplicate
+        message) and chat.stopStream never runs (the thread status hangs).
+        """
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "\n\n**11", metadata=META)
+        await adapter.send_draft("D1", 7, "\n\n**11,332 sellers** on Vionic", metadata=META)
+        result = await adapter.send(
+            "D1", "**11,332 sellers** on Vionic — live as of now.", metadata=META
+        )
+        assert result.success
+        assert result.message_id == "123.456"
+        kwargs = client.chat_stopStream.await_args.kwargs
+        assert kwargs["markdown_text"] == " — live as of now."
+        client.chat_postMessage.assert_not_awaited()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_leading_newline_equal_content_seals_without_delta(self):
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "\n\nHello world", metadata=META)
+        result = await adapter.send("D1", "Hello world", metadata=META)
+        assert result.success
+        kwargs = client.chat_stopStream.await_args.kwargs
+        assert "markdown_text" not in kwargs
+        client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_unrelated_send_passes_through(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Streaming text here", metadata=META)

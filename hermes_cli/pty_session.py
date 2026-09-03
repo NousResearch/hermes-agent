@@ -129,7 +129,7 @@ class PtySession:
             pass
 
 
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Set, Tuple
 
 
 class RegistryFull(Exception):
@@ -154,6 +154,12 @@ class PtySessionRegistry:
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
+        # Strong references to detached ``close()`` tasks for sessions that
+        # have already been removed from ``_sessions``. asyncio keeps only a
+        # weak reference in the event loop's task table, so without this the
+        # loop can garbage-collect a capacity eviction's close mid-flight and
+        # the PTY child is never joined.
+        self._closing: Set[asyncio.Task] = set()
 
     async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]
                               ) -> Tuple[PtySession, bool]:
@@ -198,8 +204,23 @@ class PtySessionRegistry:
             raise RegistryFull()
         oldest = min(idle, key=lambda s: s.last_detached_at or 0.0)
         self._sessions.pop(oldest.key, None)
-        asyncio.create_task(oldest.close())
+        # This is a sync method (``attach_or_spawn`` calls it from a
+        # non-awaitable position), so the close cannot be awaited here. Keep
+        # the task in ``_closing`` instead: that holds the strong reference
+        # the event loop does not, and it is what lets ``close_all()`` still
+        # reach an eviction that is in flight at shutdown.
+        task = asyncio.create_task(oldest.close())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
 
     async def close_all(self) -> None:
         for key in list(self._sessions):
             await self._sessions.pop(key).close()
+        # Capacity evictions are removed from ``_sessions`` before their
+        # close is scheduled, so the loop above cannot reach one that is
+        # still in flight. Drain them here too, or shutdown returns while a
+        # PTY child is still unjoined. ``return_exceptions=True`` keeps one
+        # failing bridge from aborting the rest of the drain, matching the
+        # swallow-and-continue posture ``PtySession.close()`` already takes.
+        if self._closing:
+            await asyncio.gather(*list(self._closing), return_exceptions=True)

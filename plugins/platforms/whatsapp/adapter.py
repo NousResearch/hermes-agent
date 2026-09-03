@@ -325,6 +325,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import _normalize_allow_list_value
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -1901,23 +1902,17 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
         os.environ["WHATSAPP_MENTION_PATTERNS"] = _json.dumps(whatsapp_cfg["mention_patterns"])
     frc = whatsapp_cfg.get("free_response_chats")
     if frc is not None and not os.getenv("WHATSAPP_FREE_RESPONSE_CHATS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+        os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = _normalize_allow_list_value(frc)
     if "dm_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_DM_POLICY"):
         os.environ["WHATSAPP_DM_POLICY"] = str(whatsapp_cfg["dm_policy"]).lower()
     af = whatsapp_cfg.get("allow_from")
     if af is not None and not os.getenv("WHATSAPP_ALLOWED_USERS"):
-        if isinstance(af, list):
-            af = ",".join(str(v) for v in af)
-        os.environ["WHATSAPP_ALLOWED_USERS"] = str(af)
+        os.environ["WHATSAPP_ALLOWED_USERS"] = _normalize_allow_list_value(af)
     if "group_policy" in whatsapp_cfg and not os.getenv("WHATSAPP_GROUP_POLICY"):
         os.environ["WHATSAPP_GROUP_POLICY"] = str(whatsapp_cfg["group_policy"]).lower()
     gaf = whatsapp_cfg.get("group_allow_from")
     if gaf is not None and not os.getenv("WHATSAPP_GROUP_ALLOWED_USERS"):
-        if isinstance(gaf, list):
-            gaf = ",".join(str(v) for v in gaf)
-        os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = str(gaf)
+        os.environ["WHATSAPP_GROUP_ALLOWED_USERS"] = _normalize_allow_list_value(gaf)
     return None
 
 

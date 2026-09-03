@@ -3627,6 +3627,11 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    from agent.text_verbosity import finalize_text_verbosity_request
+
+                    next_api_kwargs = finalize_text_verbosity_request(
+                        agent, next_api_kwargs
+                    )
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,

@@ -83,6 +83,50 @@ def _rename_tool_search_bridge_for_xai(
     return rewritten, alias_map
 
 
+_TEXT_MISSING = object()
+
+
+def _strip_text_verbosity(api_kwargs: dict[str, Any]) -> None:
+    """Remove Responses-only verbosity while preserving sibling overrides."""
+    text = api_kwargs.pop("text", _TEXT_MISSING)
+    if isinstance(text, dict):
+        filtered_text = {
+            key: value
+            for key, value in text.items()
+            if not (isinstance(key, str) and key.strip() == "verbosity")
+        }
+        if filtered_text:
+            api_kwargs["text"] = filtered_text
+    elif text is not _TEXT_MISSING:
+        api_kwargs["text"] = text
+
+    extra_body = api_kwargs.get("extra_body")
+    if not isinstance(extra_body, dict):
+        return
+    filtered_body = dict(extra_body)
+    for key in list(filtered_body):
+        if not (isinstance(key, str) and key.strip() == "text"):
+            continue
+        value = filtered_body.pop(key)
+        if not isinstance(value, dict):
+            filtered_body[key] = value
+            continue
+        filtered_nested = {
+            nested_key: nested_value
+            for nested_key, nested_value in value.items()
+            if not (
+                isinstance(nested_key, str)
+                and nested_key.strip() == "verbosity"
+            )
+        }
+        if filtered_nested:
+            filtered_body["text"] = filtered_nested
+    if filtered_body:
+        api_kwargs["extra_body"] = filtered_body
+    else:
+        api_kwargs.pop("extra_body", None)
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 
@@ -805,6 +849,7 @@ class ChatCompletionsTransport(ProviderTransport):
         overrides = params.get("request_overrides")
         if overrides:
             api_kwargs.update(overrides)
+        _strip_text_verbosity(api_kwargs)
 
         _add_prompt_cache_key(
             api_kwargs,
@@ -970,6 +1015,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if extra_body:
                 api_kwargs["extra_body"] = extra_body
 
+        _strip_text_verbosity(api_kwargs)
         _add_prompt_cache_key(
             api_kwargs,
             messages=sanitized,

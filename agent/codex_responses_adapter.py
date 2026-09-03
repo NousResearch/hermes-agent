@@ -18,9 +18,11 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, List, NamedTuple, Optional
+from urllib.parse import urlsplit
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from agent.text_verbosity import parse_text_verbosity
 
 logger = logging.getLogger(__name__)
 
@@ -854,13 +856,15 @@ class ResponsesRouteFlags(NamedTuple):
     is_github_responses: bool
 
 
-def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
-    """Classify the agent's Responses route from provider + base URL.
+class _ResponsesRouteIdentity(NamedTuple):
+    provider: Any
+    hostname: str
+    lower: str
+    path: str
 
-    Host checks are exact-host-or-subdomain (``base_url_hostname``
-    semantics), never substring matching — ``https://evil.com/models.github.ai``
-    must not classify as a GitHub route.
-    """
+
+def _responses_route_identity(agent: Any) -> _ResponsesRouteIdentity:
+    """Resolve provider, host, and path once for every route predicate."""
     from utils import base_url_hostname
 
     provider = getattr(agent, "provider", None)
@@ -869,20 +873,46 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     if not hostname:
         hostname = base_url_hostname(base_url)
     lower = str(getattr(agent, "_base_url_lower", "") or base_url).lower()
+    path = urlsplit(base_url).path.rstrip("/")
+    return _ResponsesRouteIdentity(provider, hostname, lower, path)
 
+
+def _classify_responses_identity(identity: _ResponsesRouteIdentity) -> ResponsesRouteFlags:
     def _host_is(domain: str) -> bool:
-        return hostname == domain or hostname.endswith("." + domain)
+        return identity.hostname == domain or identity.hostname.endswith("." + domain)
 
-    is_codex_backend = provider == "openai-codex" or (
-        _host_is("chatgpt.com") and "/backend-api/codex" in lower
-    )
-    is_github_responses = _host_is("models.github.ai") or _host_is("githubcopilot.com")
-    is_xai_responses = provider in {"xai", "xai-oauth"} or hostname == "api.x.ai"
     return ResponsesRouteFlags(
-        is_codex_backend=is_codex_backend,
-        is_xai_responses=is_xai_responses,
-        is_github_responses=is_github_responses,
+        is_codex_backend=identity.provider == "openai-codex" or (
+            _host_is("chatgpt.com") and "/backend-api/codex" in identity.lower
+        ),
+        is_xai_responses=identity.provider in {"xai", "xai-oauth"}
+        or identity.hostname == "api.x.ai",
+        is_github_responses=_host_is("models.github.ai")
+        or _host_is("githubcopilot.com"),
     )
+
+
+def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
+    """Classify the agent's Responses route from provider + base URL.
+
+    Host checks are exact-host-or-subdomain (``base_url_hostname``
+    semantics), never substring matching — ``https://evil.com/models.github.ai``
+    must not classify as a GitHub route.
+    """
+    return _classify_responses_identity(_responses_route_identity(agent))
+
+
+def supports_openai_text_verbosity_route(agent: Any) -> bool:
+    """Return whether the exact Responses endpoint accepts text verbosity."""
+    identity = _responses_route_identity(agent)
+    route = _classify_responses_identity(identity)
+    return (
+        (
+            identity.hostname == "chatgpt.com"
+            and identity.path == "/backend-api/codex"
+        )
+        or identity.hostname == "api.openai.com"
+    ) and not route.is_xai_responses and not route.is_github_responses
 
 
 def estimate_native_responses_preflight_tokens(
@@ -908,7 +938,10 @@ def estimate_native_responses_preflight_tokens(
     if not isinstance(messages, list):
         return None
 
-    is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
+    route = classify_responses_route(agent)
+    is_codex_backend = route.is_codex_backend
+    is_xai_responses = route.is_xai_responses
+    is_github_responses = route.is_github_responses
 
     from agent.native_compaction import native_compaction_context_management
 
@@ -1310,7 +1343,7 @@ def _preflight_codex_api_kwargs(
 
     allowed_keys = {
         "model", "instructions", "input", "tools", "store",
-        "reasoning", "include", "max_output_tokens", "temperature",
+        "reasoning", "include", "max_output_tokens", "temperature", "text",
         "tool_choice", "parallel_tool_calls", "prompt_cache_key",
         "prompt_cache_retention", "service_tier", "context_management",
         "extra_headers", "extra_body", "timeout",
@@ -1334,6 +1367,31 @@ def _preflight_codex_api_kwargs(
     service_tier = api_kwargs.get("service_tier")
     if isinstance(service_tier, str) and service_tier.strip():
         normalized["service_tier"] = service_tier.strip()
+
+    text = api_kwargs.get("text")
+    if text is not None:
+        if not isinstance(text, dict):
+            raise ValueError("Codex Responses request 'text' must be an object.")
+        normalized_text: Dict[str, Any] = {}
+        for key, value in text.items():
+            if not isinstance(key, str) or not key.strip():
+                raise ValueError(
+                    "Codex Responses request 'text' keys must be non-empty strings."
+                )
+            normalized_key = key.strip()
+            if normalized_key == "verbosity":
+                if value is None:
+                    continue
+                verbosity = parse_text_verbosity(value)
+                if verbosity is None:
+                    raise ValueError(
+                        "Codex Responses request 'text.verbosity' must be low, medium, or high."
+                    )
+                normalized_text["verbosity"] = verbosity
+            else:
+                normalized_text[normalized_key] = value
+        if normalized_text:
+            normalized["text"] = normalized_text
 
     # Pass through max_output_tokens and temperature
     max_output_tokens = api_kwargs.get("max_output_tokens")

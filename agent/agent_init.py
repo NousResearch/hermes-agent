@@ -42,6 +42,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.text_verbosity import parse_text_verbosity
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
@@ -2041,6 +2042,21 @@ def init_agent(
     _agent_section = _agent_cfg.get("agent", {})
     if not isinstance(_agent_section, dict):
         _agent_section = {}
+    _configured_text_verbosity = _agent_section.get("text_verbosity")
+    agent.text_verbosity = parse_text_verbosity(_configured_text_verbosity)
+    if (
+        _configured_text_verbosity is not None
+        and (
+            not isinstance(_configured_text_verbosity, str)
+            or bool(_configured_text_verbosity.strip())
+        )
+        and agent.text_verbosity is None
+    ):
+        logger.warning(
+            "Invalid agent.text_verbosity in config.yaml: %r; must be low, "
+            "medium, high, or empty. Falling back to provider default.",
+            _configured_text_verbosity,
+        )
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
     # Execution-discipline guidance gate: "auto" (default — matches

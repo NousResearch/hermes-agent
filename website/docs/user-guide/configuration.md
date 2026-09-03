@@ -1664,6 +1664,23 @@ unreachable or a model isn't listed, Hermes falls back to its built-in
 model-family list and passes your effort through unchanged.
 :::
 
+### OpenAI Responses text verbosity
+
+Reasoning effort controls how much the model thinks; output verbosity separately
+controls how detailed its final response is. For supported GPT-5 Responses
+requests on the canonical ChatGPT Codex route or exact `api.openai.com` host,
+set `agent.text_verbosity` to `low`, `medium`, or `high`:
+
+```yaml
+agent:
+  reasoning_effort: high
+  text_verbosity: low
+```
+
+An empty or omitted value preserves the provider default. Hermes sends this as
+`text.verbosity` only on those routes. It is omitted for custom, xAI, GitHub,
+non-GPT, and chat-completions routes.
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

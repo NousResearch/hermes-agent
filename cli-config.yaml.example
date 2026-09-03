@@ -1194,6 +1194,12 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # OpenAI Responses output detail for GPT-5 models: "low", "medium", or "high".
+  # Empty preserves the provider default. Applied only to the canonical ChatGPT
+  # Codex route or exact api.openai.com host; omitted for custom, xAI, GitHub,
+  # non-GPT, and chat-completions routes.
+  text_verbosity: ""
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,

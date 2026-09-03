@@ -184,6 +184,60 @@ class TestExtractCacheBustingConfig:
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
 
+    def test_normalizes_agent_text_verbosity(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": " Low "}}
+        )
+
+        assert out["agent.text_verbosity"] == "low"
+
+    def test_text_verbosity_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m",
+            runtime,
+            [],
+            "",
+            cache_keys={"agent.text_verbosity": "low"},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m",
+            runtime,
+            [],
+            "",
+            cache_keys={"agent.text_verbosity": "high"},
+        )
+
+        assert sig_before != sig_after
+
+    def test_malformed_text_verbosity_is_safe_for_cache_signature(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": {"bad": "value"}}}
+        )
+
+        assert out["agent.text_verbosity"] is None
+
+    def test_text_verbosity_cache_key_expands_environment_refs(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_TEST_TEXT_VERBOSITY", "low")
+        out_low = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": "${HERMES_TEST_TEXT_VERBOSITY}"}}
+        )
+        monkeypatch.setenv("HERMES_TEST_TEXT_VERBOSITY", "high")
+        out_high = GatewayRunner._extract_cache_busting_config(
+            {"agent": {"text_verbosity": "${HERMES_TEST_TEXT_VERBOSITY}"}}
+        )
+
+        assert out_low["agent.text_verbosity"] == "low"
+        assert out_high["agent.text_verbosity"] == "high"
+
 
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""

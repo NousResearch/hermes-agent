@@ -39,6 +39,100 @@ from agent.reasoning_effort import (
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+from agent.text_verbosity import (
+    parse_text_verbosity,
+    supports_openai_text_verbosity,
+)
+
+
+_MISSING = object()
+
+
+def _apply_text_verbosity(
+    kwargs: Dict[str, Any],
+    *,
+    configured: Any,
+    route_supported: bool,
+) -> None:
+    """Merge supported verbosity controls and close override bypasses."""
+    extra_body = kwargs.get("extra_body")
+    cleaned_extra_body = dict(extra_body) if isinstance(extra_body, dict) else None
+    extra_text: Any = _MISSING
+    effective_model = kwargs.get("model")
+
+    if cleaned_extra_body is not None:
+        if "model" in cleaned_extra_body:
+            effective_model = cleaned_extra_body["model"]
+        for key in list(cleaned_extra_body):
+            if isinstance(key, str) and key.strip() == "text":
+                value = cleaned_extra_body.pop(key)
+                if extra_text is _MISSING:
+                    extra_text = value
+                elif isinstance(extra_text, dict) and isinstance(value, dict):
+                    extra_text = {**extra_text, **value}
+
+    supported = supports_openai_text_verbosity(
+        effective_model,
+        route_supported=route_supported,
+    )
+    top_text = kwargs.get("text", _MISSING)
+
+    if supported:
+        if isinstance(top_text, dict):
+            supported_text: Any = {
+                key.strip() if isinstance(key, str) else key: value
+                for key, value in top_text.items()
+            }
+        else:
+            supported_text = top_text
+
+        if extra_text is not _MISSING:
+            if isinstance(supported_text, dict) and isinstance(extra_text, dict):
+                supported_text.update(
+                    {
+                        key.strip() if isinstance(key, str) else key: value
+                        for key, value in extra_text.items()
+                    }
+                )
+            elif supported_text is _MISSING:
+                if isinstance(extra_text, dict):
+                    supported_text = {
+                        key.strip() if isinstance(key, str) else key: value
+                        for key, value in extra_text.items()
+                    }
+                else:
+                    supported_text = extra_text
+
+        verbosity = parse_text_verbosity(configured)
+        if verbosity:
+            if supported_text is _MISSING:
+                supported_text = {"verbosity": verbosity}
+            elif isinstance(supported_text, dict):
+                supported_text.setdefault("verbosity", verbosity)
+
+        if supported_text is _MISSING:
+            kwargs.pop("text", None)
+        else:
+            kwargs["text"] = supported_text
+    else:
+        filtered_text: Dict[Any, Any] = {}
+        for candidate in (top_text, extra_text):
+            if not isinstance(candidate, dict):
+                continue
+            for key, value in candidate.items():
+                normalized_key = key.strip() if isinstance(key, str) else key
+                if normalized_key != "verbosity":
+                    filtered_text[normalized_key] = value
+        if filtered_text:
+            kwargs["text"] = filtered_text
+        else:
+            kwargs.pop("text", None)
+
+    if cleaned_extra_body is not None:
+        if cleaned_extra_body:
+            kwargs["extra_body"] = cleaned_extra_body
+        else:
+            kwargs.pop("extra_body", None)
 
 
 def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
@@ -538,6 +632,8 @@ class ResponsesApiTransport(ProviderTransport):
             is_codex_backend: bool — chatgpt.com/backend-api/codex
             is_xai_responses: bool — xAI/Grok backend
             github_reasoning_extra: dict | None — Copilot reasoning params
+            text_verbosity: str | None — configured OpenAI output detail
+            text_verbosity_route_supported: bool — exact endpoint capability
         """
         from agent.codex_responses_adapter import (
             _chat_messages_to_responses_input,
@@ -815,6 +911,12 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        _apply_text_verbosity(
+            kwargs,
+            configured=params.get("text_verbosity"),
+            route_supported=params.get("text_verbosity_route_supported") is True,
+        )
 
         if "prompt_cache_key" in kwargs:
             bounded_cache_key = _bounded_prompt_cache_key(kwargs["prompt_cache_key"])

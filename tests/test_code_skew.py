@@ -81,12 +81,26 @@ class TestDashboardCodeSkewGuard:
     def test_dashboard_guard_message_names_revs_and_restart(self, monkeypatch):
         from hermes_cli import web_server
 
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
         monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
         msg = web_server._dashboard_code_skew_guard()
         assert msg is not None
         assert "abc1234567" in msg
         assert "def4567890" in msg
         assert "restart" in msg.lower()
+        # Browser-dashboard path: never hardcode a Linux-only unit (#97046).
+        assert "systemctl" not in msg
+
+    def test_serve_guard_message_points_at_desktop_backend(self, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+        msg = web_server._dashboard_code_skew_guard()
+        assert msg is not None
+        assert "Desktop-owned backend" in msg
+        assert "systemctl" not in msg
+        assert "hermes-dashboard" not in msg
 
 
 class TestModelOptionsSkewGuard:

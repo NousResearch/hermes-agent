@@ -201,6 +201,14 @@ def _install_session_record_factory() -> None:
         record = current_factory(*args, **kwargs)
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+        # QueueListener formats records on its own thread, after the
+        # profile-scoped ContextVar has gone out of scope. Keep the resolved
+        # home on the record so a multiplex desktop ticker can route the log
+        # to the job owner's files (#97489).
+        try:
+            record.hermes_home = str(get_hermes_home().resolve())  # type: ignore[attr-defined]
+        except Exception:
+            record.hermes_home = ""  # type: ignore[attr-defined]
         return record
 
     _session_record_factory._hermes_session_injector = True  # type: ignore[attr-defined]
@@ -547,6 +555,97 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._record_stream_stat()
 
 
+class _ProfileRoutingFileHandler(logging.Handler):
+    """Route queued records to the log file for their Hermes home.
+
+    Dashboard logging is initialized once for the process that launched it,
+    while the desktop cron ticker can execute jobs for several profile homes.
+    A normal ``RotatingFileHandler`` therefore pins every cron record to the
+    dashboard profile. This handler keeps one rotating file handler per live
+    profile and selects it from the home captured by the record factory.
+
+    The handler itself is used only behind the existing QueueListener, so its
+    small routing lock never blocks an agent or dashboard event loop. The
+    underlying handlers retain the existing rotation, redaction, and managed
+    permission behavior.
+    """
+
+    def __init__(
+        self,
+        *,
+        default_path: Path,
+        profile_homes: Sequence[Path],
+        level: int,
+        max_bytes: int,
+        backup_count: int,
+        formatter: logging.Formatter | None,
+        log_filters: Sequence[logging.Filter],
+    ) -> None:
+        super().__init__(level=level)
+        self.baseFilename = str(default_path.resolve())
+        self._hermes_routed_log_path = Path(self.baseFilename)
+        self._default_home = Path(self.baseFilename).parent.parent.resolve()
+        self._profile_homes = {
+            Path(home).expanduser().resolve()
+            for home in profile_homes
+        }
+        self._filename = Path(self.baseFilename).name
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
+        self._profile_handlers: dict[Path, _ManagedRotatingFileHandler] = {}
+        self._profile_handlers_lock = threading.RLock()
+        if formatter is not None:
+            self.setFormatter(formatter)
+        for log_filter in log_filters:
+            self.addFilter(log_filter)
+
+    def _home_for_record(self, record: logging.LogRecord) -> Path:
+        raw_home = getattr(record, "hermes_home", "")
+        try:
+            candidate = Path(raw_home).expanduser().resolve()
+        except (TypeError, ValueError, OSError):
+            candidate = self._default_home
+        return candidate if candidate in self._profile_homes else self._default_home
+
+    def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
+        with self._profile_handlers_lock:
+            handler = self._profile_handlers.get(home)
+            if handler is not None:
+                return handler
+
+            path = home / "logs" / self._filename
+            from hermes_constants import mkdir_under_hermes_home
+
+            mkdir_under_hermes_home(path.parent)
+            handler = _ManagedRotatingFileHandler(
+                str(path),
+                maxBytes=self._max_bytes,
+                backupCount=self._backup_count,
+                encoding="utf-8",
+            )
+            handler.setLevel(self.level)
+            handler.setFormatter(self.formatter)
+            self._profile_handlers[home] = handler
+            return handler
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._handler_for_home(self._home_for_record(record)).handle(record)
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        with self._profile_handlers_lock:
+            handlers = list(self._profile_handlers.values())
+            self._profile_handlers.clear()
+        for handler in handlers:
+            try:
+                handler.close()
+            except Exception:
+                pass
+        super().close()
+
+
 # ---------------------------------------------------------------------------
 # Asynchronous file logging — keep the cross-process rotation lock off the loop
 #
@@ -700,6 +799,73 @@ def rotating_file_handlers() -> list:
     return list(_queued_file_handlers)
 
 
+def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
+    """Make the queued file logs follow a desktop profile context.
+
+    ``setup_logging`` normally binds handlers to one process home. The
+    desktop dashboard is the exception: its embedded cron ticker may run
+    jobs for every profile. Replace the existing static file handlers with
+    profile routers after that profile list is known.
+
+    Returns ``True`` when routing is enabled or was already enabled. A
+    single-profile caller is left untouched because its existing handlers are
+    already correctly scoped.
+    """
+    global _queue_listener
+
+    homes = []
+    for entry in profile_homes:
+        home = entry[1] if isinstance(entry, tuple) else entry
+        try:
+            resolved = Path(home).expanduser().resolve()
+        except (TypeError, ValueError, OSError):
+            continue
+        if resolved not in homes:
+            homes.append(resolved)
+    if len(homes) < 2:
+        return False
+
+    with _queue_state_lock:
+        if not _queued_file_handlers:
+            return False
+        if any(isinstance(h, _ProfileRoutingFileHandler) for h in _queued_file_handlers):
+            return True
+
+        listener = _queue_listener
+        if listener is not None:
+            listener.stop()
+
+        replacement = []
+        for existing in _queued_file_handlers:
+            if not isinstance(existing, RotatingFileHandler):
+                replacement.append(existing)
+                continue
+
+            default_path = Path(existing.baseFilename)
+            router = _ProfileRoutingFileHandler(
+                default_path=default_path,
+                profile_homes=homes,
+                level=existing.level,
+                max_bytes=getattr(existing, "maxBytes", 0),
+                backup_count=getattr(existing, "backupCount", 0),
+                formatter=existing.formatter,
+                log_filters=list(existing.filters),
+            )
+            replacement.append(router)
+            try:
+                existing.close()
+            except Exception:
+                pass
+
+        _queued_file_handlers[:] = replacement
+        if listener is not None:
+            _queue_listener = QueueListener(
+                _log_queue, *_queued_file_handlers, respect_handler_level=True
+            )
+            _queue_listener.start()
+        return True
+
+
 def _reset_queued_handlers() -> None:
     """Tear down the async logging queue + listener (test-isolation helper)."""
     global _log_queue
@@ -744,6 +910,8 @@ def _add_rotating_handler(
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
             return  # already attached
+        if getattr(existing, "_hermes_routed_log_path", None) == resolved:
+            return  # already covered by the profile router
 
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(path.parent)

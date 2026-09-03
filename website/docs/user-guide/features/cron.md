@@ -187,8 +187,8 @@ When `workdir` is set:
 - The path must be an absolute directory that exists — relative paths and missing directories are rejected at create / update time
 - Pass `--workdir ""` (or `workdir=""` via the tool) on edit to clear it and restore the old behaviour
 
-:::note Serialization
-Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
+:::note Isolation
+Each agent run binds its `workdir` to that run's unique task identity. Workdir jobs therefore use the normal parallel pool without mutating process-global terminal state or leaking paths between concurrent runs. Set `cron.max_parallel_jobs` if you want to limit total cron concurrency.
 :::
 
 ## Editing jobs
@@ -379,6 +379,32 @@ written.
 Recording is always on and costs nothing to ignore — no ping is ever
 suppressed until you explicitly `ack`.
 
+### Fleet health check: `hermes cron doctor`
+
+`hermes cron doctor` is a read-only health check over every active job. It
+prints grouped, per-job issues and exits `1` when anything actionable is
+found (`0` when healthy), so it works from a terminal, a watchdog script, or
+a CI-style smoke check:
+
+```bash
+hermes cron doctor
+```
+
+Checks per active job:
+
+- last run failed (`last_status` not ok, with the recorded error),
+- last delivery failed (the output was produced but never reached you),
+- `next_run_at` missing, or parked in the past beyond a 15-minute ticker
+  grace window — the "job is silently not firing" signal (scheduler dead,
+  gateway down, or a wedged fire-claim),
+- script missing, not a file, or resolving outside `HERMES_HOME/scripts`,
+- `no_agent` job with no script,
+- configured `workdir` that no longer exists.
+
+Doctor never mutates jobs or state — it only reports. Pair it with
+`hermes cron incidents` (durable failure records) and `hermes cron runs`
+(attempt ledger) when digging into a flagged job.
+
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:
@@ -413,6 +439,19 @@ When scheduling jobs, you specify where the output goes:
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
+
+### Delivery failures are a distinct status
+
+Execution and delivery are tracked separately. When the agent run succeeds but
+the output never reaches the target (platform 5xx, rate limit, stale session,
+adapter returned no positive evidence of a send), the job records
+`last_status: delivery_failed` — never a plain `ok` — with the reason in
+`last_delivery_error`. `hermes cron list` shows it in yellow as
+`delivery_failed: <reason>`, `hermes cron doctor` reports it as a delivery
+issue, and a manual `cronjob run` reports `success: false` with the delivery
+error. A delivery failure does not count toward the job's `failure_streak`
+(the agent did its job); the next fully successful run returns the status to
+`ok`.
 
 ### Bot Chat delivery (`bot-chat`)
 
@@ -462,6 +501,43 @@ To deliver the raw agent output without the wrapper, set `cron.wrap_response` to
 cron:
   wrap_response: false
 ```
+
+### Push notifications (`cron.delivery.notify`)
+
+Cron output is a *final* delivery, not a progress message, so by default it is
+sent with the platform's notification flag set — on Telegram this means the
+brief triggers a push even when the adapter's notification mode is `important`
+(which otherwise sends with `disable_notification=true`, and users report the
+silent brief as "never delivered"). To restore silent deliveries:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  delivery:
+    notify: false   # default: true
+```
+
+The flag rides both the text send and any media attachments, so a run never
+pushes for one and stays silent for the other.
+
+### Delivery confirmation and the `UNVERIFIED` state
+
+A live-adapter delivery is logged as delivered only on positive evidence from
+the adapter: an explicit `success` that is not a filtered drop
+(`delivered: false`), plus a `message_id` or `raw_response`. A result carrying
+`success` but neither piece of evidence — the shape Slack, Matrix and
+Mattermost adapters return — is still accepted (it is not proof of failure),
+but the run is recorded on the job as `last_delivery_unverified` and surfaces
+in `hermes cron list`:
+
+```
+⚠ Delivery UNVERIFIED: adapter acked slack:C0123456 without message_id/raw_response
+```
+
+and in `hermes cron doctor` as `last delivery unverified (...)`. The marker is
+cleared by the next run that delivers with evidence. An empty payload (no text
+and no media) is never handed to an adapter; it fails closed and is reported in
+`last_delivery_error` instead of being logged as delivered.
 
 ### Continuable jobs (reply to a cron delivery)
 

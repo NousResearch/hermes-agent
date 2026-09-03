@@ -286,7 +286,12 @@ def test_native_authorize_empty_provider_password_only_brokers_to_login(
     assert r.status_code == 302, r.text
     assert r.headers["location"].endswith("/login")
     set_cookie = r.headers.get("set-cookie", "")
-    assert "broker=" in set_cookie
+    # The PKCE cookie value is URL-encoded on the wire; decode through
+    # the real reader inverse before asserting the broker handle rides
+    # in it.
+    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    wire_value = set_cookie.split("=", 1)[1].split(";", 1)[0]
+    assert "broker" in parse_pkce_payload(wire_value)
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +413,10 @@ def test_native_authorize_password_provider_redirects_to_login(
     assert r.headers["location"].endswith("/login")
     set_cookie = r.headers.get("set-cookie", "")
     assert "pkce" in set_cookie
-    assert "broker=" in set_cookie
+    # Wire value is URL-encoded; decode through the reader inverse.
+    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    wire_value = set_cookie.split("=", 1)[1].split(";", 1)[0]
+    assert "broker" in parse_pkce_payload(wire_value)
 
 
 def _start_native_password_login(client, *, challenge, state="desk-state"):

@@ -274,21 +274,15 @@ class TestSyncMode:
         sched._shutdown_parallel_pool()
 
 
-class TestSequentialPool:
-    """Sequential (workdir) jobs use the persistent cron-seq pool.
+class TestWorkdirParallelPool:
+    """Task-scoped workdir jobs use the normal persistent parallel pool."""
 
-    Verifies the follow-up fix: env-mutating jobs no longer run inline
-    in the ticker thread, so a long workdir job can't starve the
-    schedule the same way the parallel path used to.
-    """
-
-    def test_sequential_job_does_not_block_ticker(self, tmp_path, monkeypatch):
+    def test_workdir_job_does_not_block_ticker(self, tmp_path, monkeypatch):
         """sync=False returns immediately even when a workdir job is slow."""
         import cron.scheduler as sched
 
         sched._parallel_pool = None
         sched._parallel_pool_max_workers = None
-        sched._sequential_pool = None
         sched._running_job_ids.clear()
 
         job = {
@@ -299,7 +293,7 @@ class TestSequentialPool:
             "enabled": True,
             "next_run_at": "2020-01-01T00:00:00",
             "deliver": "local",
-            "workdir": str(tmp_path),  # makes it sequential
+            "workdir": str(tmp_path),
         }
 
         barrier = threading.Barrier(2, timeout=5)
@@ -326,13 +320,12 @@ class TestSequentialPool:
         time.sleep(0.1)
         sched._shutdown_parallel_pool()
 
-    def test_sequential_running_guard_prevents_double_dispatch(self, tmp_path, monkeypatch):
+    def test_workdir_running_guard_prevents_double_dispatch(self, tmp_path, monkeypatch):
         """A workdir job already in _running_job_ids is skipped on next tick."""
         import cron.scheduler as sched
 
         sched._parallel_pool = None
         sched._parallel_pool_max_workers = None
-        sched._sequential_pool = None
         sched._running_job_ids.clear()
 
         job = {
@@ -363,19 +356,6 @@ class TestSequentialPool:
 
         sched._running_job_ids.discard("guard-seq")
         sched._shutdown_parallel_pool()
-
-    def test_get_sequential_pool_is_persistent(self):
-        """_get_sequential_pool returns the same single-thread pool."""
-        import cron.scheduler as sched
-
-        sched._sequential_pool = None
-        pool1 = sched._get_sequential_pool()
-        pool2 = sched._get_sequential_pool()
-        assert pool1 is pool2
-
-        sched._shutdown_parallel_pool()
-        assert sched._sequential_pool is None
-
 
 class TestTickBatchAdvance:
     """The tick's pre-dispatch advance must go through advance_next_runs

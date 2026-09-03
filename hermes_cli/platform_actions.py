@@ -99,7 +99,36 @@ class PlatformActions:
             platform_enum = Platform(str(platform).strip().lower())
         except Exception:
             return None, _err("unknown_platform", f"unknown platform {platform!r}")
-        adapter = getattr(runner, "adapters", {}).get(platform_enum)
+        # Multiplex/Team-Gateway: a secondary profile's adapters live in
+        # runner._profile_adapters[profile], not runner.adapters (the default
+        # profile's registry) — every other adapter-resolution path in this
+        # codebase (_authorization_adapter, plugin message-injection) goes
+        # through this same profile-aware, fail-closed lookup so a plugin
+        # scoped to one profile can never act through another profile's bot
+        # identity. Falls back to the bare default-profile lookup only when
+        # the gateway runner predates this method (defensive, not expected).
+        resolve_fn = getattr(runner, "_authorization_adapter", None)
+        if callable(resolve_fn):
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile_name = get_active_profile_name()
+            except Exception:
+                # Fail closed: an unresolvable profile must not degrade to the
+                # default profile's bot (the same rule _authorization_adapter
+                # applies to a stamped profile with no registry entry).
+                logger.debug(
+                    "platform_actions: profile resolution failed for %s",
+                    self._plugin_id, exc_info=True,
+                )
+                return None, _err(
+                    "adapter_not_registered",
+                    f"no {platform_enum.value} adapter is registered "
+                    "(active profile could not be resolved)",
+                )
+            adapter = resolve_fn(platform_enum, profile_name)
+        else:
+            adapter = getattr(runner, "adapters", {}).get(platform_enum)
         if adapter is None:
             return None, _err(
                 "adapter_not_registered",

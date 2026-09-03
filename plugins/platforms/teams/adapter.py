@@ -103,12 +103,13 @@ TextBlock = None  # type: ignore[assignment,misc]
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
+    gateway_trust_env,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
     cache_image_from_url,
-    cache_media_bytes,
+    cache_media_bytes_async,
 )
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
@@ -641,7 +642,7 @@ async def _standalone_send(
         # Per-request timeouts so a slow STS endpoint cannot starve the
         # subsequent activity POST of its budget.
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
-        async with _aiohttp.ClientSession(trust_env=True) as session:
+        async with _aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
             async with session.post(
                 token_url,
                 data={
@@ -1095,7 +1096,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 filename = att_name or (f"document.{file_type}" if file_type else "document")
                 try:
                     data = await self._fetch_attachment_bytes(download_url)
-                    cached = cache_media_bytes(data, filename=filename, mime_type="")
+                    cached = await cache_media_bytes_async(data, filename=filename, mime_type="")
                     if cached:
                         media_urls.append(cached.path)
                         media_types.append(cached.media_type)
@@ -1116,7 +1117,7 @@ class TeamsAdapter(BasePlatformAdapter):
                         # bearer token; the generic cache helper sends none.
                         data = await self._fetch_attachment_bytes(content_url)
                         ext = content_type.split("/")[-1].split(";")[0] or "png"
-                        cached_m = cache_media_bytes(
+                        cached_m = await cache_media_bytes_async(
                             data,
                             filename=att_name or f"image.{ext}",
                             mime_type=content_type,
@@ -1144,7 +1145,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 # Direct-URL non-image attachment (video/audio/document).
                 try:
                     data = await self._fetch_attachment_bytes(content_url)
-                    cached = cache_media_bytes(
+                    cached = await cache_media_bytes_async(
                         data, filename=att_name, mime_type=content_type
                     )
                     if cached:

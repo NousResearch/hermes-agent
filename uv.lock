@@ -12,19 +12,104 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
+elevenlabs = false
 setuptools = false
-huggingface-hub = false
-vercel = false
-pillow = false
-unpaddedbase64 = false
-h2 = false
-defusedxml = false
+modal = false
+pyyaml = false
+maturin = false
+numpy = false
+pvporcupine = false
+google-auth = false
 aiohttp = false
-cryptography = false
+starlette = false
+mistralai = false
+firecrawl-py = false
+parallel-web = false
+markdown = false
+opentelemetry-sdk = false
+prompt-toolkit = false
+fastapi = false
+anthropic = false
+pathspec = false
+openwakeword = false
+defusedxml = false
+ruff = false
+exa-py = false
 mcp = false
 python-olm = false
+wheel = false
+websockets = false
+pytest = false
+pillow = false
+setuptools-rust = false
+tenacity = false
+pyjwt = false
+slack-bolt = false
+fal-client = false
+asyncpg = false
+boto3 = false
+ruamel-yaml = false
+sherpa-onnx = false
+huggingface-hub = false
+pytest-asyncio = false
+slack-sdk = false
+unpaddedbase64 = false
+discord-py = false
+honcho-ai = false
+faster-whisper = false
+certifi = false
+debugpy = false
+packaging = false
+rich = false
+supermemory = false
+youtube-transcript-api = false
+h2 = false
+edge-tts = false
+microsoft-teams-apps = false
+aiohttp-socks = false
+ai-edge-litert = false
+onnxruntime = false
+croniter = false
+opentelemetry-exporter-otlp-proto-http = false
+azure-identity = false
+lark-oapi = false
+sentencepiece = false
 firecrawl-anydoc = false
+google-api-python-client = false
+brotlicffi = false
+mem0ai = false
+qrcode = false
+vercel = false
+aiosqlite = false
+tzdata = false
+python-dotenv = false
+daytona = false
+uvicorn = false
 nemo-relay = false
+requests = false
+httplib2 = false
+httpx = false
+pyasn1 = false
+snowballstemmer = false
+concurrent-log-handler = false
+cryptography = false
+pydantic = false
+agent-client-protocol = false
+fire = false
+httpx2 = false
+google-auth-oauthlib = false
+python-multipart = false
+ty = false
+openai = false
+mautrix = false
+google-auth-httplib2 = false
+python-telegram-bot = false
+psutil = false
+jinja2 = false
+hindsight-client = false
+sounddevice = false
+alibabacloud-dingtalk = false
+dingtalk-stream = false
 
 [manifest]
 overrides = [
@@ -1585,7 +1670,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.20.6"
+version = "0.21.0"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -4070,7 +4155,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4125,7 +4210,7 @@ resolution-markers = [
     "python_full_version == '3.12.*'",
 ]
 dependencies = [
-    { name = "numpy" },
+    { name = "numpy", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
@@ -4773,11 +4858,11 @@ name = "vercel-workers"
 version = "0.0.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "vercel" },
+    { name = "anyio", marker = "python_full_version >= '3.12'" },
+    { name = "httpx", marker = "python_full_version >= '3.12'" },
+    { name = "pydantic", marker = "python_full_version >= '3.12'" },
+    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
+    { name = "vercel", marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/30/df/04d37021ad7ca53b7599c313e411d91623c7a005c741f491d1eefb7a9f0c/vercel_workers-0.0.25.tar.gz", hash = "sha256:212ded01400b524be51d251df49f801caf115ad7d48cca7eb168cbeceda3def3", size = 64149, upload-time = "2026-06-20T19:26:27.177Z" }
 wheels = [

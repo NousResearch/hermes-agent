@@ -272,6 +272,8 @@ class ComputeHost:
             self._handle_turn_start(frame)
         elif kind == "interrupt":
             self._handle_interrupt(frame)
+        elif kind == "respond":
+            self._handle_respond(frame)
         elif kind == "reload_mcp":
             self._handle_reload_mcp(frame)
         elif kind == "control":
@@ -363,17 +365,61 @@ class ComputeHost:
             if session is None:
                 self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False})
                 return
-            agent = session.get("agent")
-            if agent is not None:
-                request_hard_interrupt(agent)
-            with session.get("history_lock", threading.Lock()):
-                session["_turn_cancel_requested"] = True
-                session["queued_prompt"] = None
-                session.pop("queued_prompts", None)
-                session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+            # In the child, `_session_uses_compute_host()` is false, so the
+            # shared helper interrupts the local agent and releases this
+            # process's pending clarify Event. The parent has only a metadata
+            # mirror and cannot release the prompt that is blocking the turn.
+            server._interrupt_session_turn(sid, session)
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": True, "applied_ns": now_ns()})
         except Exception as exc:
             self.emit({"type": "interrupt.ack", "sid": sid, "request_id": frame.get("request_id"), "applied": False, "message": str(exc)})
+
+    def _handle_respond(self, frame: dict[str, Any]) -> None:
+        """Resolve an interactive request in the host-owned pending registry."""
+        sid = str(frame.get("sid") or "")
+        request_id = frame.get("request_id")
+        try:
+            from tui_gateway import server
+
+            if sid not in server._sessions:
+                self.emit(
+                    {
+                        "type": "respond.error",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "message": "session not found",
+                    }
+                )
+                return
+            params = frame.get("params")
+            if not isinstance(params, dict):
+                self.emit(
+                    {
+                        "type": "respond.error",
+                        "sid": sid,
+                        "request_id": request_id,
+                        "message": "response params must be an object",
+                    }
+                )
+                return
+            response = server._methods["clarify.respond"](request_id, params)
+            self.emit(
+                {
+                    "type": "respond.ack",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "response": response,
+                }
+            )
+        except Exception as exc:
+            self.emit(
+                {
+                    "type": "respond.error",
+                    "sid": sid,
+                    "request_id": request_id,
+                    "message": str(exc),
+                }
+            )
 
     def _run_spike_turn(self, session: HostSession, frame: dict[str, Any]) -> None:
         request_id = frame.get("request_id") or uuid.uuid4().hex
@@ -563,7 +609,8 @@ class ComputeHost:
                 # server._sessions[sid] (via _init_session, or the fallback dict
                 # in the except below), so the agent is the right owner; a
                 # _make_agent that RAISES is the one path where nothing takes it.
-                session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+                from hermes_state import get_shared_session_db
+                session_db = get_shared_session_db(Path(profile_home) / "state.db")
                 owns_db = True
             agent = server._make_agent(
                 sid,
@@ -573,6 +620,9 @@ class ComputeHost:
                 reasoning_config_override=frame.get("reasoning_config_override"),
                 service_tier_override=frame.get("service_tier_override"),
                 platform_override=frame.get("source"),
+                context_cwd_is_launch_artifact=bool(
+                    frame.get("context_cwd_is_launch_artifact", False)
+                ),
                 session_db=session_db,
             )
             if server._transfer_db_to_agent(agent, session_db):
@@ -580,7 +630,8 @@ class ComputeHost:
         finally:
             if owns_db and session_db is not None:
                 with contextlib.suppress(Exception):
-                    session_db.close()
+                    from hermes_state import release_or_close
+                    release_or_close(session_db)
             if home_token is not None:
                 try:
                     from hermes_constants import reset_hermes_home_override

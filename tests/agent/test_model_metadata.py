@@ -799,6 +799,36 @@ class TestFetchEndpointModelMetadata:
         not_found.close.assert_called_once()
         success.close.assert_called_once()
 
+    def test_remote_probe_is_memoized_on_disk_across_processes(self, tmp_path, monkeypatch):
+        """A fresh process (cleared in-memory cache) must answer from the disk
+        memo within the TTL instead of re-probing the endpoint — the cost every
+        one-shot Bot Mode DM hop paid on startup. Expired memos re-probe."""
+        import agent.model_metadata as mm
+
+        monkeypatch.setattr(
+            mm, "_get_endpoint_metadata_cache_path", lambda: tmp_path / "endpoint_model_metadata.json"
+        )
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {"data": [{"id": "test/model", "context_length": 32768}]}
+
+        with patch("agent.model_metadata.requests.get", return_value=success) as mock_get:
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+            # "New process": drop the in-memory cache only.
+            mm._endpoint_model_metadata_cache.clear()
+            mm._endpoint_model_metadata_cache_time.clear()
+            assert mm.fetch_endpoint_model_metadata("https://custom.example/v1")["test/model"]["context_length"] == 32768
+        mock_get.assert_called_once()
+
+        # Past the TTL the memo is stale and the endpoint is probed again.
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        with patch("agent.model_metadata.time.time", return_value=time.time() + mm._ENDPOINT_MODEL_CACHE_TTL + 1), patch(
+            "agent.model_metadata.requests.get", return_value=success
+        ) as mock_get:
+            mm.fetch_endpoint_model_metadata("https://custom.example/v1")
+        mock_get.assert_called_once()
+
 
 # =========================================================================
 # Nous Portal context-window resolution (provider="nous")
@@ -1412,6 +1442,29 @@ class TestParseContextLimitFromError:
         space-only patterns silently missed ':', '=', '(' and 'is' forms and
         fell through to None."""
         assert parse_context_limit_from_error(msg) == expected
+
+    @pytest.mark.parametrize("msg,expected", [
+        # Google Gemini/Gemma overflow phrasing (#57275): the limit follows
+        # "supports up to"; the larger input count before it must NOT win.
+        ("Unable to submit request because the input token count is 32825 "
+         "but model only supports up to 32768. Reduce the input token count "
+         "and try again.", 32768),
+        ("input token count is 140000 but model only supports up to 131072", 131072),
+        ("model supports up to 65536 tokens", 65536),
+    ])
+    def test_google_supports_up_to_variants(self, msg, expected):
+        """Google's overflow error was previously unparseable — recovery kept
+        the wrong window and burned its attempts (#57275, residual claim 5)."""
+        assert parse_context_limit_from_error(msg) == expected
+
+    def test_google_supports_up_to_recalibrates_window(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        msg = ("Unable to submit request because the input token count is "
+               "32825 but model only supports up to 32768.")
+        assert get_context_length_from_provider_error(msg, 131072) == 32768
+        # Parsed limit not below current window → no recalibration.
+        assert get_context_length_from_provider_error(msg, 32768) is None
 
     def test_get_context_length_from_vllm_max_model_len_error(self):
         from agent.model_metadata import get_context_length_from_provider_error

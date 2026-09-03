@@ -10,6 +10,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 
 
 @pytest.fixture(autouse=True)
@@ -2407,3 +2408,220 @@ def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     )
 
     assert "".join(reasoning_streamed) == "Need to inspect files."
+
+
+def _codex_compaction_checkpoint_response(blob: str = "compaction_blob_1"):
+    """A turn that returns ONLY a server-side native-compaction checkpoint.
+
+    This is what gpt-5.6 on the Codex backend sends when it compacts a long
+    conversation: a ``compaction`` output item carrying the encrypted
+    stand-in for the pruned history, with no ``message`` and no
+    ``function_call``. It normalizes to ``finish_reason="incomplete"``, and
+    the checkpoint rides the ``codex_reasoning_items`` sidecar.
+    """
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="compaction",
+                encrypted_content=blob,
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=9, output_tokens=1, total_tokens=10),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
+def test_codex_compaction_only_continuation_gets_nudged_before_budget_runs_out(monkeypatch):
+    """A compaction-checkpoint-only turn must not burn the retry budget on
+    byte-identical continuations.
+
+    The checkpoint lands in ``codex_reasoning_items``, so the interim looks
+    "replayable" and the old gate suppressed the continuation nudge. But a
+    checkpoint carries no answer and no new instruction, and — because a
+    replayed checkpoint makes the wire converter prune every pre-checkpoint
+    item — the continuation re-sends the same checkpoint plus the same
+    retained user messages and ends on an empty assistant turn. Every attempt
+    is then identical (the provider's prefix cache reports 99-100% on the
+    repeats) and returns the same empty response, so the turn dies with
+    "Codex response remained incomplete after 3 continuation attempts" and
+    the whole turn's work is lost.
+
+    One bare retry is still allowed. Once that has also come back incomplete,
+    every remaining attempt must carry the nudge so the request differs and
+    states what is wanted.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_compaction_checkpoint_response("blob_1"),
+        _codex_compaction_checkpoint_response("blob_2"),
+        _codex_message_response("Here is the answer."),
+    ]
+    sent_message_counts: list = []
+    original_call = agent._interruptible_api_call
+
+    def _fake_call(api_kwargs):
+        sent_message_counts.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_call)
+
+    result = agent.run_conversation("summarize the investigation")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Here is the answer."
+
+    nudges = [
+        m for m in result["messages"]
+        if m.get("role") == "user"
+        and m.get("content") == _CODEX_INCOMPLETE_NUDGE
+    ]
+    assert len(nudges) == 1, (
+        "the second continuation of a compaction-only turn must carry the "
+        "incomplete nudge so the retry is not byte-identical"
+    )
+
+
+def test_codex_first_compaction_continuation_is_still_a_bare_retry(monkeypatch):
+    """The first continuation stays bare — the model often just needs another
+    turn, and nudging it immediately would cut multi-phase work short."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_compaction_checkpoint_response("blob_1"),
+        _codex_message_response("Done."),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    result = agent.run_conversation("short turn")
+
+    assert result["completed"] is True
+    assert not [
+        m for m in result["messages"]
+        if m.get("role") == "user"
+        and m.get("content") == _CODEX_INCOMPLETE_NUDGE
+    ]
+
+
+class _LazyCreateStream:
+    """Lazy iterable fake — events are produced during consumption, not upfront.
+
+    ``_FakeCreateStream`` materializes its events with ``list(events)`` in
+    __init__, which would run any side effect a generator encodes (such as
+    retiring the request token) before consumption starts. Retirement tests
+    need the side effect to land *between* two consumed frames.
+    """
+
+    def __init__(self, event_factory):
+        self._event_factory = event_factory
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._event_factory())
+
+    def close(self):
+        self.closed = True
+
+
+def _retiring_stream(agent, deltas, *, retire_after):
+    """Yield ``deltas`` lazily, clearing the request token mid-stream.
+
+    The token is cleared just before yielding delta index ``retire_after``,
+    mimicking a watchdog (TTFB / stream-idle / stale-call) retiring the
+    in-flight request while the worker thread is still draining SSE frames.
+    """
+
+    def _events():
+        yield SimpleNamespace(type="response.created")
+        for index, delta in enumerate(deltas):
+            if index == retire_after:
+                agent._active_codex_stream_request_token = None
+            yield SimpleNamespace(type="response.output_text.delta", delta=delta)
+        # A retired stream never reaches a terminal frame on the wire; the
+        # connection is force-closed under it.
+
+    return _LazyCreateStream(_events)
+
+
+def test_run_codex_stream_retired_request_raises_instead_of_partial_final(monkeypatch):
+    """A retired request must not be normalized into a completed response.
+
+    ``_consume_codex_event_stream`` returns ``status=terminal_status`` which
+    defaults to ``"completed"``, and its only guard is
+    ``if not saw_terminal and not output``. A watchdog kill mid-stream leaves
+    ``saw_terminal=False`` but ``output``/text non-empty, so the partial text
+    used to come back as a ``finish_reason=stop`` response and get persisted as
+    a complete assistant turn (a long reply would just stop mid-sentence).
+
+    Retirement must surface as a retryable ``TimeoutError`` instead.
+    """
+    agent = _build_agent(monkeypatch)
+    token = object()
+    agent._active_codex_stream_request_token = token
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return _retiring_stream(
+            agent, ["1. Create ", "(6/6)", " [END-BILLING"], retire_after=2
+        )
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with pytest.raises(TimeoutError, match="retired"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+
+def test_run_codex_stream_without_token_keeps_partial_tolerance(monkeypatch):
+    """No token installed (non-watchdog callers) keeps the existing behavior.
+
+    ``_active_codex_stream_request_token`` is only set by
+    ``interruptible_api_call``. Auxiliary callers (compression summaries,
+    title generation) drive ``_run_codex_stream`` directly with no token and
+    must keep tolerating a stream that ends without a terminal frame.
+    """
+    agent = _build_agent(monkeypatch)
+    agent._active_codex_stream_request_token = None
+    output_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="no terminal frame")],
+    )
+
+    def _fake_create(**kwargs):
+        return _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=output_item),
+        ])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.status == "completed"
+    assert response.output == [output_item]
+
+
+def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
+    """Deltas that arrive after retirement must not reach the UI callbacks.
+
+    The gateway caches AIAgent instances per session, so a retired worker that
+    keeps draining frames would otherwise stream tokens from an abandoned
+    attempt into the live turn's bubble alongside the retry's output.
+    """
+    agent = _build_agent(monkeypatch)
+    token = object()
+    agent._active_codex_stream_request_token = token
+
+    streamed: list[str] = []
+    monkeypatch.setattr(agent, "_fire_stream_delta", streamed.append)
+
+    def _fake_create(**kwargs):
+        return _retiring_stream(agent, ["keep", "DROPPED"], retire_after=1)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_fake_create))
+
+    with pytest.raises(TimeoutError):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert streamed == ["keep"]
+    assert "DROPPED" not in streamed

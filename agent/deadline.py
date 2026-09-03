@@ -63,6 +63,7 @@ Design invariants:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import faulthandler
 import logging
 import os
@@ -99,6 +100,12 @@ MAX_SAFE_TIMEOUT_S = 31_536_000.0  # 365 days
 # Grace period after a deadline fires before concluding the event loop thread
 # is blocked in a synchronous call and dumping stacks (family A diagnostics).
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0
+
+# ``Event.wait`` is a C-level block: KeyboardInterrupt / SetAsyncExc only
+# land when the thread returns to Python. Slice the wait so a /stop or
+# SIGINT during a bounded sync call is observed within this window rather
+# than at the full deadline (#94285, tools/test_local_interrupt_cleanup).
+_BOUNDED_SYNC_WAIT_SLICE_S = 0.2
 
 
 class DeadlineExpired(TimeoutError):
@@ -485,6 +492,14 @@ def run_bounded_sync(
     in a retry loop would accumulate them.
 
     ``timeout=None`` (or non-positive) blocks until ``fn`` returns.
+
+    The worker runs under ``contextvars.copy_context()`` so profile secret
+    scope, session id, and delegated-child guards set on the caller survive
+    the thread hop (terminal env.execute — #94285 CI).
+
+    The caller's wait is sliced (``_BOUNDED_SYNC_WAIT_SLICE_S``) so a
+    ``KeyboardInterrupt`` or ``PyThreadState_SetAsyncExc`` lands within
+    that window instead of only at the full deadline.
     """
     timeout_s = clamp_timeout(timeout)
     start = time.monotonic()
@@ -499,10 +514,11 @@ def run_bounded_sync(
 
     box: dict[str, Any] = {}
     done = threading.Event()
+    ctx = contextvars.copy_context()
 
     def _worker() -> None:
         try:
-            box["value"] = fn()
+            box["value"] = ctx.run(fn)
         except BaseException as exc:  # re-raised in caller; must not vanish
             box["exc"] = exc
         finally:
@@ -510,7 +526,14 @@ def run_bounded_sync(
 
     thread = threading.Thread(target=_worker, name=f"deadline-{label}", daemon=True)
     thread.start()
-    if not done.wait(timeout_s):
+    deadline = start + timeout_s
+    while not done.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done.wait(min(_BOUNDED_SYNC_WAIT_SLICE_S, remaining))
+
+    if not done.is_set():
         logger.warning(
             "[deadline] %r timed out after %.1fs; worker abandoned", label, timeout_s
         )

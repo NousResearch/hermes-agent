@@ -170,10 +170,18 @@ class TestFindStaleDashboardPids:
         assert 12345 in pids
 
 
-    def test_ps_timeout_returns_empty(self):
+    def _assert_ps_timeout_returns_empty(self):
         import subprocess as sp
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
+
+    @pytest.mark.linux_only
+    def test_ps_timeout_returns_empty_linux(self):
+        self._assert_ps_timeout_returns_empty()
+
+    @pytest.mark.macos_only
+    def test_ps_timeout_returns_empty_macos(self):
+        self._assert_ps_timeout_returns_empty()
 
 
 
@@ -223,7 +231,15 @@ class TestKillStaleDashboardPosix:
 
 
     def test_user_scope_restart_never_falls_back_to_system_or_sudo(self, capsys):
-        """A user unit is discovered and restarted through ``systemctl --user``."""
+        """A user unit is discovered and restarted through ``systemctl --user``.
+
+        Since #92145 the managed restart no longer ends the pass — the scan
+        for OTHER stale serve/dashboard backends continues (with the restarted
+        unit recorded in ``already_restarted_units``), so the scan being
+        reached is now part of the contract rather than a violation of it.
+        The invariant this test pins is unchanged: nothing here may touch the
+        system scope or sudo.
+        """
         calls: list[list[str]] = []
 
         def fake_run(args, *a, **kw):
@@ -239,7 +255,7 @@ class TestKillStaleDashboardPosix:
             raise AssertionError(f"unexpected subprocess.run call: {args}")
 
         with patch("subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]) as find_pids, \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]) as find_pids, \
              patch("os.kill") as kill:
             _kill_stale_dashboard_processes(restart_managed=True)
 
@@ -250,7 +266,9 @@ class TestKillStaleDashboardPosix:
             ["systemctl", "--user", "restart", "hermes-dashboard.service"],
         ]
         assert all(call[:1] != ["sudo"] and call[:2] != ["systemctl"] for call in calls)
-        find_pids.assert_not_called()
+        # The pass keeps scanning for serve backends the dashboard unit does
+        # not own (#92145) — but with nothing stale, nothing is killed.
+        find_pids.assert_called_once()
         kill.assert_not_called()
         assert "✓ restarted hermes-dashboard.service" in capsys.readouterr().out
 
@@ -273,6 +291,8 @@ class TestKillStaleDashboardWindows:
 
         with patch("hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[12345, 12346]), \
+             patch("gateway.status.get_process_start_time", return_value=123), \
+             patch("hermes_cli._subprocess_compat.pid_is_hermes", return_value=True), \
              patch("subprocess.run", side_effect=fake_run) as mock_run:
             _kill_stale_dashboard_processes()
 

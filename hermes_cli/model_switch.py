@@ -48,7 +48,7 @@ from agent.models_dev import (
     get_model_info,
     list_provider_models,
 )
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 # Providers whose picker model list should NOT be capped by max_models.
 # OpenCode Zen / Go are aggregators whose full catalogs (70+ models each) must
@@ -513,10 +513,21 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 # ---------------------------------------------------------------------------
 
 class DirectAlias(NamedTuple):
-    """Exact model mapping that bypasses catalog resolution."""
+    """Exact model mapping that bypasses catalog resolution.
+
+    ``api_key`` / ``key_env`` carry the alias endpoint's OWN credential.
+    Without them the switch keeps whatever key the *default* provider
+    resolved, which 401s against the alias host and sends that provider's
+    secret to an unrelated third party (#83612).
+    """
     model: str
     provider: str
     base_url: str
+    # Defaulted so existing positional construction —
+    # ``DirectAlias(model, provider, base_url)`` — keeps working for callers
+    # and for the string-format aliases built below.
+    api_key: str = ""
+    key_env: str = ""
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -540,11 +551,23 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
             model: "minimax-m2.7"
             provider: custom
             base_url: "https://ollama.com/v1"
+          theta:
+            model: "theta-1"
+            provider: custom
+            base_url: "https://theta.example.com/v1"
+            api_key: "sk-..."          # literal, or "${THETA_API_KEY}"
+            key_env: "THETA_API_KEY"   # read from the environment instead
 
-    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``)
-    and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
-    into DirectAlias objects.  The provider is parsed from the ``provider/``
-    prefix in the value; if no slash, the current provider is used.
+    ``api_key``/``key_env`` are the alias endpoint's own credential. When
+    neither is set the key is resolved from the alias HOST, never from the
+    previously active provider (#83612).
+
+    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``
+    or hand-written). String entries (``ds-flash: deepseek/deepseek-v4-flash``)
+    are converted into DirectAlias objects with the provider parsed from the
+    ``provider/`` prefix in the value; if no slash, the current provider is
+    used. Dict entries use the same shape as ``model_aliases:`` (``model``,
+    ``provider``, ``base_url`` keys).
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
@@ -563,20 +586,38 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                        api_key=str(entry.get("api_key", "") or "").strip(),
+                        key_env=str(entry.get("key_env", "") or "").strip(),
                     )
 
-        # --- model.aliases (string-based format, from config set) ---
+        # --- model.aliases (from config set / hand-written config) ---
         model_section = cfg.get("model", {})
         if isinstance(model_section, dict):
             simple_aliases = model_section.get("aliases")
             if isinstance(simple_aliases, dict):
                 current_provider = model_section.get("provider", "")
                 for name, value in simple_aliases.items():
+                    key = name.strip().lower()
+                    if not key or key in merged:
+                        continue  # don't override explicit model_aliases entries
+                    if isinstance(value, dict):
+                        # Dict form mirrors the ``model_aliases:`` shape:
+                        # localqwen: {model: qwen3.5:4b, provider: custom}.
+                        # Hand-written configs already use it; honoring it
+                        # here keeps aliases with an explicit provider from
+                        # being silently dropped (#87189).
+                        model = str(value.get("model") or "").strip()
+                        if not model:
+                            continue
+                        provider = str(value.get("provider") or "").strip()
+                        merged[key] = DirectAlias(
+                            model=model,
+                            provider=provider or current_provider or "custom",
+                            base_url=str(value.get("base_url") or "").strip(),
+                        )
+                        continue
                     if not isinstance(value, str) or not value.strip():
                         continue
-                    key = name.strip().lower()
-                    if key in merged:
-                        continue  # don't override explicit model_aliases entries
                     val = value.strip()
                     if "/" in val:
                         provider, model = val.split("/", 1)
@@ -593,16 +634,247 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     return merged
 
 
+# Identity of the config the cached aliases were built from. The cache is
+# process-global but its source is profile-local, so it must be keyed or the
+# first profile to resolve an alias pins its definitions — and, since entries
+# carry `api_key`, its credentials — for every later profile in the process.
+# Same shape `load_config()` already keys its own cache on, so a profile
+# switch (HERMES_HOME moves, so the path moves) and a config/key rotation
+# (mtime/size move) both invalidate.
+_DIRECT_ALIAS_IDENTITY: Optional[tuple] = None
+# A copy of what this loader last produced. Callers and tests seed
+# DIRECT_ALIASES both by rebinding the module attribute AND by editing it in
+# place, so neither the object's identity nor a "did we load" flag can tell
+# our own stale cache from someone else's contents. Comparing against what we
+# actually wrote does: if the dict no longer holds it, the entries are not
+# ours to discard.
+_DIRECT_ALIAS_LOADED: Optional[dict] = None
+
+
+def _direct_alias_source_identity() -> Optional[tuple]:
+    """Identity of the active profile's alias source, or None if unknowable.
+
+    None means "do not reuse the cache" — a source we cannot identify must
+    not be assumed to be the one already loaded.
+    """
+    try:
+        from hermes_constants import get_config_path
+
+        path = get_config_path()
+        try:
+            stat = path.stat()
+        except OSError:
+            # A missing config is still a definite identity for this profile.
+            return (str(path), None, None)
+        return (str(path), stat.st_mtime_ns, stat.st_size)
+    except Exception:
+        return None
+
+
 def _ensure_direct_aliases() -> None:
-    """Lazy-load direct aliases on first use.
+    """Load direct aliases for the ACTIVE profile, caching per config identity.
 
     Mutates the existing DIRECT_ALIASES dict in place rather than rebinding
     the module attribute. This keeps `from hermes_cli.model_switch import
     DIRECT_ALIASES` references valid in callers — rebinding would leave them
     pointing at a stale empty dict.
     """
-    if not DIRECT_ALIASES:
-        DIRECT_ALIASES.update(_load_direct_aliases())
+    global _DIRECT_ALIAS_IDENTITY, _DIRECT_ALIAS_LOADED
+    identity = _direct_alias_source_identity()
+    if DIRECT_ALIASES and (
+        # Contents are not what we loaded — seeded or edited by a caller.
+        # Not ours to discard.
+        DIRECT_ALIASES != _DIRECT_ALIAS_LOADED
+        # Ours, and still the same config file at the same signature.
+        or (identity is not None and identity == _DIRECT_ALIAS_IDENTITY)
+    ):
+        return
+    loaded = _load_direct_aliases()
+    # clear()+update() rather than a rebind: callers hold this exact dict.
+    DIRECT_ALIASES.clear()
+    DIRECT_ALIASES.update(loaded)
+    _DIRECT_ALIAS_IDENTITY = identity
+    _DIRECT_ALIAS_LOADED = dict(loaded)
+
+
+def direct_alias_api_key(alias: DirectAlias) -> str:
+    """Resolve a direct alias's own credential, or "" when it has none.
+
+    Precedence, highest first — ``api_key`` always wins over ``key_env``, so
+    an entry carrying both is not ambiguous:
+
+    1. ``api_key: "${VAR}"`` — indirection, read from the environment.
+    2. ``api_key: "sk-..."`` — literal.
+    3. ``key_env: VAR`` — read from the environment.
+    4. otherwise "" — the caller resolves from the alias host instead.
+    Environment reads go through the per-profile secret scope for the same
+    reason the user-provider branch does: a raw ``os.environ`` read hands
+    this profile whatever key the process env holds — another profile's,
+    under the multiplexed gateway.
+    """
+    raw = (alias.api_key or "").strip()
+    if raw.startswith("${") and raw.endswith("}"):
+        return _scoped_key_env(raw[2:-1].strip())
+    if raw:
+        return raw
+    return _scoped_key_env((alias.key_env or "").strip())
+
+
+def direct_alias_runtime_request(alias: DirectAlias) -> tuple[str, Optional[str]]:
+    """Return ``(requested_provider, explicit_api_key)`` for resolving *alias*.
+
+    Single owner of the invariant that a URL-bearing direct alias resolves its
+    credential for the alias HOST, never for its provider label. A label like
+    ``anthropic`` on an unrelated URL would otherwise reach that provider's
+    explicit-runtime branch, keep the foreign URL, and fall back to the live
+    vendor token. Bare ``custom`` is host-gated (#28660), so an authoritative
+    URL still resolves its vendor key and a foreign one resolves none.
+
+    An alias with no base_url keeps its label: there is no foreign host to
+    protect against, and the label is the only routing information there is.
+    """
+    key = direct_alias_api_key(alias) or None
+    if alias.base_url:
+        return "custom", key
+    return (alias.provider or "custom"), key
+
+
+# Hosts where plaintext HTTP is not a downgrade — a local server has no
+# network hop to intercept.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _may_reuse_session_credential(session_base_url: str, alias_base_url: str) -> bool:
+    """Whether the session's key may follow a switch to *alias_base_url*.
+
+    Same hostname is NOT sufficient to authorise handing a bearer secret to a
+    new URL. ``http://h`` and ``https://h:8443`` are different origins and
+    different trust boundaries, so an alias that keeps the hostname but drops
+    the scheme would otherwise put a live session credential on the wire in
+    the clear. Require an identical (scheme, host, port), and refuse plaintext
+    outside loopback.
+    """
+    session = base_url_origin(session_base_url)
+    alias = base_url_origin(alias_base_url)
+    if not session[1] or session != alias:
+        return False
+    scheme, hostname, _ = alias
+    return scheme == "https" or hostname in _LOOPBACK_HOSTS
+
+
+class StartupModelRoute(NamedTuple):
+    """Model/provider pair resolved before an agent is constructed."""
+
+    model: str
+    provider: str = ""
+    base_url: str = ""
+    api_key: str = ""
+
+
+def resolve_startup_model_route(
+    raw_model: str,
+    *,
+    explicit_provider: str = "",
+    current_provider: str = "",
+    user_providers: Optional[dict] = None,
+    custom_providers: Optional[list] = None,
+) -> Optional[StartupModelRoute]:
+    """Resolve aliases and configured ``provider/model`` input at startup.
+
+    ``HermesCLI`` is constructed before the interactive ``/model`` pipeline
+    runs.  Keeping this small resolver at the same boundary as
+    ``DIRECT_ALIASES`` prevents startup from attaching the configured default
+    provider to an explicitly requested model. Provider/model strings are
+    consumed only for providers present in user configuration; aggregator
+    namespaces remain untouched.
+
+    ``current_provider`` is the provider the session would otherwise use
+    (config ``model.provider`` / ``--provider``). When it is a routing
+    aggregator and the raw string is an aggregator-native slug
+    (``anthropic/claude-opus-4.6`` on OpenRouter), the input stays on the
+    aggregator — bare vendor slugs resolve WITHIN the aggregator first and a
+    ``providers:`` block for the same vendor must not steal the route.
+    """
+    raw = str(raw_model or "").strip()
+    if not raw:
+        return None
+
+    _ensure_direct_aliases()
+    direct = DIRECT_ALIASES.get(raw.lower())
+    if direct is not None:
+        if explicit_provider:
+            # An explicit --provider wins over the alias's own label; the
+            # alias contributes model/base_url only.
+            return StartupModelRoute(
+                model=direct.model,
+                provider=explicit_provider,
+                base_url=direct.base_url,
+            )
+        # Resolve through the SAME owner the interactive /model and oneshot
+        # paths use: a URL-bearing alias must resolve its credential for the
+        # alias HOST, never for its provider label — a label like
+        # ``anthropic`` on a foreign URL would otherwise reach that
+        # provider's explicit-runtime branch and put the live vendor token
+        # on the foreign wire (#28660).
+        alias_provider, alias_key = direct_alias_runtime_request(direct)
+        return StartupModelRoute(
+            model=direct.model,
+            provider=alias_provider,
+            base_url=direct.base_url,
+            api_key=alias_key or "",
+        )
+
+    if explicit_provider or "/" not in raw:
+        return None
+    prefix, model = (part.strip() for part in raw.split("/", 1))
+    if not prefix or not model:
+        return None
+
+    # Aggregator-native slugs stay on the aggregator. A user on OpenRouter
+    # whose config also has a ``providers.anthropic`` block must NOT have
+    # ``anthropic/claude-opus-4.6`` silently rerouted to native Anthropic.
+    if current_provider:
+        try:
+            from hermes_cli.providers import (
+                is_routing_aggregator as _is_routing_agg,
+                normalize_provider as _norm_prov,
+            )
+
+            if _is_routing_agg(_norm_prov(current_provider)):
+                from hermes_cli.models import _find_openrouter_slug
+
+                if _find_openrouter_slug(raw):
+                    return None
+        except Exception:
+            pass
+
+    configured = {
+        str(name).strip().lower()
+        for name in (user_providers or {})
+        if str(name).strip()
+    }
+    configured.update(
+        f"custom:{entry.get('name', '').strip().lower()}"
+        for entry in (custom_providers or [])
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip()
+    )
+    try:
+        from hermes_cli.models import normalize_provider
+
+        canonical = normalize_provider(prefix)
+    except Exception:
+        canonical = prefix.lower()
+
+    if prefix.lower() in configured:
+        provider = prefix
+    elif canonical.lower() in configured:
+        provider = canonical
+    else:
+        return None
+
+    if is_aggregator(canonical):
+        return None
+    return StartupModelRoute(model=model, provider=provider)
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +898,7 @@ class ModelSwitchResult:
     provider_label: str = ""
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
+    runtime_capabilities: Optional[dict[str, bool]] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
 
@@ -743,11 +1016,18 @@ def resolve_persist_behavior(
     1. ``--once`` explicitly opts out → ``False`` (next turn only).
     2. ``--session`` explicitly opts out → ``False`` (this session only).
     3. ``--global`` explicitly opts in → ``True``.
-    4. ``--provider`` given without an explicit persist flag → ``False``
+    4. No default configured yet (neither ``model.default`` nor
+       ``model.provider`` set — a fresh install whose first-ever pick this
+       is) → ``True``.  Without a persisted provider, ``resolve_provider``
+       falls through to whatever ``*_API_KEY`` env var is lying around on
+       the next launch (#86414), so the first pick becomes the default
+       instead of evaporating.  Applies to every surface (CLI, gateway,
+       Desktop picker) so no client has to hardcode ``--global``.
+    5. ``--provider`` given without an explicit persist flag → ``False``
        (session only).  Provider switches are typically exploratory — the
        user is trying a different backend for this conversation, not
        reconfiguring the default.  ``--global`` can still force persist.
-    5. Otherwise defer to ``model.persist_switch_by_default`` in
+    6. Otherwise defer to ``model.persist_switch_by_default`` in
        ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
        affects only the current session).  Users who want the old
        persist-by-default behavior can set the key to ``true``; a one-off
@@ -763,17 +1043,20 @@ def resolve_persist_behavior(
         return False
     if is_global:
         return True
-    if explicit_provider:
-        return False
     try:
         from hermes_cli.config import load_config
 
         model_cfg = load_config().get("model")
-        if isinstance(model_cfg, dict):
-            return bool(model_cfg.get("persist_switch_by_default", False))
     except Exception:
-        pass
-    return False
+        return False
+    if isinstance(model_cfg, dict):
+        if not (model_cfg.get("default") or model_cfg.get("provider")):
+            return True
+        if explicit_provider:
+            return False
+        return bool(model_cfg.get("persist_switch_by_default", False))
+    # Flat-string form: a non-empty string IS a configured default.
+    return not model_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -1849,6 +2132,7 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    runtime_capabilities: dict[str, bool] = {}
     ollama_headers: dict[str, str] = {}
     validation_headers: dict[str, str] = {}
     suppress_ollama_headers = False
@@ -1893,6 +2177,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "") or _ukey
                 base_url = runtime.get("base_url", "") or _user_pdef.base_url
                 api_mode = runtime.get("api_mode", "")
+                runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception:
                 api_key = _ukey
@@ -1911,6 +2196,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception as e:
                 return ModelSwitchResult(
@@ -1971,6 +2257,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                runtime_capabilities = runtime.get("capabilities") or {}
                 validation_headers = runtime.get("extra_headers") or validation_headers
             except Exception:
                 pass
@@ -1980,9 +2267,70 @@ def switch_model(
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
         if _da is not None and _da.base_url:
-            base_url = _da.base_url
+            # Credentials above were resolved against the DEFAULT provider.
+            # Carrying that key onto the alias's endpoint both 401s and ships
+            # the default provider's secret to an unrelated third-party host
+            # (#83612). The alias's own endpoint decides the credential
+            # instead: its declared key when it has one, otherwise a fresh
+            # resolution against the alias base_url, whose env-key fallbacks
+            # are gated on authoritative hosts (#28660) — so OLLAMA_API_KEY
+            # still resolves for an ollama.com alias while OPENROUTER_API_KEY
+            # never reaches an unrelated host.
+            _alias_key = direct_alias_api_key(_da)
+            if _alias_key:
+                # The alias states its own credential: nothing left to
+                # resolve, and re-entering the resolver would only risk a
+                # second local-endpoint model probe.
+                base_url = _da.base_url
+                api_key = _alias_key
+            elif api_key and api_key != "no-key-required" and (
+                _may_reuse_session_credential(base_url, _da.base_url)
+            ):
+                # The alias points at the very origin the resolution above
+                # already produced a key for, so that key is the
+                # host-appropriate one and re-entering the resolver would only
+                # repeat the work — including, for a local endpoint with no
+                # configured model, a second bounded /models probe.
+                base_url = _da.base_url
+            else:
+                try:
+                    # Shared owner of the label-vs-host invariant; the one-shot
+                    # path resolves through the same helper.
+                    _req, _explicit = direct_alias_runtime_request(_da)
+                    _alias_runtime = resolve_runtime_provider(
+                        requested=_req,
+                        explicit_api_key=_explicit,
+                        explicit_base_url=_da.base_url,
+                        target_model=new_model,
+                    )
+                except Exception:
+                    _alias_runtime = {}
+                # The already-resolved key is reusable only when the alias
+                # points at the SAME ORIGIN it was resolved for (an alias that
+                # just pins a model on the endpoint already in use). Across
+                # origins it is the leak, so it is dropped, not carried.
+                _same_host = _may_reuse_session_credential(base_url, _da.base_url)
+                base_url = _alias_runtime.get("base_url", "") or _da.base_url
+                # The resolver reports "no key found" with the
+                # `no-key-required` placeholder rather than "". Normalise it
+                # so a same-host credential still outranks the placeholder.
+                _resolved_key = _alias_runtime.get("api_key", "")
+                if _resolved_key == "no-key-required":
+                    _resolved_key = ""
+                api_key = (
+                    _resolved_key
+                    or (api_key if _same_host else "")
+                    or "no-key-required"
+                )
             api_mode = ""  # clear so determine_api_mode re-detects from URL
-            if target_provider.strip().lower() == "ollama":
+            # Upstream's providers.ollama refinement: pick up the
+            # configured key only for the configured native root, and drop
+            # both the key and the provider-level headers for any other
+            # origin. Orthogonal to the resolution above and kept as-is —
+            # except that it is skipped when the alias declared its own
+            # credential, since an explicit api_key/key_env outranks a
+            # provider-level config key (this PR's documented precedence).
+            if not _alias_key and target_provider.strip().lower() == "ollama":
                 _ollama_cfg = _get_provider_config_dict("ollama")
                 _ollama_cfg_base = str(
                     _ollama_cfg.get("base_url")
@@ -2173,6 +2521,13 @@ def switch_model(
 
     # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model, allow_network=True)
+    from agent.native_compaction import resolve_native_compaction_capabilities
+    runtime_capabilities = resolve_native_compaction_capabilities(
+        model=new_model,
+        base_url=base_url,
+        provider=target_provider,
+        is_codex_backend=target_provider.strip().lower() == "openai-codex",
+    )
 
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model, allow_network=True)
@@ -2215,6 +2570,11 @@ def switch_model(
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
+        runtime_capabilities={
+            key: value
+            for key, value in runtime_capabilities.items()
+            if isinstance(key, str) and isinstance(value, bool)
+        },
         model_info=model_info,
         is_global=is_global,
     )
@@ -2584,7 +2944,10 @@ def _collect_authed_provider_slugs(
             slugs.append(_cp.slug)
             seen.add(_cp.slug.lower())
 
-    return slugs
+    # Nous excluded: its picker branch builds from the curated list and it
+    # cannot reach the api_key-only pathway, so a prefetched entry is written
+    # and never read.
+    return [s for s in slugs if s != "nous"]
 
 
 def list_authenticated_providers(
@@ -3001,6 +3364,19 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        # External-process providers (copilot-acp) hold no API key, OAuth
+        # token, or pool entry by design — the spawned ACP subprocess brings
+        # its own auth. "Configured" means the executable resolves, which is
+        # exactly what get_auth_status() reports for them; without this branch
+        # the has_creds filter below unconditionally hides the provider from
+        # every picker (#63662).
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_auth_status
+                _ext_status = get_auth_status(hermes_slug) or {}
+                has_creds = bool(_ext_status.get("logged_in") or _ext_status.get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for %s: %s", pid, exc)
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -3115,6 +3491,19 @@ def list_authenticated_providers(
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
                 pass
+            # Outside the try above, so a failed recommendation fetch still
+            # yields a policy-filtered curated list.
+            try:
+                from hermes_cli.models import (
+                    nous_policy_allowed_ids as _nous_policy,
+                    restrict_to_nous_policy as _nous_restrict,
+                )
+
+                model_ids = _nous_restrict(
+                    model_ids, _nous_policy(), rescue_empty=True,
+                )
+            except Exception:
+                pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
@@ -3162,7 +3551,20 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_lit = {ev for ev in _cp_config.api_key_env_vars if os.environ.get(ev)}
+            _cp_has_creds = bool(_cp_lit)
+            # A regional "-cn" twin lit only by key vars it shares with its
+            # non-CN sibling (e.g. alibaba-coding-plan-cn off the intl
+            # ALIBABA_CODING_PLAN_API_KEY) is a phantom picker row (#101122).
+            # Hide it unless the user configured that CN provider -- and only
+            # when it has a dedicated var of its own the user could set instead.
+            _sib = _auth_registry.get(_cp.slug[:-3]) if _cp.slug.endswith("-cn") else None
+            _sib_vars = set(_sib.api_key_env_vars) if _sib else set()
+            if (
+                _cp_lit and _cp_lit <= _sib_vars < set(_cp_config.api_key_env_vars)
+                and _cp.slug != current_provider
+            ):
+                continue
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

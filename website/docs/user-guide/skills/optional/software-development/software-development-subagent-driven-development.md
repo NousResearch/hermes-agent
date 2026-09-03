@@ -15,13 +15,13 @@ Execute plans via delegate_task subagents (2-stage review).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/subagent-driven-development` |
-| Path | `optional-skills/software-development/subagent-driven-development` |
+| Path | `optional-skills/software-development\subagent-driven-development` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `delegation`, `subagent`, `implementation`, `workflow`, `parallel` |
-| Related skills | `plan` (now the built-in `/plan` command), [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
+| Related skills | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) |
 
 ## Reference: full SKILL.md
 

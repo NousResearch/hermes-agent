@@ -119,7 +119,17 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
   return indicatorFrameWidth(style) + verb + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function FaceTicker({
+  color,
+  startedAt,
+  style,
+  verbOverride
+}: {
+  color: string
+  startedAt?: null | number
+  style: IndicatorStyle
+  verbOverride?: string
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
@@ -128,8 +138,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
   // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
+  // timer dangling. A frozen override (idle compaction) always shows the
+  // verb so "compacting…" is visible even in unicode style (#97239).
   const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const freezeVerb = Boolean(verbOverride)
+  const displayVerb = freezeVerb || showVerb
 
   useEffect(() => {
     // An overlay is painted OVER the status rule (the modal widget slot, or a
@@ -147,9 +160,10 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
 
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
+    // entirely, so cycling `verbTick` would be an avoidable re-render. A
+    // frozen override does not rotate.
+    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
@@ -159,11 +173,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, isOccluded, showVerb])
+  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
+  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -475,6 +489,7 @@ export function StatusRule({
   cwdLabel,
   cols,
   busy,
+  compacting = false,
   status,
   statusBarFields = null,
   statusColor,
@@ -666,7 +681,12 @@ export function StatusRule({
             </Text>
           ) : null}
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            <FaceTicker
+              color={statusColor}
+              startedAt={turnStartedAt}
+              style={indicatorStyle}
+              verbOverride={compacting ? 'compacting' : undefined}
+            />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}
@@ -918,6 +938,8 @@ interface StatusRuleProps {
   lastTurnEndedAt?: null | number
   liveSessionCount: number
   busy: boolean
+  // Context compaction in progress — FaceTicker freezes on "compacting".
+  compacting?: boolean
   cols: number
   cwdLabel: string
   model: string

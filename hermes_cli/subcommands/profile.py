@@ -135,7 +135,9 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     )
     profile_export.add_argument("profile_name", help="Profile to export")
     profile_export.add_argument(
-        "-o", "--output", default=None, help="Output file (default: <name>.tar.gz)"
+        "-o", "--output", default=None,
+        help="Output file (default: a managed profile-exports/<name>-<timestamp>.tar.gz "
+             "under the default Hermes home)",
     )
 
     profile_import = profile_subparsers.add_parser(

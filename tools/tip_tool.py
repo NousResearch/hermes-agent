@@ -10,12 +10,11 @@ sentence.
 Fire-and-forget, unlike ``tour``: a tip is not a question, so blocking the turn
 on a round-trip would stall the reply it belongs to.
 
-Ungated, also like ``tour``. The desktop's Settings → Appearance switch governs
-the app's own idle rotation — the half that talks unprompted — not this, which
-Hermes raises mid-conversation in answer to something the user said.
-
 Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions.
+desktop-sourced sessions, and withdraws itself entirely when the user has
+turned tips off (Settings → Appearance). Off means the model is never told the
+tool exists — a switch that only made the call fail would leave Hermes
+promising to point at things it cannot point at.
 """
 
 import json
@@ -60,7 +59,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
 
 
 TIP_SCHEMA = {
-    "name": "tip",
+    "name": "show_tip",
     "description": (
         "Point at one thing in the desktop UI with a small arrow bubble (no "
         "dimming, no tour chrome) — for when a sentence is clearer with a "
@@ -95,8 +94,13 @@ TIP_SCHEMA = {
 }
 
 
+def check_tips_enabled() -> bool:
+    """The user's Settings → Appearance switch. On unless they turned it off."""
+    return desktop_ui.user_enabled("in_app_tips", default=True)
+
+
 registry.register(
-    name="tip",
+    name="show_tip",
     toolset="desktop_ui",
     schema=TIP_SCHEMA,
     handler=lambda args, **kw: tip_tool(
@@ -105,5 +109,6 @@ registry.register(
         title=args.get("title", ""),
         side=args.get("side", ""),
     ),
+    check_fn=check_tips_enabled,
     emoji="💡",
 )

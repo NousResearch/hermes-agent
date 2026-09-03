@@ -504,6 +504,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         return
       }
 
+      const messages = state.messages
+
       update(current => applyReloadOptimistic(current, plan))
 
       try {
@@ -518,11 +520,20 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(state.messages)
+            durableRowIdsForRebind(messages)
           )
         )
       } catch (err) {
-        update(current => ({ ...current, busy: false, awaitingResponse: false, turnLive: false, turnStartedAt: null }))
+        // Mirror the primary-chat reload catch: optimistic hide/truncate
+        // must roll back when the submit is rejected (#95745).
+        update(current => ({
+          ...current,
+          busy: false,
+          awaitingResponse: false,
+          turnLive: false,
+          turnStartedAt: null,
+          messages
+        }))
         notifyError(err, copy.regenerateFailed)
       }
     },

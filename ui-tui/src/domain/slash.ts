@@ -47,10 +47,17 @@ export const inlineSlashTrigger = (text: string): { query: string; start: number
   return { query, start: text.length - query.length - 1 }
 }
 
-export const parseSlashCommand = (cmd: string) => {
-  const [name = '', ...rest] = cmd.slice(1).split(/\s+/)
+// Only the separator between the command name and its argument is whitespace
+// the parser owns. Everything after it is the user's text and survives
+// verbatim: splitting the whole line on `\s+` and rejoining with a space
+// flattened every pasted diff, log, or PR thread into one run-on line before
+// the command ever saw it.
+const SLASH_PARTS_RE = /^(\S*)\s*([\s\S]*)$/
 
-  return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
+export const parseSlashCommand = (cmd: string) => {
+  const [, name = '', arg = ''] = SLASH_PARTS_RE.exec(cmd.slice(1)) ?? []
+
+  return { arg, cmd, name: name.toLowerCase() }
 }
 
 /**

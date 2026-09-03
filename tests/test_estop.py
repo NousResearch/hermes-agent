@@ -29,6 +29,26 @@ def hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+_AUTHORITATIVE_STATE_KEYS = {
+    "source",
+    "observed_at",
+    "freshness",
+    "path",
+    "state",
+    "engaged",
+    "reason",
+    "engaged_at",
+    "error",
+}
+
+
+def _assert_authoritative_state_shape(state):
+    assert set(state) == _AUTHORITATIVE_STATE_KEYS
+    assert state["source"] == "fleet-root"
+    assert state["observed_at"]
+    assert state["path"].endswith("/ESTOP")
+
+
 # ── sentinel create / remove ────────────────────────────────────────────────
 
 
@@ -52,6 +72,7 @@ def test_reason_and_timestamp_stored(hermes_home):
     estop.engage(reason="runaway cron fan-out")
     state = estop.get_state()
     assert state is not None
+    _assert_authoritative_state_shape(state)
     assert state["reason"] == "runaway cron fan-out"
     assert state["engaged_at"]  # ISO timestamp string
 
@@ -61,6 +82,13 @@ def test_reason_and_timestamp_stored(hermes_home):
 
 def test_get_state_none_when_disengaged(hermes_home):
     assert estop.get_state() is None
+    state = estop.get_authoritative_state()
+    _assert_authoritative_state_shape(state)
+    assert state["state"] == "clear"
+    assert state["engaged"] is False
+    assert state["reason"] is None
+    assert state["engaged_at"] is None
+    assert state["error"] is None
 
 
 def test_corrupt_sentinel_still_engages(hermes_home):
@@ -69,7 +97,12 @@ def test_corrupt_sentinel_still_engages(hermes_home):
     assert estop.is_engaged() is True
     state = estop.get_state()
     assert state is not None
+    _assert_authoritative_state_shape(state)
+    assert state["state"] == "engaged"
+    assert state["freshness"] == "unknown"
     assert state.get("reason") is None
+    assert state["engaged_at"] is None
+    assert state["error"]
 
 
 # ── paused notice for new gateway turns ─────────────────────────────────────
@@ -397,10 +430,17 @@ def test_profile_gateway_honors_canonical_root_estop(tmp_path, monkeypatch):
     # which gateway answered first.
     (profile / "ESTOP").write_text("{\"reason\": \"stale local\"}\n", encoding="utf-8")
     assert estop.is_engaged() is False
+    clear_state = estop.get_authoritative_state()
+    _assert_authoritative_state_shape(clear_state)
+    assert clear_state["state"] == "clear"
+    assert clear_state["engaged"] is False
+    assert clear_state["reason"] is None
+    assert clear_state["engaged_at"] is None
 
     (root / "ESTOP").write_text("{\"reason\": \"thundering herd\"}\n", encoding="utf-8")
     assert estop.is_engaged() is True
     state = estop.get_state()
+    _assert_authoritative_state_shape(state)
     assert state["source"] == "fleet-root"
     assert state["reason"] == "thundering herd"
     assert state["observed_at"]
@@ -430,10 +470,13 @@ def test_authoritative_estop_read_fails_closed_with_unknown_state(hermes_home, m
 
     monkeypatch.setattr(estop, "sentinel_path", lambda: _UnreadablePath())
     state = estop.get_authoritative_state()
+    _assert_authoritative_state_shape(state)
     assert state["source"] == "fleet-root"
     assert state["state"] == "unknown"
     assert state["engaged"] is True
     assert state["freshness"] == "unknown"
     assert state["observed_at"]
     assert state["error"]
+    assert state["reason"] is None
+    assert state["engaged_at"] is None
     assert estop.get_state()["engaged"] is True

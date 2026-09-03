@@ -142,6 +142,11 @@ def get_authoritative_state() -> dict:
         "observed_at": observed_at,
         "freshness": "fresh",
         "path": str(path),
+        # Keep the machine-facing envelope schema stable on clear, engaged,
+        # corrupt, and read-error paths.  Voice callers can consume one shape
+        # without treating a missing metadata key as a contradictory state.
+        "reason": None,
+        "engaged_at": None,
         "error": None,
     }
     try:

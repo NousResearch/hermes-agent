@@ -254,6 +254,14 @@ def test_docker_extra_args_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
 
 
+def test_apple_container_extra_args_is_bridged_everywhere():
+    """Apple Container flags must survive every config-to-env entry point."""
+    assert "apple_container_extra_args" in _cli_env_map_keys()
+    assert "apple_container_extra_args" in _gateway_env_map_keys()
+    assert "apple_container_extra_args" in _save_config_env_sync_keys()
+    assert "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS" in _terminal_tool_env_var_names()
+
+
 def test_docker_persist_across_processes_is_bridged_everywhere():
     """Regression pin for the cross-process container reuse toggle.
 

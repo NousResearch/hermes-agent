@@ -33,7 +33,7 @@ class TestIsUnusableContainerCwd:
 
     def test_container_backends_set(self):
         assert tt._CONTAINER_BACKENDS == frozenset(
-            {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+            {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "apple_container"}
         )
 
 
@@ -44,7 +44,9 @@ class TestOverrideCwdSanitizedAtCallSite:
     the (sanitized) config["cwd"] and flowed raw into `docker run -w`.
     """
 
-    def _run_and_capture_cwd(self, monkeypatch, override_cwd, config_cwd="/root"):
+    def _run_and_capture_cwd(
+        self, monkeypatch, override_cwd, config_cwd="/root", env_type="docker"
+    ):
         """Drive terminal_tool() on the docker backend with a host-path cwd
         override registered, and return the cwd that reached _create_environment
         (i.e. the cwd that would be passed to `docker run -w`).
@@ -52,8 +54,10 @@ class TestOverrideCwdSanitizedAtCallSite:
         captured = {}
 
         config = {
-            "env_type": "docker",
+            "env_type": env_type,
             "docker_image": "pytorch/pytorch:latest",
+            "apple_container_image": "python:3.11-slim-bookworm",
+            "apple_container_volumes": [],
             "cwd": config_cwd,
             "host_cwd": None,
             "timeout": 180,
@@ -112,6 +116,24 @@ class TestOverrideCwdSanitizedAtCallSite:
         # RL/benchmark envs set an in-container path; it must pass through.
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
         assert cwd == "/workspace/task42"
+
+    def test_apple_container_host_override_is_discarded(self, monkeypatch):
+        cwd = self._run_and_capture_cwd(
+            monkeypatch,
+            "/Users/alice/project",
+            config_cwd="/workspace",
+            env_type="apple_container",
+        )
+        assert cwd == "/workspace"
+
+    def test_apple_container_workspace_override_is_preserved(self, monkeypatch):
+        cwd = self._run_and_capture_cwd(
+            monkeypatch,
+            "/workspace/project",
+            config_cwd="/workspace",
+            env_type="apple_container",
+        )
+        assert cwd == "/workspace/project"
 
 
 class TestFileOpsCwdSanitizedAtCallSite:

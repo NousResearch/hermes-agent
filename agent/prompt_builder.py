@@ -1134,6 +1134,7 @@ WSL_ENVIRONMENT_HINT = (
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
     "vercel_sandbox", "managed_modal",
+    "apple_container",
 })
 
 
@@ -1177,6 +1178,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
     "vercel_sandbox": "a Vercel sandbox (Linux)",
+    "apple_container": "a Linux VM via Apple Container",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -1289,6 +1291,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
             image = config.get("modal_image", "")
         elif env_type == "daytona":
             image = config.get("daytona_image", "")
+        elif env_type == "apple_container":
+            image = config.get("apple_container_image", "python:3.11-slim-bookworm")
         else:
             image = ""
 
@@ -1312,6 +1316,16 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "modal_mode": config.get("modal_mode", "auto"),
+                "vercel_runtime": config.get("vercel_runtime", ""),
+                "apple_container_image": config.get(
+                    "apple_container_image", "python:3.11-slim-bookworm"
+                ),
+                "apple_container_volumes": config.get(
+                    "apple_container_volumes", []
+                ),
+                "apple_container_extra_args": config.get(
+                    "apple_container_extra_args", []
+                ),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                 "docker_forward_env": config.get("docker_forward_env", []),
@@ -1411,7 +1425,7 @@ def build_environment_hints() -> str:
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
-      modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
+      modal, daytona, ssh, vercel_sandbox, apple_container): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.

@@ -372,13 +372,87 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
     )
 
 
+def _mount_spec_has_host_source(mount_spec: str) -> bool:
+    """Return True when a ``--mount`` spec bind-mounts a host path.
+
+    Parses the comma-separated key=value form (``type=bind,source=/host,...``)
+    and returns True only for bind mounts whose source is a host path. Named
+    volumes (``type=volume``) and tmpfs mounts never expose host files.
+    """
+    if not isinstance(mount_spec, str):
+        return False
+    parts: dict = {}
+    for pair in mount_spec.split(","):
+        if "=" in pair:
+            key, _, value = pair.partition("=")
+            parts[key.strip().lower()] = value.strip()
+    if parts.get("type", "bind") != "bind":
+        return False
+    source = parts.get("source") or parts.get("src")
+    return bool(source) and _docker_volume_uses_host_path(source)
+
+
+def _extra_args_expose_host_path(extra_args) -> bool:
+    """Return True when raw run args carry a host bind/volume mount.
+
+    ``extra_args`` are passed verbatim to the runtime (``docker run`` /
+    ``container run``), so a user can smuggle a host mount past the structured
+    ``*_volumes`` lists via ``--mount type=bind,source=/host,...`` or
+    ``-v /host:/container``. Such mounts must be treated as host access or the
+    approval guard would skip for a container that can reach host files.
+    """
+    args = [a for a in (extra_args or []) if isinstance(a, str)]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if arg == "--mount" and nxt is not None:
+            if _mount_spec_has_host_source(nxt):
+                return True
+            i += 2
+            continue
+        if arg.startswith("--mount="):
+            if _mount_spec_has_host_source(arg[len("--mount="):]):
+                return True
+            i += 1
+            continue
+        if arg in ("-v", "--volume") and nxt is not None:
+            if _docker_volume_uses_host_path(nxt):
+                return True
+            i += 2
+            continue
+        for prefix in ("-v=", "--volume="):
+            if arg.startswith(prefix) and _docker_volume_uses_host_path(arg[len(prefix):]):
+                return True
+        i += 1
+    return False
+
+
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
-    if config.get("env_type") != "docker":
+    """Return True when a local container exposes user-selected host paths.
+
+    The historical name is retained for callers, but Apple Container has the
+    same approval implication as Docker when explicit bind mounts are present.
+    """
+    env_type = config.get("env_type")
+    if env_type == "apple_container":
+        return (
+            any(
+                _docker_volume_uses_host_path(volume)
+                for volume in config.get("apple_container_volumes", [])
+            )
+            or _extra_args_expose_host_path(
+                config.get("apple_container_extra_args")
+            )
+        )
+    if env_type != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    return (
+        any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+        or _extra_args_expose_host_path(config.get("docker_extra_args"))
+    )
 
 
 def _check_all_guards(command: str, env_type: str,
@@ -1451,7 +1525,7 @@ def _current_session_profile() -> str:
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
     "docker_image", "modal_image", "singularity_image",
-    "daytona_image", "env_type",
+    "daytona_image", "apple_container_image", "env_type",
 })
 
 
@@ -1657,7 +1731,9 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "apple_container"}
+)
 
 
 def _plugin_env_flag(env_type: str, attr: str, default=False):
@@ -1807,6 +1883,7 @@ def _get_env_config() -> Dict[str, Any]:
     mount_docker_cwd = _tenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = _is_container_backend(env_type)
     docker_backend = env_type == "docker"
+    apple_container_backend = env_type == "apple_container"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
     # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
@@ -1833,6 +1910,26 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = {}
         docker_extra_args = []
         docker_shm_size = "1g"
+
+    if apple_container_backend:
+        apple_container_volumes = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_VOLUMES", "[]", json.loads, "valid JSON"
+        )
+        if not isinstance(apple_container_volumes, list):
+            raise ValueError(
+                "Invalid value for TERMINAL_APPLE_CONTAINER_VOLUMES: expected a JSON list."
+            )
+        apple_container_extra_args = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS", "[]", json.loads, "valid JSON"
+        )
+        if not isinstance(apple_container_extra_args, list):
+            raise ValueError(
+                "Invalid value for TERMINAL_APPLE_CONTAINER_EXTRA_ARGS: "
+                "expected a JSON list."
+            )
+    else:
+        apple_container_volumes = []
+        apple_container_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, Vercel uses its documented workspace root, and everything
@@ -1880,6 +1977,11 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": _tenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "apple_container_image": _tenv(
+            "TERMINAL_APPLE_CONTAINER_IMAGE", "python:3.11-slim-bookworm"
+        ),
+        "apple_container_volumes": apple_container_volumes,
+        "apple_container_extra_args": apple_container_extra_args,
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
@@ -1963,14 +2065,23 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
 
     Shared by the terminal tool's own get-or-create path and the lazy
     :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
+
+    Unknown keys are passed through so a plugin-registered backend can read its
+    own config values from ``container_config`` without the core enumerating
+    them (the forward-compat ``**kwargs`` contract on ``create_environment``).
     """
-    return {
+    known = {
         "container_cpu": config.get("container_cpu", 1),
         "container_memory": config.get("container_memory", 5120),
         "container_disk": config.get("container_disk", 51200),
         "container_persistent": config.get("container_persistent", True),
         "modal_mode": config.get("modal_mode", "auto"),
         "vercel_runtime": config.get("vercel_runtime", ""),
+        "apple_container_image": config.get(
+            "apple_container_image", "python:3.11-slim-bookworm"
+        ),
+        "apple_container_volumes": config.get("apple_container_volumes", []),
+        "apple_container_extra_args": config.get("apple_container_extra_args", []),
         "docker_volumes": config.get("docker_volumes", []),
         "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
         "docker_forward_env": config.get("docker_forward_env", []),
@@ -1983,6 +2094,10 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "docker_shared_container_key": config.get("docker_shared_container_key", ""),
         "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
     }
+    for key, value in config.items():
+        if key not in known:
+            known[key] = value
+    return known
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
@@ -1995,7 +2110,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "apple_container", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -2159,6 +2274,23 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
         )
 
+    elif env_type == "apple_container":
+        from tools.environments.apple_container import (
+            AppleContainerEnvironment as _AppleContainerEnvironment,
+        )
+
+        return _AppleContainerEnvironment(
+            image=cc.get("apple_container_image") or image,
+            cwd=cwd,
+            timeout=timeout,
+            cpu=cpu,
+            memory=memory,
+            persistent_filesystem=persistent,
+            task_id=task_id,
+            volumes=cc.get("apple_container_volumes", []),
+            extra_args=cc.get("apple_container_extra_args", []),
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -2196,7 +2328,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', 'ssh'{extra}"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', "
+            f"'apple_container', or 'ssh'{extra}"
         )
 
 
@@ -2962,6 +3095,11 @@ def terminal_tool(
             image = overrides.get("modal_image") or config["modal_image"]
         elif env_type == "daytona":
             image = overrides.get("daytona_image") or config["daytona_image"]
+        elif env_type == "apple_container":
+            image = (
+                overrides.get("apple_container_image")
+                or config["apple_container_image"]
+            )
         else:
             image = ""
 
@@ -4100,6 +4238,12 @@ def check_terminal_requirements() -> bool:
         elif env_type == "vercel_sandbox":
             return _check_vercel_sandbox_requirements(config)
 
+        elif env_type == "apple_container":
+            from tools.environments.apple_container import _ensure_container_available
+
+            _ensure_container_available()
+            return True
+
         elif env_type == "daytona":
             from daytona import Daytona  # noqa: F401 — SDK presence check
             from agent.secret_scope import get_secret
@@ -4111,7 +4255,8 @@ def check_terminal_requirements() -> bool:
                 return bool(provider.check_requirements(config))
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh, or a plugin-registered backend.",
+                "modal, daytona, vercel_sandbox, apple_container, ssh, "
+                "or a plugin-registered backend.",
                 env_type,
             )
             return False
@@ -4154,7 +4299,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{_tenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/vercel_sandbox/ssh)"
+        "(local/docker/singularity/modal/daytona/vercel_sandbox/apple_container/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {_tenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {_tenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")

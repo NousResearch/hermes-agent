@@ -245,7 +245,15 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
-  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
+  'terminal.backend': [
+    'local',
+    'docker',
+    'singularity',
+    'modal',
+    'daytona',
+    'ssh',
+    'apple_container',
+  ],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in

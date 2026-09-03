@@ -14,6 +14,8 @@ from tools.credential_files import (
     iter_cache_files,
     iter_skills_files,
     map_cache_path_to_container,
+    from_agent_visible_cache_path,
+    to_agent_visible_cache_path,
     register_credential_file,
     register_credential_files,
 )
@@ -221,6 +223,28 @@ class TestIterSkillsFiles:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
             assert iter_skills_files() == []
+
+def test_apple_container_cache_paths_translate_both_directions(monkeypatch, tmp_path):
+    import tools.credential_files as credential_files
+
+    host_cache = tmp_path / "cache" / "images"
+    host_cache.mkdir(parents=True)
+    host_file = host_cache / "file.png"
+    host_file.write_bytes(b"png")
+    monkeypatch.setenv("TERMINAL_ENV", "apple_container")
+    monkeypatch.setattr(
+        credential_files,
+        "get_cache_directory_mounts",
+        lambda container_base="/root/.hermes": [{
+            "host_path": str(host_cache),
+            "container_path": f"{container_base}/cache/images",
+        }],
+    )
+
+    container_file = "/root/.hermes/cache/images/file.png"
+    assert to_agent_visible_cache_path(str(host_file)) == container_file
+    assert from_agent_visible_cache_path(container_file) == str(host_file)
+
 
 class TestPathTraversalSecurity:
     """Path traversal and absolute path rejection.

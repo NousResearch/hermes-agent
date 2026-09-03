@@ -4879,6 +4879,36 @@ def systemd_restart(system: bool = False):
     _wait_for_systemd_service_restart(system=system, previous_pid=pid)
 
 
+def _runtime_identity_lines(pid: int | None = None) -> list[str]:
+    """Return live, redacted identity fields for gateway diagnostics.
+
+    Profile files and logs can be synchronized or stale across hosts.  These
+    fields deliberately come from the current process and the current
+    profile-scoped service lookup, so status output has an explicit source of
+    truth for host attribution.
+    """
+    try:
+        host = socket.gethostname().strip() or "unknown"
+    except OSError:
+        host = "unknown"
+    try:
+        profile = _profile_suffix() or "default"
+    except Exception:
+        profile = "unknown"
+    try:
+        home = str(get_hermes_home().resolve())
+    except Exception:
+        home = "unknown"
+    lines = [
+        f"Host: {host}",
+        f"Profile: {profile}",
+        f"HERMES_HOME: {home}",
+    ]
+    if pid is not None and pid > 0:
+        lines.append(f"Gateway PID: {pid}")
+    return lines
+
+
 def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
     system = _select_systemd_scope(system)
     unit_path = get_systemd_unit_path(system=system)
@@ -4904,28 +4934,37 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         )
         print()
 
-    status_cmd = ["status", get_service_name(), "--no-pager"]
-    if full:
-        status_cmd.append("-l")
+    # ``systemctl status`` includes journal lines in its output.  Keep that
+    # historical/log view behind --deep/--full so stale or cross-profile logs
+    # cannot be mistaken for live gateway state (#102170).
+    if deep or full:
+        status_cmd = ["status", get_service_name(), "--no-pager"]
+        if full:
+            status_cmd.append("-l")
+        _run_systemctl(
+            status_cmd,
+            system=system,
+            capture_output=False,
+            timeout=10,
+        )
 
-    _run_systemctl(
-        status_cmd,
-        system=system,
-        capture_output=False,
-        timeout=10,
-    )
+    unit_props = _read_systemd_unit_properties(system=system)
+    active_state = unit_props.get("ActiveState", "")
+    sub_state = unit_props.get("SubState", "")
+    exec_main_status = unit_props.get("ExecMainStatus", "")
+    result_code = unit_props.get("Result", "")
+    try:
+        main_pid = int(unit_props.get("MainPID", "0") or "0")
+    except (TypeError, ValueError):
+        main_pid = 0
 
-    result = _run_systemctl(
-        ["is-active", get_service_name()],
-        system=system,
-        capture_output=True,
-        text=True, encoding='utf-8', errors='replace',
-        timeout=10,
-    )
+    print("Gateway runtime identity:")
+    for line in _runtime_identity_lines(main_pid):
+        print(f"  {line}")
+    print(f"  Service: {get_service_name()}")
+    print(f"  Service state: {active_state or 'unknown'} ({sub_state or 'unknown'})")
 
-    status = result.stdout.strip()
-
-    if status == "active":
+    if active_state == "active":
         print(
             f"✓ {_service_scope_label(system).capitalize()} gateway service is running"
         )

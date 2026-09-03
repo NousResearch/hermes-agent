@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, List
 
 from agent.web_search_provider import WebSearchProvider
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 # :mod:`tools.web_tools` so tests that do ``tools.web_tools._exa_client =
 # None`` between cases see fresh state. The plugin reads/writes through
 # that public module (see :func:`_get_exa_client`).
+_client_lock = threading.Lock()
 
 
 def _get_exa_client() -> Any:
@@ -47,41 +49,49 @@ def _get_exa_client() -> Any:
     """
     import tools.web_tools as _wt
 
+    # Intentionally lock-free after publication; the slow path double-checks
+    # under the lock before constructing the singleton.
     cached = getattr(_wt, "_exa_client", None)
     if cached is not None:
         return cached
 
-    from agent.web_search_provider import get_provider_env
+    with _client_lock:
+        cached = getattr(_wt, "_exa_client", None)
+        if cached is not None:
+            return cached
 
-    api_key = get_provider_env("EXA_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "EXA_API_KEY environment variable not set. "
-            "Get your API key at https://exa.ai"
-        )
+        from agent.web_search_provider import get_provider_env
 
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
+        api_key = get_provider_env("EXA_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "EXA_API_KEY environment variable not set. "
+                "Get your API key at https://exa.ai"
+            )
 
-        _lazy_ensure("search.exa", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
-        raise ImportError(str(exc))
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
 
-    from exa_py import Exa  # noqa: WPS433 — deliberately lazy
+            _lazy_ensure("search.exa", prompt=False)
+        except ImportError:
+            pass
+        except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
+            raise ImportError(str(exc))
 
-    client = Exa(api_key=api_key)
-    client.headers["x-exa-integration"] = "hermes-agent"
-    _wt._exa_client = client
-    return client
+        from exa_py import Exa  # noqa: WPS433 — deliberately lazy
+
+        client = Exa(api_key=api_key)
+        client.headers["x-exa-integration"] = "hermes-agent"
+        _wt._exa_client = client
+        return client
 
 
 def _reset_client_for_tests() -> None:
     """Drop the cached Exa client so tests can re-instantiate cleanly."""
     import tools.web_tools as _wt
 
-    _wt._exa_client = None
+    with _client_lock:
+        _wt._exa_client = None
 
 
 class ExaWebSearchProvider(WebSearchProvider):

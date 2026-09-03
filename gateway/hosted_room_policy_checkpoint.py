@@ -340,14 +340,26 @@ class HostedRoomPolicyCheckpoint:
                    WHERE room_id=? AND discussion_event_id=? LIMIT 1""",
                 (room_id, discussion_event_id),
             ).fetchone()
+            source_compacted = source is None
             if source is None:
-                return
-            self._store_active_event(
-                conn,
-                event=event,
-                thread_id=thread_id,
-                discussion_event_id=discussion_event_id,
-            )
+                source = conn.execute(
+                    """SELECT payload_json FROM hosted_room_events
+                       WHERE room_id=? AND event_id=? AND kind='message.user'""",
+                    (room_id, discussion_event_id),
+                ).fetchone()
+                if source is None or str(
+                    json.loads(source["payload_json"]).get("thread_id") or ""
+                ) != thread_id:
+                    return
+                if kind not in _TERMINAL_KINDS:
+                    return
+            else:
+                self._store_active_event(
+                    conn,
+                    event=event,
+                    thread_id=thread_id,
+                    discussion_event_id=discussion_event_id,
+                )
             if kind in _TERMINAL_KINDS:
                 task_id = str(payload.get("task_id") or "")
                 execution_generation = (
@@ -368,6 +380,8 @@ class HostedRoomPolicyCheckpoint:
                             seq,
                         ),
                     )
+                if source_compacted:
+                    return
                 member_id = str(payload.get("member_id") or "")
                 seen_through_seq = int(payload.get("seen_through_seq") or 0)
                 if kind == "turn.settled" and payload.get("message_event_id"):
@@ -595,7 +609,10 @@ class HostedRoomPolicyCheckpoint:
         status: str,
         execution_generation: int,
     ) -> bool:
-        """Return whether one exact driver outcome is already in the room log."""
+        """Return whether one exact driver outcome is already in the room log.
+
+        Repair the bounded publication index when an older runtime skipped it.
+        """
 
         kind = f"turn.{status}"
         generation = execution_generation if status == "deferred" else 0
@@ -615,7 +632,43 @@ class HostedRoomPolicyCheckpoint:
                        )""",
                     (room_id, task_id),
                 ).fetchone()
-        return row is not None
+            if row is not None:
+                return True
+            if status == "deferred":
+                publication = conn.execute(
+                    """SELECT kind, seq FROM hosted_room_events
+                       WHERE room_id=? AND kind=?
+                         AND json_extract(payload_json, '$.task_id')=?
+                         AND COALESCE(CAST(json_extract(
+                             payload_json, '$.execution_generation'
+                         ) AS INTEGER), 0)=?
+                       ORDER BY seq LIMIT 1""",
+                    (room_id, kind, task_id, generation),
+                ).fetchone()
+            else:
+                publication = conn.execute(
+                    """SELECT kind, seq FROM hosted_room_events
+                       WHERE room_id=? AND kind IN (
+                           'turn.settled', 'turn.failed', 'turn.cancelled'
+                       ) AND json_extract(payload_json, '$.task_id')=?
+                       ORDER BY seq LIMIT 1""",
+                    (room_id, task_id),
+                ).fetchone()
+            if publication is None:
+                return False
+            conn.execute(
+                """INSERT OR IGNORE INTO hosted_room_policy_publications (
+                       room_id, task_id, kind, execution_generation, seq
+                   ) VALUES (?, ?, ?, ?, ?)""",
+                (
+                    room_id,
+                    task_id,
+                    str(publication["kind"]),
+                    generation,
+                    int(publication["seq"]),
+                ),
+            )
+            return True
 
     def events_for_task(
         self,
@@ -632,22 +685,39 @@ class HostedRoomPolicyCheckpoint:
                    WHERE room_id=? AND seq=?""",
                 (room_id, source_event_seq),
             ).fetchone()
+            source_event = None
             if source is None:
-                return []
+                source_row = conn.execute(
+                    """SELECT room_id, seq, event_id, kind, actor_json,
+                              authority_epoch, payload_json, created_at
+                       FROM hosted_room_events
+                       WHERE room_id=? AND seq=? AND kind='message.user'""",
+                    (room_id, source_event_seq),
+                ).fetchone()
+                if source_row is None:
+                    return []
+                source_event = self._event_from_room_row(source_row)
+                discussion_event_id = str(source_event["event_id"])
+                thread_id = str(source_event["payload"].get("thread_id") or "")
+                if not thread_id:
+                    return []
+            else:
+                discussion_event_id = str(source["discussion_event_id"])
+                thread_id = str(source["thread_id"])
             active_rows = conn.execute(
                 """SELECT event_json FROM hosted_room_policy_events
                    WHERE room_id=? AND discussion_event_id=?
                    ORDER BY seq LIMIT ?""",
                 (
                     room_id,
-                    str(source["discussion_event_id"]),
+                    discussion_event_id,
                     MAX_ACTIVE_POLICY_EVENTS + 1,
                 ),
             ).fetchall()
             transcript_events = self._transcript_events(
                 conn,
                 room_id=room_id,
-                thread_id=str(source["thread_id"]),
+                thread_id=thread_id,
             )
         if len(active_rows) > MAX_ACTIVE_POLICY_EVENTS:
             raise RuntimeError("task policy projection exceeded its bound")
@@ -656,6 +726,7 @@ class HostedRoomPolicyCheckpoint:
             for event in (
                 *transcript_events,
                 *(json.loads(row["event_json"]) for row in active_rows),
+                *((source_event,) if source_event is not None else ()),
             )
         }
         return [events_by_seq[seq] for seq in sorted(events_by_seq)]

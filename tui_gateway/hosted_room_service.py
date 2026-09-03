@@ -149,12 +149,19 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
+        from hermes_cli.profiles import validate_profile_name
+
         profiles = {"default"}
         profiles_dir = self.root / "profiles"
         if profiles_dir.is_dir():
-            profiles.update(
-                path.name for path in profiles_dir.iterdir() if path.is_dir()
-            )
+            for path in profiles_dir.iterdir():
+                if not path.is_dir():
+                    continue
+                try:
+                    validate_profile_name(path.name)
+                except ValueError:
+                    continue
+                profiles.add(path.name)
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:

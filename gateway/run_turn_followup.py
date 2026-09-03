@@ -8,6 +8,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.input_owner import gateway_input_owner
+from gateway.run_inbound_logging import log_inbound_reply_context
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch_record
 from gateway.response_filters import display_kind_for_event, reply_expected_metadata
@@ -142,6 +143,8 @@ class GatewayQueuedFollowupMixin:
                 # Event-less interrupt/steer follow-ups continue the effective prompt
                 # of the turn they are recursively following.
                 next_channel_prompt = turn_ctx.channel_prompt
+
+            log_inbound_reply_context(next_source, next_message, pending_event, queued=True)
 
             # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
             # See #60671.

@@ -5457,13 +5457,21 @@ def run_conversation(
                 if (
                     agent.api_mode == "codex_responses"
                     and agent.provider in {"openai-codex", "xai-oauth"}
-                    and status_code == 401
+                    # xAI invalid OAuth often returns 403 unauthenticated:bad-credentials
+                    # (not 401). Only refresh on auth-shaped failures so real 403
+                    # entitlement/policy denials still fail closed.
+                    and (
+                        status_code == 401
+                        or (status_code == 403 and getattr(classified, "is_auth", False))
+                    )
                     and not _retry.codex_auth_retry_attempted
                 ):
                     _retry.codex_auth_retry_attempted = True
                     if agent._try_refresh_codex_client_credentials(force=True):
                         _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-                        agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
+                        agent._buffer_vprint(
+                            f"🔐 {_label} auth refreshed after {status_code}. Retrying request..."
+                        )
                         continue
                 if (
                     agent.api_mode == "chat_completions"

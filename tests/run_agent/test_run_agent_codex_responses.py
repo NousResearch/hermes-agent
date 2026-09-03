@@ -1377,20 +1377,32 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
 
 
 def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_differs(monkeypatch):
-    """An xai-oauth agent constructed with a non-singleton credential
-    (e.g. a manual pool entry whose tokens belong to a different account
-    than the device_code singleton, or an explicit ``api_key=`` arg)
-    MUST NOT silently adopt the singleton's tokens on a 401 reactive
-    refresh.  Otherwise a 401 mid-conversation would re-route the rest
-    of the conversation onto a different account, with no user feedback.
+    """An xai-oauth agent whose active key is a *known pool entry* for a
+    different account than the device_code singleton MUST NOT silently
+    adopt the singleton's tokens on a force refresh.  Otherwise a 401
+    mid-conversation would re-route the rest of the conversation onto a
+    different account, with no user feedback.
 
     The credential pool's reactive recovery is the right channel for
-    pool-managed credentials; this fallback path is for the singleton-
-    only case and must short-circuit when the active key differs."""
+    pool-managed multi-account credentials.  Orphan / rotated-away keys
+    (active key not present in the pool) are covered by the adopt test
+    below.
+    """
     agent = _build_xai_oauth_agent(monkeypatch)
     # Agent is using "xai-oauth-token" (per the builder); singleton holds
-    # a *different* account's token.  No force_refresh should fire.
+    # a *different* account's token.  Bind a pool that still knows the
+    # active key so recovery stays with the pool.
     refresh_calls = {"count": 0}
+
+    class _PoolEntry:
+        def __init__(self, key):
+            self.runtime_api_key = key
+
+    class _Pool:
+        def entries(self):
+            return [_PoolEntry(agent.api_key)]
+
+    agent._credential_pool = _Pool()
 
     def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
         if force_refresh:
@@ -1415,8 +1427,8 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
     ok = agent._try_refresh_codex_client_credentials(force=True)
 
     assert ok is False, (
-        "must not refresh when the active credential isn't the singleton; "
-        "otherwise the conversation silently swaps accounts mid-flight."
+        "must not refresh when the active credential is a known non-singleton "
+        "pool entry; otherwise the conversation silently swaps accounts mid-flight."
     )
     assert refresh_calls["count"] == 0, (
         "force_refresh must not run — that would mutate the singleton's "
@@ -1424,6 +1436,88 @@ def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_dif
         "agent that wasn't even using the singleton."
     )
     assert agent.api_key == pre_refresh_key
+
+
+def test_try_refresh_codex_client_credentials_adopts_singleton_for_orphan_xai_key(monkeypatch):
+    """Long-lived Desktop agents can hold an orphan/rotated-away access
+    token that matches neither the pool nor the current singleton.  On
+    force recovery, adopt the current singleton *without* force-minting
+    a new grant (no single-use refresh burn).
+    """
+    agent = _build_xai_oauth_agent(monkeypatch)
+    agent.api_key = "orphan-dead-token"
+    refresh_calls = {"count": 0}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        def close(self):
+            pass
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+        return {
+            "api_key": "singleton-account-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    class _EmptyPool:
+        def entries(self):
+            # Pool only knows the current singleton — not the orphan key.
+            return [type("E", (), {"runtime_api_key": "singleton-account-token"})()]
+
+    agent._credential_pool = _EmptyPool()
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    existing = _ExistingClient()
+    agent.client = existing
+    retired = {"client": None}
+    monkeypatch.setattr(
+        agent,
+        "_retire_shared_openai_client",
+        lambda client, *, reason: retired.__setitem__("client", client),
+    )
+
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is True
+    assert refresh_calls["count"] == 0, "orphan adopt must not force-mint"
+    assert agent.api_key == "singleton-account-token"
+    assert rebuilt["kwargs"]["api_key"] == "singleton-account-token"
+    assert isinstance(agent.client, _RebuiltClient)
+    assert retired["client"] is existing
+
+
+def test_try_refresh_codex_client_credentials_skips_orphan_adopt_without_force(monkeypatch):
+    """Non-force calls must not rewrite a mismatched active key onto the
+    singleton — only explicit auth recovery (force=True) may adopt.
+    """
+    agent = _build_xai_oauth_agent(monkeypatch)
+    agent.api_key = "orphan-dead-token"
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        return {
+            "api_key": "singleton-account-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+    ok = agent._try_refresh_codex_client_credentials(force=False)
+    assert ok is False
+    assert agent.api_key == "orphan-dead-token"
 
 
 

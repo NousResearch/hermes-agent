@@ -13,6 +13,8 @@ The plugin router is attached to a bare FastAPI app — same approach as
 from __future__ import annotations
 
 import importlib.util
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -97,6 +99,7 @@ def test_add_list_get_delete_attachment(kanban_home, tmp_path):
         assert a.size == len(b"%PDF-1.4 fake")
         assert a.uploaded_by == "tester"
         assert a.stored_path == str(blob)
+        assert a.attachment_type == "attachment"
 
         got = kb.get_attachment(conn, att_id)
         assert got is not None and got.id == att_id
@@ -108,6 +111,108 @@ def test_add_list_get_delete_attachment(kanban_home, tmp_path):
         assert kb.get_attachment(conn, att_id) is None
     finally:
         conn.close()
+
+
+def test_fresh_attachment_type_constraint_tracks_declared_policy(kanban_home, tmp_path):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="fresh-constraint")
+        for index, attachment_type in enumerate(sorted(kb.VALID_ATTACHMENT_TYPES), 1):
+            conn.execute(
+                "INSERT INTO task_attachments "
+                "(task_id, filename, stored_path, size, created_at, attachment_type) "
+                "VALUES (?, ?, ?, 0, ?, ?)",
+                (
+                    task_id,
+                    f"valid-{index}.txt",
+                    str(tmp_path / f"fresh-valid-{index}.txt"),
+                    index,
+                    attachment_type,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_attachments "
+                "(task_id, filename, stored_path, size, created_at, attachment_type) "
+                "VALUES (?, 'invalid.txt', ?, 0, 99, 'unknown')",
+                (task_id, str(tmp_path / "fresh-invalid.txt")),
+            )
+    finally:
+        conn.close()
+
+
+def test_attachment_type_migration_is_idempotent_and_legacy_rows_remain_inputs(
+    kanban_home, tmp_path,
+):
+    """A pre-type board upgrades in place, and old writers stay compatible."""
+    db_path = tmp_path / "legacy-attachments.db"
+    kb.init_db(db_path)
+    with kb.connect(db_path) as conn:
+        task_id = _make_task(conn, title="legacy")
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_attachments)")
+        }
+        if "attachment_type" in columns:
+            conn.execute("ALTER TABLE task_attachments DROP COLUMN attachment_type")
+        conn.execute(
+            "INSERT INTO task_attachments "
+            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+            "VALUES (?, 'legacy.txt', ?, 'text/plain', 6, 'old-version', 1)",
+            (task_id, str(tmp_path / "legacy.txt")),
+        )
+        conn.commit()
+
+    kb.init_db(db_path)
+    kb.init_db(db_path)
+    with kb.connect(db_path) as conn:
+        info = {
+            row["name"]: row for row in conn.execute("PRAGMA table_info(task_attachments)")
+        }
+        assert "attachment_type" in info
+        assert info["attachment_type"]["notnull"] == 0
+        assert info["attachment_type"]["dflt_value"] is None
+
+        legacy = kb.list_attachments(conn, task_id)
+        assert [(item.filename, item.attachment_type) for item in legacy] == [
+            ("legacy.txt", "attachment"),
+        ]
+
+        # Simulate a downgraded/older Hermes binary that omits the new column.
+        conn.execute(
+            "INSERT INTO task_attachments "
+            "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
+            "VALUES (?, 'old-writer.txt', ?, 'text/plain', 1, 'old-version', 2)",
+            (task_id, str(tmp_path / "old-writer.txt")),
+        )
+        conn.commit()
+        assert [item.attachment_type for item in kb.list_attachments(conn, task_id)] == [
+            "attachment",
+            "attachment",
+        ]
+
+        # The additive migration and fresh schema share one generated CHECK
+        # policy: every declared type must be accepted, while unknown values
+        # still fail at SQLite's persistence boundary.
+        for index, attachment_type in enumerate(sorted(kb.VALID_ATTACHMENT_TYPES), 3):
+            conn.execute(
+                "INSERT INTO task_attachments "
+                "(task_id, filename, stored_path, size, created_at, attachment_type) "
+                "VALUES (?, ?, ?, 0, ?, ?)",
+                (
+                    task_id,
+                    f"valid-{index}.txt",
+                    str(tmp_path / f"valid-{index}.txt"),
+                    index,
+                    attachment_type,
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_attachments "
+                "(task_id, filename, stored_path, size, created_at, attachment_type) "
+                "VALUES (?, 'invalid.txt', ?, 0, 99, 'unknown')",
+                (task_id, str(tmp_path / "invalid.txt")),
+            )
 
 
 def test_delete_attachment_missing_returns_none(kanban_home):
@@ -158,6 +263,36 @@ def test_worker_context_lists_attachments_with_absolute_path(kanban_home):
         conn.close()
 
 
+def test_worker_context_labels_inputs_and_generated_artifacts_separately(kanban_home):
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="render report")
+        kb.add_attachment(
+            conn,
+            task_id,
+            filename="brief.txt",
+            stored_path="/tmp/brief.txt",
+            attachment_type="attachment",
+        )
+        kb.add_attachment(
+            conn,
+            task_id,
+            filename="report.pdf",
+            stored_path="/tmp/report.pdf",
+            attachment_type="artifact",
+        )
+
+        ctx = kb.build_worker_context(conn, task_id)
+        attachments_block, artifacts_block = ctx.split("## Artifacts", 1)
+        assert "## Attachments" in attachments_block
+        assert "brief.txt" in attachments_block
+        assert "report.pdf" not in attachments_block
+        assert "Files generated by this task" in artifacts_block
+        assert "report.pdf" in artifacts_block
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # REST surface — upload / list / download / delete round-trip
 # ---------------------------------------------------------------------------
@@ -182,6 +317,7 @@ def test_upload_list_download_delete_roundtrip(client):
     att = r.json()["attachment"]
     assert att["filename"] == "notes.txt"
     assert att["size"] == len(content)
+    assert att["attachment_type"] == "attachment"
     att_id = att["id"]
 
     # List (drawer also embeds it in GET /tasks/:id)
@@ -205,6 +341,50 @@ def test_upload_list_download_delete_roundtrip(client):
     assert client.get(
         f"/api/plugins/kanban/tasks/{task_id}/attachments"
     ).json()["attachments"] == []
+
+
+def test_upload_list_detail_and_download_artifact_roundtrip(client):
+    task_id = _create_task_via_api(client)
+    content = b"generated report"
+
+    created = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("report.txt", content, "text/plain")},
+        data={"attachment_type": "artifact"},
+    )
+    assert created.status_code == 200, created.text
+    artifact = created.json()["attachment"]
+    assert artifact["attachment_type"] == "artifact"
+
+    listed = client.get(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments"
+    ).json()["attachments"]
+    assert [(item["filename"], item["attachment_type"]) for item in listed] == [
+        ("report.txt", "artifact"),
+    ]
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()
+    assert detail["attachments"][0]["attachment_type"] == "artifact"
+
+    downloaded = client.get(
+        f"/api/plugins/kanban/attachments/{artifact['id']}"
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.content == content
+
+
+def test_upload_rejects_unknown_attachment_type_without_leaving_a_blob(client):
+    task_id = _create_task_via_api(client)
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("bad.txt", b"bad", "text/plain")},
+        data={"attachment_type": "output"},
+    )
+    assert response.status_code == 400
+    assert "attachment_type" in response.json()["detail"]
+    assert client.get(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments"
+    ).json()["attachments"] == []
+    assert not kb.task_attachments_dir(task_id).exists()
 
 
 def test_upload_sanitizes_traversal_filename(client):
@@ -243,6 +423,7 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
         assert a.filename == "doc.txt"
         assert a.size == len(b"some bytes")
         assert a.uploaded_by == "tester"
+        assert a.attachment_type == "attachment"
         assert Path(a.stored_path).read_bytes() == b"some bytes"
         assert Path(a.stored_path).resolve().is_relative_to(
             kb.task_attachments_dir(task_id).resolve()
@@ -277,6 +458,7 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
         assert len(atts) == 1
         att_id = atts[0].id
         assert atts[0].filename == "upload.txt"
+        assert atts[0].attachment_type == kb.DEFAULT_HUMAN_ATTACHMENT_TYPE
         assert Path(atts[0].stored_path).read_bytes() == b"cli file body"
     finally:
         conn.close()
@@ -292,4 +474,29 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
     finally:
         conn.close()
 
+
+def test_cli_can_create_and_label_an_artifact(kanban_home, tmp_path):
+    from hermes_cli.kanban import run_slash
+
+    conn = kb.connect()
+    try:
+        task_id = _make_task(conn, title="cli-artifact")
+    finally:
+        conn.close()
+
+    src = tmp_path / "result.json"
+    src.write_text('{"ok": true}', encoding="utf-8")
+    created = run_slash(f"attach {task_id} {src} --type artifact")
+    assert "artifact" in created.lower()
+
+    conn = kb.connect()
+    try:
+        artifact = kb.list_attachments(conn, task_id)[0]
+        assert artifact.attachment_type == "artifact"
+    finally:
+        conn.close()
+
+    listed = run_slash(f"attachments {task_id}")
+    assert "artifact" in listed.lower()
+    assert "result.json" in listed
 

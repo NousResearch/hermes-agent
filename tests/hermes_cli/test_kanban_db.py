@@ -607,8 +607,8 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     assert run.metadata["artifacts"] == [str(persisted)]
     with kb.connect() as conn:
         attachments = kb.list_attachments(conn, t)
-    assert [(a.filename, a.stored_path) for a in attachments] == [
-        ("chart.png", str(persisted.resolve()))
+    assert [(a.filename, a.stored_path, a.attachment_type) for a in attachments] == [
+        ("chart.png", str(persisted.resolve()), "artifact")
     ]
 
 

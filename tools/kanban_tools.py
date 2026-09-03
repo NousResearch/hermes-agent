@@ -1136,12 +1136,14 @@ def _handle_comment(args: dict, **kw) -> str:
 
 
 def _handle_attach(args: dict, **kw) -> str:
-    """Attach an inline (base64) file to a task.
+    """Store an inline (base64) task artifact.
 
     Mirrors the dashboard's upload endpoint for the agent surface: decode
     the payload, enforce the shared size cap, write it under the per-task
     attachments dir, and record the metadata row — all via
     ``kanban_db.store_attachment_bytes`` so the three surfaces stay in lockstep.
+    Worker-created files default to artifacts; callers can explicitly classify
+    a file as an input attachment when needed.
     """
     from hermes_cli import kanban_db as kb
 
@@ -1169,6 +1171,7 @@ def _handle_attach(args: dict, **kw) -> str:
     except (binascii.Error, ValueError) as e:
         return tool_error(f"content_base64 is not valid base64: {e}")
     content_type = args.get("content_type")
+    attachment_type = args.get("attachment_type") or kb.DEFAULT_WORKER_ATTACHMENT_TYPE
     board = args.get("board")
     try:
         _, conn = _connect(board=board)
@@ -1180,9 +1183,15 @@ def _handle_attach(args: dict, **kw) -> str:
                 data,
                 content_type=content_type,
                 uploaded_by="agent",
+                attachment_type=attachment_type,
                 board=board,
             )
-            return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+            return _ok(
+                task_id=tid,
+                attachment_id=att_id,
+                attachment_type=attachment_type,
+                size=len(data),
+            )
         finally:
             conn.close()
     except kb.AttachmentTooLarge as e:
@@ -1259,11 +1268,12 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
 
 
 def _handle_attach_url(args: dict, **kw) -> str:
-    """Attach a file fetched server-side from a URL.
+    """Store a URL-backed task artifact.
 
     The agent passes a URL; Hermes downloads it (with the shared size cap)
-    and stores it as a real attachment. Useful when the agent has a link
-    rather than the bytes. Only http/https URLs are accepted.
+    and stores it as a real task file. Worker-created files default to artifacts;
+    callers can explicitly classify a file as an input attachment. Only
+    http/https URLs are accepted.
     """
     from hermes_cli import kanban_db as kb
 
@@ -1289,6 +1299,7 @@ def _handle_attach_url(args: dict, **kw) -> str:
         leaf = unquote(urlparse(url).path.rsplit("/", 1)[-1]).strip()
         filename = leaf or "download"
     content_type = args.get("content_type")
+    attachment_type = args.get("attachment_type") or kb.DEFAULT_WORKER_ATTACHMENT_TYPE
     board = args.get("board")
     try:
         data, fetched_ct = _download_url_with_cap(url, kb.KANBAN_ATTACHMENT_MAX_BYTES)
@@ -1307,9 +1318,15 @@ def _handle_attach_url(args: dict, **kw) -> str:
                 data,
                 content_type=content_type or fetched_ct,
                 uploaded_by="agent",
+                attachment_type=attachment_type,
                 board=board,
             )
-            return _ok(task_id=tid, attachment_id=att_id, size=len(data))
+            return _ok(
+                task_id=tid,
+                attachment_id=att_id,
+                attachment_type=attachment_type,
+                size=len(data),
+            )
         finally:
             conn.close()
     except kb.AttachmentTooLarge as e:
@@ -1347,6 +1364,7 @@ def _handle_attachments(args: dict, **kw) -> str:
                         "uploaded_by": a.uploaded_by,
                         "stored_path": a.stored_path,
                         "created_at": a.created_at,
+                        "attachment_type": a.attachment_type,
                     }
                     for a in atts
                 ],
@@ -2056,12 +2074,12 @@ KANBAN_COMMENT_SCHEMA = {
 KANBAN_ATTACH_SCHEMA = {
     "name": "kanban_attach",
     "description": (
-        "Attach a file to a task by passing its bytes inline (base64). "
-        "Use for genuine file artifacts the next worker or a human should "
-        "be able to download — generated reports, images, exports. The "
-        "file is stored as a real attachment (not a comment link) under "
-        "the task's attachments dir, capped at 25 MB. Prefer "
-        "kanban_attach_url when you only have a URL."
+        "Store a task artifact by passing its bytes inline (base64). Use for "
+        "genuine worker outputs the next worker or a human should be able to "
+        "download — generated reports, images, exports. The file is stored "
+        "under the task's attachments directory, capped at 25 MB. Prefer "
+        "kanban_attach_url when you only have a URL. Set attachment_type only "
+        "when intentionally adding an input attachment instead."
     ),
     "parameters": {
         "type": "object",
@@ -2085,6 +2103,14 @@ KANBAN_ATTACH_SCHEMA = {
                 "type": "string",
                 "description": "Optional MIME type (e.g. 'application/pdf').",
             },
+            "attachment_type": {
+                "type": "string",
+                "enum": ["attachment", "artifact"],
+                "default": "artifact",
+                "description": (
+                    "File purpose. Defaults to 'artifact' for worker-produced files."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["filename", "content_base64"],
@@ -2094,10 +2120,11 @@ KANBAN_ATTACH_SCHEMA = {
 KANBAN_ATTACH_URL_SCHEMA = {
     "name": "kanban_attach_url",
     "description": (
-        "Attach a file to a task by URL — Hermes downloads it server-side "
-        "and stores it as a real attachment (capped at 25 MB). Use when "
-        "you have a link rather than the bytes. Only http/https URLs are "
-        "accepted."
+        "Store a task artifact by URL — Hermes downloads it server-side and "
+        "keeps it under the task's attachments directory (capped at 25 MB). "
+        "Use when you have a worker-output link rather than the bytes. Only "
+        "http/https URLs are accepted. Set attachment_type only when "
+        "intentionally adding an input attachment instead."
     ),
     "parameters": {
         "type": "object",
@@ -2124,6 +2151,14 @@ KANBAN_ATTACH_URL_SCHEMA = {
                     "Content-Type the server returns."
                 ),
             },
+            "attachment_type": {
+                "type": "string",
+                "enum": ["attachment", "artifact"],
+                "default": "artifact",
+                "description": (
+                    "File purpose. Defaults to 'artifact' for worker-produced files."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["url"],
@@ -2133,8 +2168,9 @@ KANBAN_ATTACH_URL_SCHEMA = {
 KANBAN_ATTACHMENTS_SCHEMA = {
     "name": "kanban_attachments",
     "description": (
-        "List the files attached to a task: id, filename, content_type, "
-        "size, who uploaded it, and the absolute on-disk path you can read."
+        "List a task's input attachments and generated artifacts: id, filename, "
+        "attachment_type, content_type, size, who uploaded it, and the absolute "
+        "on-disk path you can read."
     ),
     "parameters": {
         "type": "object",

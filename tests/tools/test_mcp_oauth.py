@@ -4,6 +4,7 @@ import json
 import stat
 import sys
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -159,6 +160,39 @@ class TestHermesTokenStorage:
 
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
+
+    def test_snapshot_warns_without_exposing_unreadable_file_contents(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("warn-server")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        token_path = token_dir / "warn-server.json"
+        token_path.write_text("access-secret refresh-secret")
+        client_path = token_dir / "warn-server.client.json"
+        client_path.write_text('{"client_id":"safe"}')
+
+        original_read_bytes = Path.read_bytes
+
+        def fail_token_read(path):
+            if path == token_path:
+                raise OSError("permission denied")
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", fail_token_read)
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+            snapshot = storage.snapshot()
+
+        assert "warn-server.json" not in snapshot
+        assert "warn-server.client.json" in snapshot
+        assert "Incomplete OAuth state snapshot" in caplog.text
+        assert "warn-server.json" in caplog.text
+        assert "access-secret" not in caplog.text
+        assert "refresh-secret" not in caplog.text
 
 
 # ---------------------------------------------------------------------------

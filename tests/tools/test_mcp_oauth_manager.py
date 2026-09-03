@@ -55,6 +55,12 @@ def test_manager_restore_entry_preserves_newer_concurrent_entry(tmp_path, monkey
     manager = MCPOAuthManager()
     old_provider = manager.get_or_build_provider("shared", "https://old.example", {})
     old_entry = manager.remove("shared")
+    assert old_entry is not None
+
+    manager.restore_entry("shared", old_entry)
+    assert manager.get_or_build_provider("shared", "https://old.example", {}) is old_provider
+
+    old_entry = manager.remove("shared")
     new_provider = manager.get_or_build_provider("shared", "https://new.example", {})
 
     manager.restore_entry("shared", old_entry)

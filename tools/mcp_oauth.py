@@ -639,22 +639,46 @@ class HermesTokenStorage:
         ):
             p.unlink(missing_ok=True)
 
-    def snapshot(self) -> dict[str, bytes]:
+    def snapshot(self) -> dict[str, dict[str, Any]]:
         """Capture on-disk OAuth state so a failed re-auth can restore it.
 
-        Maps filename -> bytes for whichever of the three state files exist.
-        Feed back to ``restore()`` to undo an intervening ``remove()`` when a
-        re-authentication attempt fails, so a still-valid token isn't destroyed.
+        Maps filename -> ``{"data": bytes, "mode": int}`` for whichever of
+        the three state files exist. Feed back to ``restore()`` to undo an
+        intervening ``remove()`` when a re-authentication attempt fails, so a
+        still-useful token/client/meta set is not destroyed. File modes are
+        captured with the bytes so rollback preserves secure permissions.
         """
-        snap: dict[str, bytes] = {}
+        snap: dict[str, dict[str, Any]] = {}
         for p in (self._tokens_path(), self._client_info_path(), self._meta_path()):
             try:
-                snap[p.name] = p.read_bytes()
-            except OSError:
-                pass
+                st = p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning(
+                    "Incomplete OAuth state snapshot for %s: could not stat %s: %s",
+                    self._server_name,
+                    p.name,
+                    exc,
+                )
+                continue
+            try:
+                data = p.read_bytes()
+            except OSError as exc:
+                logger.warning(
+                    "Incomplete OAuth state snapshot for %s: could not read %s: %s",
+                    self._server_name,
+                    p.name,
+                    exc,
+                )
+                continue
+            snap[p.name] = {
+                "data": data,
+                "mode": stat.S_IMODE(st.st_mode),
+            }
         return snap
 
-    def restore(self, snapshot: dict[str, bytes], *, only_if_absent: bool = False) -> None:
+    def restore(self, snapshot: dict[str, dict[str, Any]], *, only_if_absent: bool = False) -> None:
         """Revert to a snapshot without overwriting a concurrent successful write."""
         if only_if_absent and any(
             path.exists()
@@ -670,16 +694,19 @@ class HermesTokenStorage:
             return
         token_dir = _get_token_dir(self._hermes_home)
         token_dir.mkdir(parents=True, exist_ok=True)
-        for fname, data in snapshot.items():
+        for fname, entry in snapshot.items():
             path = token_dir / fname
             try:
+                data = entry["data"]
+                mode = int(entry.get("mode") or (stat.S_IRUSR | stat.S_IWUSR))
                 fd = os.open(
                     str(path),
                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                    stat.S_IRUSR | stat.S_IWUSR,
+                    mode,
                 )
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(data)
+                os.chmod(path, mode)
             except OSError as exc:
                 logger.warning("Failed to restore OAuth state %s: %s", fname, exc)
 

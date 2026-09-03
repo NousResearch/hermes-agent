@@ -748,6 +748,7 @@ class TestMcpLogin:
         out = capsys.readouterr().out
 
         assert "no OAuth token was obtained" in out
+        assert "Could not restore previous OAuth state" not in out
         assert "Authenticated" not in out
         assert "client_id" in out
 
@@ -783,6 +784,156 @@ class TestMcpLogin:
         # The login path must grant a human enough time to finish the browser
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
+
+    def test_login_failure_restores_existing_oauth_state(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A failed replacement OAuth flow must not destroy prior state."""
+        _seed_config(tmp_path, {
+            "linear": {"url": "https://mcp.linear.app/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        original = {
+            "linear.json": b'{"access_token":"old","refresh_token":"old-r"}',
+            "linear.client.json": b'{"client_id":"old-client"}',
+            "linear.meta.json": b'{"token_endpoint":"https://old/token"}',
+        }
+        for name, data in original.items():
+            path = token_dir / name
+            path.write_bytes(data)
+            path.chmod(0o600)
+
+        def mock_probe(*_args, **_kwargs):
+            # Simulate a failed flow after destructive remove has already run.
+            (token_dir / "linear.json").write_bytes(b'{"access_token":"partial"}')
+            raise RuntimeError("simulated callback failure")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+
+        reset_manager_for_tests()
+        _set_interactive_stdin(monkeypatch)
+        manager = get_manager()
+        provider = manager.get_or_build_provider(
+            "linear", "https://mcp.linear.app/mcp", None
+        )
+        assert manager._key("linear") in manager._entries
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="linear"))
+        out = capsys.readouterr().out
+
+        assert "Authentication failed" in out
+        assert "Could not restore previous OAuth state" not in out
+        assert manager.get_or_build_provider(
+            "linear", "https://mcp.linear.app/mcp", None
+        ) is provider
+        for name, data in original.items():
+            path = token_dir / name
+            assert path.read_bytes() == data
+            assert path.stat().st_mode & 0o777 == 0o600
+
+    def test_login_success_replaces_existing_oauth_state(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """A successful replacement keeps the freshly written OAuth state."""
+        _seed_config(tmp_path, {
+            "linear": {"url": "https://mcp.linear.app/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        for name in ("linear.json", "linear.client.json", "linear.meta.json"):
+            (token_dir / name).write_text("old")
+
+        new_state = {
+            "linear.json": b'{"access_token":"new","refresh_token":"new-r"}',
+            "linear.client.json": b'{"client_id":"new-client"}',
+            "linear.meta.json": b'{"token_endpoint":"https://new/token"}',
+        }
+
+        def mock_probe(*_args, **_kwargs):
+            token_dir.mkdir(exist_ok=True)
+            for name, data in new_state.items():
+                path = token_dir / name
+                path.write_bytes(data)
+                path.chmod(0o600)
+            return [("get_issue", "d")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="linear"))
+        out = capsys.readouterr().out
+
+        assert "Authenticated" in out
+        for name, data in new_state.items():
+            assert (token_dir / name).read_bytes() == data
+
+    def test_brand_new_failed_login_leaves_no_partial_oauth_state(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """No prior state: failed login cleans any partial token artifacts."""
+        _seed_config(tmp_path, {
+            "linear": {"url": "https://mcp.linear.app/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+
+        def mock_probe(*_args, **_kwargs):
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "linear.client.json").write_text("partial-client")
+            raise RuntimeError("simulated timeout")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="linear"))
+        out = capsys.readouterr().out
+
+        assert "Authentication failed" in out
+        assert list(token_dir.glob("linear*.json")) == []
+
+    def test_login_failure_restores_partial_prior_oauth_state(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Rollback restores exactly the prior subset when only some files existed."""
+        _seed_config(tmp_path, {
+            "linear": {"url": "https://mcp.linear.app/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "linear.client.json").write_bytes(b'{"client_id":"old-client"}')
+
+        def mock_probe(*_args, **_kwargs):
+            token_dir.mkdir(exist_ok=True)
+            (token_dir / "linear.json").write_text("partial-token")
+            (token_dir / "linear.meta.json").write_text("partial-meta")
+            raise RuntimeError("simulated provider error")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="linear"))
+        out = capsys.readouterr().out
+
+        assert "Authentication failed" in out
+        assert sorted(p.name for p in token_dir.glob("linear*.json")) == [
+            "linear.client.json"
+        ]
+        assert (token_dir / "linear.client.json").read_bytes() == b'{"client_id":"old-client"}'
 
 
 # ---------------------------------------------------------------------------

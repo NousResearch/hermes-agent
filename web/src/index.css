@@ -222,6 +222,23 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* Touch devices: the xterm transcript scrollbar is the only native scroll
+   affordance and its default width is nearly impossible to grab with a
+   finger. Fatten it (and give the thumb visible contrast) on coarse
+   pointers; desktop styling is untouched. */
+@media (pointer: coarse) {
+  .xterm .xterm-viewport {
+    scrollbar-width: auto;
+  }
+  .xterm .xterm-viewport::-webkit-scrollbar {
+    width: 16px;
+  }
+  .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, currentColor 35%, transparent);
+    border-radius: 8px;
+  }
+}
+
 /* System UI-monospace stack — distinct from `font-courier` (Courier
    Prime), used for dense data readouts where the display font would
    break the grid. Routes through the theme's mono stack so themes

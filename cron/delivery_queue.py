@@ -27,6 +27,34 @@ _PROCESS_ID = uuid.uuid4().hex
 _lock = threading.RLock()
 _ACTIVE_DELIVERIES: set[str] = set()
 _TERMINAL = ("delivered", "failed", "unknown")
+MAX_TERMINAL_DELIVERIES = 1000
+
+
+def _prune_terminal_unlocked(conn: sqlite3.Connection) -> None:
+    """Redact terminal payloads and retain only bounded outcome metadata."""
+    conn.execute(
+        """UPDATE deliveries SET job_json='{}', content=''
+           WHERE status IN ('delivered','failed','unknown')
+             AND (job_json != '{}' OR content != '')"""
+    )
+    keep = max(0, int(MAX_TERMINAL_DELIVERIES))
+    terminal_count = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM deliveries "
+            "WHERE status IN ('delivered','failed','unknown')"
+        ).fetchone()[0]
+    )
+    excess = terminal_count - keep
+    if excess > 0:
+        conn.execute(
+            """DELETE FROM deliveries WHERE execution_id IN (
+                 SELECT execution_id FROM deliveries
+                 WHERE status IN ('delivered','failed','unknown')
+                 ORDER BY finished_at, created_at, execution_id
+                 LIMIT ?
+               )""",
+            (excess,),
+        )
 
 
 def _path() -> Path:
@@ -53,6 +81,7 @@ def _transaction() -> Iterator[sqlite3.Connection]:
                      execution_id TEXT PRIMARY KEY,
                      job_json TEXT NOT NULL,
                      content TEXT NOT NULL,
+                     for_failure INTEGER NOT NULL DEFAULT 0,
                      status TEXT NOT NULL CHECK(status IN
                        ('pending','delivering','delivered','failed','unknown')),
                      owner_process_id TEXT,
@@ -63,7 +92,16 @@ def _transaction() -> Iterator[sqlite3.Connection]:
                      error TEXT
                    )"""
             )
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(deliveries)")
+            }
+            if "for_failure" not in columns:
+                conn.execute(
+                    "ALTER TABLE deliveries "
+                    "ADD COLUMN for_failure INTEGER NOT NULL DEFAULT 0"
+                )
             with conn:
+                _prune_terminal_unlocked(conn)
                 yield conn
         finally:
             conn.close()
@@ -91,17 +129,24 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     return _process_start_time(pid) == started_at
 
 
-def enqueue(execution_id: str, job: dict, content: str) -> dict:
+def enqueue(
+    execution_id: str,
+    job: dict,
+    content: str,
+    *,
+    for_failure: bool = False,
+) -> dict:
     """Persist one idempotent delivery request before the worker waits."""
     with _transaction() as conn:
         conn.execute(
             """INSERT OR IGNORE INTO deliveries
-               (execution_id, job_json, content, status, created_at)
-               VALUES (?, ?, ?, 'pending', ?)""",
+               (execution_id, job_json, content, for_failure, status, created_at)
+               VALUES (?, ?, ?, ?, 'pending', ?)""",
             (
                 str(execution_id),
                 json.dumps(job, ensure_ascii=False, sort_keys=True),
                 str(content),
+                int(bool(for_failure)),
                 _hermes_now().isoformat(),
             ),
         )
@@ -163,6 +208,7 @@ def _finish(execution_id: str, *, error: Optional[str]) -> bool:
                 os.getpid(),
             ),
         )
+        _prune_terminal_unlocked(conn)
     return cur.rowcount == 1
 
 
@@ -198,10 +244,13 @@ def recover_abandoned() -> int:
                 ),
             )
             changed += cur.rowcount
+        _prune_terminal_unlocked(conn)
     return changed
 
 
-def drain(send: Callable[[dict, str], Optional[str]], *, limit: int = 20) -> int:
+def drain(
+    send: Callable[[dict, str, bool], Optional[str]], *, limit: int = 20
+) -> int:
     """Deliver pending rows through *send*, terminalizing every claimed row."""
     recover_abandoned()
     processed = 0
@@ -213,7 +262,9 @@ def drain(send: Callable[[dict, str], Optional[str]], *, limit: int = 20) -> int
             _ACTIVE_DELIVERIES.add(row["execution_id"])
         try:
             try:
-                error = send(row["job"], row["content"])
+                error = send(
+                    row["job"], row["content"], bool(row["for_failure"])
+                )
             except BaseException as exc:
                 error = f"{type(exc).__name__}: {exc}"
             _finish(row["execution_id"], error=error)
@@ -229,10 +280,11 @@ def enqueue_and_wait(
     job: dict,
     content: str,
     *,
+    for_failure: bool = False,
     timeout: Optional[float] = None,
 ) -> Optional[str]:
     """Queue delivery and wait for a gateway's terminal at-most-once outcome."""
-    enqueue(execution_id, job, content)
+    enqueue(execution_id, job, content, for_failure=for_failure)
     deadline = None if timeout is None else time.monotonic() + timeout
     while deadline is None or time.monotonic() < deadline:
         row = get_status(execution_id)

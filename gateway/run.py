@@ -33280,13 +33280,13 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
     """Drain each profile's worker queue through its matching live adapters."""
     from cron import scheduler as cron_scheduler
 
-    if adapters:
+    if adapters is not None:
         cron_scheduler.drain_delivery_queue(adapters, loop)
     if runner is None:
         return
     for profile_name, profile_home in _handoff_watch_scopes(runner)[1:]:
         profile_adapters = getattr(runner, "_profile_adapters", {}).get(profile_name)
-        if not profile_adapters:
+        if profile_adapters is None:
             continue
         with _profile_runtime_scope(profile_home):
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
@@ -33358,10 +33358,7 @@ def _start_gateway_housekeeping(
         # their final send for whichever gateway instance is live.  Drain on
         # the gateway-wide housekeeper rather than the built-in scheduler tick:
         # external providers do not run that ticker.
-        profile_adapters = (
-            getattr(runner, "_profile_adapters", {}) if runner is not None else {}
-        )
-        if adapters or any(profile_adapters.values()):
+        if adapters is not None or runner is not None:
             try:
                 _drain_restart_safe_cron_deliveries(adapters, loop, runner)
             except Exception as exc:

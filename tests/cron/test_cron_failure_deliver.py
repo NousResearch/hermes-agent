@@ -76,7 +76,7 @@ def run_env(monkeypatch, tmp_path):
 
     monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": "exec-t"})
     monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
-    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
     monkeypatch.setattr(
         s, "save_job_output",
         lambda jid, out: state["saved"].append(jid) or f"/tmp/{jid}.txt",

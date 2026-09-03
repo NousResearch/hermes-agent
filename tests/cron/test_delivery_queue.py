@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import Mock
 
 import pytest
@@ -16,8 +17,79 @@ def test_pending_delivery_is_claimed_and_sent_once(tmp_path, monkeypatch):
 
     assert queue.drain(send) == 1
     assert queue.drain(send) == 0
-    send.assert_called_once_with({"id": "job-1"}, "brief")
-    assert queue.get_status("exec-1")["status"] == "delivered"
+    send.assert_called_once_with({"id": "job-1"}, "brief", False)
+    status = queue.get_status("exec-1")
+    assert status["status"] == "delivered"
+    assert status["job_json"] == "{}"
+    assert status["content"] == ""
+
+
+def test_terminal_delivery_retention_is_bounded(tmp_path, monkeypatch):
+    import cron.delivery_queue as queue
+
+    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    monkeypatch.setattr(queue, "MAX_TERMINAL_DELIVERIES", 2, raising=False)
+    for index in range(4):
+        execution_id = f"exec-{index}"
+        queue.enqueue(execution_id, {"id": f"job-{index}"}, f"brief-{index}")
+        assert queue.claim_next()["execution_id"] == execution_id
+        assert queue._finish(execution_id, error=None)
+
+    assert queue.get_status("exec-0") is None
+    assert queue.get_status("exec-1") is None
+    assert queue.get_status("exec-2")["status"] == "delivered"
+    assert queue.get_status("exec-3")["status"] == "delivered"
+
+
+def test_failure_delivery_lane_survives_durable_handoff(tmp_path, monkeypatch):
+    import cron.delivery_queue as queue
+
+    monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
+    queue.enqueue(
+        "exec-failure",
+        {"id": "job-failure", "failure_deliver": "local"},
+        "failed",
+        for_failure=True,
+    )
+    send = Mock(return_value=None)
+
+    assert queue.drain(send) == 1
+    send.assert_called_once_with(
+        {"id": "job-failure", "failure_deliver": "local"},
+        "failed",
+        True,
+    )
+
+
+def test_legacy_queue_schema_adds_failure_lane_before_enqueue(tmp_path, monkeypatch):
+    import cron.delivery_queue as queue
+
+    db = tmp_path / "deliveries.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE deliveries (
+                 execution_id TEXT PRIMARY KEY,
+                 job_json TEXT NOT NULL,
+                 content TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 owner_process_id TEXT,
+                 owner_pid INTEGER,
+                 owner_started_at INTEGER,
+                 created_at TEXT NOT NULL,
+                 finished_at TEXT,
+                 error TEXT
+               )"""
+        )
+    monkeypatch.setattr(queue, "DELIVERY_DB", db)
+
+    queue.enqueue(
+        "exec-migrated",
+        {"id": "job-migrated"},
+        "failed",
+        for_failure=True,
+    )
+
+    assert queue.get_status("exec-migrated")["for_failure"] == 1
 
 
 def test_dead_delivery_owner_becomes_unknown_and_is_not_retried(

@@ -608,7 +608,22 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        enabled_toolsets: list[str] | None = None,
+        disabled_toolsets: list[str] | None = None,
     ):
+        """Build a fresh ``AIAgent`` for the session.
+
+        Explicit ``enabled_toolsets`` / ``disabled_toolsets`` are passed through
+        verbatim — the rebuild deliberately does NOT re-run
+        ``_expand_acp_enabled_toolsets`` against the current config. This trades
+        config freshness for session fidelity: MCP toolsets the ACP client
+        registered at session creation stay bound even after a ``/model``
+        switch, while servers added to ``config.yaml`` after creation only
+        appear on the *next* new session (the ``_make_agent`` cold path, with
+        both ``enabled_toolsets`` and ``disabled_toolsets`` left as ``None``).
+        See the corresponding docs on ``_capture_session_toolset_state`` in
+        ``acp_adapter.server`` for the explicit ``None``/``[]`` invariant.
+        """
         if self._agent_factory is not None:
             return self._agent_factory()
 
@@ -634,9 +649,18 @@ class SessionManager:
 
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
-                mcp_server_names=configured_mcp_servers,
+            "enabled_toolsets": (
+                list(enabled_toolsets)
+                if enabled_toolsets is not None
+                else _expand_acp_enabled_toolsets(
+                    ["hermes-acp"],
+                    mcp_server_names=configured_mcp_servers,
+                )
+            ),
+            "disabled_toolsets": (
+                list(disabled_toolsets)
+                if disabled_toolsets is not None
+                else None
             ),
             "quiet_mode": True,
             "session_id": session_id,

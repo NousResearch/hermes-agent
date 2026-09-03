@@ -269,6 +269,12 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Grace (seconds) added to the inactivity timeout while the agent is
+        # explicitly waiting on a provider response (non-streaming "thinking"
+        # gap).  A reasoning model can sit idle 60-120s between its last tool
+        # result and the next API call while the provider thinks; that idle
+        # clock must not reap a turn that is genuinely making progress.  0 disables.
+        "gateway_timeout_provider_grace": 300,
         # Maximum time (seconds) the gateway will block an agent waiting for
         # a clarify-tool response from the user.  Hit this and the agent
         # unblocks with "[user did not respond within Xm]" so it can adapt

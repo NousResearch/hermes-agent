@@ -67,6 +67,33 @@ def test_thread_watchdog_reaps_only_processes_created_by_timed_out_turn(monkeypa
     ]
 
 
+def test_thread_watchdog_honors_effective_timeout_callback(monkeypatch):
+    """Provider grace and /extend must reach the thread watchdog, not only the asyncio poll."""
+    agent = _IdleAgent(idle_seconds=60.0)
+    worker_done, timeout_fired, cleanup_lock = _state()
+    reaps = []
+    monkeypatch.setattr(
+        "gateway.run._abandon_timed_out_gateway_turn",
+        lambda **kwargs: reaps.append(kwargs) or True,
+    )
+
+    threading.Timer(0.03, worker_done.set).start()
+    _watch_gateway_turn_inactivity(
+        agent_holder=[agent],
+        task_id="session-a",
+        process_baseline=frozenset(),
+        timeout=30.0,
+        effective_timeout=lambda _activity: float("inf"),
+        worker_done=worker_done,
+        timeout_fired=timeout_fired,
+        cleanup_lock=cleanup_lock,
+        poll_interval=0.01,
+    )
+
+    assert reaps == []
+    assert not timeout_fired.is_set()
+
+
 def test_completed_worker_wins_race_and_preserves_background_process(monkeypatch):
     agent = _IdleAgent()
     worker_done, timeout_fired, cleanup_lock = _state()

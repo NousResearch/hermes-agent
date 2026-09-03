@@ -20,6 +20,7 @@ import dataclasses
 import hashlib
 import inspect
 import logging
+import math
 import os
 import re
 import shlex
@@ -1514,6 +1515,48 @@ class GatewaySlashCommandsMixin:
                 )
 
         return t("gateway.stop.no_active")
+
+    async def _handle_extend_command(self, event: MessageEvent) -> str:
+        """Handle ``/extend [minutes]`` — raise this turn's inactivity timeout.
+
+        Stores a monotonic deadline for the currently active turn, hard-capped
+        so a single command cannot pin a hung turn forever (#4815). The
+        inactivity watchdog reads it and will not reap that turn before it.
+        """
+        # Hard cap per call so an extension cannot pin a hung turn forever.
+        _CAP = 3600.0
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        if session_key not in self._running_agents:
+            return "No active agent turn to extend."
+        run_generation = self._session_run_generation.get(session_key)
+        if not isinstance(run_generation, int):
+            return "No active agent turn to extend."
+        raw = (event.get_command_args() or "").strip()
+        try:
+            minutes = float(raw) if raw else 30.0
+        except ValueError:
+            return (
+                "Usage: /extend [minutes] — e.g. /extend 30 (max "
+                f"{int(_CAP // 60)} min per call)."
+            )
+        if not math.isfinite(minutes):
+            return (
+                "Usage: /extend [minutes] — minutes must be a finite number "
+                f"up to {int(_CAP // 60)}."
+            )
+        if minutes <= 0:
+            # A non-positive value clears any prior extension.
+            self._clear_inactivity_extension(session_key, run_generation)
+            return "Inactivity extension cleared for this session."
+        minutes = min(minutes, _CAP / 60.0)
+        deadline = time.monotonic() + minutes * 60.0
+        self._set_inactivity_extension(session_key, run_generation, deadline)
+        rendered_minutes = f"{minutes:g}"
+        return (
+            f"⏱️ Inactivity timeout extended by {rendered_minutes} min for this "
+            f"session (will not be reaped before then). Send /extend 0 to clear."
+        )
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and

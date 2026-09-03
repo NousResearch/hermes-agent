@@ -2946,6 +2946,10 @@ if _config_path.exists():
                 )
             if "gateway_timeout_warning" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
+            if "gateway_timeout_provider_grace" in _agent_cfg:
+                os.environ["HERMES_AGENT_TIMEOUT_PROVIDER_GRACE"] = str(
+                    _agent_cfg["gateway_timeout_provider_grace"]
+                )
             if "gateway_notify_interval" in _agent_cfg:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
             if "session_stall_timeout" in _agent_cfg:
@@ -3976,6 +3980,35 @@ def _abandon_timed_out_gateway_turn(
     return True
 
 
+def _effective_gateway_inactivity_timeout(
+    timeout: float,
+    activity: dict,
+    *,
+    provider_grace: float = 0.0,
+    extend_deadline: Optional[float] = None,
+    now: Optional[float] = None,
+) -> float:
+    """Return the one inactivity threshold shared by both watchdog paths."""
+    effective_timeout = timeout
+    if provider_grace:
+        description = activity.get("last_activity_desc") or activity.get("description") or ""
+        provenance = activity.get("last_activity_provenance") or activity.get("provenance") or ""
+        if (
+            "waiting for provider response" in description
+            or "waiting for non-streaming API response" in description
+            or provenance == "waiting_for_provider_response"
+        ):
+            effective_timeout += provider_grace
+    if extend_deadline is not None:
+        current_time = time.monotonic() if now is None else now
+        if current_time < extend_deadline:
+            # A user-requested extension is an absolute no-reap deadline, not
+            # a shrinking idle threshold that can expire early on an already
+            # idle turn.
+            return float("inf")
+    return effective_timeout
+
+
 def _watch_gateway_turn_inactivity(
     *,
     agent_holder,
@@ -3987,19 +4020,30 @@ def _watch_gateway_turn_inactivity(
     cleanup_lock: threading.Lock,
     poll_interval: float = 5.0,
     is_still_current: Optional[Callable[[], bool]] = None,
+    effective_timeout: Optional[Callable[[dict], float]] = None,
 ) -> None:
-    """Thread watchdog that remains runnable when gateway asyncio is starved."""
+    """Thread watchdog that remains runnable when gateway asyncio is starved.
+
+    ``effective_timeout`` is the canonical per-poll policy supplied by the
+    owning turn.  The thread must not bypass provider grace or a live /extend
+    deadline merely because the asyncio poll is starved.
+    """
     while not worker_done.wait(max(0.01, poll_interval)):
         agent = agent_holder[0] if agent_holder else None
         if agent is None or not hasattr(agent, "get_activity_summary"):
             continue
         try:
-            idle_seconds = float(
-                agent.get_activity_summary().get("seconds_since_activity", 0.0)
-            )
+            activity = agent.get_activity_summary()
+            idle_seconds = float(activity.get("seconds_since_activity", 0.0))
         except Exception:
             continue
-        if idle_seconds < timeout:
+        timeout_for_poll = timeout
+        if effective_timeout is not None:
+            try:
+                timeout_for_poll = float(effective_timeout(activity))
+            except Exception:
+                logger.debug("Could not resolve effective gateway inactivity timeout", exc_info=True)
+        if idle_seconds < timeout_for_poll:
             continue
         _abandon_timed_out_gateway_turn(
             agent_holder=agent_holder,
@@ -7566,8 +7610,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _platform_lock_takeover_on_start: bool = False
     _reconnect_watcher_task: Optional["asyncio.Task"] = None
 
+    def _inactivity_extend_lock(self) -> threading.Lock:
+        """Return the owner lock for per-turn /extend state.
+
+        Production runners initialize this state in ``__init__``. The lazy
+        fallback keeps narrow ``GatewayRunner.__new__`` test fixtures from
+        gaining a new construction requirement without reintroducing
+        class-shared mutable state.
+        """
+        lock = getattr(self, "_inactivity_extend_deadlines_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._inactivity_extend_deadlines_lock = lock
+        if not hasattr(self, "_inactivity_extend_deadlines"):
+            self._inactivity_extend_deadlines = {}
+        return lock
+
+    def _set_inactivity_extension(
+        self, session_key: str, run_generation: int, deadline: float
+    ) -> None:
+        """Bind one /extend deadline to the exact turn generation that owns it."""
+        with self._inactivity_extend_lock():
+            self._inactivity_extend_deadlines[session_key] = (
+                int(run_generation),
+                float(deadline),
+            )
+
+    def _get_inactivity_extension(
+        self, session_key: str, run_generation: Optional[int]
+    ) -> Optional[float]:
+        """Return a deadline only to its owning turn generation."""
+        if run_generation is None:
+            return None
+        with self._inactivity_extend_lock():
+            entry = self._inactivity_extend_deadlines.get(session_key)
+        if not entry or int(entry[0]) != int(run_generation):
+            return None
+        return float(entry[1])
+
+    def _clear_inactivity_extension(
+        self, session_key: str, run_generation: Optional[int]
+    ) -> bool:
+        """Clear only the deadline owned by ``run_generation``."""
+        if run_generation is None:
+            return False
+        with self._inactivity_extend_lock():
+            entry = self._inactivity_extend_deadlines.get(session_key)
+            if not entry or int(entry[0]) != int(run_generation):
+                return False
+            self._inactivity_extend_deadlines.pop(session_key, None)
+        return True
+
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
+        self._inactivity_extend_deadlines: Dict[str, tuple[int, float]] = {}
+        self._inactivity_extend_deadlines_lock = threading.Lock()
         # When multiplex_profiles is on, load under the default profile secret
         # scope so bot tokens in that profile's .env resolve the same way
         # secondary profiles do (#64674). Explicit config= injection (tests)
@@ -18575,6 +18672,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "egress": self._busy_egress_command,
                 "goal": self._busy_goal_command,
                 "loop": self._busy_loop_command,
+                "extend": lambda event, _quick_key, _source: self._handle_extend_command(event),
             }.get(handler_key)
             if special is not None:
                 return await special(event, quick_key, source)
@@ -19790,6 +19888,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "stop":
             return await self._handle_stop_command(event)
         
+        if canonical == "extend":
+            return await self._handle_extend_command(event)
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -32230,6 +32330,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             _agent_warning_raw = _float_env("HERMES_AGENT_TIMEOUT_WARNING", 900)
             _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
+            # Grace while the agent is explicitly waiting on a provider response
+            # (non-streaming "thinking" gap). Added to the idle threshold below.
+            _agent_provider_grace_raw = _float_env("HERMES_AGENT_TIMEOUT_PROVIDER_GRACE", 300)
+            _agent_provider_grace = _agent_provider_grace_raw if _agent_provider_grace_raw > 0 else 0.0
             _warning_fired = False
 
             # A background=true process intentionally survives a successful
@@ -32259,10 +32363,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else (lambda: True)
             )
 
+            def _turn_extend_deadline() -> Optional[float]:
+                return self._get_inactivity_extension(
+                    session_key, _turn_run_generation
+                )
+
+            def _effective_timeout_for_turn(activity: dict) -> float:
+                return _effective_gateway_inactivity_timeout(
+                    _agent_timeout,
+                    activity,
+                    provider_grace=_agent_provider_grace,
+                    extend_deadline=_turn_extend_deadline(),
+                )
+
+            def _clear_turn_extend_deadline() -> None:
+                self._clear_inactivity_extension(
+                    session_key, _turn_run_generation
+                )
+
             def _run_sync_with_timeout_lifecycle():
                 try:
                     return run_sync()
                 finally:
+                    # /extend is a current-turn override, never durable session
+                    # state. Clearing here also prevents a completed turn's
+                    # extension from shielding a future hung turn.
+                    _clear_turn_extend_deadline()
                     _turn_worker_done.set()
                     # `.turn.agent` on the session state is only reset to
                     # _AGENT_PENDING_SENTINEL when the *next* turn is
@@ -32293,6 +32419,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "cleanup_lock": _turn_cleanup_lock,
                         "poll_interval": 5.0,
                         "is_still_current": _turn_is_current,
+                        "effective_timeout": _effective_timeout_for_turn,
                     },
                     name=f"gateway-turn-watchdog-{_turn_task_id[:12]}",
                     daemon=True,
@@ -32376,13 +32503,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Agent still running — check inactivity.
                     _agent_ref = agent_holder[0]
                     _idle_secs = 0.0
+                    _act = {}
                     if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                         try:
                             _act = _agent_ref.get_activity_summary()
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
                         except Exception:
-                            pass
+                            _act = {}
                     # Staged warning: fire once before escalating to full timeout.
+                    # While explicitly waiting on a provider response (non-streaming
+                    # "thinking" gap), extend the idle budget by _agent_provider_grace
+                    # so a slow reasoning model is not reaped mid-think (#4815).
+                    # An /extend command may also raise the deadline for this turn.
+                    _effective_timeout = _effective_timeout_for_turn(_act)
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
@@ -32396,12 +32529,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     f"⚠️ No activity for {_elapsed_warn} min. "
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    f"You can continue waiting, send /extend N to add N minutes, or use /reset.",
                                     metadata=_interim_metadata(_status_thread_metadata),
                                 )
                             except Exception as _warn_err:
                                 logger.debug("Inactivity warning send error: %s", _warn_err)
-                    if _idle_secs >= _agent_timeout:
+                    if _idle_secs >= _effective_timeout:
                         _inactivity_timeout = True
                         threading.Thread(
                             target=_abandon_timed_out_gateway_turn,

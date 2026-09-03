@@ -206,6 +206,11 @@ def _load_dashboard_section() -> dict:
 def resolve_public_url() -> str:
     """Resolve the operator-declared dashboard public URL.
 
+    A Desktop-managed loopback backend is not the public dashboard, even when
+    this Hermes installation also hosts one behind a reverse proxy. It must
+    retain its private per-process session-token auth, so ignore the public URL
+    declaration for that child only.
+
     Precedence (mirrors ``dashboard.oauth.client_id``):
 
       1. ``HERMES_DASHBOARD_PUBLIC_URL`` env var (when non-empty after
@@ -220,6 +225,13 @@ def resolve_public_url() -> str:
     malformed config entry falls through to ``""``. This means a typo
     in one surface doesn't prevent the other from working.
     """
+    # Desktop launches a private loopback backend and authenticates it with a
+    # per-process token. A public dashboard URL belongs to a separate hosted
+    # dashboard and would incorrectly switch this local child to cookie/OAuth
+    # auth, causing its WebSocket token to be rejected.
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        return ""
+
     env_raw = os.environ.get("HERMES_DASHBOARD_PUBLIC_URL", "")
     env_clean = _normalise_public_url(env_raw)
     if env_clean:

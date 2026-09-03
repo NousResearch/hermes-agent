@@ -326,6 +326,19 @@ class TestPublicUrlOverride:
             "depends on this precedence"
         )
 
+    def test_desktop_backend_ignores_public_dashboard_url(
+        self, patch_config, monkeypatch
+    ):
+        """Desktop's private loopback backend keeps token auth even when this
+        Hermes home also has a reverse-proxied public dashboard."""
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_PUBLIC_URL", "https://from-env.example",
+        )
+        patch_config("https://from-config.example")
+
+        assert prefix_mod.resolve_public_url() == ""
+
 
 
 

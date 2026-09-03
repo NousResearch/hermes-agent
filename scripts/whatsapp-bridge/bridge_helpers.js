@@ -578,19 +578,58 @@ export function pollCreationMessageFromPayload(payload) {
  */
 export function createReconnectScheduler(startFn, {
   retryDelayMs = 5000,
+  backoffBaseMs = 3000,
+  maxDelayMs = 300000,
+  jitterRatio = 0.2,
   log = console.log,
   setTimeoutFn = setTimeout,
+  randomFn = Math.random,
 } = {}) {
+  // Consecutive scheduling attempts since the last healthy connection.
+  // Reset via scheduleReconnect.reset() from the 'open' handler; without
+  // that a persistent failure (unreachable proxy, pre-auth 428/503) retried
+  // every 3-5s forever, because each close scheduled a fresh fixed delay.
+  let attempts = 0;
+
+  function nextDelay(requestedMs) {
+    // The first two attempts honour the caller's delay verbatim: the close
+    // handler deliberately picks 1s for a 515 restart and 3s otherwise, and
+    // a single blip should recover at that speed.
+    if (attempts < 2) return requestedMs;
+    // Beyond that, escalate from one fixed base rather than the caller's
+    // value. Rooting the curve in the request would give the 515 path
+    // (1000), a normal close (3000) and the retry path (5000) three
+    // different curves sharing one counter, so interleaved calls could step
+    // backwards -- and a request of 0 would stay 0 forever.
+    const grown = Math.min(backoffBaseMs * 2 ** (attempts - 1), maxDelayMs);
+    // Jitter spreads retries so bridges recovering from one outage don't
+    // reconnect in lockstep. Clamp AFTER jittering: applying it to an
+    // already-capped value would overshoot the cap by jitterRatio.
+    const spread = grown * jitterRatio;
+    const jittered = grown - spread + randomFn() * spread * 2;
+    return Math.min(Math.round(jittered), maxDelayMs);
+  }
+
   function scheduleReconnect(delayMs) {
+    const wait = nextDelay(delayMs);
+    attempts += 1;
     setTimeoutFn(() => {
       Promise.resolve()
         .then(startFn)
         .catch((err) => {
-          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(retryDelayMs / 1000)}s...`);
-          scheduleReconnect(retryDelayMs);
+          const next = scheduleReconnect(retryDelayMs);
+          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(next / 1000)}s...`);
         });
-    }, delayMs);
+    }, wait);
+    return wait;
   }
+
+  // Attached rather than returned separately so existing callers, which
+  // treat the scheduler as a plain function, keep working unchanged.
+  scheduleReconnect.reset = () => {
+    attempts = 0;
+  };
+
   return scheduleReconnect;
 }
 

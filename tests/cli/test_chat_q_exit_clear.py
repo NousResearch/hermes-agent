@@ -86,6 +86,13 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
 
         def chat(self, query, images=None):
             calls.append(("chat", query, images))
+            # Mirrors the real chat(): publish the turn's raw result so
+            # main()'s single-query exit-code path sees a successful turn
+            # instead of "no turn happened" (which exits 1).
+            self._last_turn_result = {
+                "final_response": "done",
+                "completed": True,
+            }
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):

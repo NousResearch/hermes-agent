@@ -108,6 +108,12 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
 
         def chat(self, query, images=None):
             calls.append(("chat", query, images))
+            # Mirrors the real chat(): the turn's raw result is published
+            # for the single-query exit-code path.
+            self._last_turn_result = {
+                "final_response": "done",
+                "completed": True,
+            }
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):
@@ -201,3 +207,117 @@ def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatc
     assert ("claim", "cli", True) in calls
     assert ("run", "hello", []) in calls
     assert calls[-1] == ("finalize", "quiet-session")
+
+
+def _run_human_single_query(monkeypatch, calls, turn_result):
+    """Drive main()'s human-facing ``chat -q`` branch with a stub CLI.
+
+    Returns the ``SystemExit`` code, or ``None`` when main() returned
+    normally (the success path falls through instead of exiting).
+    """
+    import cli as cli_mod
+
+    class _Console:
+        def print(self, *_args, **_kwargs):
+            pass
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.console = _Console()
+            self.session_id = "human-session"
+            self.agent = SimpleNamespace(
+                session_id="human-session",
+                platform="cli",
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            return True
+
+        def _show_security_advisories(self):
+            pass
+
+        def chat(self, query, images=None):
+            calls.append(("chat", query))
+            self._last_turn_result = turn_result
+            return (turn_result or {}).get("final_response", "")
+
+        def _print_exit_summary(self, clear_screen=True):
+            calls.append("summary")
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        cli_mod,
+        "_finalize_single_query",
+        lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
+    )
+
+    try:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    except SystemExit as exc:
+        return exc.code
+    return None
+
+
+def test_human_single_query_failed_turn_exits_nonzero(monkeypatch):
+    """A failed turn on the ``-q`` path must not look like success.
+
+    This branch is what the kanban dispatcher spawns; before the fix it
+    returned 0 for every provider failure, so the dispatcher recorded a
+    protocol violation ("worker exited cleanly without kanban_complete")
+    and burned one of the card's failure-counter lives per attempt.
+    """
+    calls = []
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    code = _run_human_single_query(
+        monkeypatch,
+        calls,
+        {
+            "final_response": "",
+            "failed": True,
+            "error": "provider failed",
+            "failure_reason": "api_error",
+        },
+    )
+
+    assert code == 1
+    # The exit code must not cost us session finalization.
+    assert calls[-1] == ("finalize", "human-session")
+
+
+def test_human_single_query_quota_wall_exits_tempfail_for_kanban(monkeypatch):
+    """A quota wall in a kanban worker exits 75, not 0 and not 1."""
+    from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+
+    calls = []
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_d16778b1")
+
+    code = _run_human_single_query(
+        monkeypatch,
+        calls,
+        {
+            "final_response": "",
+            "failed": True,
+            "error": "You've hit your session limit",
+            "failure_reason": "rate_limit",
+        },
+    )
+
+    assert code == KANBAN_RATE_LIMIT_EXIT_CODE
+    assert calls[-1] == ("finalize", "human-session")
+
+
+def test_human_single_query_successful_turn_does_not_exit(monkeypatch):
+    """Success still falls through to a normal return (no SystemExit)."""
+    calls = []
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+
+    code = _run_human_single_query(
+        monkeypatch,
+        calls,
+        {"final_response": "done", "completed": True},
+    )
+
+    assert code is None
+    assert calls[-1] == ("finalize", "human-session")

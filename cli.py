@@ -5720,6 +5720,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        # The raw ``run_conversation()`` result of the turn that just
+        # finished. ``chat()`` returns only the response text, so the
+        # non-interactive single-query path in ``main()`` reads the
+        # outcome (failed / failure_reason) from here to pick its exit
+        # code — see hermes_cli/single_query_exit.py. ``None`` means no
+        # agent turn happened at all (credentials / agent init failed).
+        self._last_turn_result = None
         # When stdout/PTY raises EIO (broken pipe after a stream-stall
         # interrupt), freeze further UI paints so we don't spin the main
         # thread at hundreds of escape-sequence writes/sec (#81521).
@@ -16981,6 +16988,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        # Clear the previous turn's outcome so an early return below cannot
+        # let a stale success mask this turn's failure (the single-query
+        # exit-code path reads it).
+        self._last_turn_result = None
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -17538,6 +17549,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+
+            # Publish the turn's raw outcome for callers that need more than
+            # the response text — notably the non-interactive single-query
+            # path in main(), which must translate a failed turn into a
+            # non-zero exit code for automation wrappers and the kanban
+            # dispatcher (see hermes_cli/single_query_exit.py).
+            self._last_turn_result = result
 
             # Session titling now runs at TURN START (agent/turn_context.py)
             # from the user's message alone, so it is already done — or in
@@ -22362,31 +22380,13 @@ def main(
                         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
                         # Ensure proper exit code for automation wrappers.
-                        #
-                        # Kanban workers get a special case: when the run failed
-                        # purely because the provider rate-limited / exhausted
-                        # quota (not because the task itself is broken), exit with
-                        # the EX_TEMPFAIL sentinel instead of the generic 1. The
-                        # dispatcher's reap classifier maps that code to a
-                        # ``rate_limited`` exit and releases the task back to
-                        # ``ready`` WITHOUT incrementing the failure counter, so a
-                        # 5-hour quota window can't trip the circuit breaker and
-                        # permanently block the card. Non-kanban runs keep the
-                        # plain 0/1 contract automation wrappers expect.
-                        _exit_code = 0
-                        if isinstance(result, dict) and result.get("failed"):
-                            _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing"):
-                                try:
-                                    from hermes_cli.kanban_db import (
-                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
-                                    )
-                                    _exit_code = _RL_CODE
-                                except Exception:
-                                    _exit_code = 1
-                        sys.exit(_exit_code)
+                        # Shared with the human-facing single-query path below
+                        # so the two cannot drift; contract documented in
+                        # hermes_cli/single_query_exit.py.
+                        from hermes_cli.single_query_exit import (
+                            single_query_exit_code,
+                        )
+                        sys.exit(single_query_exit_code(result))
 
                 # Exit with error code if credentials or agent init fails
                 sys.exit(1)
@@ -22412,6 +22412,26 @@ def main(
                 cli._show_security_advisories()
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary(clear_screen=False)
+                # Same exit-code contract as the fully-quiet path above.
+                # This branch is what the kanban dispatcher spawns (`chat
+                # -q` with no `-Q`, see `_default_spawn`), and it used to
+                # return 0 no matter what: a provider quota wall reached
+                # the dispatcher as a clean exit, which its reap
+                # classifier can only read as "worker finished without
+                # calling kanban_complete" — a protocol violation blamed
+                # on the agent, one failure-counter life burned per
+                # attempt (incident 2026-09-02, card t_d16778b1: eight
+                # such runs during one Copilot session-limit window).
+                # Only a non-zero code is raised here so a successful run
+                # keeps falling through to the normal return below.
+                from hermes_cli.single_query_exit import (
+                    single_query_exit_code,
+                )
+                _exit_code = single_query_exit_code(
+                    getattr(cli, "_last_turn_result", None)
+                )
+                if _exit_code:
+                    sys.exit(_exit_code)
         finally:
             _finalize_single_query(cli)
         return

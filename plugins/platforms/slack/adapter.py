@@ -7861,7 +7861,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel=channel_id,
                 ts=msg_ts,
                 text=decision_text,
-                blocks=updated_blocks,
+                blocks=sanitize_blocks(updated_blocks),
             )
         except Exception as e:
             logger.warning("[Slack] Failed to update clarify message: %s", e)

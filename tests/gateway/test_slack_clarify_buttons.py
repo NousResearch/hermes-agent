@@ -186,6 +186,63 @@ class TestSlackClarifyChoiceAction:
         assert entry is not None
         assert not entry.event.is_set()
 
+    @pytest.mark.asyncio
+    async def test_choice_update_sanitizes_slack_reescaped_question(self):
+        from plugins.platforms.slack.block_kit import MAX_SECTION_TEXT
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "3.3"})
+        mock_client.chat_update = AsyncMock(return_value={"ok": True})
+
+        question = "Approve this exact content? " + ("&" * 700)
+        await adapter.send_clarify(
+            chat_id="C1",
+            question=question,
+            choices=["Approve", "Reject"],
+            clarify_id="cid-reescaped-question",
+            session_key="sk-reescaped-question",
+        )
+        cm.register(
+            "cid-reescaped-question",
+            "sk-reescaped-question",
+            question,
+            ["Approve", "Reject"],
+        )
+
+        sent_blocks = mock_client.chat_postMessage.await_args.kwargs["blocks"]
+        sent_question = sent_blocks[0]["text"]["text"]
+        assert len(sent_question) == MAX_SECTION_TEXT
+        interaction_question = sent_question.replace("&", "&amp;")
+        assert len(interaction_question) > MAX_SECTION_TEXT
+
+        body = {
+            "message": {
+                "ts": "3.3",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": interaction_question},
+                    },
+                    {"type": "actions", "elements": [{"type": "button"}]},
+                ],
+            },
+            "channel": {"id": "C1"},
+            "user": {"name": "will", "id": "U_WILL"},
+        }
+        action = {
+            "action_id": "hermes_clarify_choice_0",
+            "value": "cid-reescaped-question|0",
+        }
+
+        await adapter._handle_clarify_action(AsyncMock(), body, action)
+
+        updated_blocks = mock_client.chat_update.await_args.kwargs["blocks"]
+        assert all(block["type"] != "actions" for block in updated_blocks)
+        assert len(updated_blocks[0]["text"]["text"]) <= MAX_SECTION_TEXT
+
 
 # ===========================================================================
 # _handle_clarify_action — "Other" → text-capture → typed reply (c)

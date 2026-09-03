@@ -19,6 +19,7 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -55,6 +56,32 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         and row.get("session_id") == "acp-x"
         for row in payload
     )
+
+
+def test_kanban_json_includes_max_runtime_for_set_and_unset_tasks(kanban_home):
+    limited = json.loads(kc.run_slash(
+        "create 'limited task' --max-runtime 4377 "
+        "--idempotency-key runtime-observability --json"
+    ))
+    reused = json.loads(kc.run_slash(
+        "create 'ignored replacement' --max-runtime 9999 "
+        "--idempotency-key runtime-observability --json"
+    ))
+    uncapped = json.loads(kc.run_slash("create 'uncapped task' --json"))
+
+    assert reused["id"] == limited["id"]
+
+    rows = {
+        row["id"]: row
+        for row in json.loads(kc.run_slash("list --json"))
+    }
+    assert rows[limited["id"]]["max_runtime_seconds"] == 4377
+    assert rows[uncapped["id"]]["max_runtime_seconds"] is None
+
+    limited_show = json.loads(kc.run_slash(f"show {limited['id']} --json"))
+    uncapped_show = json.loads(kc.run_slash(f"show {uncapped['id']} --json"))
+    assert limited_show["task"]["max_runtime_seconds"] == 4377
+    assert uncapped_show["task"]["max_runtime_seconds"] is None
 
 
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):

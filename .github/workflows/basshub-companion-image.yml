@@ -1,0 +1,45 @@
+name: BassHUB companion image
+
+# Builds the companion Hermes image (MCP approval-origin forwarding +
+# authenticated X-Hermes-Turn-Id) and publishes it to GHCR under an immutable
+# digest, as required by BassHUB v0.2.27+ inline-approval provisioning
+# (deploy/hermes/NOTES.md: stock nousresearch/hermes-agent is origin-blind and
+# scripts/hermes-user.sh refuses non-digest images).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/iammrbass/hermes-agent-basshub:companion-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Print immutable reference
+        run: |
+          echo "IMMUTABLE IMAGE: ghcr.io/iammrbass/hermes-agent-basshub@${{ steps.push.outputs.digest }}"
+          echo "BUILT FROM: ${{ github.sha }}"

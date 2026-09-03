@@ -206,6 +206,43 @@ class TestAudit:
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
 
+    def test_audit_rejected_record(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit(
+            "inbound", None, None, "unauthorized",
+            decision="rejected_bad_token", status=401, ip="127.0.0.1",
+        )
+        audit_file = tmp_path / "a2a_audit.jsonl"
+        assert audit_file.exists()
+        rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+        assert rec["direction"] == "inbound"
+        assert rec["peer"] is None
+        assert rec["decision"] == "rejected_bad_token"
+        assert rec["status"] == 401
+        assert rec["ip"] == "127.0.0.1"
+
+    def test_audit_hashes_oversized_and_non_scalar_task_ids(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit("inbound", "peer-y", "x" * 400, "ok")
+        rec = json.loads((tmp_path / "a2a_audit.jsonl").read_text().splitlines()[-1])
+        assert rec["task_id"].startswith("sha256:")
+        assert len(rec["task_id"]) < 40
+
+        security.audit("inbound", "mallory", {"id": "x" * 5000}, "untrusted")
+        rec = json.loads((tmp_path / "a2a_audit.jsonl").read_text().splitlines()[-1])
+        assert rec["task_id"].startswith("sha256:")
+
+    def test_audit_rejection_quota_caps_per_source(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security._rejection_events.clear()
+        for _ in range(security._REJECTION_PER_SOURCE + 5):
+            security.audit(
+                "inbound", None, None, "unauthorized",
+                decision="rejected_bad_token", status=401, ip="203.0.113.9",
+            )
+        lines = (tmp_path / "a2a_audit.jsonl").read_text().splitlines()
+        assert len(lines) == security._REJECTION_PER_SOURCE
+
 
 # --------------------------------------------------------------------------
 # Protocol v1.0 shapes
@@ -1272,6 +1309,74 @@ class TestInboundRoundTrip:
             asyncio.run(run())
         finally:
             set_multiplex_active(False)
+
+    def test_401_unauthorized_is_audited(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("A2A_BEARER_TOKEN", "topsecret")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+
+            def _post_unauth():
+                try:
+                    _post_json(base + "/", _send_body("x"))
+                    raise AssertionError("expected 401")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 401
+                    return json.loads(e.read().decode())
+
+            err = await asyncio.to_thread(_post_unauth)
+            assert err["error"]["code"] == protocol.ERR_UNAUTHORIZED
+
+            await adapter.disconnect()
+
+            # The rejected request must appear in the audit log.
+            audit_file = tmp_path / "a2a_audit.jsonl"
+            assert audit_file.exists()
+            rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+            assert rec["direction"] == "inbound"
+            assert rec["decision"] == "rejected_bad_token"
+            assert rec["status"] == 401
+
+        asyncio.run(run())
+
+    def test_403_untrusted_peer_is_audited(self, monkeypatch, tmp_path):
+        """A valid token from a non-trusted peer is rejected *and* logged."""
+        monkeypatch.setenv("A2A_PEER_TOKENS", "mallory:tok-mallory")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            assert await adapter.connect() is True
+
+            def _post_untrusted():
+                body = _send_body("do a thing")
+                try:
+                    _post_json(base + "/", body, {"Authorization": "Bearer tok-mallory"})
+                    raise AssertionError("expected 403")
+                except urllib.error.HTTPError as e:
+                    assert e.code == 403
+                    return json.loads(e.read().decode())
+
+            err = await asyncio.to_thread(_post_untrusted)
+            assert err["error"]["code"] == protocol.ERR_UNTRUSTED_PEER
+
+            await adapter.disconnect()
+
+            audit_file = tmp_path / "a2a_audit.jsonl"
+            assert audit_file.exists()
+            rec = json.loads(audit_file.read_text().strip().splitlines()[-1])
+            assert rec["direction"] == "inbound"
+            assert rec["peer"] == "mallory"
+            assert rec["decision"] == "rejected_untrusted_peer"
+            assert rec["status"] == 403
+
+        asyncio.run(run())
 
 
 # --------------------------------------------------------------------------

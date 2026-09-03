@@ -436,18 +436,89 @@ def _audit_path() -> Path:
     return base / "a2a_audit.jsonl"
 
 
-def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
-    """Append an audit record. Best-effort — never raises into the caller."""
+_MAX_AUDIT_TASK_ID_CHARS = 128
+_MAX_AUDIT_FILE_BYTES = 2 * 1024 * 1024
+_REJECTION_WINDOW_S = 60.0
+_REJECTION_PER_SOURCE = 20
+_REJECTION_GLOBAL = 200
+_REJECTION_DECISIONS = frozenset({"rejected_bad_token", "rejected_untrusted_peer"})
+_rejection_events: list[tuple[float, str]] = []
+
+
+def _sanitize_audit_task_id(task_id: object) -> str | None:
+    """Bound untrusted JSON-RPC ids before they hit the audit sink."""
+    if task_id is None:
+        return None
+    if isinstance(task_id, bool) or not isinstance(task_id, (str, int, float)):
+        digest = hashlib.sha256(
+            repr(task_id).encode("utf-8", errors="replace")
+        ).hexdigest()[:16]
+        return f"sha256:{digest}"
+    text = str(task_id)
+    if len(text) <= _MAX_AUDIT_TASK_ID_CHARS:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"sha256:{digest}"
+
+
+def _allow_rejection_audit(ip: str | None) -> bool:
+    """Cap unauthenticated/untrusted rejection writes per source and globally."""
+    now = time.monotonic()
+    cutoff = now - _REJECTION_WINDOW_S
+    source = ip or "unknown"
+    retained = [event for event in _rejection_events if event[0] >= cutoff]
+    _rejection_events[:] = retained
+    if len(retained) >= _REJECTION_GLOBAL:
+        return False
+    if sum(1 for _, seen in retained if seen == source) >= _REJECTION_PER_SOURCE:
+        return False
+    _rejection_events.append((now, source))
+    return True
+
+
+def _rotate_audit_file(path: Path) -> None:
     try:
-        rec = {
+        if path.exists() and path.stat().st_size >= _MAX_AUDIT_FILE_BYTES:
+            path.replace(path.with_suffix(path.suffix + ".1"))
+    except OSError:
+        return
+
+
+def audit(
+    direction: str,
+    peer: str | None,
+    task_id: str | None,
+    summary: str,
+    *,
+    decision: str | None = None,
+    status: int | None = None,
+    ip: str | None = None,
+) -> None:
+    """Append an audit record. Best-effort — never raises into the caller.
+
+    ``decision`` and ``status`` capture auth/rejection outcomes so the audit
+    log can record 401/403 rejections alongside accepted inbound/outbound
+    traffic. ``ip`` is the caller's address when known.
+    """
+    try:
+        if decision in _REJECTION_DECISIONS and not _allow_rejection_audit(ip):
+            return
+        rec: dict[str, object] = {
             "ts": time.time(),
             "direction": direction,  # "inbound" | "outbound" | "push"
             "peer": peer,
-            "task_id": task_id,
+            "task_id": _sanitize_audit_task_id(task_id),
             "summary": (summary or "")[:500],
         }
+        if decision is not None:
+            rec["decision"] = decision
+        if status is not None:
+            rec["status"] = status
+        if ip is not None:
+            rec["ip"] = ip
         path = _audit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_audit_file(path)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:

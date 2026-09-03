@@ -618,6 +618,61 @@ class TestOSSBackend:
         assert raw == before
 
 
+    def test_oss_pgvector_password_reads_from_env_when_absent(self, monkeypatch):
+        import sys
+        import types
+
+        captured = {}
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                captured.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+        # Unknown embedder model -> dims unknown -> dims-migration check skipped
+        # (avoids a real psycopg2 connection attempt in the test).
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "custom-unknown-model"}},
+            "vector_store": {"provider": "pgvector", "config": {"host": "localhost"}},
+        }
+        monkeypatch.setenv("MEM0_PGVECTOR_PASSWORD", "s3cret")
+
+        OSSBackend(raw)
+
+        assert captured["vector_store"]["config"]["password"] == "s3cret"
+
+    def test_oss_pgvector_password_keeps_mem0_json_value(self, monkeypatch):
+        import sys
+        import types
+
+        captured = {}
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                captured.update(config)
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+        raw = {
+            "llm": {"provider": "openai", "config": {"model": "gpt-5-mini"}},
+            "embedder": {"provider": "openai", "config": {"model": "custom-unknown-model"}},
+            "vector_store": {"provider": "pgvector", "config": {"host": "localhost", "password": "legacy"}},
+        }
+
+        OSSBackend(raw)
+
+        # Backward compat: a password already in mem0.json (written by older
+        # wizard versions) still wins over the env var.
+        assert captured["vector_store"]["config"]["password"] == "legacy"
+
 httpx = pytest.importorskip("httpx")
 
 
@@ -678,3 +733,120 @@ class TestSelfHostedBackend:
         s = _StubServer()
         with pytest.raises(httpx.HTTPStatusError):
             _backend(s).delete("missing")  # 404 -> raise_for_status; 'not found' won't trip breaker
+
+def _make_pg_stub(row, monkeypatch):
+    """Stub psycopg2 (incl. its ``sql`` submodule) whose cursor returns ``row``."""
+    import sys
+    import types
+
+    class _Sql:
+        @staticmethod
+        def SQL(s):
+            return s
+
+        @staticmethod
+        def Identifier(s):
+            return s
+
+    class _Cursor:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, sql, params=None):
+            self.statements.append(str(sql))
+
+        def fetchone(self):
+            return row
+
+        def close(self):
+            pass
+
+    class _Conn:
+        def __init__(self):
+            self.autocommit = False
+            self._c = _Cursor()
+
+        def cursor(self):
+            return self._c
+
+        def close(self):
+            pass
+
+    class _Module:
+        sql = _Sql
+
+        def __init__(self):
+            self._conn = _Conn()
+
+        def connect(self, **kwargs):
+            return self._conn
+
+    mod = _Module()
+    monkeypatch.setitem(sys.modules, "psycopg2", mod)
+    return mod
+
+
+class TestRecreateCollectionDims:
+    """Regression: pgvector ``atttypmod`` stores dims + 4 (VARHDRSZ header),
+    so a same-dims collection must NOT be dropped on every startup."""
+
+    def _call_pgvector(self, row, monkeypatch):
+        mod = _make_pg_stub(row, monkeypatch)
+        OSSBackend._recreate_collection_if_dims_changed(
+            "pgvector",
+            {"collection_name": "mem0", "host": "localhost", "port": 5432},
+            1536,
+        )
+        return mod._conn._c.statements
+
+    def test_pgvector_unchanged_dims_does_not_drop_table(self, monkeypatch):
+        # atttypmod for vector(1536) is 1540, not 1536.
+        stmts = self._call_pgvector((1536 + 4,), monkeypatch)
+        assert not any("DROP TABLE" in s for s in stmts)
+
+    def test_pgvector_changed_dims_drops_table(self, monkeypatch):
+        # Collection was built for 768-dims embeddings; drop is the intended
+        # migration so the new dims can be recreated cleanly.
+        stmts = self._call_pgvector((768 + 4,), monkeypatch)
+        assert any("DROP TABLE" in s for s in stmts)
+
+    def test_pgvector_missing_column_does_not_drop(self, monkeypatch):
+        stmts = self._call_pgvector(None, monkeypatch)
+        assert not any("DROP TABLE" in s for s in stmts)
+
+    def test_qdrant_unchanged_dims_does_not_delete_collection(self, monkeypatch):
+        import sys
+        import types
+        from types import SimpleNamespace
+
+        calls = []
+
+        class _FakeQdrant:
+            def __init__(self, **kwargs):
+                pass
+
+            def collection_exists(self, name):
+                return True
+
+            def get_collection(self, name):
+                return SimpleNamespace(
+                    config=SimpleNamespace(
+                        params=SimpleNamespace(vectors=SimpleNamespace(size=1536))
+                    )
+                )
+
+            def delete_collection(self, name):
+                calls.append(name)
+
+            def close(self):
+                pass
+
+        mod = types.ModuleType("qdrant_client")
+        mod.QdrantClient = _FakeQdrant
+        monkeypatch.setitem(sys.modules, "qdrant_client", mod)
+
+        OSSBackend._recreate_collection_if_dims_changed(
+            "qdrant", {"collection_name": "mem0", "path": "~/.hermes/mem0_qdrant"}, 1536
+        )
+        assert calls == []
+

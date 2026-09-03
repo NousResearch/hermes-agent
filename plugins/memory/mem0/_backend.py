@@ -206,6 +206,14 @@ class OSSBackend(Mem0Backend):
         vector_store = dict(oss_config["vector_store"])
         vs_config = dict(vector_store.get("config", {}))
 
+        if "password" not in vs_config:
+            # Legacy wizard versions stored the PG password in mem0.json; new
+            # setups keep it in .env only. Prefer the config value (backward
+            # compat), fall back to the env secret.
+            env_password = os.environ.get("MEM0_PGVECTOR_PASSWORD", "")
+            if env_password:
+                vs_config["password"] = env_password
+
         if "path" in vs_config:
             vs_config["path"] = os.path.expanduser(vs_config["path"])
 
@@ -301,7 +309,8 @@ class OSSBackend(Mem0Backend):
                             (collection_name,),
                         )
                         row = cur.fetchone()
-                        if row and row[0] > 0 and row[0] != expected_dims:
+                        # atttypmod encodes dims + VARHDRSZ (4-byte header); compare dims, not raw typmod.
+                        if row and row[0] > 0 and row[0] - 4 != expected_dims:
                             cur.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(
                                 pgsql.Identifier(collection_name)
                             ))

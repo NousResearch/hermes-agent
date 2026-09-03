@@ -131,6 +131,7 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
     Returns (oss_config, env_writes) where oss_config goes into mem0.json
     and env_writes maps env var names to secret values for .env.
     """
+    env_writes: dict[str, str] = {}
     llm_id = flags.get("oss_llm", "openai")
     llm_def = LLM_PROVIDERS[llm_id]
     llm_model = flags.get("oss_llm_model") or llm_def["default_model"]
@@ -169,7 +170,9 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
         if flags.get("oss_vector_user"):
             vector_config["user"] = flags["oss_vector_user"]
         if flags.get("oss_vector_password"):
-            vector_config["password"] = flags["oss_vector_password"]
+            # Secrets belong in .env, never in mem0.json (which is merged into
+            # config wholesale and written without restrictive permissions).
+            env_writes["MEM0_PGVECTOR_PASSWORD"] = flags["oss_vector_password"]
         if flags.get("oss_vector_dbname"):
             vector_config["dbname"] = flags["oss_vector_dbname"]
 
@@ -179,7 +182,6 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
         "vector_store": {"provider": vector_id, "config": vector_config},
     }
 
-    env_writes: dict[str, str] = {}
     if llm_def.get("needs_key") and flags.get("oss_llm_key"):
         env_writes[llm_def["env_var"]] = flags["oss_llm_key"]
     if embedder_def.get("needs_key") and flags.get("oss_embedder_key"):
@@ -230,7 +232,8 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         except Exception:
             pass
     existing.update(data)
-    config_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    from utils import atomic_json_write
+    atomic_json_write(config_path, existing, mode=0o600)
 
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
@@ -827,7 +830,8 @@ def _setup_oss_interactive(hermes_home: str, config: dict) -> None:
             flags["oss_vector_password"] = pgvector_config["password"]
         flags["oss_vector_dbname"] = pgvector_config["dbname"]
 
-    oss_config, _ = build_oss_config(flags)
+    oss_config, built_env_writes = build_oss_config(flags)
+    env_writes.update(built_env_writes)
 
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)

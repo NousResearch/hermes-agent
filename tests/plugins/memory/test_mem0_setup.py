@@ -146,6 +146,20 @@ class TestBuildOSSConfig:
         assert oss["vector_store"]["config"]["path"] == "/data/qdrant"
 
 
+    def test_pgvector_password_goes_to_env_not_mem0_json(self):
+        flags = parse_flags([
+            "--mode", "oss", "--oss-llm-key", "sk-oai",
+            "--oss-vector", "pgvector",
+            "--oss-vector-user", "pg",
+            "--oss-vector-password", "s3cret",
+            "--oss-vector-dbname", "memdb",
+        ])
+        oss, env_writes = build_oss_config(flags)
+        # Secrets belong in .env, never in mem0.json (which is merged into
+        # config wholesale and written without restrictive permissions).
+        assert "password" not in oss["vector_store"]["config"]
+        assert env_writes["MEM0_PGVECTOR_PASSWORD"] == "s3cret"
+
 class TestWriteEnv:
 
     def test_write_new_vars(self, tmp_path):
@@ -253,3 +267,27 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+class TestSaveMem0Json:
+    def test_uses_atomic_write_with_0600(self, tmp_path, monkeypatch):
+        import json as _json
+        import utils
+        from plugins.memory.mem0._setup import _save_mem0_json
+
+        calls = []
+        real = utils.atomic_json_write
+
+        def spy(path, data, mode=None):
+            calls.append((str(path), dict(data), mode))
+            return real(path, data, mode=mode)
+
+        monkeypatch.setattr(utils, "atomic_json_write", spy)
+
+        _save_mem0_json(str(tmp_path), {"mode": "oss", "oss": {"a": 1}})
+        _save_mem0_json(str(tmp_path), {"user_id": "u"})
+
+        assert calls[-1][2] == 0o600
+        data = _json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
+        assert data["mode"] == "oss"
+        assert data["user_id"] == "u"

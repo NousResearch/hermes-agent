@@ -2611,6 +2611,71 @@ class TestModelRoutesAgentCreation:
         assert captured["api_key"] == "sk-session"
 
 
+class TestSessionPersistedModelProviderResolution:
+    """A session row that persisted a model with a *named custom provider*
+    must re-resolve the provider runtime using the original requested
+    provider (``custom:inference``), not the normalized runtime label
+    (``custom``). Found live (Aug 2026): after the first successful
+    ``hermes peer dm`` turn persisted the GGUF model on the session row,
+    every later chat on that session failed with ``modelCode: does not
+    exist`` because ``current_provider`` re-fed the label ``custom`` into
+    ``_resolve_provider_runtime``, which fell through to a default endpoint
+    (Z.AI / DeepSeek / OpenRouter) instead of the named custom provider.
+    """
+
+    def test_session_model_resolves_with_requested_provider(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        # Global runtime resolution returns the normalized provider label
+        # ("custom") for a named custom provider — but it also carries the
+        # original requested provider ("custom:inference"). The session-model
+        # branch must prefer the latter when re-resolving credentials.
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "requested_provider": "custom:inference",
+                "api_key": "no-key-required",
+                "base_url": "http://inference.internal:8080/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        resolved_providers = []
+
+        def _fake_request_runtime(provider, target_model=None):
+            resolved_providers.append(provider)
+            return {
+                "provider": provider,
+                "api_key": "no-key-required",
+                "base_url": f"https://{provider}.example/v1",
+                "api_mode": "chat_completions",
+            }
+
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._resolve_request_runtime_agent_kwargs",
+            _fake_request_runtime,
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(
+            session_id="s1",
+            session_model="/models/model.gguf",
+        )
+
+        # The session-model branch must feed the ORIGINAL provider name into
+        # provider-runtime resolution — not the normalized label "custom".
+        assert "custom:inference" in resolved_providers
+        assert "custom" not in resolved_providers
+        assert captured["base_url"] == "https://custom:inference.example/v1"
+
+
 class TestStoredSessionModelFilter:
     """A session row that persisted the advertised virtual model must read as
     "no stored model" — replaying "hermes-agent" upstream 400s. Found live

@@ -4713,7 +4713,13 @@ def compress_context(
         # local KV prefixes survive on equality; when something changed,
         # the cache was stale by definition and propagation is the point.
         # Preserve OBJECT identity on byte-equality for backends that key
-        # on it.
+        # on it. This unconditional rebuild also folds in #72253's SOUL.md
+        # identity-drift fix for free: a drifted identity block makes
+        # rebuilt_system_prompt differ from cached_system_prompt, so the
+        # containment-based `stored_identity_is_stale` gate that #72253 added
+        # to the old keep-prompt branch has no branch left to attach to — the
+        # byte comparison below already forces a rebuild whenever identity
+        # (or anything else) drifted.
         rebuilt_system_prompt = agent._build_system_prompt(system_message)
         if cached_system_prompt is not None and rebuilt_system_prompt == cached_system_prompt:
             new_system_prompt = cached_system_prompt

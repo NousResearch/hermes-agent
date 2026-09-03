@@ -83,6 +83,7 @@ const PROFILE_SCOPED_PREFIXES = [
   // cancellation, and disconnect must all follow the selected management
   // profile rather than silently targeting the dashboard process's profile.
   "/api/providers/oauth",
+  "/api/webhooks",
   "/api/model/info",
   "/api/model/set",
   "/api/model/auxiliary",

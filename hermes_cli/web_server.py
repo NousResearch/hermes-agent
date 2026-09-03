@@ -14194,8 +14194,7 @@ def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> D
     }
 
 
-@app.get("/api/webhooks")
-async def list_webhooks():
+def _list_webhooks() -> Dict[str, Any]:
     import hermes_cli.webhook as wh
 
     base_url = wh._get_webhook_base_url()
@@ -14210,8 +14209,13 @@ async def list_webhooks():
     }
 
 
-@app.post("/api/webhooks/enable")
-async def enable_webhooks():
+@app.get("/api/webhooks")
+async def list_webhooks(profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        return _list_webhooks()
+
+
+def _enable_webhooks(profile: Optional[str]) -> Dict[str, Any]:
     try:
         _write_platform_enabled("webhook", True)
     except Exception as exc:
@@ -14221,7 +14225,7 @@ async def enable_webhooks():
             detail="Failed to enable webhook platform.",
         ) from exc
 
-    restart_result = _restart_gateway_after_webhook_enable()
+    restart_result = _restart_gateway_after_webhook_enable(profile)
     return {
         "ok": True,
         "platform": "webhook",
@@ -14231,8 +14235,13 @@ async def enable_webhooks():
     }
 
 
-@app.post("/api/webhooks")
-async def create_webhook(body: WebhookCreate):
+@app.post("/api/webhooks/enable")
+async def enable_webhooks(profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        return _enable_webhooks(profile)
+
+
+def _create_webhook(body: WebhookCreate) -> Dict[str, Any]:
     import re as _re
     import secrets as _secrets
     import time as _time
@@ -14285,8 +14294,13 @@ async def create_webhook(body: WebhookCreate):
     return summary
 
 
-@app.delete("/api/webhooks/{name}")
-async def delete_webhook(name: str):
+@app.post("/api/webhooks")
+async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        return _create_webhook(body)
+
+
+def _delete_webhook(name: str) -> Dict[str, bool]:
     import hermes_cli.webhook as wh
 
     key = (name or "").strip().lower()
@@ -14298,8 +14312,13 @@ async def delete_webhook(name: str):
     return {"ok": True}
 
 
-@app.put("/api/webhooks/{name}/enabled")
-async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
+@app.delete("/api/webhooks/{name}")
+async def delete_webhook(name: str, profile: Optional[str] = None):
+    with _config_profile_scope(profile):
+        return _delete_webhook(name)
+
+
+def _set_webhook_enabled(name: str, body: WebhookEnabledToggle) -> Dict[str, Any]:
     """Enable or disable a webhook route.
 
     Disabled routes stay in the subscriptions file (so they can be
@@ -14316,6 +14335,14 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
     subs[key]["enabled"] = bool(body.enabled)
     wh._save_subscriptions(subs)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
+
+
+@app.put("/api/webhooks/{name}/enabled")
+async def set_webhook_enabled(
+    name: str, body: WebhookEnabledToggle, profile: Optional[str] = None
+):
+    with _config_profile_scope(profile):
+        return _set_webhook_enabled(name, body)
 
 
 # ---------------------------------------------------------------------------

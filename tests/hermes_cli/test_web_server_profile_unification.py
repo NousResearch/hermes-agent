@@ -50,7 +50,7 @@ def client(monkeypatch, isolated_profiles):
 
 
 def _cfg(home):
-    return yaml.safe_load((home / "config.yaml").read_text()) or {}
+    return yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
 
 
 def _write_jobs(home, jobs):
@@ -86,11 +86,11 @@ class TestProfileScopedEnv:
             json={"key": "FAL_KEY", "value": "test-fal-123", "profile": "worker_beta"},
         )
         assert resp.status_code == 200
-        worker_env = (isolated_profiles["worker_beta"] / ".env").read_text()
+        worker_env = (isolated_profiles["worker_beta"] / ".env").read_text(encoding="utf-8")
         assert "test-fal-123" in worker_env
         default_env_path = isolated_profiles["default"] / ".env"
         if default_env_path.exists():
-            assert "test-fal-123" not in default_env_path.read_text()
+            assert "test-fal-123" not in default_env_path.read_text(encoding="utf-8")
 
 
     def test_env_delete_scoped(self, client, isolated_profiles):
@@ -103,7 +103,41 @@ class TestProfileScopedEnv:
             json={"key": "FAL_KEY", "profile": "worker_beta"},
         )
         assert resp.status_code == 200
-        assert "doomed" not in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert "doomed" not in (isolated_profiles["worker_beta"] / ".env").read_text(
+            encoding="utf-8"
+        )
+
+
+class TestProfileScopedWebhooks:
+    def test_webhook_actions_stay_in_requested_profile(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        restart_profiles = []
+        monkeypatch.setattr(
+            ws,
+            "_restart_gateway_after_webhook_enable",
+            lambda profile: restart_profiles.append(profile) or {"restart_started": True},
+        )
+
+        params = {"profile": "worker_beta"}
+        assert client.post("/api/webhooks/enable", params=params).status_code == 200
+        assert restart_profiles == ["worker_beta"]
+        assert _cfg(isolated_profiles["worker_beta"])["platforms"]["webhook"]["enabled"] is True
+        assert "platforms" not in _cfg(isolated_profiles["default"])
+
+        assert client.post(
+            "/api/webhooks", params=params, json={"name": "worker-hook", "deliver": "log"}
+        ).status_code == 200
+        assert client.get("/api/webhooks", params=params).json()["subscriptions"][0]["name"] == "worker-hook"
+        assert not (isolated_profiles["default"] / "webhook_subscriptions.json").exists()
+
+        assert client.put(
+            "/api/webhooks/worker-hook/enabled", params=params, json={"enabled": False}
+        ).json()["enabled"] is False
+        assert client.delete("/api/webhooks/worker-hook", params=params).status_code == 200
+        assert client.get("/api/webhooks", params=params).json()["subscriptions"] == []
 
 
 class TestProfileScopedMcp:
@@ -126,7 +160,7 @@ class TestProfileScopedMcp:
         assert worker_cfg["mcp_servers"]["profile-bearer"]["headers"] == {
             "Authorization": "Bearer ${MCP_PROFILE_BEARER_API_KEY}",
         }
-        assert secret in (isolated_profiles["worker_beta"] / ".env").read_text()
+        assert secret in (isolated_profiles["worker_beta"] / ".env").read_text(encoding="utf-8")
         assert not (isolated_profiles["default"] / ".env").exists()
         assert "profile-bearer" not in _cfg(isolated_profiles["default"]).get(
             "mcp_servers", {}
@@ -664,12 +698,12 @@ class TestProfileScopedTelegramOnboarding:
             (["-p", "worker_beta", "gateway", "restart"], "gateway-restart")
         ]
 
-        worker_env = (isolated_profiles["worker_beta"] / ".env").read_text()
+        worker_env = (isolated_profiles["worker_beta"] / ".env").read_text(encoding="utf-8")
         assert "TELEGRAM_BOT_TOKEN=123456:SECRET" in worker_env
         assert "TELEGRAM_ALLOWED_USERS=123456789" in worker_env
         default_env_path = isolated_profiles["default"] / ".env"
         if default_env_path.exists():
-            assert "TELEGRAM_BOT_TOKEN" not in default_env_path.read_text()
+            assert "TELEGRAM_BOT_TOKEN" not in default_env_path.read_text(encoding="utf-8")
 
         worker_cfg = _cfg(isolated_profiles["worker_beta"])
         default_cfg = _cfg(isolated_profiles["default"])

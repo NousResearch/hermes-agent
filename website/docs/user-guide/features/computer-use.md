@@ -430,6 +430,17 @@ computer_use:
   capability_manifest: ""          # capability manifest path, required for bounded
 ```
 
+On Linux, native Wayland support remains an explicit opt-in. Hermes passes the
+opt-in to every cua-driver process, including gateway sessions, only when that
+process also has `WAYLAND_DISPLAY`:
+
+```yaml
+computer_use:
+  native_wayland: true
+```
+
+Restart a running gateway after changing this setting.
+
 Override the driver binary path (tests / CI / local builds):
 
 ```

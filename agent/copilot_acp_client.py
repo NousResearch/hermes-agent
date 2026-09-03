@@ -159,6 +159,12 @@ def _build_subprocess_env() -> dict[str, str]:
     env = hermes_subprocess_env(inherit_credentials=True)
     home = _resolve_home_dir()
     env["HOME"] = home
+    # A parent Hermes gateway may export HERMES_REAL_HOME from its own long-lived
+    # environment. When tests or child sessions deliberately override HOME,
+    # keep the subprocess contract coherent by pairing HERMES_REAL_HOME with the
+    # HOME value we are about to hand to the ACP adapter before applying the
+    # shared home policy.
+    env["HERMES_REAL_HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
     return env

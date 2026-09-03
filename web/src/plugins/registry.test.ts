@@ -9,7 +9,7 @@
  * Toast/useToast/useConfirmDelete on the plugin SDK". See issue #50547.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { exposePluginSDK } from "./registry";
+import { exposePluginSDK, SDK_CONTRACT_VERSION } from "./registry";
 
 describe("plugin SDK dialog/toast surface", () => {
   beforeEach(() => {
@@ -42,5 +42,22 @@ describe("plugin SDK dialog/toast surface", () => {
     // Original React hooks still present (no accidental removal).
     expect(typeof sdk.hooks.useState).toBe("function");
     expect(typeof sdk.hooks.useCallback).toBe("function");
+  });
+
+  it("exposes additive router integration without changing the SDK version", () => {
+    exposePluginSDK();
+    const sdk = (globalThis as unknown as {
+      window: {
+        __HERMES_PLUGIN_SDK__: {
+          sdkVersion: string;
+          basePath?: string;
+          hooks: Record<string, unknown>;
+        };
+      };
+    }).window.__HERMES_PLUGIN_SDK__;
+
+    expect(sdk.sdkVersion).toBe(SDK_CONTRACT_VERSION);
+    expect(typeof sdk.basePath).toBe("string");
+    expect(typeof sdk.hooks.useNavigate).toBe("function");
   });
 });

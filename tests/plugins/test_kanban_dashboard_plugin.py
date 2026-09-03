@@ -116,6 +116,111 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_locate_task_finds_active_card_across_boards(client):
+    kb.create_board("ops")
+    created = client.post(
+        "/api/plugins/kanban/tasks?board=ops",
+        json={"title": "Deep-linked card"},
+    ).json()["task"]
+
+    response = client.get(
+        f"/api/plugins/kanban/tasks/locate/{created['id']}"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "board": "ops",
+        "task": {
+            "id": created["id"],
+            "title": "Deep-linked card",
+            "status": "ready",
+        },
+    }
+
+
+def test_locate_task_treats_unknown_and_archived_cards_as_not_found(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Archived card"},
+    ).json()["task"]
+    archived = client.patch(
+        f"/api/plugins/kanban/tasks/{created['id']}",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200
+
+    for task_id in (created["id"], "t_does_not_exist"):
+        response = client.get(f"/api/plugins/kanban/tasks/locate/{task_id}")
+        assert response.status_code == 404
+
+
+def test_locate_task_rejects_ids_duplicated_across_active_boards(client):
+    first = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Default copy"},
+    ).json()["task"]
+    kb.create_board("ops")
+    second = client.post(
+        "/api/plugins/kanban/tasks?board=ops",
+        json={"title": "Ops copy"},
+    ).json()["task"]
+    conn = kb.connect(board="ops")
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET id = ? WHERE id = ?",
+                (first["id"], second["id"]),
+            )
+    finally:
+        conn.close()
+
+    response = client.get(f"/api/plugins/kanban/tasks/locate/{first['id']}")
+
+    assert response.status_code == 409
+    assert "ambiguous" in response.json()["detail"].lower()
+
+
+def test_locate_task_excludes_archived_boards(client):
+    kb.create_board("retired")
+    created = client.post(
+        "/api/plugins/kanban/tasks?board=retired",
+        json={"title": "Retired card"},
+    ).json()["task"]
+    kb.remove_board("retired", archive=True)
+
+    response = client.get(f"/api/plugins/kanban/tasks/locate/{created['id']}")
+
+    assert response.status_code == 404
+
+
+def test_locate_task_does_not_recreate_board_archived_after_discovery(
+    client, monkeypatch
+):
+    kb.create_board("retired-during-locate")
+    created = client.post(
+        "/api/plugins/kanban/tasks?board=retired-during-locate",
+        json={"title": "Racing card"},
+    ).json()["task"]
+    plugin_api = sys.modules["hermes_dashboard_plugin_kanban_test"]
+    original_open = plugin_api._existing_board_conn
+    archived_after_discovery = False
+
+    def archive_before_open(board):
+        nonlocal archived_after_discovery
+        if board == "retired-during-locate" and not archived_after_discovery:
+            archived_after_discovery = True
+            kb.remove_board(board, archive=True)
+        return original_open(board)
+
+    monkeypatch.setattr(plugin_api, "_existing_board_conn", archive_before_open)
+
+    response = client.get(f"/api/plugins/kanban/tasks/locate/{created['id']}")
+
+    assert response.status_code == 404
+    assert archived_after_discovery
+    assert not kb.board_dir("retired-during-locate").exists()
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")
@@ -1228,5 +1333,3 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------
-
-

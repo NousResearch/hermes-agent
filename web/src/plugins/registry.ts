@@ -17,7 +17,15 @@ import React, {
   useContext,
   createContext,
 } from "react";
-import { api, fetchJSON, authedFetch, buildWsUrl, buildWsAuthParam } from "@/lib/api";
+import { useNavigate } from "react-router";
+import {
+  api,
+  fetchJSON,
+  authedFetch,
+  buildWsUrl,
+  buildWsAuthParam,
+  HERMES_BASE_PATH,
+} from "@/lib/api";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -119,6 +127,9 @@ export function exposePluginSDK() {
     // Contract version of the plugin SDK surface (see plugins/sdk.d.ts).
     // Bump on backwards-incompatible changes; additive changes don't need it.
     sdkVersion: SDK_CONTRACT_VERSION,
+    // Deployment prefix used by BrowserRouter. Router navigation accepts
+    // paths relative to this basename, while window.location includes it.
+    basePath: HERMES_BASE_PATH,
     // React core — plugins use these instead of importing react
     React,
     hooks: {
@@ -136,6 +147,10 @@ export function exposePluginSDK() {
       // pendingId) for single-id delete confirmations.
       useToast,
       useConfirmDelete,
+      // Router-aware navigation for plugin-owned URL state. Plugins must use
+      // this instead of calling history.pushState/replaceState directly so
+      // BrowserRouter and sibling providers retain the same location.
+      useNavigate,
     },
 
     // Hermes API client

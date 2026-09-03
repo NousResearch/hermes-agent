@@ -22,6 +22,7 @@
     Badge, Button, Input, Label, Select, SelectOption,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
+  const useHostNavigate = SDK.hooks.useNavigate;
   const { cn, timeAgo } = SDK.utils;
 
   // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
@@ -299,6 +300,101 @@
       if (slug) window.localStorage.setItem(LS_BOARD_KEY, slug);
       else window.localStorage.removeItem(LS_BOARD_KEY);
     } catch (_e) { /* ignore quota / private mode */ }
+  }
+
+  // A task drawer is shareable as /kanban?board=<slug>&task=<id>. Task-only
+  // and task_id links remain accepted as input and are normalized after resolve.
+  function readKanbanUrlSelection() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const board = (params.get("board") || "").trim() || null;
+      const canonicalTask = (params.get("task") || "").trim() || null;
+      const legacyTask = (params.get("task_id") || "").trim() || null;
+      return { board: board, task: canonicalTask || legacyTask, legacyTask: !!legacyTask };
+    } catch (_e) { return { board: null, task: null, legacyTask: false }; }
+  }
+
+  function buildKanbanLocation(board, taskId) {
+    const url = new URL(window.location.href);
+    const params = url.searchParams;
+    params.delete("board");
+    params.delete("task");
+    params.delete("task_id");
+    if (board) params.append("board", board);
+    if (taskId) params.append("task", taskId);
+    return `${url.pathname}${params.toString() ? `?${params}` : ""}${url.hash}`;
+  }
+
+  function hostRouterLocation(location) {
+    const basePath = String(SDK.basePath || "").replace(/\/+$/, "");
+    if (!basePath) return location;
+    if (location === basePath) return "/";
+    if (location.indexOf(`${basePath}/`) === 0) return location.slice(basePath.length);
+    return location;
+  }
+
+  function replaceKanbanUrl(navigate, board, taskId) {
+    try {
+      const next = buildKanbanLocation(board, taskId);
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (next !== current) {
+        if (navigate) navigate(hostRouterLocation(next), { replace: true });
+        else window.history.replaceState(null, "", next);
+      }
+    } catch (_e) { /* URL/history unavailable (for example, an embedded preview) */ }
+  }
+
+  function pushKanbanUrl(navigate, board, taskId) {
+    try {
+      const next = buildKanbanLocation(board, taskId);
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (next !== current) {
+        if (navigate) navigate(hostRouterLocation(next));
+        else window.history.pushState(null, "", next);
+      }
+    } catch (_e) { /* URL/history unavailable (for example, an embedded preview) */ }
+  }
+
+  function buildKanbanTaskUrl(board, taskId) {
+    const url = new URL(window.location.href);
+    const profile = url.searchParams.get("profile");
+    url.search = "";
+    if (profile) url.searchParams.append("profile", profile);
+    if (board) url.searchParams.append("board", board);
+    url.searchParams.append("task", taskId);
+    url.hash = "";
+    return url;
+  }
+
+  function copyTextWithTextarea(text) {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "readonly");
+    el.style.position = "fixed";
+    el.style.left = "-9999px";
+    document.body.appendChild(el);
+    el.select();
+    try {
+      if (typeof document.execCommand !== "function") {
+        throw new Error("Copy command is not available");
+      }
+      const copied = document.execCommand("copy");
+      if (!copied) throw new Error("Copy command was not accepted");
+    } catch (e) {
+      return Promise.reject(e);
+    } finally {
+      document.body.removeChild(el);
+    }
+    return Promise.resolve();
+  }
+
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () {
+        return copyTextWithTextarea(text);
+      });
+    }
+    return copyTextWithTextarea(text);
   }
 
   function withBoard(url, board) {
@@ -602,8 +698,18 @@
 
   function KanbanPage() {
     const { t } = useI18n();
+    // Static feature detection keeps older dashboard hosts compatible while
+    // production hosts route every write through BrowserRouter.
+    const hostNavigate = useHostNavigate ? useHostNavigate() : null;
     const kanbanDialogs = useKanbanDialogs(t);
-    const [board, setBoard] = useState(() => readSelectedBoard() || null);
+    const initialUrlSelectionRef = useRef(null);
+    if (initialUrlSelectionRef.current === null) {
+      initialUrlSelectionRef.current = readKanbanUrlSelection();
+    }
+    const [board, setBoard] = useState(() =>
+      initialUrlSelectionRef.current.board
+        || (initialUrlSelectionRef.current.task ? null : readSelectedBoard())
+        || null);
     const [boardList, setBoardList] = useState([]);      // [{slug, name, counts, ...}]
     const [showNewBoard, setShowNewBoard] = useState(false);
     const [showBoardSettings, setShowBoardSettings] = useState(false);
@@ -628,6 +734,11 @@
     const [laneByProfile, setLaneByProfile] = useState(true);
     const [configApplied, setConfigApplied] = useState(false);
 
+    const [deepLinkNotice, setDeepLinkNotice] = useState(null);
+    const [pendingTaskId, setPendingTaskId] = useState(initialUrlSelectionRef.current.task);
+    const [pendingTaskIsBoardQualified, setPendingTaskIsBoardQualified] = useState(
+      !!initialUrlSelectionRef.current.board,
+    );
     const [selectedTaskId, setSelectedTaskId] = useState(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
@@ -646,6 +757,46 @@
     const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
     const wsClosedRef = useRef(false);
+    // Fetches are not abortable through every dashboard SDK host.  Keep the
+    // selected slug separately so a response for a board we have since left
+    // cannot repaint the grid after a fallback or board switch.
+    const currentBoardRef = useRef(board);
+    const navigationGenerationRef = useRef(0);
+    const locatorRequestGenerationRef = useRef(0);
+    const detailRequestGenerationRef = useRef(0);
+    const taskLookupRequestRef = useRef(null);
+    const navigationSourceRef = useRef("initial");
+    // Increment for both committed selections and synchronous transitions.
+    // The request generation prevents A -> B -> A from accepting the first
+    // A response after the newer A request has started.
+    const boardRequestGenerationRef = useRef(0);
+    const boardListRequestGenerationRef = useRef(0);
+    useEffect(function () {
+      currentBoardRef.current = board;
+      boardRequestGenerationRef.current += 1;
+    }, [board]);
+
+    const openTask = useCallback(function (taskId) {
+      navigationGenerationRef.current += 1;
+      detailRequestGenerationRef.current += 1;
+      navigationSourceRef.current = "user";
+      setPendingTaskId(null);
+      setPendingTaskIsBoardQualified(false);
+      setDeepLinkNotice(null);
+      setSelectedTaskId(taskId);
+      pushKanbanUrl(hostNavigate, board, taskId);
+    }, [board, hostNavigate]);
+
+    const closeTask = useCallback(function () {
+      navigationGenerationRef.current += 1;
+      detailRequestGenerationRef.current += 1;
+      navigationSourceRef.current = "user";
+      setPendingTaskId(null);
+      setPendingTaskIsBoardQualified(false);
+      setDeepLinkNotice(null);
+      setSelectedTaskId(null);
+      pushKanbanUrl(hostNavigate, board, null);
+    }, [board, hostNavigate]);
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -664,45 +815,148 @@
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
+      const requestedBoard = board;
+      if (!requestedBoard) return Promise.resolve();
+      const requestGeneration = ++boardRequestGenerationRef.current;
+      const isCurrentRequest = function () {
+        return currentBoardRef.current === requestedBoard
+          && boardRequestGenerationRef.current === requestGeneration;
+      };
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
-      return SDK.fetchJSON(withBoard(url, board))
+      return SDK.fetchJSON(withBoard(url, requestedBoard))
         .then(function (data) {
+          if (!isCurrentRequest()) return;
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
         })
         .catch(function (err) {
+          if (!isCurrentRequest()) return;
           setError(String(err && err.message ? err.message : err));
         })
-        .finally(function () { setLoading(false); });
+        .finally(function () {
+          if (isCurrentRequest()) setLoading(false);
+        });
     }, [tenantFilter, includeArchived, board]);
 
     // --- load list of boards for the switcher ------------------------------
     const loadBoardList = useCallback(function () {
-      return SDK.fetchJSON(withBoard(`${API}/boards`, board))
+      const requestedBoard = board;
+      const requestGeneration = ++boardListRequestGenerationRef.current;
+      const navigationGeneration = navigationGenerationRef.current;
+      return SDK.fetchJSON(`${API}/boards`)
         .then(function (data) {
+          if (boardListRequestGenerationRef.current !== requestGeneration
+              || navigationGenerationRef.current !== navigationGeneration
+              || currentBoardRef.current !== requestedBoard) return;
           const boards = (data && data.boards) || [];
           const storedBoard = readSelectedBoard();
           setBoardList(boards);
-          if (!storedBoard && !board && data && data.current) {
-            setBoard(data.current);
+          if (!requestedBoard) {
+            const storedIsActive = storedBoard && boards.some(function (item) {
+              return item.slug === storedBoard;
+            });
+            const currentIsActive = data && data.current && boards.some(function (item) {
+              return item.slug === data.current;
+            });
+            const resolvedBoard = storedIsActive ? storedBoard : (currentIsActive ? data.current : "default");
+            currentBoardRef.current = resolvedBoard;
+            boardRequestGenerationRef.current += 1;
+            setBoard(resolvedBoard);
+            writeSelectedBoard(resolvedBoard);
+            // An unqualified task is authoritative until its global lookup
+            // settles. Do not let a stored/current-board bootstrap turn it
+            // into a board-qualified link or discard it in the interim.
+            if (navigationSourceRef.current !== "pop"
+                && !pendingTaskId && !selectedTaskId) {
+              replaceKanbanUrl(hostNavigate, resolvedBoard, null);
+            }
             return;
           }
-          // If the stored slug isn't in the list any longer (board was
-          // deleted in the CLI while dashboard was open), fall back to
-          // default so the UI doesn't hang on a 404.
-          if (board && board !== "default" && !boards.find(function (b) { return b.slug === board; })) {
-            setBoard("default");
-            writeSelectedBoard("default");
+          if (!boards.some(function (item) { return item.slug === requestedBoard; })) {
+            const fallbackBoard = (storedBoard && boards.some(function (item) {
+              return item.slug === storedBoard;
+            })) ? storedBoard : "default";
+            navigationGenerationRef.current += 1;
+            setPendingTaskId(null);
+            setPendingTaskIsBoardQualified(false);
+            setSelectedTaskId(null);
+            setDeepLinkNotice(`Board ${requestedBoard} was not found or is archived. Showing ${fallbackBoard}.`);
+            setBoardData(null);
+            setLoading(true);
+            currentBoardRef.current = fallbackBoard;
+            boardRequestGenerationRef.current += 1;
+            setBoard(fallbackBoard);
+            if (navigationSourceRef.current !== "pop") {
+              replaceKanbanUrl(hostNavigate, fallbackBoard, null);
+            }
+            return;
+          }
+          writeSelectedBoard(requestedBoard);
+          if (initialUrlSelectionRef.current.legacyTask
+              && navigationSourceRef.current !== "pop") {
+            replaceKanbanUrl(hostNavigate, requestedBoard, pendingTaskId || selectedTaskId);
+          } else if (!pendingTaskId && !selectedTaskId
+              && navigationSourceRef.current !== "pop") {
+            replaceKanbanUrl(hostNavigate, requestedBoard, null);
           }
         })
         .catch(function () { /* non-fatal */ });
-    }, [board]);
+    }, [board, pendingTaskId, selectedTaskId, hostNavigate]);
 
     useEffect(function () { loadBoardList(); }, [loadBoardList]);
+
+    function applyHistoryBoard(targetBoard, targetTask, taskIsBoardQualified, navigationGeneration) {
+      if (navigationGenerationRef.current !== navigationGeneration) return;
+      if (targetBoard !== currentBoardRef.current) {
+        setBoardData(null);
+        cursorRef.current = 0;
+        setLoading(true);
+        setSearch("");
+        setTenantFilter("");
+        setAssigneeFilter("");
+        setIncludeArchived(false);
+      }
+      currentBoardRef.current = targetBoard;
+      boardRequestGenerationRef.current += 1;
+      setBoard(targetBoard);
+      setPendingTaskId(targetTask || null);
+      setPendingTaskIsBoardQualified(!!taskIsBoardQualified);
+    }
+
+    // History entries can be created outside this plugin. Back/Forward should
+    // re-read them without creating or rewriting another history entry.
+    useEffect(function () {
+      function onPopState() {
+        const selection = readKanbanUrlSelection();
+        const navigationGeneration = ++navigationGenerationRef.current;
+        locatorRequestGenerationRef.current += 1;
+        detailRequestGenerationRef.current += 1;
+        navigationSourceRef.current = "pop";
+        setPendingTaskId(null);
+        setSelectedTaskId(null);
+        setDeepLinkNotice(null);
+        if (selection.board) {
+          applyHistoryBoard(selection.board, selection.task, true, navigationGeneration);
+          return;
+        }
+        if (!selection.task) {
+          applyHistoryBoard(readSelectedBoard() || "default", null, false, navigationGeneration);
+          return;
+        }
+        applyHistoryBoard(
+          currentBoardRef.current || readSelectedBoard() || "default",
+          selection.task,
+          false,
+          navigationGeneration,
+        );
+      }
+      window.addEventListener("popstate", onPopState);
+      return function () { window.removeEventListener("popstate", onPopState); };
+    }, []);
 
     const scheduleReload = useCallback(function () {
       if (reloadTimerRef.current) return;
@@ -721,6 +975,133 @@
         }
       };
     }, [loadBoard]);
+
+    // Board-qualified links may use visible board data directly. Task-only
+    // links always use the global locator so duplicate ids stay ambiguous.
+    // The request is keyed to navigation identity and shared across board-data
+    // refreshes; WebSocket reloads must never fan out an all-board scan.
+    useEffect(function () {
+      const requestedTaskId = pendingTaskId;
+      if (!requestedTaskId || !boardData || !board) return undefined;
+      const task = boardData.columns.reduce(function (found, column) {
+        return found || column.tasks.find(function (item) { return item.id === requestedTaskId; });
+      }, null);
+      const requestedBoard = board;
+      const navigationGeneration = navigationGenerationRef.current;
+      const requestGeneration = ++detailRequestGenerationRef.current;
+      let cancelled = false;
+      const isCurrent = function () {
+        return !cancelled
+          && detailRequestGenerationRef.current === requestGeneration
+          && navigationGenerationRef.current === navigationGeneration
+          && currentBoardRef.current === requestedBoard;
+      };
+      if (task && pendingTaskIsBoardQualified) {
+        setPendingTaskId(null);
+        setPendingTaskIsBoardQualified(false);
+        if (task.status === "archived") {
+          setSelectedTaskId(null);
+          setDeepLinkNotice(`Card ${requestedTaskId} is archived.`);
+          if (navigationSourceRef.current !== "pop") {
+            replaceKanbanUrl(hostNavigate, requestedBoard, null);
+          }
+          return undefined;
+        }
+        setSelectedTaskId(task.id);
+        setDeepLinkNotice(null);
+        if (navigationSourceRef.current !== "pop") {
+          replaceKanbanUrl(hostNavigate, requestedBoard, task.id);
+        }
+        return undefined;
+      }
+
+      const lookupUrl = pendingTaskIsBoardQualified
+        ? withBoard(`${API}/tasks/${encodeURIComponent(requestedTaskId)}`, requestedBoard)
+        : `${API}/tasks/locate/${encodeURIComponent(requestedTaskId)}`;
+      const lookupKey = [
+        navigationGeneration,
+        requestedBoard,
+        requestedTaskId,
+        pendingTaskIsBoardQualified ? "qualified" : "global",
+      ].join(":");
+      let lookupRequest = taskLookupRequestRef.current;
+      if (!lookupRequest || lookupRequest.key !== lookupKey) {
+        lookupRequest = { key: lookupKey, promise: SDK.fetchJSON(lookupUrl) };
+        taskLookupRequestRef.current = lookupRequest;
+        const clearRequest = function () {
+          if (taskLookupRequestRef.current === lookupRequest) {
+            taskLookupRequestRef.current = null;
+          }
+        };
+        lookupRequest.promise.then(clearRequest, clearRequest);
+      }
+      lookupRequest.promise
+        .then(function (result) {
+          if (!isCurrent()) return;
+          const targetBoard = pendingTaskIsBoardQualified ? requestedBoard : (result && result.board);
+          const targetTask = result && result.task && result.task.id;
+          if (!targetBoard || targetTask !== requestedTaskId) {
+            throw new Error("invalid task lookup response");
+          }
+          if (targetBoard === requestedBoard) {
+            if (result.task.status === "archived") {
+              throw new Error(`Card ${requestedTaskId} is archived.`);
+            }
+            setPendingTaskId(null);
+            setPendingTaskIsBoardQualified(false);
+            setSelectedTaskId(requestedTaskId);
+            setDeepLinkNotice(task
+              ? null
+              : `Card ${requestedTaskId} is outside the current filters.`);
+            if (navigationSourceRef.current !== "pop") {
+              replaceKanbanUrl(hostNavigate, requestedBoard, requestedTaskId);
+            }
+            return;
+          }
+          setBoardData(null);
+          cursorRef.current = 0;
+          setLoading(true);
+          currentBoardRef.current = targetBoard;
+          boardRequestGenerationRef.current += 1;
+          setBoard(targetBoard);
+          writeSelectedBoard(targetBoard);
+          // Reuse the successful global locator. Once the target board loads,
+          // visible data or the board-qualified detail endpoint completes the
+          // open without another global request.
+          setPendingTaskIsBoardQualified(true);
+          setSelectedTaskId(null);
+          setDeepLinkNotice(null);
+          setSearch("");
+          setTenantFilter("");
+          setAssigneeFilter("");
+          setIncludeArchived(false);
+        })
+        .catch(function (err) {
+          if (!isCurrent()) return;
+          setSelectedTaskId(null);
+          const message = String(err && err.message ? err.message : err);
+          const isAmbiguous = message.includes("409:") || message.includes("ambiguous");
+          const isArchived = message.includes("is archived");
+          const isMissing = message.includes("404:") || message.includes("task not found");
+          if (!isAmbiguous && !isArchived && !isMissing) {
+            setDeepLinkNotice(
+              `Could not load card ${requestedTaskId}. The link was kept; retry by refreshing.`,
+            );
+            return;
+          }
+          setPendingTaskId(null);
+          setPendingTaskIsBoardQualified(false);
+          setDeepLinkNotice(isAmbiguous
+            ? `Card ${requestedTaskId} is ambiguous across active boards.`
+            : isArchived
+              ? `Card ${requestedTaskId} is archived.`
+              : `Card ${requestedTaskId} was not found or is archived.`);
+          if (navigationSourceRef.current !== "pop") {
+            replaceKanbanUrl(hostNavigate, requestedBoard, null);
+          }
+        });
+      return function () { cancelled = true; };
+    }, [board, boardData, pendingTaskId, pendingTaskIsBoardQualified, hostNavigate]);
 
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
@@ -1140,21 +1521,32 @@
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
       if (!nextSlug || nextSlug === board) return;
+      navigationGenerationRef.current += 1;
+      locatorRequestGenerationRef.current += 1;
+      detailRequestGenerationRef.current += 1;
+      navigationSourceRef.current = "user";
       // Optimistic UI: clear the current grid + show loading, reset the
       // event cursor so the WS reopens aligned to the new board's
       // latest_event_id on the next loadBoard.
       setBoardData(null);
       cursorRef.current = 0;
       setLoading(true);
+      currentBoardRef.current = nextSlug;
+      boardRequestGenerationRef.current += 1;
       setBoard(nextSlug);
       writeSelectedBoard(nextSlug);
+      setPendingTaskId(null);
+      setPendingTaskIsBoardQualified(false);
+      setSelectedTaskId(null);
+      setDeepLinkNotice(null);
+      pushKanbanUrl(hostNavigate, nextSlug, null);
       // Reset filters so stale search/tenant/assignee don't persist across boards.
       setSearch("");
       setTenantFilter("");
       setAssigneeFilter("");
       setIncludeArchived(false);
       clearSelected();
-    }, [board, clearSelected]);
+    }, [board, clearSelected, hostNavigate]);
 
     const createNewBoard = useCallback(function (payload) {
       return SDK.fetchJSON(`${API}/boards`, {
@@ -1283,7 +1675,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1307,6 +1699,10 @@
          onSelectAllVisible: selectAllVisible,
          onDelete: deleteSelected,
        }) : null,
+        deepLinkNotice ? h("div", {
+          className: "text-xs text-muted-foreground border border-border bg-muted/40 px-3 py-2",
+          role: "status",
+        }, deepLinkNotice) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
         h(KanbanDialogs, {
           dialogProps: kanbanDialogs.dialogProps,
@@ -1328,15 +1724,16 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
+          key: `${board}:${selectedTaskId}`,
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          onClose: closeTask,
+          onOpenTask: openTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -3414,6 +3811,7 @@
     const [homeChannels, setHomeChannels] = useState([]);
     const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
+    const [linkCopied, setLinkCopied] = useState(false);
 
     const load = useCallback(function () {
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug))
@@ -3440,6 +3838,16 @@
       window.addEventListener("keydown", onKey);
       return function () { window.removeEventListener("keydown", onKey); };
     }, [props.onClose, editing]);
+
+    const handleCopyLink = function () {
+      const link = buildKanbanTaskUrl(boardSlug, props.taskId).toString();
+      copyTextToClipboard(link)
+        .then(function () {
+          setLinkCopied(true);
+          setTimeout(function () { setLinkCopied(false); }, 1800);
+        })
+        .catch(function (e) { setErr(String(e.message || e)); });
+    };
 
     const handleComment = function () {
       const body = newComment.trim();
@@ -3679,12 +4087,20 @@
       },
         h("div", { className: "hermes-kanban-drawer-head" },
           h("span", { className: "text-xs text-muted-foreground" }, props.taskId),
-          h("button", {
-            type: "button",
-            onClick: props.onClose,
-            className: "hermes-kanban-drawer-close",
-            title: tx(t, "close", "Close (Esc)"),
-          }, "×"),
+          h("div", { className: "hermes-kanban-drawer-actions" },
+            h("button", {
+              type: "button",
+              onClick: handleCopyLink,
+              className: "hermes-kanban-drawer-linkcopy",
+              title: tx(t, "copyTaskLink", "Copy link to this task"),
+            }, linkCopied ? tx(t, "copied", "Copied") : tx(t, "copyLink", "Copy link")),
+            h("button", {
+              type: "button",
+              onClick: props.onClose,
+              className: "hermes-kanban-drawer-close",
+              title: tx(t, "close", "Close (Esc)"),
+            }, "×"),
+          ),
         ),
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
@@ -3711,7 +4127,6 @@
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
           onOpenTask: function (taskId) {
-            props.onClose();
             if (props.onOpenTask) props.onOpenTask(taskId);
           },
                     requestDialog: props.requestDialog,

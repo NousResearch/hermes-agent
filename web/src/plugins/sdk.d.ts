@@ -94,6 +94,8 @@ export interface PluginRegistry {
 export interface HermesPluginSDK {
   /** Contract version of this SDK surface (see SDK_CONTRACT_VERSION). */
   readonly sdkVersion: string;
+  /** BrowserRouter deployment basename (empty for root deployments). Added by newer hosts. */
+  basePath?: string;
 
   /** React core — use instead of importing/bundling react. */
   React: typeof import("react").default;
@@ -105,6 +107,8 @@ export interface HermesPluginSDK {
     useRef: typeof import("react").useRef;
     useContext: typeof import("react").useContext;
     createContext: typeof import("react").createContext;
+    /** Router-aware navigation for plugin-owned URL state. Added by newer hosts. */
+    useNavigate?: typeof import("react-router").useNavigate;
     /**
      * Toast feedback. Returns ``{ showToast, toast }`` where ``toast`` is the
      * current visible toast (or null) and ``showToast(message, 'success' | 'error')``

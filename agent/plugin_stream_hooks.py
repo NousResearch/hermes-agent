@@ -32,6 +32,19 @@ def _callback_name(callback: Callable[..., Any]) -> str:
     return getattr(callback, "__name__", repr(callback))
 
 
+def _invoke_callback(callback: Callable[..., Any], payload: dict[str, Any]) -> Any:
+    """Deliver ``payload`` the way synchronous plugin hooks do.
+
+    A callback declaring ``**kwargs`` sees every field; one with a fixed
+    signature receives only the fields it names. That is what lets a payload
+    grow (e.g. ``usage`` on ``on_stream_end``) without breaking an older
+    observer that never asked for the new field.
+    """
+    from hermes_cli.plugins import PluginManager
+
+    return PluginManager._invoke_hook_callback(callback, payload)
+
+
 def _worker(dispatcher: _ConsumerDispatcher) -> None:
     while True:
         item = dispatcher.events.get()
@@ -41,7 +54,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
             payload = dict(item)
             payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
             try:
-                dispatcher.callback(**payload)
+                _invoke_callback(dispatcher.callback, payload)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",

@@ -262,6 +262,120 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     assert end_call[1]["error"] is None
 
 
+def test_stream_end_plugin_hook_carries_usage(monkeypatch):
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_end": [lambda **kwargs: calls.append(kwargs)]}),
+    )
+
+    agent = _agent()
+    agent.session_prompt_tokens = 1200
+    agent.session_completion_tokens = 300
+    agent.session_total_tokens = 1500
+    agent.session_reasoning_tokens = 45
+    agent.session_api_calls = 3
+    agent.context_compressor.last_prompt_tokens = 900
+    agent.context_compressor.context_length = 128000
+    agent._emit_stream_end(final_text="done", finished=True, error=None)
+    _wait_for(lambda: len(calls) == 1)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    usage = calls[0]["usage"]
+    assert usage["prompt_tokens"] == 1200
+    assert usage["completion_tokens"] == 300
+    assert usage["total_tokens"] == 1500
+    assert usage["reasoning_tokens"] == 45
+    assert usage["api_calls"] == 3
+    assert usage["last_prompt_tokens"] == 900
+    assert usage["context_length"] == 128000
+
+
+def test_stream_end_usage_survives_missing_counters(monkeypatch):
+    """A partially initialized agent must yield zeroed usage, never a raise."""
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_end": [lambda **kwargs: calls.append(kwargs)]}),
+    )
+
+    agent = _agent()
+    agent.context_compressor = None
+    agent._emit_stream_end(final_text="", finished=False, error="boom")
+    _wait_for(lambda: len(calls) == 1)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    usage = calls[0]["usage"]
+    assert usage["last_prompt_tokens"] == 0
+    assert usage["context_length"] == 0
+
+
+def test_stream_end_usage_reports_unknown_window_as_zero(monkeypatch):
+    """An unresolved context window is the 0 sentinel, not a raise or a None."""
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_end": [lambda **kwargs: calls.append(kwargs)]}),
+    )
+
+    agent = _agent()
+    # A context engine that never resolved a window (plugin engines, or an
+    # unresolved model) reports 0 — the payload must pass that through as an
+    # int 0, not None and not a guess.
+    agent.context_compressor = SimpleNamespace(context_length=0, last_prompt_tokens=900)
+    agent._emit_stream_end(final_text="done", finished=True, error=None)
+    _wait_for(lambda: len(calls) == 1)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    usage = calls[0]["usage"]
+    assert usage["context_length"] == 0
+    assert isinstance(usage["context_length"], int)
+    assert usage["last_prompt_tokens"] == 900
+
+
+def test_stream_end_narrow_signature_callback_keeps_working(monkeypatch):
+    """An observer that only declares the original fields must not see ``usage``.
+
+    Stream observers are delivered through the same signature-aware path as
+    synchronous hooks: ``**kwargs`` callbacks get every field, fixed-signature
+    callbacks get only what they name. That is what makes ``usage`` additive.
+    """
+    from agent.plugin_stream_hooks import shutdown_plugin_stream_hook_dispatcher
+
+    shutdown_plugin_stream_hook_dispatcher()
+    narrow_calls = []
+    wide_calls = []
+
+    def narrow(final_text, finished, error):
+        narrow_calls.append((final_text, finished, error))
+
+    def wide(**kwargs):
+        wide_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.iter_hook_callbacks",
+        _callbacks({"on_stream_end": [narrow, wide]}),
+    )
+
+    agent = _agent()
+    agent._emit_stream_end(final_text="done", finished=True, error=None)
+    _wait_for(lambda: len(narrow_calls) == 1 and len(wide_calls) == 1)
+    shutdown_plugin_stream_hook_dispatcher()
+
+    assert narrow_calls == [("done", True, None)]
+    assert "usage" in wide_calls[0]
+    assert wide_calls[0]["final_text"] == "done"
+
+
 @patch("run_agent.AIAgent._create_request_openai_client")
 @patch("run_agent.AIAgent._close_request_openai_client")
 def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, monkeypatch):

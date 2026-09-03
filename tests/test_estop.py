@@ -392,15 +392,48 @@ def test_profile_gateway_honors_canonical_root_estop(tmp_path, monkeypatch):
     estop._reset_log_state_for_tests()
 
     assert estop.is_engaged() is False
+    # A profile-local sentinel is not an authoritative fleet stop. This is the
+    # contradictory present/absent case that previously made status depend on
+    # which gateway answered first.
+    (profile / "ESTOP").write_text("{\"reason\": \"stale local\"}\n", encoding="utf-8")
+    assert estop.is_engaged() is False
+
     (root / "ESTOP").write_text("{\"reason\": \"thundering herd\"}\n", encoding="utf-8")
     assert estop.is_engaged() is True
+    state = estop.get_state()
+    assert state["source"] == "fleet-root"
+    assert state["reason"] == "thundering herd"
+    assert state["observed_at"]
+    assert state["freshness"] == "fresh"
     assert estop.paused_reply() is not None
     assert "paused" in estop.paused_reply().lower()
-    # Profile-local engage still works and is independent.
-    estop.engage(reason="local")
-    assert (profile / "ESTOP").exists()
-    assert estop.is_engaged() is True
+
+    # Profile-local presence cannot hold the stop after the root is cleared.
     (root / "ESTOP").unlink()
-    assert estop.is_engaged() is True  # still held by profile sentinel
+    assert estop.is_engaged() is False
+
+    # Profile gateways write the canonical root as well.
+    estop.engage(reason="local")
+    assert (root / "ESTOP").exists()
+    assert estop.is_engaged() is True
     estop.disengage()
     assert estop.is_engaged() is False
+
+
+def test_authoritative_estop_read_fails_closed_with_unknown_state(hermes_home, monkeypatch):
+    class _UnreadablePath:
+        def exists(self):
+            raise OSError("permission denied")
+
+        def __str__(self):
+            return "/fleet-root/ESTOP"
+
+    monkeypatch.setattr(estop, "sentinel_path", lambda: _UnreadablePath())
+    state = estop.get_authoritative_state()
+    assert state["source"] == "fleet-root"
+    assert state["state"] == "unknown"
+    assert state["engaged"] is True
+    assert state["freshness"] == "unknown"
+    assert state["observed_at"]
+    assert state["error"]
+    assert estop.get_state()["engaged"] is True

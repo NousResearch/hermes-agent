@@ -67,44 +67,26 @@ def _canonical_root() -> Path:
 
 
 def sentinel_path() -> Path:
-    """Path of the ESTOP sentinel this process would write on `hermes pause`."""
-    return _hermes_home() / SENTINEL_NAME
+    """Path of the fleet-wide ESTOP sentinel.
 
-
-def _candidate_sentinel_paths() -> list:
-    """Profile home first, then the fleet root if it is a different directory."""
-    primary = sentinel_path()
-    paths = [primary]
-    try:
-        root = _canonical_root() / SENTINEL_NAME
-    except Exception:
-        return paths
-    try:
-        if root.resolve() != primary.resolve():
-            paths.append(root)
-    except Exception:
-        # Non-Path test doubles (fail-safe stat fixture) fail .resolve();
-        # the generic comparison below still dedupes plain equal paths.
-        if root != primary:
-            paths.append(root)
-    return paths
+    ESTOP is a process-independent safety boundary.  Profile-local
+    ``HERMES_HOME`` must never create a second stop state: a voice/profile
+    gateway reads and writes the same root sentinel as the operator CLI.
+    """
+    return _canonical_root() / SENTINEL_NAME
 
 
 def is_engaged() -> bool:
     """Cheap check: is the global emergency stop engaged?
 
-    Engaged if ANY candidate sentinel exists: the process HERMES_HOME
-    (profile-local) or the fleet canonical root (~/.hermes). Fail SAFE on
-    stat errors so an unreadable sentinel still holds the pause.
+    Engaged if the fleet canonical root (~/.hermes/ESTOP) exists. Fail SAFE on
+    stat errors so an unreadable sentinel still holds the pause. A profile
+    local sentinel is deliberately ignored; it is not an authoritative stop.
     """
-    saw_stat_error = False
-    for path in _candidate_sentinel_paths():
-        try:
-            if path.exists():
-                return True
-        except OSError:
-            saw_stat_error = True
-    return saw_stat_error
+    try:
+        return sentinel_path().exists()
+    except OSError:
+        return True
 
 
 def engage(reason: Optional[str] = None) -> Path:
@@ -127,56 +109,76 @@ def engage(reason: Optional[str] = None) -> Path:
 
 
 def disengage() -> bool:
-    """Remove ESTOP sentinels this process can see.
-
-    Lifts both the process-local sentinel and the fleet-root sentinel so
-    ``hermes resume`` from a profile gateway still clears an operator pause
-    written at ~/.hermes/ESTOP.
-    """
-    lifted = False
-    for path in _candidate_sentinel_paths():
-        try:
-            path.unlink()
-            lifted = True
-        except FileNotFoundError:
-            continue
-        except (OSError, AttributeError):
-            continue
-    return lifted
+    """Remove the fleet-root ESTOP sentinel, if present."""
+    try:
+        sentinel_path().unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except (OSError, AttributeError):
+        return False
 
 
 def get_state() -> Optional[dict]:
-    """Return ``{"reason": ..., "engaged_at": ...}`` or None when not engaged.
+    """Return the uncached fleet-root status envelope, or ``None`` if clear."""
+    state = get_authoritative_state()
+    return None if not state["engaged"] else state
 
-    A sentinel with an unreadable/corrupt body still reports engaged, with
-    both fields None — the pause is authoritative, the metadata is not.
+
+def get_authoritative_state() -> dict:
+    """Read the fleet-root ESTOP once and return an uncached status envelope.
+
+    This is the machine-facing surface for status consumers such as the voice
+    lane.  ``state=unknown`` is never presented as clear: ``engaged`` remains
+    true on a root stat/read failure so callers can fail closed while showing
+    an explicit error.  ``observed_at`` is generated for every read, including
+    clear and error results, so a caller cannot mistake a cached snapshot for
+    current state.
     """
-    if not is_engaged():
-        return None
+    observed_at = datetime.now(timezone.utc).isoformat()
+    path = sentinel_path()
+    base = {
+        "source": "fleet-root",
+        "observed_at": observed_at,
+        "freshness": "fresh",
+        "path": str(path),
+        "error": None,
+    }
+    try:
+        exists = path.exists()
+    except (OSError, AttributeError) as exc:
+        return {
+            **base,
+            "state": "unknown",
+            "engaged": True,
+            "freshness": "unknown",
+            "error": f"unable to read fleet-root ESTOP: {exc}",
+        }
+    if not exists:
+        return {**base, "state": "clear", "engaged": False}
+
     reason = None
     engaged_at = None
-    found = False
-    for path in _candidate_sentinel_paths():
-        try:
-            exists = path.exists()
-        except OSError:
-            return {"reason": None, "engaged_at": None}
-        except AttributeError:
-            continue
-        if not exists:
-            continue
-        found = True
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                reason = raw.get("reason") or None
-                engaged_at = raw.get("engaged_at") or None
-                break
-        except (OSError, ValueError, AttributeError):
-            continue
-    if not found:
-        return None
-    return {"reason": reason, "engaged_at": engaged_at}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            reason = raw.get("reason") or None
+            engaged_at = raw.get("engaged_at") or None
+    except (OSError, ValueError, AttributeError) as exc:
+        return {
+            **base,
+            "state": "engaged",
+            "engaged": True,
+            "freshness": "unknown",
+            "error": f"invalid fleet-root ESTOP metadata: {exc}",
+        }
+    return {
+        **base,
+        "state": "engaged",
+        "engaged": True,
+        "reason": reason,
+        "engaged_at": engaged_at,
+    }
 
 
 def paused_reply() -> Optional[str]:

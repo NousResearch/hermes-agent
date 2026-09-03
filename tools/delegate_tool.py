@@ -1299,6 +1299,12 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    parts.append(
+        "\nKanban safety: delegated children are not board owners and cannot "
+        "perform durable Kanban mutations. Do not retry a refused Kanban call; "
+        "return the finding to the parent so the root Kanban "
+        "orchestrator/dispatcher can act."
+    )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -5141,6 +5147,9 @@ def _build_top_level_description() -> str:
         "- Durable work that must survive this session -> cronjob or "
         "terminal(background=True, notify=True); /stop, /new, or "
         "process exit discards running subagents.\n\n"
+        "- Kanban work or any durable board mutation -> do NOT delegate; "
+        "return the request to the root Kanban orchestrator/dispatcher, "
+        "which owns the board and task lifecycle.\n\n"
         "RULES:\n"
         "- Children know nothing of this conversation: pass everything needed "
         "via 'context', including any required output language, tone, or "

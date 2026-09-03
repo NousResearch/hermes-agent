@@ -1739,6 +1739,15 @@ DEFAULT_CONFIG = {
         # Set this to True to re-enable the surfaces with the understanding
         # that the numbers are a local lower-bound estimate, not billing.
         "show_token_analytics": False,
+        # How much of ``/api/status`` an ANONYMOUS caller sees on a gated
+        # (non-loopback) bind. "full" keeps every field public, which is what
+        # Hermes Cloud needs: the Portal renders the profile list from an
+        # unauthenticated read. "minimal" withholds the deployment detail
+        # (profile names, gateway mode, host memory / disk rollups) from
+        # anonymous callers while a signed-in operator still gets the full
+        # payload. Meant for a self-hosted dashboard published on the internet,
+        # where nothing but the operator has a reason to read it.
+        "public_status_detail": "full",
         # IP addresses or bounded CIDR networks of reverse proxies allowed to
         # supply X-Forwarded-Proto / X-Forwarded-For. Loopback remains trusted
         # automatically. Wildcards and /0 networks are rejected so arbitrary

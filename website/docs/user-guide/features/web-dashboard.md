@@ -458,6 +458,29 @@ Both collectors are fail-safe: any sampling error degrades the block to
 `{"pressure": "unknown"}` instead of failing the status endpoint. The numbers
 are coarse (whole MB, whole-percent) since `/api/status` is public.
 
+#### Limiting what anonymous callers see
+
+`/api/status` bypasses the auth gate (it is the portal's liveness probe and the
+SPA's pre-login bootstrap), so on a gated bind **anyone who can reach the host
+reads it**. By default the payload also carries deployment detail: `profiles`
+(profile names), `gateway_mode`, and the `memory` / `disk` rollups above. That
+default serves Hermes Cloud, where the portal renders the profile list from an
+unauthenticated read.
+
+A self-hosted dashboard published on the internet has no such reader. Set:
+
+```yaml
+dashboard:
+  public_status_detail: minimal   # default: "full"
+```
+
+(or `HERMES_DASHBOARD_PUBLIC_STATUS_DETAIL=minimal`) and those four fields are
+withheld from **anonymous** callers on a gated bind. Version, gateway state,
+`install_id`, session counts, and the auth-gate shape stay public, so probes
+and the desktop's pre-login discovery keep working. A caller carrying a valid
+session still receives the full payload, so the dashboard's own Status page and
+its resource banners are unaffected. On a loopback bind nothing changes.
+
 ### GET /api/sessions
 
 Returns the 20 most recent sessions with metadata (model, token counts, timestamps, preview).

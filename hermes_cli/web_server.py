@@ -3823,8 +3823,50 @@ def _merge_profile_gateway_platforms(
     return merged
 
 
+# One-shot guard for the unreadable-config warning below. ``/api/status`` is a
+# liveness probe: portals, uptime monitors and the desktop poll it on a timer,
+# so a per-call warning would turn one broken config into a log flood that
+# buries the very line the operator needs to see. Same discipline as the
+# malformed-public_url warnings in dashboard_auth/prefix.py.
+_warned_public_status_detail_unreadable = False
+
+
+def _public_status_detail() -> str:
+    """Return ``"minimal"`` or ``"full"`` for the public ``/api/status`` payload.
+
+    ``full`` (the default) keeps the historical payload: Hermes Cloud renders
+    the profile list in the Portal from an unauthenticated read of this
+    endpoint, so trimming it by default would regress a product surface.
+    ``minimal`` is for the self-hosted case the default cannot serve: a
+    dashboard published on the open internet, where the only readers are the
+    operator (who signs in) and whoever else finds the hostname.
+    """
+    env_override = os.environ.get("HERMES_DASHBOARD_PUBLIC_STATUS_DETAIL", "").strip()
+    if env_override:
+        return "minimal" if env_override.lower() == "minimal" else "full"
+    try:
+        configured = (load_config().get("dashboard") or {}).get(
+            "public_status_detail", "full"
+        )
+    except Exception:
+        # Fail open: an unreadable config must not turn a liveness probe into
+        # an error. Warned once because it silently drops an operator's
+        # hardening choice back to the public default.
+        global _warned_public_status_detail_unreadable
+        if not _warned_public_status_detail_unreadable:
+            _warned_public_status_detail_unreadable = True
+            _log.warning(
+                "Could not read dashboard.public_status_detail; "
+                "serving the full public /api/status payload"
+            )
+        return "full"
+    if isinstance(configured, str) and configured.strip().lower() == "minimal":
+        return "minimal"
+    return "full"
+
+
 @app.get("/api/status")
-async def get_status(profile: Optional[str] = None):
+async def get_status(request: Request = None, profile: Optional[str] = None):
     status_scope = None
     requested_profile = (profile or "").strip()
     # Plain /api/status stays the machine-level public liveness probe. The
@@ -4134,6 +4176,26 @@ async def get_status(profile: Optional[str] = None):
             else "degraded"
         )
 
+        # Deployment detail vs liveness. ``/api/status`` is in
+        # ``PUBLIC_API_PATHS``, so on a gated bind an anonymous caller reaches
+        # it cold. The rollups below (host memory, host disk) and the profile
+        # topology further down describe the deployment, not whether it is
+        # alive, and an operator running ``public_status_detail: minimal``
+        # asked for them to stay off the anonymous probe. A caller carrying a
+        # valid session is not anonymous (the gate's public-path branch
+        # attaches ``request.state.session``), so the dashboard's own Status
+        # page keeps every field it renders today.
+        # ``request`` is None for the in-process callers that await this
+        # handler directly (a long-standing test seam); they are not a network
+        # caller, so they read as anonymous.
+        request_state = getattr(request, "state", None)
+        withhold_operator_detail = (
+            auth_required
+            and _public_status_detail() == "minimal"
+            and getattr(request_state, "session", None) is None
+            and not getattr(request_state, "token_authenticated", False)
+        )
+
         # Memory-pressure rollup (NS-656). Distilled from the gateway's
         # 30s loop heartbeat + lifecycle sentinel — two small file reads,
         # no gateway IPC. Coarse MB numbers/enums/booleans only: this
@@ -4143,30 +4205,32 @@ async def get_status(profile: Optional[str] = None):
         # material), not a liveness verdict, and flipping `overall` to
         # "degraded" on it would page NAS's availability sweep for a
         # condition the valve is already handling.
-        try:
-            from gateway.memory_status import collect_memory_status
+        if not withhold_operator_detail:
+            try:
+                from gateway.memory_status import collect_memory_status
 
-            status["memory"] = await run_in_threadpool(
-                collect_memory_status,
-                profile_dir if profile_dir else get_hermes_home(),
-            )
-        except Exception:
-            status["memory"] = {"pressure": "unknown"}
+                status["memory"] = await run_in_threadpool(
+                    collect_memory_status,
+                    profile_dir if profile_dir else get_hermes_home(),
+                )
+            except Exception:
+                status["memory"] = {"pressure": "unknown"}
 
         # Disk-usage rollup (NS-656, same lineage as OOF-2/OOF-107 fleet
         # disk-exhaustion incidents). One statvfs call on HERMES_HOME's
         # filesystem — coarse MB numbers + enum, same public disclosure
         # class as the memory block, and equally advisory: not folded
         # into components/overall.
-        try:
-            from gateway.disk_status import collect_disk_status
+        if not withhold_operator_detail:
+            try:
+                from gateway.disk_status import collect_disk_status
 
-            status["disk"] = await run_in_threadpool(
-                collect_disk_status,
-                profile_dir if profile_dir else get_hermes_home(),
-            )
-        except Exception:
-            status["disk"] = {"pressure": "unknown"}
+                status["disk"] = await run_in_threadpool(
+                    collect_disk_status,
+                    profile_dir if profile_dir else get_hermes_home(),
+                )
+            except Exception:
+                status["disk"] = {"pressure": "unknown"}
 
         # Deferred FTS rebuild progress (schema v23): lets the desktop /
         # dashboard render a "search index rebuilding: N%" indicator instead
@@ -4204,8 +4268,9 @@ async def get_status(profile: Optional[str] = None):
         # (``topology`` was already fetched above, before the platform rollup,
         # so the per-profile platform merge could use it — the TTL cache makes
         # the earlier fetch the only real scan either way.)
-        status["profiles"] = topology["profiles"]
-        status["gateway_mode"] = topology["gateway_mode"]
+        if not withhold_operator_detail:
+            status["profiles"] = topology["profiles"]
+            status["gateway_mode"] = topology["gateway_mode"]
 
         # Absolute host paths, the gateway PID, the internal gateway health
         # URL, and per-gateway ports are deployment recon a liveness probe never

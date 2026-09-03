@@ -2050,6 +2050,18 @@ updates:
 #   #     - "172.20.0.5"
 #   #     # - "172.20.0.0/24"  # dedicated network, if the IP is dynamic
 #
+#   # How much of /api/status an ANONYMOUS caller sees on a gated bind.
+#   # /api/status bypasses the auth gate (liveness probe + pre-login
+#   # bootstrap), so on a public host anyone reading the hostname gets this
+#   # payload. "full" (default) keeps every field public, which is what
+#   # Hermes Cloud needs: the Portal renders the profile list from an
+#   # unauthenticated read. "minimal" withholds the deployment detail
+#   # (profiles, gateway_mode, memory and disk rollups) from anonymous
+#   # callers, while a signed-in operator still gets the full payload.
+#   # Override: HERMES_DASHBOARD_PUBLIC_STATUS_DETAIL
+#   #
+#   #   public_status_detail: "minimal"
+#
 # -----------------------------------------------------------------------------
 # Self-hosted OIDC dashboard auth (generic OpenID Connect — Authentik,
 # Keycloak, Zitadel, Authelia, Auth0, Okta, Google, …). Use this INSTEAD of the

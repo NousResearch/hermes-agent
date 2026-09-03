@@ -320,6 +320,51 @@ def _verify_bearer(request: Request, *, access_token: str):
     return None
 
 
+def _attach_public_path_session(request: Request) -> None:
+    """Best-effort session attach for a request on a public (ungated) path.
+
+    Public paths bypass the gate by design, so a handler there cannot tell a
+    signed-in operator from an anonymous probe: both arrive with
+    ``request.state.session`` unset. ``/api/status`` needs that distinction to
+    decide how much deployment detail its payload may carry.
+
+    Nothing here may fail the request: an absent, stale, or unverifiable
+    cookie, or an unreachable IDP, all mean the same thing to the caller of
+    this helper (anonymous), and a liveness probe that 503s because a cookie
+    went stale is worse than the disclosure it was hardening against.
+    """
+    if getattr(request.state, "session", None) is not None:
+        return
+    # The desktop authenticates REST with ``Authorization: Bearer`` and holds
+    # no cookies at all (RFC 8252 native flow), so the bearer has to be read
+    # here too: otherwise a signed-in desktop reads as anonymous on every
+    # public path.
+    try:
+        bearer = _extract_bearer(request)
+        if bearer:
+            try:
+                bearer_session = _verify_bearer(request, access_token=bearer)
+            except Exception:
+                bearer_session = None
+            if bearer_session is not None:
+                request.state.session = bearer_session
+                return
+        access_token, _refresh_token = read_session_cookies(request)
+        if not access_token:
+            return
+        provider_hint = read_session_provider(request)
+        for provider in _ordered_session_providers(provider_hint):
+            try:
+                session = provider.verify_session(access_token=access_token)
+            except Exception:
+                continue
+            if session is not None:
+                request.state.session = session
+                return
+    except Exception:
+        return
+
+
 async def gated_auth_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
@@ -341,6 +386,10 @@ async def gated_auth_middleware(
 
     path = request.url.path
     if _path_is_public(path):
+        # Ungated, but not necessarily anonymous: attach the session when the
+        # caller carries a valid one so a public handler can vary its payload
+        # by caller (see ``_attach_public_path_session``).
+        _attach_public_path_session(request)
         return await call_next(request)
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop

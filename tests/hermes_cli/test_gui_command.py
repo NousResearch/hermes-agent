@@ -179,11 +179,18 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
-def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "managed_already_present",
+    [False, True],
+    ids=["missing", "after-system-node"],
+)
+def test_gui_install_env_prepends_managed_node(
+    tmp_path, monkeypatch, managed_already_present
+):
     """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
     shell out to bare ``node``. When Desktop is launched from the updater chain
-    the parent PATH is stripped, so the install env MUST carry the Hermes-managed
-    Node ahead of that bare PATH or the install dies with ``node: not found``.
+    the parent PATH can be stripped or put system Node first, so the install env
+    MUST carry Hermes-managed Node first or lifecycle scripts use the wrong Node.
     """
     import os
 
@@ -197,8 +204,10 @@ def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatc
     home = tmp_path / "hermes-home"
     (home / "node" / "bin").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # Simulate the stripped PATH the desktop updater chain hands us.
-    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    inherited_path = ["/usr/bin", "/bin"]
+    if managed_already_present:
+        inherited_path.extend([str(home / "node"), str(home / "node" / "bin")])
+    monkeypatch.setenv("PATH", os.pathsep.join(inherited_path))
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     launch_ok = subprocess.CompletedProcess(["hermes"], 0)

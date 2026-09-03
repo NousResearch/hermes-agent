@@ -4,6 +4,7 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import ntpath
 import os
 import shutil
 import stat
@@ -1036,16 +1037,25 @@ def find_node_executable(command: str) -> str | None:
     return find_node_executable_on_path(command)
 
 
+def _node_path_comparison_key(path: str) -> str:
+    """Normalize a PATH entry using the active platform's path semantics."""
+    path_module = ntpath if sys.platform == "win32" else os.path
+    return path_module.normcase(path_module.normpath(path))
+
+
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     """Return *env* with Hermes-managed Node directories prepended to PATH."""
     merged = dict(os.environ if env is None else env)
     existing = merged.get("PATH", "")
     parts = [p for p in existing.split(os.pathsep) if p]
     managed = [str(path) for path in iter_hermes_node_dirs() if path.is_dir()]
-    for entry in reversed(managed):
-        if entry not in parts:
-            parts.insert(0, entry)
-    merged["PATH"] = os.pathsep.join(parts)
+    managed_keys = {_node_path_comparison_key(entry) for entry in managed}
+    remaining = [
+        entry
+        for entry in parts
+        if _node_path_comparison_key(entry) not in managed_keys
+    ]
+    merged["PATH"] = os.pathsep.join([*managed, *remaining])
     return merged
 
 

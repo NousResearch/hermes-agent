@@ -179,6 +179,41 @@ class TestHermesManagedNode:
 
         assert find_hermes_node_executable("npm") == str(npm_cmd)
 
+    def test_managed_node_dirs_move_ahead_of_system_path(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        bin_dir = node_dir / "bin"
+        bin_dir.mkdir(parents=True)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        env = with_hermes_node_path(
+            {"PATH": os.pathsep.join(["system-node", str(node_dir), "tools"])}
+        )
+
+        assert env["PATH"].split(os.pathsep) == [
+            str(node_dir),
+            str(bin_dir),
+            "system-node",
+            "tools",
+        ]
+
+    def test_windows_managed_node_path_collapses_normalized_duplicates(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "Hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        duplicate = f"{str(node_dir).upper()}{os.sep}"
+
+        env = with_hermes_node_path(
+            {"PATH": os.pathsep.join(["system-node", duplicate, str(node_dir)])}
+        )
+
+        assert env["PATH"].split(os.pathsep) == [str(node_dir), "system-node"]
+
 
 
     @pytest.mark.windows_only

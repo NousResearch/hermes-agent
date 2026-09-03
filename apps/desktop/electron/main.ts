@@ -169,6 +169,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { traceWindowDomNavigation } from './dom-navigation-tracer'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
 import {
@@ -13290,6 +13291,7 @@ function spawnSecondaryWindow({
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'session-window', rememberLog)
+  traceWindowDomNavigation(win, 'session-window', { log: rememberLog })
 
   // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
   // renderer used to log nothing and stay black; now it logs with its window
@@ -13376,6 +13378,7 @@ function spawnBrowserWindow(tabId) {
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
   attachRendererConsoleCapture(win, 'browser-window', rememberLog)
+  traceWindowDomNavigation(win, 'browser-window', { log: rememberLog })
 
   installWindowRendererLifecycle(win, {
     kind: 'browser',
@@ -13494,6 +13497,7 @@ function createInstanceWindow() {
   })
 
   attachRendererConsoleCapture(win, 'instance', rememberLog)
+  traceWindowDomNavigation(win, 'instance', { log: rememberLog })
   loadWindowUrl(
     win,
     buildInstanceWindowUrl({
@@ -13626,6 +13630,7 @@ function spawnPetOverlayWindow(bounds) {
   })
 
   attachRendererConsoleCapture(win, 'pet-overlay', rememberLog)
+  traceWindowDomNavigation(win, 'pet-overlay', { log: rememberLog })
   loadWindowUrl(win, petOverlayUrl(), 'Pet overlay')
 
   return win
@@ -14083,6 +14088,7 @@ function spawnHudWindow(sessionId, profile) {
   })
 
   attachRendererConsoleCapture(win, 'hud', rememberLog)
+  traceWindowDomNavigation(win, 'hud', { log: rememberLog })
   // Log-only lifecycle (#81290): the HUD is a compact auxiliary surface the
   // user can re-toggle; a dead renderer should be diagnosable, not resurrected.
   installWindowRendererLifecycle(win, { kind: 'hud', callbacks: { log: rememberLog } })
@@ -14296,6 +14302,7 @@ function spawnQuickEntryWindow() {
   })
 
   attachRendererConsoleCapture(win, 'quick-entry', rememberLog)
+  traceWindowDomNavigation(win, 'quick-entry', { log: rememberLog })
   loadWindowUrl(win, quickEntryUrl(), 'Quick entry')
 
   return win
@@ -14591,6 +14598,7 @@ function createWindow() {
   // every renderer-content window shares (#79428: crashes in secondary/HUD/
   // quick-entry windows used to vanish without a trace).
   attachRendererConsoleCapture(mainWindow, 'main', rememberLog)
+  traceWindowDomNavigation(mainWindow, 'main', { log: rememberLog })
 
   // #95575: a torn renderer bundle (update replaced the app while its files
   // were locked) loads fine and then dies on the first lazy import — a white

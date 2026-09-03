@@ -248,11 +248,20 @@ export function buildGroups(signature: string): MessageGroup[] {
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
 // regardless of weight. Returns the index of that first visible group.
-export function firstVisibleGroupIndex(groups: readonly MessageGroup[], budget: number, minVisible = 0): number {
+export function firstVisibleGroupIndex(
+  groups: readonly MessageGroup[],
+  budget: number,
+  minVisible = 0,
+  unbudgetedTail = 0
+): number {
   let firstVisible = groups.length
+  const budgetedEnd = Math.max(0, groups.length - unbudgetedTail)
 
   for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
-    weight += groups[i].weight
+    if (i < budgetedEnd) {
+      weight += groups[i].weight
+    }
+
     firstVisible = i
 
     if (weight >= budget) {
@@ -411,6 +420,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
   )
 
+  const threadRunning = useAuiState(s => s.thread.isRunning)
+
   const { t } = useI18n()
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
@@ -564,7 +575,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const hiddenCount = firstVisibleGroupIndex(
     weightedGroups,
     renderBudget,
-    renderBudget >= paneBudget ? MIN_VISIBLE_GROUPS : 0
+    renderBudget >= paneBudget ? MIN_VISIBLE_GROUPS : 0,
+    // The active turn has to stay mounted regardless of size. Charging its
+    // growing weight to the history budget made this cut advance mid-stream:
+    // old rows unmounted, scrollHeight shrank, and the browser clamp looked
+    // like a user scroll-up to use-stick-to-bottom. Budget the history around
+    // the live turn instead, so token flushes cannot move the cut boundary.
+    threadRunning ? 1 : 0
   )
 
   // Memoized for IDENTITY, not to save the slice: `rows` below keys off this

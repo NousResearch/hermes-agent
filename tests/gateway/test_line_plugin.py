@@ -86,6 +86,61 @@ class TestSourceResolution:
         assert ctype == "group"
 
 
+class TestInboundDispatch:
+
+    def test_dm_defers_loading_indicator_to_shared_typing_lifecycle(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        }))
+        adapter._client = MagicMock()
+        adapter._client.loading = AsyncMock()
+        adapter.handle_message = AsyncMock()
+        event = {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U1"},
+            "message": {"id": "m1", "type": "text", "text": "hello"},
+        }
+
+        asyncio.run(adapter._handle_message_event(event))
+
+        adapter.handle_message.assert_awaited_once()
+        adapter._client.loading.assert_not_awaited()
+
+    def test_shared_typing_lifecycle_starts_loading_indicator(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+            "slow_response_threshold": 0,
+        }))
+        adapter._client = MagicMock()
+        stop_event = asyncio.Event()
+
+        async def loading(chat_id):
+            stop_event.set()
+
+        adapter._client.loading = AsyncMock(side_effect=loading)
+
+        async def run_typing_lifecycle():
+            await asyncio.wait_for(
+                adapter._keep_typing("U1", interval=0.1, stop_event=stop_event),
+                timeout=1,
+            )
+
+        asyncio.run(run_typing_lifecycle())
+
+        adapter._client.loading.assert_awaited_once_with("U1")
+
+
 # ---------------------------------------------------------------------------
 # 3. Three-allowlist gating
 # ---------------------------------------------------------------------------

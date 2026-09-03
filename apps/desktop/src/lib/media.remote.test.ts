@@ -6,6 +6,7 @@ import {
   downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
+  gatewayMediaDataUrlLocalFallback,
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
@@ -265,6 +266,90 @@ describe('downloadGatewayMediaFile', () => {
 
     await expect(downloadGatewayMediaFile('/Users/me/project/report.md')).rejects.toThrow(
       'Desktop file download bridge'
+    )
+  })
+
+  // A preview screenshot is written by THIS shell's Electron main process into
+  // userData/composer-images, never on the gateway. Fetching it from the
+  // gateway can only 404 ("missing, unreadable, or too large").
+  it('opens a locally produced artifact from this disk instead of the gateway', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+    const openExternal = vi.fn()
+
+    vi.stubGlobal('window', { hermesDesktop: { openExternal, readFileDataUrl, saveGatewayFile } })
+
+    await expect(
+      downloadGatewayMediaFile('/home/alex/.config/Hermes/composer-images/preview-shot_47a88d.png')
+    ).resolves.toEqual({
+      path: '/home/alex/.config/Hermes/composer-images/preview-shot_47a88d.png',
+      saved: true
+    })
+
+    expect(saveGatewayFile).not.toHaveBeenCalled()
+  })
+
+  it('still uses the gateway when the path is not on this disk', async () => {
+    const readFileDataUrl = vi.fn(async () => {
+      throw new Error('ENOENT')
+    })
+
+    vi.stubGlobal('window', { hermesDesktop: { readFileDataUrl, saveGatewayFile } })
+
+    await expect(downloadGatewayMediaFile('/srv/app/report.md')).resolves.toEqual({
+      path: '/Users/me/Downloads/report.md',
+      saved: true
+    })
+
+    expect(saveGatewayFile).toHaveBeenCalled()
+  })
+})
+
+describe('gatewayMediaDataUrlLocalFallback', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    $connection.set(null)
+  })
+
+  it('prefers the gateway when the file lives there', async () => {
+    const api = vi.fn(async () => ({ dataUrl: 'data:image/png;base64,cmVtb3Rl' }))
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl } })
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(gatewayMediaDataUrlLocalFallback('/srv/app/a.png')).resolves.toBe('data:image/png;base64,cmVtb3Rl')
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('falls back to this machine for shell-produced screenshots', async () => {
+    const api = vi.fn(async () => {
+      throw new Error('404 not found')
+    })
+
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl } })
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(
+      gatewayMediaDataUrlLocalFallback('/home/alex/.config/Hermes/composer-images/preview-shot_47a88d.png')
+    ).resolves.toBe('data:image/png;base64,bG9jYWw=')
+
+    expect(readFileDataUrl).toHaveBeenCalledWith(
+      '/home/alex/.config/Hermes/composer-images/preview-shot_47a88d.png'
+    )
+  })
+
+  it('reports both hosts when the file exists on neither', async () => {
+    const api = vi.fn(async () => {
+      throw new Error('404 not found')
+    })
+
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl: vi.fn(async () => '') } })
+    $connection.set({ mode: 'remote' } as never)
+
+    await expect(gatewayMediaDataUrlLocalFallback('/nowhere/a.png')).rejects.toThrow(
+      'not found on the gateway or this machine'
     )
   })
 })

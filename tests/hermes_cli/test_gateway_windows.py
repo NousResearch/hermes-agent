@@ -340,6 +340,109 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def _mock_startup_dir(monkeypatch, tmp_path, *, task_name="Hermes_Gateway_alice"):
+    """Point Startup-folder helpers at a temp dir; skip the Windows host guard."""
+    startup_dir = tmp_path / "Startup"
+    startup_dir.mkdir()
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup_dir)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: task_name)
+    return startup_dir
+
+
+def test_install_scheduled_task_removes_startup_shim(monkeypatch, tmp_path, capsys):
+    """A later elevated install must drop the UAC-fallback shim (#99638)."""
+    startup_dir = _mock_startup_dir(monkeypatch, tmp_path)
+    shim = startup_dir / "Hermes_Gateway_alice.vbs"
+    legacy = startup_dir / "Hermes_Gateway_alice.cmd"
+    other = startup_dir / "Hermes_Gateway_bob.vbs"
+    shim.write_text("' leftover shim", encoding="utf-8")
+    legacy.write_text("rem leftover", encoding="utf-8")
+    other.write_text("' other profile", encoding="utf-8")
+    script_path = tmp_path / "gateway-service" / "Hermes_Gateway_alice.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_write_task_script", lambda: script_path)
+    monkeypatch.setattr(
+        gateway_windows,
+        "_install_scheduled_task",
+        lambda task_name, path: (True, f"Created Scheduled Task {task_name!r}"),
+    )
+    monkeypatch.setattr(gateway_windows, "_is_running_as_admin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: None)
+
+    gateway_windows.install(force=True, start_now=False, start_on_login=True)
+
+    assert not shim.exists()
+    assert not legacy.exists()
+    assert other.exists()
+    out = capsys.readouterr().out
+    assert "Created Scheduled Task 'Hermes_Gateway_alice'" in out
+    assert "Removed leftover Windows login item" in out
+    assert str(shim) in out
+    assert "Removed leftover legacy Windows login item" in out
+
+
+def test_status_reports_leftover_startup_shim_alongside_scheduled_task(
+    monkeypatch, tmp_path, capsys
+):
+    """Status must list both autostart paths when a leftover shim remains."""
+    startup_dir = _mock_startup_dir(monkeypatch, tmp_path)
+    shim = startup_dir / "Hermes_Gateway_alice.vbs"
+    shim.write_text("' leftover shim", encoding="utf-8")
+
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows, "query_task_status", lambda: {"status": "Ready"}
+    )
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert "Scheduled Task registered: Hermes_Gateway_alice" in out
+    assert "Leftover Windows login item still installed" in out
+    assert str(shim) in out
+    assert "Gateway service not installed" not in out
+
+
+def test_status_reports_startup_shim_when_scheduled_task_is_absent(
+    monkeypatch, tmp_path, capsys
+):
+    """Startup-only installs still surface as the active login item."""
+    startup_dir = _mock_startup_dir(monkeypatch, tmp_path)
+    shim = startup_dir / "Hermes_Gateway_alice.vbs"
+    shim.write_text("' fallback shim", encoding="utf-8")
+
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert "Windows login item installed" in out
+    assert str(shim) in out
+    assert "Leftover" not in out
+    assert "Scheduled Task registered" not in out
+
+
+def test_status_omits_startup_shim_when_only_scheduled_task_is_present(
+    monkeypatch, tmp_path, capsys
+):
+    """A clean Scheduled Task install must not invent a leftover shim line."""
+    _mock_startup_dir(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+    monkeypatch.setattr(
+        gateway_windows, "query_task_status", lambda: {"status": "Ready"}
+    )
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+
+    gateway_windows.status()
+    out = capsys.readouterr().out
+    assert "Scheduled Task registered: Hermes_Gateway_alice" in out
+    assert "Windows login item" not in out
+    assert "Leftover" not in out
+
+
 
 
 

@@ -15,9 +15,12 @@ Design notes
 * We write a shared ``gateway.cmd`` wrapper plus a console-less ``gateway.vbs``
   launcher. Scheduled Task and Startup-folder persistence both route through
   VBS/wscript; immediate manual starts route through direct ``subprocess`` spawn.
-* Status = merge of "is the schtasks entry registered?" + "is the startup
-  login item present?" + "is there a gateway process running?" so the status
-  command keeps working regardless of which install path was taken.
+* Status lists every persistence mechanism that is actually present: the
+  schtasks entry, the Startup-folder shim, and any live gateway PID. When
+  both autostart paths exist, both are printed; status must not hide a
+  leftover shim behind a registered Scheduled Task.
+* A successful Scheduled Task install removes any leftover Startup-folder
+  shim for the same profile so both mechanisms do not fire at logon.
 * Quoting is tricky: schtasks parses ``/TR`` itself and cmd.exe parses the
   generated ``gateway.cmd``. Those are DIFFERENT parsers. We keep two
   separate quote helpers (same pattern OpenClaw uses) and never cross them.
@@ -360,6 +363,40 @@ def get_startup_entry_path() -> Path:
 def _legacy_startup_entry_path() -> Path:
     _assert_windows()
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
+
+
+def _startup_shim_targets() -> tuple[tuple[Path, str], ...]:
+    """Current and legacy Startup-folder launchers for this profile."""
+    return (
+        (get_startup_entry_path(), "Windows login item"),
+        (_legacy_startup_entry_path(), "legacy Windows login item"),
+    )
+
+
+def _present_startup_entries() -> list[tuple[Path, str]]:
+    """Startup-folder shims that currently exist for this profile."""
+    return [(path, label) for path, label in _startup_shim_targets() if path.exists()]
+
+
+def _remove_startup_shims() -> list[tuple[Path, str]]:
+    """Unlink Startup-folder fallbacks for this profile.
+
+    A later elevated ``hermes gateway install`` must not leave a previously
+    written UAC-fallback shim in place; both would fire at logon (#99638).
+    Missing files are ignored. Other unlink errors are reported and skipped
+    so a leftover file cannot abort a successful Scheduled Task install.
+    """
+    removed: list[tuple[Path, str]] = []
+    for path, label in _startup_shim_targets():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"⚠ Could not remove {label}: {path} ({exc})")
+            continue
+        removed.append((path, label))
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -1121,6 +1158,8 @@ def install(
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
         print("ℹ Gateway auto-start installed for Windows login.")
+        for path, label in _remove_startup_shims():
+            print(f"✓ Removed leftover {label}: {path}")
         if start_now:
             running_pids = _gateway_pids()
             if running_pids:
@@ -1455,8 +1494,6 @@ def uninstall() -> None:
     task_name = get_task_name()
     script_path = get_task_script_path()
     vbs_script_path = script_path.with_suffix(".vbs")
-    startup_entry = get_startup_entry_path()
-    legacy_startup_entry = _legacy_startup_entry_path()
 
     scheduled_task_removed = False
     if is_task_registered():
@@ -1481,9 +1518,10 @@ def uninstall() -> None:
         else:
             print(f"⚠ schtasks /Delete returned code {code}: {detail}")
 
+    for path, label in _remove_startup_shims():
+        print(f"✓ Removed {label}: {path}")
+
     for path, label in [
-        (startup_entry, "Windows login item"),
-        (legacy_startup_entry, "legacy Windows login item"),
         (script_path, "Task script"),
         (vbs_script_path, "Task launcher"),
     ]:
@@ -1507,7 +1545,7 @@ def is_task_registered() -> bool:
 
 
 def is_startup_entry_installed() -> bool:
-    return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
+    return bool(_present_startup_entries())
 
 
 def is_installed() -> bool:
@@ -1685,7 +1723,7 @@ def status(deep: bool = False) -> None:
     _print_start_attestation_warning()
     task_name = get_task_name()
     task_installed = is_task_registered()
-    startup_installed = is_startup_entry_installed()
+    startup_entries = _present_startup_entries()
     pids = _gateway_pids()
 
     if task_installed:
@@ -1695,12 +1733,12 @@ def status(deep: bool = False) -> None:
             for key in ("status", "last run time", "last run result"):
                 if key in info:
                     print(f"  {key.title()}: {info[key]}")
-    elif startup_installed:
-        entry = get_startup_entry_path()
-        if not entry.exists():
-            entry = _legacy_startup_entry_path()
-        print(f"✓ Windows login item installed: {entry}")
-    else:
+    for path, label in startup_entries:
+        if task_installed:
+            print(f"⚠ Leftover {label} still installed: {path}")
+        else:
+            print(f"✓ {label} installed: {path}")
+    if not task_installed and not startup_entries:
         print("✗ Gateway service not installed")
 
     if pids:
@@ -1717,7 +1755,7 @@ def status(deep: bool = False) -> None:
         # is lying when the high-level summary disagrees with reality.
         _print_deep_probes()
 
-    if not task_installed and not startup_installed and not pids:
+    if not task_installed and not startup_entries and not pids:
         print()
         print("To install:")
         print("  hermes gateway install")

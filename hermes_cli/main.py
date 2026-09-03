@@ -1882,7 +1882,9 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
+def _create_titled_session(
+    title: str, *, cwd: Optional[str] = None
+) -> Optional[str]:
     """Create a fresh session with the given title; return its session id.
 
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic
@@ -1905,7 +1907,7 @@ def _create_titled_session(title: str) -> Optional[str]:
         new_session_id = f"{timestamp_str}_{short_uuid}"
 
         db = SessionDB()
-        db.create_session(new_session_id, source="cli")
+        db.create_session(new_session_id, source="cli", cwd=cwd)
         db.set_session_title(new_session_id, title)
         return new_session_id
     except Exception:
@@ -1948,7 +1950,7 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # programmatic-caller primitive ("send to this named thread,
                 # making it if needed"); without it a background/quiet send to
                 # a not-yet-existing named session silently no-ops (#86794).
-                new_sid = _create_titled_session(continue_val)
+                new_sid = _create_titled_session(continue_val, cwd=os.getcwd())
                 if new_sid:
                     args.resume = new_sid
                 else:

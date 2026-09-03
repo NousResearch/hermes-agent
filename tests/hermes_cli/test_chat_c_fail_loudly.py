@@ -133,9 +133,11 @@ class TestChatCFailLoudlyOnStderr:
         assert any("No session found matching 'Bot Chat'" in l for l in stderr_lines)
         assert not stderr_lines[0].startswith("Use 'hermes sessions list'")
 
-    def test_create_if_missing_sets_resume(self, isolated_home, monkeypatch):
+    def test_create_if_missing_sets_resume(self, isolated_home, monkeypatch, tmp_path):
         """--create-if-missing resolves to a new session id on args.resume."""
         import hermes_cli.main as main_mod
+
+        monkeypatch.chdir(tmp_path)
 
         args = type(
             "Args",
@@ -155,5 +157,8 @@ class TestChatCFailLoudlyOnStderr:
         db = SessionDB()
         try:
             assert db.get_session_title(args.resume) == "Bot Chat"
+            from pathlib import Path
+
+            assert Path(db.get_session(args.resume)["cwd"]).resolve() == tmp_path.resolve()
         finally:
             db.close()

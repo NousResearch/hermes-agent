@@ -460,7 +460,11 @@ class CLICommandsMixin:
             /export <profile>             — export a named profile
             /export [profile] -o <path>   — choose the output path
         """
-        from hermes_cli.profiles import export_profile, get_active_profile_name
+        from hermes_cli.profiles import (
+            export_profile,
+            get_active_profile_name,
+            get_profile_export_path,
+        )
 
         parts = command.split()[1:]
         output = None
@@ -473,14 +477,14 @@ class CLICommandsMixin:
             parts = parts[:idx] + parts[idx + 2:]
 
         name = parts[0] if parts else (get_active_profile_name() or "default")
-        if not output:
-            output = f"{name}.tar.gz"
 
         try:
+            if not output:
+                output = str(get_profile_export_path(name))
             result = export_profile(name, output)
             print(f"  ✓ Exported '{name}' to {result}")
             print("  Share it: the other user runs /import or `hermes profile import <archive>`.")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"  Error: {e}")
 
     def _handle_import_command(self, command: str):
@@ -1982,7 +1986,13 @@ class CLICommandsMixin:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    status = job.get("last_status") or "?"
+                    # delivery_failed: the agent ran fine but the output never
+                    # reached the target — name the delivery reason, which
+                    # lives in last_delivery_error (last_error is None).
+                    if status == "delivery_failed" and job.get("last_delivery_error"):
+                        status = f"delivery_failed: {job['last_delivery_error']}"
+                    print(f"  Last run: {job['last_run_at']} ({status})")
                 print()
             return
 
@@ -3009,6 +3019,7 @@ class CLICommandsMixin:
                 review_memory=True,
                 review_skills=review_skills,
                 focus=focus or None,
+                explicit=True,
             )
         except Exception as exc:
             _cprint(f"  /refine failed to start: {exc}")
@@ -3978,9 +3989,9 @@ class CLICommandsMixin:
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
-            status = "fast" if self.service_tier == "priority" else "normal"
+            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         arg_tokens = parts[1].strip().lower().split()
@@ -3998,9 +4009,13 @@ class CLICommandsMixin:
             self.service_tier = None
             saved_value = "normal"
             label = "NORMAL"
+        elif arg in {"auto", "cold"}:
+            self.service_tier = arg
+            saved_value = arg
+            label = arg.upper()
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config

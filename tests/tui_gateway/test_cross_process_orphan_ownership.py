@@ -270,6 +270,84 @@ def test_automatic_cleanup_preserves_corrupt_registry_without_overwrite(
     assert state_path.read_text(encoding="utf-8") == corrupt
 
 
+def test_own_live_lease_ids_reports_live_owners_and_skips_the_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Lease:
+        def __init__(self, lease_id: str) -> None:
+            self.lease_id = lease_id
+
+    first = _Lease("first")
+    second = _Lease("second")
+    monkeypatch.setattr(
+        server,
+        "_sessions",
+        {
+            "one": {"active_session_lease": first},
+            "two": {"active_session_lease": second},
+            "three": {"active_session_lease": None},
+        },
+    )
+
+    assert server._own_live_lease_ids() == {"first", "second"}
+    assert server._own_live_lease_ids(exclude=first) == {"second"}
+
+
+def test_automatic_cleanup_reclaims_own_orphan_lease_not_treated_as_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_home = tmp_path / "profile-home"
+    session_id = "own-orphan-session"
+    owner_lease, message = server._claim_active_session_slot(
+        session_id,
+        live_session_id="vanished-runtime",
+        surface="desktop",
+        profile_home=profile_home,
+    )
+    assert owner_lease is not None and message is None
+    # The owner vanished minutes ago; a lease written seconds ago is still
+    # inside the self-orphan grace window and must be left alone.
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions._SELF_ORPHAN_GRACE_SECONDS", 0.0
+    )
+    ended: list[tuple[str, str]] = []
+
+    class _FakeDB:
+        def get_session(self, target: str) -> dict[str, str]:
+            return {"id": target, "source": "desktop"}
+
+        def end_session(self, target: str, reason: str) -> None:
+            ended.append((target, reason))
+
+    @contextlib.contextmanager
+    def _profile_db(_session: dict):
+        yield _FakeDB()
+
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(server, "_session_db", _profile_db)
+    monkeypatch.setattr(
+        server, "_notify_session_boundary", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
+    )
+    session = {
+        "active_session_lease": None,
+        "agent": None,
+        "history": [],
+        "history_lock": threading.Lock(),
+        "profile_home": str(profile_home),
+        "session_key": session_id,
+        "slash_worker": None,
+        "source": "desktop",
+    }
+
+    server._finalize_session(session, end_reason="ws_orphan_reap")
+
+    assert ended == [(session_id, "ws_orphan_reap")]
+    assert active_session_registry_snapshot(registry_home=profile_home) == []
+
+
 def test_liveness_guard_serializes_cross_process_acquire(tmp_path: Path) -> None:
     home = tmp_path / "guard-home"
     waiting_file = tmp_path / "child-waiting"

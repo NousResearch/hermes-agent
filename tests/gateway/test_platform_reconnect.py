@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -161,6 +162,175 @@ class TestStartupFailureQueuing:
 class TestPlatformReconnectWatcher:
     """Test the _platform_reconnect_watcher background task."""
 
+    def test_primary_profile_home_uses_exact_launch_home(self, monkeypatch, tmp_path):
+        runner = _make_runner()
+        runner._primary_profile_name = "primary"
+        exact_home = tmp_path / "custom-primary-home"
+        runner._primary_profile_home = exact_home
+        discovered_home = tmp_path / "profiles" / "primary"
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda _name: discovered_home
+        )
+
+        assert runner._profile_home_for_name("primary") == exact_home
+
+    def test_primary_adapter_config_preserves_shared_route_handlers(
+        self, monkeypatch
+    ):
+        runner = _make_runner()
+        runner.config.multiplex_profiles = True
+        message_handler = object()
+        busy_handler = object()
+        profile_busy_handler = object()
+        authorization_check = object()
+        runner._primary_message_handler = MagicMock(return_value=message_handler)
+        runner._handle_active_session_busy_message = busy_handler
+        runner._make_profile_busy_session_handler = MagicMock(
+            return_value=profile_busy_handler
+        )
+        runner._make_default_profile_busy_session_handler = MagicMock(
+            return_value=profile_busy_handler
+        )
+        runner._make_adapter_auth_check = MagicMock(return_value=authorization_check)
+        runner._bind_profile_adapter_bot_policy = MagicMock()
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "primary"
+        )
+        adapter = StubAdapter()
+
+        runner._configure_primary_adapter(adapter, Platform.TELEGRAM)
+
+        assert adapter._gateway_profile_name == "primary"
+        assert adapter._message_handler is message_handler
+        assert adapter._busy_session_handler is profile_busy_handler
+        runner._make_default_profile_busy_session_handler.assert_called_once_with()
+        runner._make_profile_busy_session_handler.assert_not_called()
+        runner._make_adapter_auth_check.assert_called_once_with(Platform.TELEGRAM)
+
+    @pytest.mark.asyncio
+    async def test_profile_busy_handler_uses_off_loop_runtime_scope(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.session import SessionSource
+
+        runner = _make_runner()
+        profile_home = tmp_path / "primary"
+        runner._profile_homes = {"primary": profile_home}
+        runner._session_key_for_source = lambda _source: "profile-session"
+        runner._handle_active_session_busy_message = AsyncMock(return_value="handled")
+        scoped_homes = []
+
+        @asynccontextmanager
+        async def fake_async_scope(home):
+            scoped_homes.append(home)
+            yield
+
+        def fail_sync_scope(*_args, **_kwargs):
+            raise AssertionError("busy handling must not hydrate secrets on the event loop")
+
+        monkeypatch.setattr("gateway.run._async_profile_runtime_scope", fake_async_scope)
+        monkeypatch.setattr("gateway.run._profile_runtime_scope", fail_sync_scope)
+        event = SimpleNamespace(
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C-test",
+                chat_type="group",
+            )
+        )
+
+        result = await runner._make_profile_busy_session_handler("primary")(
+            event, "stale-session"
+        )
+
+        assert result == "handled"
+        assert scoped_homes == [profile_home]
+        runner._handle_active_session_busy_message.assert_awaited_once_with(
+            event, "profile-session"
+        )
+
+    @pytest.mark.asyncio
+    async def test_primary_busy_handler_uses_routed_home_and_transport_auth_home(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.session import SessionSource
+
+        runner = _make_runner()
+        runner.config.multiplex_profiles = True
+        transport_home = tmp_path / "primary"
+        routed_home = tmp_path / "research"
+        monkeypatch.setattr("gateway.run.get_hermes_home", lambda: transport_home)
+        runner._resolve_profile_home_for_source = MagicMock(return_value=routed_home)
+        runner._session_key_for_source = MagicMock(return_value="research-session")
+        runner._handle_active_session_busy_message = AsyncMock(return_value="handled")
+        scoped_homes = []
+
+        @asynccontextmanager
+        async def fake_async_scope(home):
+            scoped_homes.append(home)
+            yield
+
+        monkeypatch.setattr("gateway.run._async_profile_runtime_scope", fake_async_scope)
+        event = SimpleNamespace(
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C-test",
+                chat_type="group",
+                profile="research",
+            )
+        )
+
+        result = await runner._make_default_profile_busy_session_handler()(
+            event, "stale-session"
+        )
+
+        assert result == "handled"
+        assert event.source._authorization_profile_home == transport_home
+        assert scoped_homes == [routed_home]
+        runner._handle_active_session_busy_message.assert_awaited_once_with(
+            event, "research-session"
+        )
+
+    @pytest.mark.asyncio
+    async def test_primary_platform_event_uses_routed_off_loop_scope(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.session import SessionSource
+
+        runner = _make_runner()
+        runner.config.multiplex_profiles = True
+        transport_home = tmp_path / "primary"
+        routed_home = tmp_path / "research"
+        runner._primary_profile_home = transport_home
+        runner._resolve_profile_home_for_source = MagicMock(return_value=routed_home)
+        runner._handle_gateway_platform_event = AsyncMock(return_value="handled")
+        scoped_homes = []
+
+        @asynccontextmanager
+        async def fake_async_scope(home):
+            scoped_homes.append(home)
+            yield
+
+        def fail_sync_scope(*_args, **_kwargs):
+            raise AssertionError("platform events must not hydrate on the event loop")
+
+        monkeypatch.setattr("gateway.run._async_profile_runtime_scope", fake_async_scope)
+        monkeypatch.setattr("gateway.run._profile_runtime_scope", fail_sync_scope)
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C-test",
+            chat_type="group",
+            profile="research",
+        )
+
+        result = await runner._make_default_profile_platform_event_handler()(
+            {}, source
+        )
+
+        assert result == "handled"
+        assert source._authorization_profile_home == transport_home
+        assert scoped_homes == [routed_home]
+        runner._handle_gateway_platform_event.assert_awaited_once_with({}, source)
+
 
     @pytest.mark.asyncio
     async def test_primary_multiplex_reconnect_restores_profile_scoped_handlers(
@@ -185,6 +355,7 @@ class TestPlatformReconnectWatcher:
             "hermes_cli.profiles.get_profile_dir",
             lambda _profile_name: profile_home,
         )
+        monkeypatch.setattr("gateway.run.get_hermes_home", lambda: profile_home)
 
         async def capture_message(event):
             scope = current_secret_scope()
@@ -233,13 +404,16 @@ class TestPlatformReconnectWatcher:
                 chat_type="dm",
             )
         )
-        assert await succeed_adapter._message_handler(event) == ("primary", "primary")
+        # The shared primary handler keeps the default profile unstamped so
+        # current route resolution can still select a different runtime.
+        assert await succeed_adapter._message_handler(event) == (None, "primary")
         event.source.profile = None
         busy_result = await succeed_adapter._busy_session_handler(event, "session-key")
-        assert busy_result[0] == "primary"
+        # The busy handler mirrors shared-primary message routing: a truly
+        # unrouted source stays unstamped, while transport-owned secrets remain
+        # scoped to the primary profile.
+        assert busy_result[0] is None
         assert busy_result[1] == "primary"
-        # The current busy handler re-derives the profile-scoped session key
-        # from the stamped source rather than trusting the caller's key.
         assert busy_result[2] == "agent:primary:telegram:dm:C-test"
 
     @pytest.mark.asyncio
@@ -279,6 +453,55 @@ class TestPlatformReconnectWatcher:
             f"watcher must pass is_reconnect=True; got {succeed_adapter.connect_calls!r}"
         )
         assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("degraded", [False, True])
+    async def test_reconnect_stamp_honours_adapter_send_path_degraded(self, degraded):
+        """connect() returning True is not proof the receive path is live:
+        Telegram's degraded reconnect returns True while its own ladder
+        retries. The watcher's status stamp must publish what the adapter
+        reports, not an unconditional "connected" (#101391)."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        class _DegradableAdapter(StubAdapter):
+            @property
+            def send_path_degraded(self) -> bool:
+                return degraded
+
+        adapter = _DegradableAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        stamps = [
+            c.kwargs for c in runner._update_platform_runtime_status.call_args_list
+            if c.args and c.args[0] == Platform.TELEGRAM.value
+        ]
+        assert stamps, "watcher never stamped telegram"
+        final = stamps[-1]
+        assert final["platform_state"] == ("retrying" if degraded else "connected")
+        assert final["error_message"] == (adapter.DEGRADED_STATUS_MESSAGE if degraded else None)
+        assert final["retrying_since"] is None
 
     @pytest.mark.asyncio
     async def test_cold_connect_defaults_to_is_reconnect_false(self):

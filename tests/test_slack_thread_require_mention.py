@@ -246,6 +246,28 @@ def test_pending_clarify_text_reply_bypasses_strict_mention_gate():
     )
 
 
+def test_authorization_optional_thread_id_preserves_legacy_callback():
+    adapter = make_adapter()
+    calls = []
+
+    def legacy_check(user_id, chat_type, chat_id):
+        calls.append((user_id, chat_type, chat_id))
+        return True
+
+    adapter.set_authorization_check(legacy_check)
+
+    assert (
+        adapter._is_sender_authorized(
+            "U123",
+            "group",
+            "C123",
+            thread_id="100.000",
+        )
+        is True
+    )
+    assert calls == [("U123", "group", "C123")]
+
+
 def test_pending_clarify_bypass_respects_registered_authorization_check():
     adapter = make_adapter(
         {
@@ -273,8 +295,8 @@ def test_pending_clarify_bypass_respects_registered_authorization_check():
     def remember_channel(*_):
         unauthorized_side_effects.append("channel-watermark")
 
-    def deny(user_id, chat_type, chat_id):
-        authorization_calls.append((user_id, chat_type, chat_id))
+    def deny(user_id, chat_type, chat_id, **kwargs):
+        authorization_calls.append((user_id, chat_type, chat_id, kwargs))
         return False
 
     adapter.handle_message = capture
@@ -299,7 +321,9 @@ def test_pending_clarify_bypass_respects_registered_authorization_check():
     finally:
         clarify_gateway.clear_session(session_key)
 
-    assert authorization_calls == [("U123", "group", "C123")]
+    assert authorization_calls == [
+        ("U123", "group", "C123", {"thread_id": "100.000"})
+    ]
     assert unauthorized_side_effects == []
     assert handled == []
 

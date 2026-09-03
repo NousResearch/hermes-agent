@@ -95,6 +95,76 @@ def test_natural_thread_channels_yaml_bridge_is_profile_local(monkeypatch):
     }
 
 
+def test_natural_thread_channels_do_not_borrow_process_env_in_multiplex(monkeypatch):
+    monkeypatch.setenv("SLACK_NATURAL_THREAD_CHANNELS", "C_PRIMARY")
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+
+    secondary = SlackAdapter(PlatformConfig(extra={}))
+
+    assert secondary._slack_natural_thread_channels() == set()
+
+
+def test_scoped_multiplex_yaml_bridge_does_not_mutate_process_env(monkeypatch):
+    from agent.secret_scope import (
+        is_multiplex_active,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    monkeypatch.delenv("SLACK_NATURAL_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("SLACK_ALLOW_BOTS", raising=False)
+    previous_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    token = set_secret_scope({})
+    try:
+        extra = _apply_yaml_config(
+            {},
+            {
+                "natural_thread_channels": ["C_SECONDARY"],
+                "allow_bots": "mentions",
+            },
+        )
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(previous_multiplex)
+
+    assert "SLACK_NATURAL_THREAD_CHANNELS" not in os.environ
+    assert "SLACK_ALLOW_BOTS" not in os.environ
+    assert extra == {
+        "natural_thread_channels": ["C_SECONDARY"],
+        "allow_bots": "mentions",
+    }
+
+
+def test_scoped_multiplex_allowed_channels_stay_adapter_local(monkeypatch):
+    from agent.secret_scope import (
+        is_multiplex_active,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    monkeypatch.setenv("SLACK_ALLOWED_CHANNELS", "C_PRIMARY")
+    previous_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    token = set_secret_scope({})
+    try:
+        extra = _apply_yaml_config({}, {"allowed_channels": ["C_SECONDARY"]})
+        configured = SlackAdapter(PlatformConfig(extra=extra or {}))
+        unconfigured = SlackAdapter(PlatformConfig(extra={}))
+        configured_channels = configured._slack_allowed_channels()
+        unconfigured_channels = unconfigured._slack_allowed_channels()
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(previous_multiplex)
+
+    assert os.environ["SLACK_ALLOWED_CHANNELS"] == "C_PRIMARY"
+    assert extra == {"allowed_channels": ["C_SECONDARY"]}
+    assert configured_channels == {"C_SECONDARY"}
+    assert unconfigured_channels == set()
+
+
 def test_natural_channel_requires_top_level_mention_then_allows_plain_thread_reply():
     adapter = make_adapter()
     handled = []

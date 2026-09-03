@@ -235,6 +235,63 @@ class TestSlackClarifyChoiceAction:
     def setup_method(self):
         _clear_clarify_state()
 
+    @pytest.mark.asyncio
+    async def test_authorization_receives_originating_thread_id(self):
+        adapter = _make_adapter()
+        calls = []
+
+        def deny(user_id, chat_type, chat_id, **kwargs):
+            calls.append((user_id, chat_type, chat_id, kwargs))
+            return False
+
+        adapter.set_authorization_check(deny)
+        body = {
+            "team": {"id": "T1"},
+            "message": {"ts": "2.2", "thread_ts": "1.1", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "mallory", "id": "U_BAD"},
+        }
+
+        await adapter._handle_clarify_action(
+            AsyncMock(),
+            body,
+            {"action_id": "hermes_clarify_choice", "value": "cidAuth|0"},
+        )
+
+        assert calls == [("U_BAD", "group", "C1", {"thread_id": "1.1"})]
+
+    @pytest.mark.asyncio
+    async def test_authorization_callback_error_fails_closed_before_resolution(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter, auth_fn=lambda _source: True)
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("authorization unavailable")
+
+        adapter.set_authorization_check(explode)
+        cm.register("cid-error", "sk-error", "Pick", ["a", "b"])
+        adapter._clarify_resolved["2.3"] = False
+        body = {
+            "team": {"id": "T1"},
+            "message": {"ts": "2.3", "thread_ts": "1.1", "blocks": []},
+            "channel": {"id": "C1"},
+            "user": {"name": "mallory", "id": "U_BAD"},
+        }
+
+        await adapter._handle_clarify_action(
+            AsyncMock(),
+            body,
+            {"action_id": "hermes_clarify_choice", "value": "cid-error|0"},
+        )
+
+        with cm._lock:
+            entry = cm._entries["cid-error"]
+        assert entry.event.is_set() is False
+        assert entry.response is None
+        assert adapter._clarify_resolved["2.3"] is False
+
 
     @pytest.mark.asyncio
     async def test_unauthorized_click_ignored(self):

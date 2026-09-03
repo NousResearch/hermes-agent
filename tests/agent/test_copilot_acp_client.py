@@ -317,3 +317,107 @@ def test_probe_skipped_for_custom_args_without_acp():
     with _patch("agent.copilot_acp_client.subprocess.run") as run_mock:
         assert _acp_supported("mycli", ["--custom-transport"]) is True
     run_mock.assert_not_called()
+
+
+# --- session/set_model: honor the picker-selected model ----------------------
+#
+# `copilot --acp` validates but IGNORES the `--model` spawn flag; the ACP
+# session runs the CLI's own default unless the client issues the ACP-native
+# `session/set_model` call. Without it, picking gpt-5.6-terra in Hermes
+# visibly answers as the CLI's default model.
+
+
+# --- session model selection -------------------------------------------------
+
+
+def _session_with_config_options():
+    return {
+        "sessionId": "s1",
+        "configOptions": [
+            {
+                "id": "model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "auto",
+                "options": [
+                    {"value": "auto", "name": "Auto"},
+                    {"value": "gpt-5.6-terra", "name": "GPT-5.6 Terra"},
+                    {
+                        "value": "claude-fable-5",
+                        "name": "Claude Fable 5",
+                        "_meta": {"copilotEnablement": "disabled"},
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def test_model_selection_prefers_stable_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "gpt-5.6-terra"
+    ) == (
+        "session/set_config_option",
+        {"sessionId": "s1", "configId": "model", "value": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_rejects_disabled_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "claude-fable-5"
+    ) is None
+
+
+def test_model_selection_rejects_unknown_config_option():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "not-served-here"
+    ) is None
+
+
+def test_model_selection_falls_back_to_legacy_extension():
+    from agent.copilot_acp_client import _model_selection_request
+
+    legacy_session = {
+        "sessionId": "s1",
+        "models": {
+            "availableModels": [
+                {"modelId": "auto"},
+                {"modelId": "gpt-5.6-terra"},
+            ]
+        },
+    }
+    assert _model_selection_request(legacy_session, "gpt-5.6-terra") == (
+        "session/set_model",
+        {"sessionId": "s1", "modelId": "gpt-5.6-terra"},
+    )
+
+
+def test_model_selection_skips_provider_virtual_slug():
+    from agent.copilot_acp_client import _model_selection_request
+
+    assert _model_selection_request(
+        _session_with_config_options(), "copilot-acp"
+    ) is None
+
+
+def test_run_prompt_receives_picker_model():
+    # _create_chat_completion must forward `model` into _run_prompt — the
+    # original wiring dropped it, reducing the selection to prompt text.
+    client = CopilotACPClient(acp_cwd="/tmp")
+    seen = {}
+
+    def fake_run_prompt(prompt_text, *, timeout_seconds, model=None):
+        seen["model"] = model
+        return "ok", ""
+
+    with patch.object(CopilotACPClient, "_run_prompt", side_effect=fake_run_prompt):
+        client._create_chat_completion(
+            model="gpt-5.6-terra", messages=[{"role": "user", "content": "hi"}]
+        )
+    assert seen["model"] == "gpt-5.6-terra"

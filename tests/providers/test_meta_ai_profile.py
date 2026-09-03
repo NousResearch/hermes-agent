@@ -8,6 +8,7 @@ bundled, so profiles resolve through normal registry discovery.
 import pytest
 
 from providers import get_provider_profile
+from providers.base import ProviderProfile
 
 
 def _profile():
@@ -29,8 +30,25 @@ class TestMetaAIProfile:
         assert p.supports_vision is True
         assert p.default_aux_model == "muse-spark-1.2-contributor"
         assert p.default_max_tokens == 16384
-        assert "muse-spark-1.2-contributor" in p.fallback_models
-        assert "muse-spark-1.2" in p.fallback_models
+        assert p.fallback_models == ("muse-spark-1.2",)
+
+    def test_live_catalog_filters_non_chat_models(self, monkeypatch):
+        p = _profile()
+        seen = []
+
+        def fake_fetch_models(_self, **_kwargs):
+            seen.append(True)
+            return [
+                "muse-voice-transcribe-1.0",
+                "muse-spark-latest",
+                "muse-image-1.0-eval",
+                "muse-nova-test",
+            ]
+
+        monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch_models)
+
+        assert p.fetch_models() == ["muse-spark-latest", "muse-nova-test"]
+        assert seen
 
     @pytest.mark.parametrize("alias", ["meta", "muse", "muse-spark", "model-api", "msl"])
     def test_aliases_resolve(self, alias):

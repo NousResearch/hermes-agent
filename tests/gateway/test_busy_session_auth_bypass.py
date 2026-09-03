@@ -101,6 +101,25 @@ class TestBusySessionAuthBypass:
     """#17775: Unauthorized users in shared threads must be blocked in the busy path."""
 
     @pytest.mark.asyncio
+    async def test_busy_path_uses_transport_aware_authorization(self):
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._is_user_authorized = MagicMock(
+            side_effect=AssertionError("must use transport-aware authorization")
+        )
+        runner._is_user_authorized_for_source = MagicMock(return_value=False)
+        event = _make_event(user_id="intruder")
+
+        result = await GatewayRunner._handle_active_session_busy_message(
+            runner, event, "active-session"
+        )
+
+        assert result is True
+        runner._is_user_authorized_for_source.assert_called_once_with(event.source)
+        runner._is_user_authorized.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_unauthorized_user_dropped_in_busy_path(self):
         """An unauthorized user's message must be silently dropped, not queued."""
         from gateway.run import GatewayRunner

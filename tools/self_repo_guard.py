@@ -42,12 +42,12 @@ _KNOWN_GIT_BUILTINS = frozenset({
     "branch",
     "bundle",
     "cat-file",
-    # `reset`/`stash`/`clean`/`restore` reach this set only in their SAFE
-    # forms — _mutates_worktree classifies the dangerous forms first (see
-    # _inspect_git) — so listing them here only prevents a pointless
-    # `git config --get alias.<sub>` subprocess for `stash list`,
-    # `reset --soft`, `clean -n`, `restore --staged`, which agent dev
-    # sessions run constantly inside the source repo.
+    # `reset`/`stash`/`clean`/`restore`/`am`/`apply` reach this set only in
+    # their SAFE forms — _mutates_worktree classifies the dangerous forms
+    # first (see _inspect_git) — so listing them here only prevents a
+    # pointless `git config --get alias.<sub>` subprocess for `stash list`,
+    # `reset --soft`, `clean -n`, `restore --staged`, `apply --check`, which
+    # agent dev sessions run constantly inside the source repo.
     "clean",
     "clone",
     "commit",
@@ -533,6 +533,19 @@ def _mutates_worktree(subcommand: str, args: list[str]) -> bool:
             for arg in args
         )
         return worktree or not staged
+    if subcommand == "apply":
+        # `--check`/`--stat`/`--numstat`/`--summary` only report what the
+        # patch WOULD do; every other form writes the patched content to
+        # disk exactly like the worktree mutations above.
+        inspect_only = frozenset({"--check", "--stat", "--numstat", "--summary"})
+        return not any(arg in inspect_only for arg in args)
+    if subcommand == "am":
+        # `git am` applies-and-commits a patch series (mutating the tree AND
+        # HEAD) for every form except pure session inspection; --abort and
+        # --skip both reset tracked files to recover from a stopped am, so
+        # they stay classified as mutating too.
+        inspect_only = frozenset({"--show-current-patch"})
+        return not any(arg in inspect_only for arg in args)
     return subcommand in _WORKTREE_MUTATIONS
 
 

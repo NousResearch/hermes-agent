@@ -3225,6 +3225,10 @@ def init_agent(
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
+        # MoA's facade holds the reference relay and per-turn accounting; a
+        # cross-provider fallback replaces ``agent.client``, so the snapshot is
+        # the only surviving reference. ``None`` for every other provider.
+        "moa_client": agent.client if agent.provider == "moa" else None,
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),

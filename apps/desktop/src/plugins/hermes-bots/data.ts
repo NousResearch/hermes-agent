@@ -598,6 +598,7 @@ export async function migrateBotMeta(storage: BotMetaStorage | undefined = getPl
  *  protocol into the system prompt itself (hermes-agent bot_mode_probe).
  *  Gates every SOUL.md protocol append below. */
 export let serverInjectsProtocol = false
+let foregroundRosterRequest: symbol | undefined
 
 /** A `profiles.list` answer as Bot Mode consumes it, plus the fields the
  *  multi-source merge and the roster query stamp on afterwards. Not in
@@ -636,7 +637,7 @@ export function useRoster() {
 
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
-    queryFn: () => fetchRoster(activeConnectionId),
+    queryFn: () => fetchRoster(activeConnectionId, { publishProtocol: true }),
     refetchInterval: 5000,
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
@@ -644,7 +645,24 @@ export function useRoster() {
   })
 }
 
-async function fetchRoster(activeConnectionId?: null | string): Promise<RosterSnapshot> {
+async function fetchRoster(
+  activeConnectionId?: null | string,
+  { publishProtocol = true }: { publishProtocol?: boolean } = {}
+): Promise<RosterSnapshot> {
+  const connectionId = String(activeConnectionId || host.activeConnectionId?.() || 'local')
+  const profile = String(host.state.profile?.get?.() || 'default').trim() || 'default'
+  const requestOwner = publishProtocol ? Symbol(connectionId) : undefined
+
+  if (requestOwner) {
+    foregroundRosterRequest = requestOwner
+  }
+
+  const ownerIsCurrent = () =>
+    connectionId === String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local') &&
+    profile === (String(host.state.profile?.get?.() || 'default').trim() || 'default')
+
+  const requestMayPublish = () => requestOwner !== undefined && foregroundRosterRequest === requestOwner && ownerIsCurrent()
+
   // Stamp the ISSUE time on the snapshot: mergeServerMeta compares it
   // against each bot's last local meta write, and a fetch issued before
   // a write can only carry pre-write ui_meta. (Issue time is the
@@ -660,27 +678,59 @@ async function fetchRoster(activeConnectionId?: null | string): Promise<RosterSn
   // keep its configured friendly identity after activation (#89131).
   // Best-effort and feature-detected — a failed read keeps the last
   // good index rather than dropping identities mid-session.
+  let activeRoute: ProfileRoute | undefined
+
   if (typeof host.profileRoutes === 'function') {
-    const epoch = beginAliasRouteIndex()
+    const epoch = publishProtocol ? beginAliasRouteIndex() : undefined
 
     try {
-      indexAliasRoutes(await host.profileRoutes(), epoch)
+      const routes = await host.profileRoutes()
+
+      activeRoute = routes.find(
+        route => String(route.connectionId) === connectionId && String(route.profile) === profile
+      )
+
+      if (epoch !== undefined && requestMayPublish()) {
+        indexAliasRoutes(routes, epoch)
+      }
     } catch {
       /* keep the previous alias index */
     }
   }
 
-  // Owner routing is ambient in the SDK now (post-#92731): requestForBot
-  // resolves the active owner itself, no captured route needed here.
-  const activeBot = {
-    name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
+  // Dispatch through the source captured before profileRoutes awaited. A
+  // connection switch must not retarget this request through ambient state.
+  const activeBot: RosterRow = {
+    connectionId,
+    name: profile,
+    route: activeRoute || {
+      connectionId,
+      mode: connectionId === 'local' ? 'local' : 'remote',
+      profile,
+      targetProfile: profile
+    },
+    sourceScoped: true
   }
 
-  const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
+  // Older hosts only have the ambient request door. It is safe while the
+  // captured owner is still active; after a switch, fail closed instead of
+  // letting that ambient door silently retarget the request.
+  if (typeof host.requestProfile !== 'function' && !ownerIsCurrent()) {
+    throw new Error(`Cannot route profiles.list for ${connectionId}::${profile}`)
+  }
+
+  const local = await requestForBot<RosterSnapshot>(
+    typeof host.requestProfile === 'function' ? activeBot : { name: profile },
+    'profiles.list',
+    {}
+  )
+
   // Newer backends inject the teammate-messaging protocol into every
   // session's system prompt (agent.bot_mode_protocol) — SOUL.md must not
   // carry a second copy. Older gateways lack the flag: keep appending.
-  serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+  if (requestMayPublish()) {
+    serverInjectsProtocol = Boolean(local?.bot_mode_protocol)
+  }
 
   // Multi-source desktops (hermes-agent #86875) also expose the union
   // agent roster across every registered connection. Merge agents from
@@ -756,34 +806,54 @@ export function cachedUnionRoster(): RosterSnapshot | null {
 
 /** Cold cache (no Bots pane mounted yet): fetch once and seed the query cache
  * so the completion popup answers on the next keystroke. */
-const warmingRosterFor = new Set<string>()
+const warmingRosterFor = new Map<string, symbol>()
 
 export function warmUnionRoster() {
-  if (typeof queryClient === 'undefined' || !queryClient || typeof queryClient.setQueryData !== 'function') {
+  if (
+    typeof queryClient === 'undefined' ||
+    !queryClient ||
+    typeof queryClient.getQueryData !== 'function' ||
+    typeof queryClient.setQueryData !== 'function'
+  ) {
     return
   }
 
   const connectionId = String(host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local')
+  const cacheKey = [...ROSTER_KEY, connectionId]
+  const cacheBefore = queryClient.getQueryData<RosterSnapshot>(cacheKey)
 
   if (warmingRosterFor.has(connectionId)) {
     return
   }
 
-  warmingRosterFor.add(connectionId)
+  const owner = Symbol(connectionId)
+
+  warmingRosterFor.set(connectionId, owner)
 
   // A hung fetch must not block warms for this connection forever.
-  const evict = setTimeout(() => warmingRosterFor.delete(connectionId), 15000)
+  const evict = setTimeout(() => {
+    if (warmingRosterFor.get(connectionId) === owner) {
+      warmingRosterFor.delete(connectionId)
+    }
+  }, 15000)
 
-  void fetchRoster(connectionId)
+  void fetchRoster(connectionId, { publishProtocol: false })
     .then(roster => {
-      if (Array.isArray(roster?.profiles)) {
-        queryClient.setQueryData([...ROSTER_KEY, connectionId], roster)
+      if (
+        warmingRosterFor.get(connectionId) === owner &&
+        queryClient.getQueryData<RosterSnapshot>(cacheKey) === cacheBefore &&
+        Array.isArray(roster?.profiles)
+      ) {
+        queryClient.setQueryData(cacheKey, roster)
       }
     })
     .catch(() => undefined)
     .finally(() => {
       clearTimeout(evict)
-      warmingRosterFor.delete(connectionId)
+
+      if (warmingRosterFor.get(connectionId) === owner) {
+        warmingRosterFor.delete(connectionId)
+      }
     })
 }
 

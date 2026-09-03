@@ -130,7 +130,9 @@ export default {
           const profiles = Array.isArray(roster?.profiles) ? roster.profiles : []
 
           if (!profiles.length) {
-            warmUnionRoster()
+            if (!roster) {
+              warmUnionRoster()
+            }
 
             return []
           }

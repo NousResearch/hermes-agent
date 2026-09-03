@@ -83,6 +83,10 @@ agent:
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+    # Non-goal workers need the quiet one-shot CLI branch too: it is where
+    # provider quota/rate-limit failures become the dispatcher's EX_TEMPFAIL
+    # sentinel instead of an rc=0 protocol violation.
+    assert captured["cmd"][-1] == "-Q"
     assert "--toolsets" in captured["cmd"]
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):

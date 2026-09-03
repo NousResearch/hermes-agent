@@ -2025,6 +2025,27 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     # fast override here, per request, only while the window is open.
     _request_overrides = effective_request_overrides(agent)
 
+    # When the current turn already has a native image attached (an
+    # image_url content part on any message), suppress the vision_analyze
+    # tool so the model reads the pixels directly rather than calling a
+    # redundant — and on local/custom endpoints often unconfigured — tool.
+    has_native_images = False
+    for msg in api_messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    has_native_images = True
+                    break
+        if has_native_images:
+            break
+
+    if has_native_images and tools_for_api:
+        tools_for_api = [
+            t for t in tools_for_api
+            if not (isinstance(t, dict) and t.get("function", {}).get("name") == "vision_analyze")
+        ]
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

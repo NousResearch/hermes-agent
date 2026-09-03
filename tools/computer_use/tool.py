@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -191,6 +192,66 @@ _backend_permission_modes: Dict[str, str] = {}
 _approval_lock = threading.Lock()
 _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
+
+# ---------------------------------------------------------------------------
+# Screenshot dedup — stop resending unchanged frames
+# ---------------------------------------------------------------------------
+# Port of openclaw/openclaw#129924. A tight capture→act→capture loop on a
+# static screen sends the exact same ~1200px image on every step, crowding
+# context with identical pixels. Every delivered screenshot is hashed
+# (sha256 over mime + base64 payload); when the next capture of the SAME
+# target (app/window) in the SAME session produces identical bytes, the tool
+# returns its normal text metadata (element index included) plus an explicit
+# "screen unchanged" note and omits the image block. The result is
+# append-only — no prior transcript message is rewritten — so prompt-cache
+# prefixes are untouched.
+#
+# Hermes has no per-frame context-epoch tracking (openclaw gates dedup on
+# theirs), so staleness is bounded differently: at most
+# _SCREENSHOT_DEDUP_MAX_STREAK consecutive captures may be omitted before
+# full pixels are re-delivered. Compaction evicts image payloads only at
+# compression time (keeps the newest _MAX_KEEP_TOOL_IMAGES image-bearing
+# tool results), so an image delivered within the last couple of captures
+# is still in context for the "unchanged" note to reference.
+_screenshot_dedup_lock = threading.Lock()
+# session_id -> {"digest": str, "target": (app, window_title), "streak": int}
+_last_screenshot_state: Dict[str, Dict[str, Any]] = {}
+_SCREENSHOT_DEDUP_MAX_STREAK = 2
+
+
+def _screenshot_dedup_check(session_id: str, digest: str,
+                            target: Tuple[str, str]) -> bool:
+    """Return True when this capture should be delivered WITHOUT its image.
+
+    True only when the previous delivered/omitted frame for this session had
+    identical bytes for the same target AND the consecutive-omission streak
+    has not exhausted _SCREENSHOT_DEDUP_MAX_STREAK. On a miss (different
+    pixels, different target, streak exhausted, or first capture) the stored
+    state is reset to this digest with a fresh streak so the image goes out.
+    """
+    with _screenshot_dedup_lock:
+        state = _last_screenshot_state.get(session_id)
+        if (
+            state is not None
+            and state.get("digest") == digest
+            and state.get("target") == target
+            and int(state.get("streak", 0)) < _SCREENSHOT_DEDUP_MAX_STREAK
+        ):
+            state["streak"] = int(state.get("streak", 0)) + 1
+            return True
+        _last_screenshot_state[session_id] = {
+            "digest": digest, "target": target, "streak": 0,
+        }
+        return False
+
+
+def _reset_screenshot_dedup(session_id: Optional[str] = None) -> None:
+    """Forget dedup state (all sessions, or one). Test/reset helper."""
+    with _screenshot_dedup_lock:
+        if session_id is None:
+            _last_screenshot_state.clear()
+        else:
+            _last_screenshot_state.pop(session_id, None)
 
 
 # Sessions already told that their approval bypass widened the driver mode.
@@ -446,6 +507,7 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend and per-session state."""
     _shutdown_backend_atexit()
     _AUX_VISION_ROUTE_CACHE.clear()
+    _reset_screenshot_dedup()
 
 
 class _NoopBackend(ComputerUseBackend):  # pragma: no cover
@@ -582,7 +644,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            return _dispatch(backend, action, args)
+            return _dispatch(backend, action, args, session_id=session_id)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -664,7 +726,8 @@ def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     return action + fg
 
 
-def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
+def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any],
+              session_id: Optional[str] = None) -> Any:
     capture_after = bool(args.get("capture_after"))
 
     if action == "capture":
@@ -678,7 +741,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
                 "window_id": args.get("window_id"),
             })
         cap = backend.capture(**capture_kwargs)
-        return _capture_response(cap)
+        return _capture_response(cap, session_id=session_id)
 
     if action == "wait":
         seconds = float(args.get("seconds", 1.0))
@@ -698,7 +761,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     # delivery_mode / bring_to_front thread through every input action so the
     # model can escalate background → foreground per cua-driver's ladder.
@@ -750,7 +813,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             modifiers=args.get("modifiers"),
             delivery_mode=delivery_mode, bring_to_front=bring_to_front,
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     if action == "drag":
         has_elements = args.get("from_element") is not None and args.get("to_element") is not None
@@ -768,7 +831,7 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             modifiers=args.get("modifiers"),
             delivery_mode=delivery_mode, bring_to_front=bring_to_front,
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     if action == "scroll":
         coord = args.get("coordinate") or (None, None)
@@ -781,24 +844,24 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             modifiers=args.get("modifiers"),
             delivery_mode=delivery_mode, bring_to_front=bring_to_front,
         )
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     if action == "type":
         res = backend.type_text(args.get("text", ""),
                                 delivery_mode=delivery_mode, bring_to_front=bring_to_front)
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     if action == "key":
         res = backend.key(args.get("keys", ""),
                           delivery_mode=delivery_mode, bring_to_front=bring_to_front)
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     if action == "set_value":
         value = args.get("value")
         if value is None:
             return json.dumps({"error": "set_value requires `value`"})
         res = backend.set_value(value=str(value), element=args.get("element"))
-        return _maybe_follow_capture(backend, res, capture_after)
+        return _maybe_follow_capture(backend, res, capture_after, session_id=session_id)
 
     # Do NOT alias unknown actions (we never repair bad model output), but
     # name the nearest real action: live QA showed a model emitting
@@ -967,7 +1030,8 @@ def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
     return None
 
 
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
+                      session_id: Optional[str] = None) -> Any:
     total_elements = len(cap.elements)
     visible_elements = cap.elements[:max_elements]
     truncated_elements = max(0, total_elements - len(visible_elements))
@@ -1043,6 +1107,54 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax" and not image_too_small:
+        # Screenshot dedup (port of openclaw/openclaw#129924): identical
+        # pixels for the same target in the same session don't need to be
+        # re-sent — return the full text metadata (element index included)
+        # with an explicit "unchanged" note instead of the image block.
+        # Runs before aux-vision routing too: an unchanged frame doesn't
+        # need another auxiliary vision call either.
+        if session_id is not None:
+            _digest = hashlib.sha256(
+                (str(cap.image_mime_type or "") + ":").encode("utf-8")
+                + cap.png_b64.encode("ascii", "ignore")
+            ).hexdigest()
+            _target = (str(cap.app or ""), str(cap.window_title or ""))
+            if _screenshot_dedup_check(session_id, _digest, _target):
+                dedup_lines = list(summary_lines)
+                dedup_lines.append(
+                    "  (screen unchanged since the previous screenshot — "
+                    "image omitted to save context; the prior screenshot "
+                    "still shows the current state. Element indices below "
+                    "are fresh and remain the preferred way to act.)"
+                )
+                if truncated_elements:
+                    dedup_lines.append(
+                        f"  (response truncated to {len(visible_elements)} of "
+                        f"{total_elements} elements; the full tree is in "
+                        "elements_file — read_file/search_files it, or pass "
+                        "app= to narrow scope)"
+                    )
+                payload = {
+                    "mode": cap.mode,
+                    "width": response_width,
+                    "height": response_height,
+                    "app": cap.app,
+                    "window_title": cap.window_title,
+                    "elements": [_element_to_dict(e) for e in visible_elements],
+                    "total_elements": total_elements,
+                    "summary": "\n".join(dedup_lines),
+                    "screen_unchanged": True,
+                }
+                if truncated_elements:
+                    payload["truncated_elements"] = truncated_elements
+                if elements_file:
+                    payload["elements_file"] = elements_file
+                if screenshot_path:
+                    payload["screenshot_path"] = screenshot_path
+                if bounds_scale:
+                    payload["bounds_scale"] = bounds_scale
+                return json.dumps(payload)
+
         # Decide whether to hand the screenshot to the auxiliary.vision
         # pipeline (text-only result) or keep the multimodal envelope (main
         # model handles vision natively). Issue #24015: previously the
@@ -1384,6 +1496,7 @@ def _route_capture_through_aux_vision(
 
 def _maybe_follow_capture(
     backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+    session_id: Optional[str] = None,
 ) -> Any:
     if not do_capture:
         return _text_response(res)
@@ -1408,7 +1521,7 @@ def _maybe_follow_capture(
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
     # Combine action summary with the capture.
-    resp = _capture_response(cap)
+    resp = _capture_response(cap, session_id=session_id)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the complete evidence/verdict contract visible when an image is
         # attached; otherwise capture_after would accidentally discard the

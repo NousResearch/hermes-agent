@@ -1144,6 +1144,9 @@ export interface Translations {
       toolsetsWipeConfirm: string
       keepAwakeTitle: string
       keepAwakeDesc: string
+      keepAwakeOff: string
+      keepAwakeWhileWorking: string
+      keepAwakeAlways: string
       disableF12Title: string
       disableF12Desc: string
       alwaysExternalLinksTitle: string

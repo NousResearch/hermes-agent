@@ -387,7 +387,7 @@ declare global {
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
       setTranslucency?: (payload: TranslucencyState) => void
-      setKeepAwake?: (on: boolean) => void
+      setKeepAwake?: (mode: 'always' | 'off' | 'while-working') => void
       minimizeToTray?: {
         get: () => Promise<{ enabled: boolean; available: boolean }>
         set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>

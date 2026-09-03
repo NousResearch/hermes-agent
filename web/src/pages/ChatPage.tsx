@@ -808,6 +808,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return false;
     });
 
+    // Touch drag-to-scroll (mobile Safari/Chrome). xterm.js has no built-in
+    // touch scrolling — without this, a single-finger drag on the terminal
+    // does nothing (or triggers the page's own scroll/pull-to-refresh,
+    // since `.hermes-chat-xterm-host` sets `touch-action: none` below).
+    // Mirrors the wheel handler above: convert vertical drag distance into
+    // `term.scrollLines()` calls sized to one terminal row, carrying any
+    // sub-row remainder to the next move event so slow drags still scroll.
+    let touchLastY: number | null = null;
+    let touchAccumulatedPx = 0;
+    const touchRowHeightPx = () =>
+      (host.clientHeight || 1) / Math.max(1, term.rows);
+
+    const handleTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      touchLastY = ev.touches[0].clientY;
+      touchAccumulatedPx = 0;
+    };
+    const handleTouchMove = (ev: TouchEvent) => {
+      if (touchLastY === null || ev.touches.length !== 1) return;
+      const y = ev.touches[0].clientY;
+      // Finger moving up (y decreasing) should scroll the transcript down,
+      // matching native scroll direction.
+      touchAccumulatedPx += touchLastY - y;
+      touchLastY = y;
+      const rowPx = touchRowHeightPx();
+      const lines = Math.trunc(touchAccumulatedPx / rowPx);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        touchAccumulatedPx -= lines * rowPx;
+      }
+      // Prevent the page/host from also scrolling or triggering
+      // pull-to-refresh while we're driving the terminal buffer directly.
+      ev.preventDefault();
+    };
+    const handleTouchEnd = () => {
+      touchLastY = null;
+      touchAccumulatedPx = 0;
+    };
+    host.addEventListener("touchstart", handleTouchStart, { passive: true });
+    host.addEventListener("touchmove", handleTouchMove, { passive: false });
+    host.addEventListener("touchend", handleTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -1512,6 +1555,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      host.removeEventListener("touchstart", handleTouchStart);
+      host.removeEventListener("touchmove", handleTouchMove);
+      host.removeEventListener("touchend", handleTouchEnd);
+      host.removeEventListener("touchcancel", handleTouchEnd);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       keyboardInsetSyncRef.current = null;

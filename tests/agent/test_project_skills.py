@@ -172,6 +172,110 @@ class TestNonInteractiveInheritance:
         assert su.find_project_root(start=project_env["repo"]) == project_env["repo"].resolve()
 
 
+def _make_linked_worktree(tmp_path, name="wt"):
+    """A repo + linked worktree laid out exactly as `git worktree add` does,
+    built by hand so the tests need no git binary (same idiom as
+    tests/tools/test_self_repo_guard.py)."""
+    repo = tmp_path / "repo"
+    admin = repo / ".git" / "worktrees" / name
+    admin.mkdir(parents=True)
+    (admin / "commondir").write_text("../..\n")
+    wt = tmp_path / name
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {admin}\n")
+    return repo, wt
+
+
+class TestLinkedWorktreeCommonRoot:
+    def test_resolves_for_linked_worktree(self, tmp_path):
+        repo, wt = _make_linked_worktree(tmp_path)
+        assert su._linked_worktree_common_root(wt) == repo.resolve()
+
+    def test_relative_gitdir_pointer_resolves(self, tmp_path):
+        # `git worktree add` writes absolute pointers, but relative ones are
+        # legal (git supports them after moves); resolve against the worktree.
+        repo, wt = _make_linked_worktree(tmp_path)
+        (wt / ".git").write_text("gitdir: ../repo/.git/worktrees/wt\n")
+        assert su._linked_worktree_common_root(wt) == repo.resolve()
+
+    def test_none_for_normal_clone(self, tmp_path):
+        repo = tmp_path / "clone"
+        (repo / ".git").mkdir(parents=True)
+        assert su._linked_worktree_common_root(repo) is None
+
+    def test_none_for_submodule_pointer(self, tmp_path):
+        # A submodule's .git file points into the superproject's modules dir,
+        # which has NO commondir file — must not fold.
+        superproject = tmp_path / "super"
+        moddir = superproject / ".git" / "modules" / "sub"
+        moddir.mkdir(parents=True)
+        sub = superproject / "sub"
+        sub.mkdir()
+        (sub / ".git").write_text(f"gitdir: {moddir}\n")
+        assert su._linked_worktree_common_root(sub) is None
+
+    def test_none_on_malformed_pointer(self, tmp_path):
+        wt = tmp_path / "broken"
+        wt.mkdir()
+        (wt / ".git").write_text("this is not a gitdir pointer\n")
+        assert su._linked_worktree_common_root(wt) is None
+
+    def test_none_on_dangling_pointer(self, tmp_path):
+        wt = tmp_path / "dangling"
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: {tmp_path / 'gone' / 'worktrees' / 'x'}\n")
+        assert su._linked_worktree_common_root(wt) is None
+
+
+class TestWorktreeTrustFolding:
+    """A linked worktree of a trusted repo is the same repo: project skills
+    load from the worktree's own tree without a per-worktree trust entry."""
+
+    @pytest.fixture
+    def wt_env(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        (home / "skills").mkdir(parents=True)
+        config = home / "config.yaml"
+        config.write_text("skills:\n  external_dirs: []\n")
+        repo, wt = _make_linked_worktree(tmp_path)
+        ag = wt / ".agents" / "skills" / "wt-skill"
+        ag.mkdir(parents=True)
+        (ag / "SKILL.md").write_text(
+            "---\nname: wt-skill\ndescription: from worktree\n---\nbody\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.chdir(wt)
+        su._external_dirs_cache_clear()
+        yield {"home": home, "config": config, "repo": repo, "wt": wt}
+        su._external_dirs_cache_clear()
+
+    def test_worktree_of_trusted_repo_loads_project_skills(self, wt_env):
+        _trust(wt_env["config"], wt_env["repo"])  # trust the MAIN checkout only
+        dirs = su.get_project_skills_dirs()
+        assert dirs == [(wt_env["wt"] / ".agents" / "skills").resolve()]
+
+    def test_worktree_of_untrusted_repo_loads_nothing(self, wt_env):
+        assert su.get_project_skills_dirs() == []
+
+    def test_directly_trusted_worktree_still_works(self, wt_env):
+        # Existing per-worktree trust entries keep working (no regression).
+        _trust(wt_env["config"], wt_env["wt"])
+        assert su.get_project_skills_dirs() != []
+
+    def test_untrusted_notice_suppressed_for_trusted_common_root(self, wt_env):
+        _trust(wt_env["config"], wt_env["repo"])
+        assert su.get_untrusted_project_skills_root() is None
+
+    def test_untrusted_notice_names_common_root(self, wt_env):
+        # Nothing trusted: the `hermes skills trust` hint should name the
+        # repo, so one trust decision covers every worktree.
+        notice = su.get_untrusted_project_skills_root()
+        assert notice is not None
+        root, count = notice
+        assert root == wt_env["repo"].resolve()
+        assert count == 1
+
+
 class TestQuarantine:
     """#48974: dangerous scan verdict excludes a project skill everywhere."""
 

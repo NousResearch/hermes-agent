@@ -780,6 +780,42 @@ def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     return None
 
 
+def _linked_worktree_common_root(root: Path) -> Optional[Path]:
+    """Main-checkout root when *root* is a linked git worktree, else None.
+
+    Pure file parsing, no git subprocess (same shape as
+    ``hermes_cli/build_info.py``): a linked worktree's ``.git`` is a FILE
+    holding a ``gitdir:`` pointer into ``<repo>/.git/worktrees/<name>``, and
+    that admin dir's ``commondir`` names the shared ``.git`` dir — whose
+    parent is the one true repo root. A submodule's gitdir has no
+    ``commondir``, so it resolves None. Anything malformed fails closed
+    (None → no trust folding).
+    """
+    dotgit = root / ".git"
+    try:
+        if not dotgit.is_file():
+            return None
+        pointer = dotgit.read_text(encoding="utf-8", errors="replace").strip()
+        if not pointer.startswith("gitdir:"):
+            return None
+        gitdir = Path(pointer[len("gitdir:"):].strip())
+        if not gitdir.is_absolute():
+            gitdir = root / gitdir
+        commondir_file = gitdir / "commondir"
+        if not commondir_file.is_file():
+            return None
+        common = Path(commondir_file.read_text(encoding="utf-8", errors="replace").strip())
+        if not common.is_absolute():
+            common = gitdir / common
+        common = common.resolve()
+        if common.name != ".git":
+            return None
+        parent = common.parent
+        return None if parent == Path(root).resolve() else parent
+    except OSError:
+        return None
+
+
 def _project_trusted_dirs_from_config() -> Set[Path]:
     """Resolved set of trusted project roots from ``skills.trusted_project_dirs``."""
     parsed = _load_raw_config()
@@ -811,6 +847,24 @@ def is_project_root_trusted(root: Path) -> bool:
         return Path(root).resolve() in _project_trusted_dirs_from_config()
     except OSError:
         return False
+
+
+def _effective_trust_root(root: Path) -> Optional[Path]:
+    """*root* when trusted directly; else its linked-worktree common root when
+    THAT is trusted; else None.
+
+    Trust is a REPO-level decision (see the quarantine note below), and a
+    linked worktree is the same repo — same remote, same commits, same skill
+    content provenance — so one ``hermes skills trust`` on the main checkout
+    covers every worktree. Content safety is unaffected: the scan-time
+    quarantine gate still scans each worktree's skill files independently.
+    """
+    if is_project_root_trusted(root):
+        return root
+    common = _linked_worktree_common_root(root)
+    if common is not None and is_project_root_trusted(common):
+        return common
+    return None
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:
@@ -846,7 +900,7 @@ def get_project_skills_dirs() -> List[Path]:
     root = find_project_root()
     if root is None:
         return []
-    if not is_project_root_trusted(root):
+    if _effective_trust_root(root) is None:
         return []
     return _candidate_project_skills_dirs(root)
 
@@ -863,7 +917,7 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
     if isinstance(skills_cfg, dict) and skills_cfg.get("project_discovery") is False:
         return None
     root = find_project_root()
-    if root is None or is_project_root_trusted(root):
+    if root is None or _effective_trust_root(root) is not None:
         return None
     count = 0
     for d in _candidate_project_skills_dirs(root):
@@ -873,7 +927,9 @@ def get_untrusted_project_skills_root() -> Optional[Tuple[Path, int]]:
             continue
     if count == 0:
         return None
-    return root, count
+    # Name the repo (common root) in the trust hint so one decision covers
+    # every worktree; the counted skills are still the ones THIS tree loads.
+    return (_linked_worktree_common_root(root) or root), count
 
 
 def get_scan_ordered_skills_dirs() -> List[Path]:

@@ -13419,6 +13419,7 @@ def _cmd_skills_trust(args):
     from agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
+        _linked_worktree_common_root,
         find_project_root,
         iter_skill_index_files,
     )
@@ -13439,6 +13440,13 @@ def _cmd_skills_trust(args):
                 "pass the project root path explicitly."
             )
             return
+
+    # Trust is repo-level: fold a linked worktree to its main checkout so one
+    # entry covers every worktree (and survives `git worktree remove`).
+    common = _linked_worktree_common_root(root)
+    if common is not None:
+        print(f"Linked worktree of {common} — using the repo root (covers all its worktrees).")
+        root = common
 
     config = load_config()
     skills_cfg = config.setdefault("skills", {})

@@ -204,6 +204,58 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/index/previewing-gpt-5-6-sol/",
         pricing_version="openai-gpt-5.6-2026-07",
     ),
+    # ── OpenAI GPT-5.4 / GPT-5.2 (snapshot 2026-08) ─────────────────────
+    # Numbers from the per-model docs pages (input / cached / output per
+    # 1M tokens). GPT-5.4/Pro 1.05M-context long-input surcharge (>272K
+    # prompts: 2x input / 1.5x output) is a serving-tier rule, not a table
+    # entry — not modeled here, same as 5.6 Fast mode.
+    # Sources: https://developers.openai.com/api/docs/models/gpt-5.4
+    #          https://developers.openai.com/api/docs/models/gpt-5.4-mini
+    (
+        "openai",
+        "gpt-5.4",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.25"),
+        source="official_docs_snapshot",
+        source_url="https://developers.openai.com/api/docs/models/gpt-5.4",
+        pricing_version="openai-pricing-2026-08",
+    ),
+    (
+        "openai",
+        "gpt-5.4-mini",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.75"),
+        output_cost_per_million=Decimal("4.50"),
+        cache_read_cost_per_million=Decimal("0.075"),
+        source="official_docs_snapshot",
+        source_url="https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        pricing_version="openai-pricing-2026-08",
+    ),
+    (
+        "openai",
+        "gpt-5.4-nano",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.20"),
+        output_cost_per_million=Decimal("1.25"),
+        cache_read_cost_per_million=Decimal("0.02"),
+        source="official_docs_snapshot",
+        source_url="https://developers.openai.com/api/docs/models/gpt-5.4-nano",
+        pricing_version="openai-pricing-2026-08",
+    ),
+    (
+        "openai",
+        "gpt-5.2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.75"),
+        output_cost_per_million=Decimal("14.00"),
+        cache_read_cost_per_million=Decimal("0.175"),
+        source="official_docs_snapshot",
+        source_url="https://developers.openai.com/api/docs/models/gpt-5.2",
+        pricing_version="openai-pricing-2026-08",
+    ),
+
     # ── Anthropic Claude 4.8 ─────────────────────────────────────────────
     # Same $5/$25 base pricing as 4.6/4.7.  Fast-mode variant is a separate
     # model ID with 2x premium (vs the 6x premium on older Opus generations).

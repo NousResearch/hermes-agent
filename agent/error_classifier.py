@@ -233,6 +233,15 @@ _OVERLOADED_PATTERNS = [
     "over capacity",
 ]
 
+# LiteLLM-proxy-style gateway phrases meaning "every deployment in the
+# requested model group is cooled down" — model-group-scoped, not
+# account-scoped. Distinct from generic rate-limit wording on purpose.
+_GATEWAY_MODEL_GROUP_COOLDOWN_PATTERNS = [
+    "no deployments available",
+    "no healthy deployments available",
+    "all deployments are cooling down",
+]
+
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
 _USAGE_LIMIT_PATTERNS = [
     "usage limit",
@@ -1391,6 +1400,24 @@ def _classify_by_status(
                 should_fallback=True,
                 error_context=ctx,
             )
+        # A self-hosted LLM gateway (LiteLLM proxy and similar) returns 429
+        # "No deployments available for selected model" when EVERY deployment
+        # in the requested model group is in the gateway's cooldown window.
+        # This is the same failure class as the OpenRouter upstream 429 above:
+        # the user's gateway key is healthy, the requested model group is
+        # benched gateway-side, and credential rotation is the wrong recovery
+        # (it can only exhaust the pool while the group stays benched). The
+        # correct recovery is an immediate fallback to a different model group.
+        # Match on the distinctive body phrase so generic "rate limit reached"
+        # 429s from the same gateway still take the normal rate-limit path.
+        if _is_gateway_model_group_cooldown(error_msg):
+            return result_fn(
+                FailoverReason.upstream_rate_limit,
+                retryable=True,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context={"upstream_provider": "gateway-model-group"},
+            )
         # Account/subscription usage exhaustion is a quota wall, not a
         # request-rate throttle. Anthropic returns this as 429, so the generic
         # branch below used to retry it and Desktop rendered a provider error
@@ -2245,6 +2272,22 @@ def _is_openrouter_upstream_error(body: Any, provider: str) -> bool:
     ):
         return True
     return False
+
+
+def _is_gateway_model_group_cooldown(error_msg: str) -> bool:
+    """Detect a gateway-side model-group cooldown (LiteLLM-proxy style).
+
+    LiteLLM (and similar self-hosted gateways) return 429 with
+    ``No deployments available for selected model, Try again in N seconds``
+    when every deployment in the requested model group is in the gateway's
+    cooldown window. The caller's API key is healthy — the *model group* is
+    benched gateway-side — so this is an upstream/gateway failure of the
+    same class as the OpenRouter aggregator 429, not an account rate limit.
+    """
+    if not error_msg:
+        return False
+    msg = error_msg.lower()
+    return any(p in msg for p in _GATEWAY_MODEL_GROUP_COOLDOWN_PATTERNS)
 
 
 def _extract_upstream_provider_name(body: Any) -> Optional[str]:

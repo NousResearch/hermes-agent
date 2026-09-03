@@ -1256,6 +1256,58 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.should_rotate_credential is True
 
 
+class TestGatewayModelGroupCooldown:
+    """Gateway-side model-group cooldown 429s (LiteLLM-proxy style).
+
+    LiteLLM returns 429 "No deployments available for selected model" when
+    every deployment in the requested model group is in the gateway's
+    cooldown window. The user's gateway key is healthy — the model group is
+    benched gateway-side — so the recovery is an immediate fallback to a
+    different model group, NOT credential rotation (which can only exhaust
+    the pool while the group stays benched).
+    """
+
+    def test_no_deployments_429_classified_as_upstream_rate_limit(self):
+        """Verbatim LiteLLM cooldown 429 → upstream_rate_limit, no rotation."""
+        msg = (
+            "HTTP 429: No deployments available for selected model, "
+            "Try again in 300 seconds. Passed model=glm-4.5-flash. "
+            "pre-call-checks=False, cooldown_list=['abc', 'def']"
+        )
+        e = MockAPIError(
+            msg,
+            status_code=429,
+            body={"error": {"message": msg, "code": 429}},
+        )
+        result = classify_api_error(e, provider="litellm", model="glm-4.5-flash")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+        assert result.should_fallback is True
+
+    def test_no_deployments_429_without_body_uses_exception_message(self):
+        """The signature is also caught when only str(error) carries it."""
+        e = MockAPIError(
+            "Error code: 429 - {'error': {'message': 'No deployments available "
+            "for selected model, Try again in 120 seconds', 'type': 'None'}}",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="litellm", model="glm-4.6v")
+        assert result.reason == FailoverReason.upstream_rate_limit
+        assert result.should_rotate_credential is False
+
+    def test_gateway_generic_rate_limit_still_rotates(self):
+        """A plain account-level 429 from the same gateway → rate_limit path."""
+        msg = "Rate limit exceeded: 200 requests per minute"
+        e = MockAPIError(
+            msg,
+            status_code=429,
+            body={"error": {"message": msg, "code": 429}},
+        )
+        result = classify_api_error(e, provider="litellm", model="glm-4.5-flash")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+
+
 
 
 

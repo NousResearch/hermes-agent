@@ -7721,6 +7721,14 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+# Budget for materializing a worktree. A dispatcher runs several workers at
+# once, so a checkout competes with sibling agents for the same disk: a
+# 100k-file monorepo measured 34s wall warm-cache while otherwise idle, and
+# `hermes -w` measured 113s under load versus 1.2s idle (#90602). Anything
+# tighter kills a create that is progressing normally and burns a retry.
+_WORKTREE_ADD_TIMEOUT = 300
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -7741,7 +7749,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         cmd,
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
-        timeout=60,
+        timeout=_WORKTREE_ADD_TIMEOUT,
         check=False,
     )
     if result.returncode != 0:

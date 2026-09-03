@@ -49,6 +49,10 @@ from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_en
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 30
+# Materializing a worktree is the one git call here that scales with repo
+# size and disk contention, so it gets its own budget (#90602 measured 113s
+# under load for a 10k-file checkout; a 100k-file monorepo takes 34s warm).
+_WORKTREE_ADD_TIMEOUT = 300
 _WORKTREES_DIRNAME = ".worktrees"
 _BRANCH_NAMESPACE = "hermes-subagent"
 
@@ -162,6 +166,7 @@ def create_subagent_worktree(
         result = _run_git(
             ["worktree", "add", str(wt_path), "-b", branch, "HEAD"],
             cwd=repo_root,
+            timeout=_WORKTREE_ADD_TIMEOUT,
         )
     except Exception as exc:
         logger.warning("subagent worktree: creation failed: %s", exc)

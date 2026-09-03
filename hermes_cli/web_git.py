@@ -22,6 +22,10 @@ from pathlib import Path
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
 
 _GIT_TIMEOUT = 30
+# Materializing a worktree scales with repo size and disk contention, unlike
+# the other git calls here, so it gets its own budget (#90602 measured 113s
+# under load for a 10k-file checkout; a 100k-file monorepo takes 34s warm).
+_WORKTREE_ADD_TIMEOUT = 300
 _GH_TIMEOUT = 30
 _MAX_BUFFER = 32 * 1024 * 1024
 _UNTRACKED_LINE_MAX_BYTES = 1024 * 1024
@@ -61,9 +65,9 @@ def _git_out(cwd: str, args: list[str]) -> str:
     return out if code == 0 else ""
 
 
-def _git_ok(cwd: str, args: list[str]) -> None:
+def _git_ok(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> None:
     """Run a git mutation, raising RuntimeError with stderr on failure."""
-    code, _, err = _git(cwd, args)
+    code, _, err = _git(cwd, args, timeout=timeout)
     if code != 0:
         raise RuntimeError(err.strip() or f"git {' '.join(args)} failed")
 
@@ -720,9 +724,9 @@ def worktree_add(cwd: str, options: dict) -> dict:
             # user did not fetch recently. On failure (offline, branch gone)
             # the last known ref is still there to branch from.
             _git(root, ["fetch", remote, existing])
-            _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested])
+            _git_ok(root, ["worktree", "add", "--track", "-b", existing, target, requested], timeout=_WORKTREE_ADD_TIMEOUT)
             return {"path": target, "branch": existing, "repoRoot": root}
-        _git_ok(root, ["worktree", "add", target, existing])
+        _git_ok(root, ["worktree", "add", target, existing], timeout=_WORKTREE_ADD_TIMEOUT)
         return {"path": target, "branch": existing, "repoRoot": root}
 
     slug = _slugify(options.get("name") or f"work-{os.urandom(4).hex()}")
@@ -744,10 +748,10 @@ def worktree_add(cwd: str, options: dict) -> dict:
             # checkout -b new` — so suppress it (parity with the Electron op).
             args.append("--no-track")
         args.append(base)
-    code, _, err = _git(root, args)
+    code, _, err = _git(root, args, timeout=_WORKTREE_ADD_TIMEOUT)
     if code != 0:
         if "already exists" in (err or "").lower():
-            _git_ok(root, ["worktree", "add", target, branch])
+            _git_ok(root, ["worktree", "add", target, branch], timeout=_WORKTREE_ADD_TIMEOUT)
         else:
             raise RuntimeError(err.strip() or "git worktree add failed")
     return {"path": target, "branch": branch, "repoRoot": root}

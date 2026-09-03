@@ -728,6 +728,26 @@ test('resolveRequestedPathForIpc expands ~ to the home directory', () => {
   )
 })
 
+test.skipIf(process.platform !== 'win32')(
+  'resolveRequestedPathForIpc round-trips the spaced Windows file URL emitted by MEDIA links',
+  () => {
+    const nativePath = 'C:\\Users\\ADMIN\\OneDrive\\Priv - Hermes Projects\\exports\\final report.pdf'
+    const rendererUrl = 'file:///C:/Users/ADMIN/OneDrive/Priv%20-%20Hermes%20Projects/exports/final%20report.pdf'
+
+    assert.equal(resolveRequestedPathForIpc(rendererUrl, { purpose: 'Open external file' }), nativePath)
+  }
+)
+
+test.skipIf(process.platform !== 'win32')(
+  'resolveRequestedPathForIpc round-trips a spaced UNC file URL emitted by MEDIA links',
+  () => {
+    assert.equal(
+      resolveRequestedPathForIpc('file://server/Shared%20Files/report.pdf', { purpose: 'Open external file' }),
+      '\\\\server\\Shared Files\\report.pdf'
+    )
+  }
+)
+
 test('resolveReadableFileForIpc validates existence type size and sensitivity', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-hardening-'))
 

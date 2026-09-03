@@ -1,7 +1,9 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection } from '@/store/session'
+import { renderMediaTags } from '@/lib/chat-messages'
+import { $previewTarget, closeRightRail } from '@/store/preview'
+import { $connection, $currentCwd } from '@/store/session'
 
 import { MarkdownImage, MarkdownTextContent } from './markdown-text'
 
@@ -77,5 +79,62 @@ describe('MarkdownImage media routing', () => {
 
     expect(container.querySelector('video')).toBeNull()
     expect(container.querySelector('audio')).toBeNull()
+  })
+})
+
+describe('MarkdownTextContent local files', () => {
+  const normalizePreviewTarget = vi.fn(async (target: string) => ({
+    kind: 'file' as const,
+    label: target.split(/[\\/]/).pop() || target,
+    language: 'markdown',
+    path: target,
+    previewKind: 'text' as const,
+    source: target,
+    url: `file://${target.split('/').map(encodeURIComponent).join('/')}`
+  }))
+
+  let originalDesktop: typeof window.hermesDesktop
+
+  beforeEach(() => {
+    normalizePreviewTarget.mockClear()
+    originalDesktop = window.hermesDesktop
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { normalizePreviewTarget }
+    })
+    $connection.set({ mode: 'local', profile: 'default' } as never)
+    $currentCwd.set('/Users/test/Documents/Hermes Projects/Monark-Inc/Bank-Charter')
+    closeRightRail()
+  })
+
+  afterEach(() => {
+    cleanup()
+    closeRightRail()
+    $connection.set(null)
+    $currentCwd.set('')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: originalDesktop
+    })
+  })
+
+  it('opens the complete unquoted Markdown MEDIA path in PreviewAttachment when it contains spaces', async () => {
+    const path =
+      '/Users/test/Documents/Hermes Projects/Monark-Inc/Bank-Charter/.hermes/plans/2026-09-03_204030-monark-i13-plus-time-thesis-deep-research.md'
+
+    render(<MarkdownTextContent isRunning={false} text={renderMediaTags(`MEDIA:${path}`)} />)
+
+    expect(await screen.findByText('2026-09-03_204030-monark-i13-plus-time-thesis-deep-research.md')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy()
+    const openPreview = screen.getByRole('button', { name: 'Open preview' })
+
+    expect(normalizePreviewTarget).not.toHaveBeenCalled()
+    fireEvent.click(openPreview)
+    await waitFor(() => expect($previewTarget.get()?.path).toBe(path))
+    expect(normalizePreviewTarget).toHaveBeenCalledOnce()
+    expect(normalizePreviewTarget).toHaveBeenCalledWith(
+      path,
+      '/Users/test/Documents/Hermes Projects/Monark-Inc/Bank-Charter'
+    )
   })
 })

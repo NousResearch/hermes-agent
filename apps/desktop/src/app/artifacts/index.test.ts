@@ -251,6 +251,101 @@ ${payload}
     ])
   })
 
+  it.each([
+    ['MEDIA: /tmp/foo.txt bar.pdf', '/tmp/foo.txt bar.pdf'],
+    ['MEDIA: "/tmp/foo.txt bar.pdf"', '/tmp/foo.txt bar.pdf'],
+    ['MEDIA: C:\\Shared Files\\report.pdf', 'C:\\Shared Files\\report.pdf'],
+    ['MEDIA: \\\\server\\Shared Files\\report.pdf', '\\\\server\\Shared Files\\report.pdf']
+  ])('does not index a contained partial path beside a recognized MEDIA path: %s', (content, path) => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      { content, role: 'assistant', timestamp: 1_781_774_000 }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([path])
+  })
+
+  it('keeps a shorter path when it is mentioned separately from the MEDIA value', () => {
+    const mediaPath = '/tmp/foo.txt bar.pdf'
+    const separatePath = '/tmp/foo.txt'
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: `MEDIA: ${mediaPath}\nAlso keep ${separatePath}`,
+        role: 'assistant',
+        timestamp: 1_781_774_000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([mediaPath, separatePath])
+  })
+
+  it('keeps both prose-prefixed consecutive MEDIA paths intact', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Files: MEDIA:/tmp/a one.png MEDIA:/tmp/b two.png',
+        role: 'assistant',
+        timestamp: 1_781_774_000
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual(['/tmp/a one.png', '/tmp/b two.png'])
+  })
+
+  it('keeps a standalone streamed-style MEDIA path with spaces as one artifact', () => {
+    const path = '/Users/zora/Documents/ZORA/hermes/operations/B17-B Value Extraction and Retirement Receipt.md'
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: `ready\nMEDIA:${path}`,
+        role: 'assistant',
+        timestamp: 1_781_774_004
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([path])
+  })
+
+  it('indexes the complete Hermes Projects markdown path once without a truncated prefix', () => {
+    const path =
+      '/Users/test/Documents/Hermes Projects/Monark-Inc/Bank-Charter/.hermes/plans/2026-09-03_204030-monark-i13-plus-time-thesis-deep-research.md'
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: `MEDIA:${path}`,
+        role: 'assistant',
+        timestamp: 1_781_774_004
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([path])
+  })
+
+  it('keeps prose outside a quote around a delivered MEDIA directive', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: '"MEDIA:/tmp/generated/final report.pdf" is ready',
+        role: 'assistant',
+        timestamp: 1_781_774_005
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual(['/tmp/generated/final report.pdf'])
+  })
+
+  it('keeps spaces in a standalone unquoted MEDIA file URL', () => {
+    const path = 'file:///C:/Program Files/final report.pdf'
+
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: `MEDIA:${path}`,
+        role: 'assistant',
+        timestamp: 1_781_774_006
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toEqual([path])
+  })
+
   it('normalizes epoch-second message timestamps', () => {
     const artifacts = collectArtifactsForSession(makeSession(), [
       {

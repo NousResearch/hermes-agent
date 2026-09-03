@@ -41,6 +41,13 @@ export function previewTargetFromMarkdownHref(href?: string): string | null {
 }
 
 export function previewName(target: string): string {
+  // WHATWG treats a native Windows drive path as a URL with a one-letter
+  // protocol. Resolve drive and UNC basenames before URL parsing so preview
+  // cards do not display the entire backslash path.
+  if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith('\\\\')) {
+    return target.split(/[\\/]/).filter(Boolean).pop() || target
+  }
+
   try {
     const url = new URL(target)
 

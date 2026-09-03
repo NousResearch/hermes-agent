@@ -720,9 +720,17 @@ class TestPromptBuilderConstants:
         ), "CLI hint should explicitly discourage MEDIA: tags."
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
-        # Dieted (#95681): messaging hints now share the _MEDIA_NATIVE
-        # spine ("write MEDIA:/absolute/path..."), not per-hint prose.
+        # Dieted (#95681): messaging hints share the _MEDIA_NATIVE spine.
         assert "MEDIA:/absolute/path" in PLATFORM_HINTS["telegram"]
+        assert "own line" in PLATFORM_HINTS["telegram"]
+        assert "no prose after the path" in PLATFORM_HINTS["telegram"]
+
+    def test_desktop_media_hint_requires_one_unambiguous_directive_per_line(self):
+        hint = PLATFORM_HINTS["desktop"]
+
+        assert "MEDIA:/absolute/path" in hint
+        assert "own line" in hint
+        assert "no prose after the path" in hint
 
 
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractPreviewTargets, previewTargetFromMarkdownHref, stripPreviewTargets } from './preview-targets'
+import {
+  extractPreviewTargets,
+  previewName,
+  previewTargetFromMarkdownHref,
+  stripPreviewTargets
+} from './preview-targets'
 
 describe('preview target detection', () => {
   it('does not infer preview targets from raw paths or URLs', () => {
@@ -23,5 +28,10 @@ describe('preview target detection', () => {
       'ready\n/tmp/mycelium-bunnies.html\nopen it'
     )
     expect(stripPreviewTargets('[Preview: demo.html](#preview:%2Ftmp%2Fdemo.html)\nopen it')).toBe('open it')
+  })
+
+  it('extracts native Windows drive and UNC basenames before URL parsing', () => {
+    expect(previewName('C:\\Users\\ADMIN\\Hermes Projects\\final report.md')).toBe('final report.md')
+    expect(previewName('\\\\server\\Hermes Projects\\final report.md')).toBe('final report.md')
   })
 })

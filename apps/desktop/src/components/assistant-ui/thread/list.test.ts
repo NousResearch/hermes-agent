@@ -12,6 +12,7 @@ import {
   RUN_START_SNAP_THRESHOLD_PX,
   shouldClampTranscriptBudget,
   shouldRePinOnTranscriptReload,
+  shouldRunHydrationSettle,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
   transcriptBackfillFrameCount,
@@ -363,5 +364,23 @@ describe('shouldRePinOnTranscriptReload', () => {
 
   it('pins on a cold-load arrival (same session, never settled non-empty)', () => {
     expect(shouldRePinOnTranscriptReload({ sessionSwitched: false, settledNonEmpty: false })).toBe(true)
+  })
+})
+
+describe('shouldRunHydrationSettle', () => {
+  it('runs on initial non-empty hydration', () => {
+    expect(shouldRunHydrationSettle({ hasGroups: true, previousHasGroups: false, sessionSwitched: false })).toBe(true)
+  })
+
+  it('does not run for an unchanged empty placeholder render', () => {
+    expect(shouldRunHydrationSettle({ hasGroups: false, previousHasGroups: false, sessionSwitched: false })).toBe(false)
+  })
+
+  it('does not restart while the same non-empty transcript is only re-rendering', () => {
+    expect(shouldRunHydrationSettle({ hasGroups: true, previousHasGroups: true, sessionSwitched: false })).toBe(false)
+  })
+
+  it('always runs on a session switch, including an empty cold load', () => {
+    expect(shouldRunHydrationSettle({ hasGroups: false, previousHasGroups: true, sessionSwitched: true })).toBe(true)
   })
 })

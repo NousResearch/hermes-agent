@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from agent.skill_audit import append_skill_audit_record
 from tools.approval import (
     _bash_exec_payload,
     _deobfuscate_shell_word_for_detection,
@@ -16,9 +19,25 @@ from tools.approval import (
     _read_shell_word,
 )
 
+logger = logging.getLogger(__name__)
+
+# Shell executables whose -c payload may mutate skill files.
+_SHELL_EXECUTABLES = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
+
+# Skill-directory mutation verbs. Any of these as the first word of a simple
+# command, or inside a shell -c payload, is enough to flag the command for
+# audit. Detection is heuristic, not exhaustive: a determined bypass can
+# still use a compiled binary or obfuscated script. This guard targets the
+# common accidental bypass (sed -i, cat >, cp into a skill file).
+_SKILL_MUTATION_VERBS = frozenset({
+    "sed", "tee", "cat", "cp", "mv", "rm", "install", "dd",
+    "perl", "python", "python3", "node", "ruby",
+})
+
+# Regex for shell redirections that create or overwrite a file.
+_REDIRECT_RE = re.compile(r"[>|]\s*['\"]?([~\w./-]+)['\"]?(?:\s|$)")
 
 _WORKTREE_MUTATIONS = frozenset({
-    "checkout",
     "switch",
     "rebase",
     "merge",
@@ -87,7 +106,7 @@ _KNOWN_GIT_BUILTINS = frozenset({
     "tag",
     "worktree",
 })
-_SHELL_EXECUTABLES = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
+
 _ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=(.*)", re.DOTALL)
 _SUDO_OPTIONS_WITH_ARG = frozenset({
     "-C",
@@ -724,6 +743,103 @@ def detect_self_repo_git_mutation(
     if operation is None:
         return False, None
     return True, _block_message(operation, root)
+
+
+def audit_skill_mutating_command(
+    command: str,
+    cwd: str | None,
+) -> None:
+    """Best-effort audit log for commands that may mutate skill files.
+
+    This is intentionally separate from ``detect_self_repo_git_mutation``:
+    it does not block execution and it never fails. Its only purpose is to
+    append a record to ``~/.hermes/skills/.audit.log`` when a terminal command
+    looks like it may touch a skill directory.
+    """
+    if not command:
+        return
+    try:
+        _audit_command_for_skill_paths(command, cwd)
+    except Exception:
+        logger.debug("skill audit of terminal command failed", exc_info=True)
+
+
+def _audit_command_for_skill_paths(command: str, cwd: str | None) -> None:
+    """Inspect a shell command and log any likely skill-directory targets."""
+    from agent.skill_audit import is_skill_dir_path
+
+    base = Path(cwd).expanduser().resolve() if cwd else Path.cwd()
+
+    for scope, executable, args in _iter_shell_command_starts(command):
+        current_dir = base
+        cd_target = _cd_target(executable, args, current_dir)
+        if cd_target is not None:
+            base = cd_target
+            continue
+
+        executable_name = _executable_name(executable)
+
+        # Shell payloads (bash -c, sh -c, ...): recurse into the script.
+        if executable_name in _SHELL_EXECUTABLES:
+            script = _shell_script_arg(args)
+            if script:
+                _audit_command_for_skill_paths(script, str(base))
+            continue
+
+        # Fast path: skip commands that are clearly not mutating files.
+        if executable_name not in _SKILL_MUTATION_VERBS:
+            continue
+
+        # Extract candidate target paths from the argument list and from
+        # shell redirections embedded in the raw command string.
+        candidates: set[str] = set()
+        for arg in args:
+            arg = arg.strip()
+            if arg and not arg.startswith("-"):
+                candidates.add(arg)
+        for match in _REDIRECT_RE.finditer(" ".join(args)):
+            candidates.add(match.group(1))
+
+        for raw in candidates:
+            target = _resolve_path_against_cwd(raw, base)
+            if target and is_skill_dir_path(str(target)):
+                action = _infer_action_from_verb(executable_name)
+                append_skill_audit_record(
+                    tool="terminal",
+                    path=str(target),
+                    action=action,
+                    extra={"command_preview": _safe_command_preview(command, limit=200)},
+                )
+
+
+def _resolve_path_against_cwd(raw: str, cwd: Path) -> Path | None:
+    """Resolve a raw path token against a cwd, expanding ~ and handling relativity."""
+    if not raw:
+        return None
+    raw = os.path.expanduser(raw)
+    try:
+        if os.path.isabs(raw):
+            return Path(raw).resolve()
+        return (cwd / raw).resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def _infer_action_from_verb(verb: str) -> str:
+    if verb in {"rm", "rmdir"}:
+        return "remove"
+    if verb in {"cp", "mv", "install", "dd"}:
+        return "modify"
+    return "modify"
+
+
+def _safe_command_preview(command: Any, limit: int = 200) -> str:
+    """Short, redacted preview of a command for logs."""
+    if not isinstance(command, str):
+        return ""
+    if len(command) <= limit:
+        return command
+    return command[:limit] + "..."
 
 
 def _block_message(operation: str, root: Path) -> str:

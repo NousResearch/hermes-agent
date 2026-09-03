@@ -12,6 +12,7 @@ import threading
 from pathlib import Path, PurePosixPath
 
 from agent.file_safety import get_read_block_error
+from agent.skill_audit import append_skill_audit_record
 from tools.binary_extensions import (
     has_binary_extension,
     has_opaque_document_extension,
@@ -2338,6 +2339,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
+            pre_existing = Path(_resolved).exists()
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
@@ -2355,6 +2357,16 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             _update_read_timestamp(path, task_id)
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
+                # Audit trail for skill-directory mutations that bypass skill_manage.
+                try:
+                    append_skill_audit_record(
+                        tool="write_file",
+                        path=_resolved,
+                        action="modify" if pre_existing else "create",
+                        session_id=session_id,
+                    )
+                except Exception:
+                    pass
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -2538,6 +2550,20 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     _r = _path_to_resolved.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
+                # Audit trail for skill-directory mutations that bypass skill_manage.
+                for _p in _paths_to_check:
+                    _r = _path_to_resolved.get(_p)
+                    if _r:
+                        try:
+                            _path_pre_existing = Path(_r).exists()
+                            append_skill_audit_record(
+                                tool="patch",
+                                path=_r,
+                                action="modify" if _path_pre_existing else "create",
+                                session_id=session_id,
+                            )
+                        except Exception:
+                            pass
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
                 # the same path starts the escalation cycle fresh.

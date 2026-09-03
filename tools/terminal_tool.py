@@ -3270,6 +3270,7 @@ def terminal_tool(
             from tools.self_repo_guard import (
                 detect_self_repo_git_mutation,
                 guard_active,
+                audit_skill_mutating_command,
             )
 
             guard_cwd = _resolve_command_cwd(
@@ -3293,6 +3294,18 @@ def terminal_tool(
                     "error": _self_repo_msg,
                     "status": "blocked",
                 }, ensure_ascii=False)
+
+        # Detection-only audit for terminal commands that may mutate skill files.
+        # Runs for all platforms, not just local.
+        if env_type == "local":
+            from tools.self_repo_guard import audit_skill_mutating_command
+
+            guard_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                default_cwd=cwd,
+                session_key=session_key,
+            )
+            audit_skill_mutating_command(command, guard_cwd)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)

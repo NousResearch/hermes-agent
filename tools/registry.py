@@ -251,7 +251,12 @@ def check_fn_cache_scope() -> Optional[str]:
     try:
         from gateway.session_context import get_session_env
         if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            return CHECK_FN_CACHE_BYPASS
+            # api_server binds a server-derived principal + transport family on EVERY request, so
+            # identity-present != controller-attached; only bypass when the extension-control
+            # feature is actually on (#79047).
+            from gateway.browser_control_broker import browser_control_enabled
+            if browser_control_enabled():
+                return CHECK_FN_CACHE_BYPASS
     except Exception:
         pass
     try:

@@ -109,6 +109,113 @@ def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
     assert captured["ws_ping_timeout"] is None
 
 
+def _write_dashboard_config(tmp_path, monkeypatch, body: str):
+    """Point HERMES_HOME at a fresh dir holding the given config.yaml."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(body, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def test_start_server_keeps_ws_ping_off_on_loopback_for_default_config(
+    tmp_path, monkeypatch
+):
+    """The loopback default must survive the explicit-config escape hatch.
+
+    Regression guard for the obvious-but-wrong implementation of
+    test_start_server_enables_ws_ping_on_loopback_when_configured below:
+    probing ``load_config()["dashboard"]`` for the keys does NOT detect an
+    operator's intent, because load_config() deep-merges DEFAULT_CONFIG and
+    that already carries ws_ping_interval/ws_ping_timeout. Every install
+    would look "explicitly configured" and the ping would come back on for
+    all loopback binds — the exact false-disconnect regression #53773 the
+    loopback gate exists to prevent. Explicitness must be read from the raw
+    config; this test fails if that ever regresses to the merged one.
+    """
+    _write_dashboard_config(
+        tmp_path, monkeypatch, "dashboard:\n  theme: midnight\n"
+    )
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] is None
+    assert captured["ws_ping_timeout"] is None
+
+
+def test_start_server_enables_ws_ping_on_loopback_when_configured(
+    tmp_path, monkeypatch
+):
+    """An explicit dashboard.ws_ping_* setting outranks the loopback default.
+
+    A loopback bind is not proof of a local client: the documented
+    reverse-proxy deployment binds 127.0.0.1 with the browser arbitrarily
+    far away. There the proxy keeps answering TCP on the server leg after
+    the client is gone, so the protocol ping is the only end-to-end
+    liveness signal, and without it the PTY session stays `attached`
+    forever and leaks its child.
+    """
+    _write_dashboard_config(
+        tmp_path,
+        monkeypatch,
+        "dashboard:\n  ws_ping_interval: 20\n  ws_ping_timeout: 25\n",
+    )
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] == 20.0
+    assert captured["ws_ping_timeout"] == 25.0
+
+
+def test_start_server_ws_ping_on_loopback_defaults_the_unset_sibling(
+    tmp_path, monkeypatch
+):
+    """Setting one key enables the ping; the other stays at its default."""
+    _write_dashboard_config(
+        tmp_path, monkeypatch, "dashboard:\n  ws_ping_interval: 30\n"
+    )
+    captured = _stub_uvicorn(monkeypatch)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_ping_interval"] == 30.0
+    assert captured["ws_ping_timeout"] == 20.0
+
+
+def test_start_server_ws_ping_on_loopback_honours_managed_scope(
+    tmp_path, monkeypatch
+):
+    """An administrator-pinned ws_ping counts as explicit configuration.
+
+    Managed scope is the enterprise equivalent of the operator editing
+    config.yaml, so it has to clear the same bar; reading only the user's
+    raw config would silently ignore it.
+    """
+    _write_dashboard_config(
+        tmp_path, monkeypatch, "dashboard:\n  theme: midnight\n"
+    )
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "dashboard:\n  ws_ping_interval: 45\n  ws_ping_timeout: 50\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    from hermes_cli.managed_scope import invalidate_managed_cache
+
+    invalidate_managed_cache()
+    captured = _stub_uvicorn(monkeypatch)
+    try:
+        web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+    finally:
+        invalidate_managed_cache()
+
+    assert captured["ws_ping_interval"] == 45.0
+    assert captured["ws_ping_timeout"] == 50.0
+
+
 def test_start_server_accepts_base64_desktop_attachments_above_preview_limit(monkeypatch):
     """The gateway frame cap must fit the Desktop attachment default after
     base64 expansion and JSON framing; uvicorn's 16 MiB default would reject

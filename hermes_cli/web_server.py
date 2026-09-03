@@ -20030,6 +20030,48 @@ def start_server(
         except (TypeError, ValueError):
             return default
 
+    # A loopback bind is not proof of a local client. Behind a reverse proxy
+    # the server binds 127.0.0.1 while the browser is arbitrarily far away —
+    # the exact shape the dashboard docs recommend ("Public URL override":
+    # `hermes dashboard --host 127.0.0.1`, point the TLS proxy at it, and the
+    # Tailscale Serve example). There an intermediary keeps answering TCP on
+    # the server leg after the client is gone, so no FIN/RST arrives and no
+    # OS-level signal reveals the death; the protocol ping, which the browser
+    # itself must answer, is the only end-to-end liveness check available.
+    # Without it the session stays `attached` forever and PtySessionRegistry
+    # .reap_idle skips it (attached sessions are exempt by design), leaking one
+    # `hermes --tui` child per dead client until the host runs out of memory.
+    #
+    # The default is unchanged — a loopback bind still disables the ping, so an
+    # event-loop stall can never false-kill a genuinely local client — but an
+    # operator who has explicitly configured a cadence is describing their
+    # topology, which is better evidence than the bind address.
+    #
+    # Explicitness MUST be read from the raw config: load_config() deep-merges
+    # DEFAULT_CONFIG, so `"ws_ping_interval" in _dash_cfg` is True on every
+    # install and would enable the ping for all loopback binds. This is the
+    # presence-sensitive read that read_user_config_raw's docstring warns
+    # about. Managed scope is overlaid so an administrator-pinned value counts
+    # as explicit too. Values still come from the merged config, so setting
+    # only one key leaves its sibling at the documented default.
+    #
+    # read_raw_config() and NOT read_raw_config_readonly(): the overlay mutates
+    # the dict it is handed, and the readonly variant returns the shared cache
+    # object itself (its docstring: "Mutating the returned dict corrupts the
+    # in-process cache for every subsequent caller").
+    try:
+        from hermes_cli.managed_scope import apply_managed_overlay
+
+        _raw_dash_cfg = (
+            apply_managed_overlay(read_raw_config()).get("dashboard") or {}
+        )
+    except Exception:
+        _raw_dash_cfg = {}
+    _ws_ping_configured = any(
+        key in _raw_dash_cfg for key in ("ws_ping_interval", "ws_ping_timeout")
+    )
+    _use_ws_ping = (not _is_loopback) or _ws_ping_configured
+
     config = uvicorn.Config(
         app, host=host, port=port, log_level="warning",
         # proxy_headers defaults to False so _ws_client_is_allowed sees
@@ -20046,12 +20088,15 @@ def start_server(
         # metadata without accepting spoofed X-Forwarded-* headers from every
         # caller.
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
-        # Half-open detection for public binds only (see above). Loopback
-        # disables the protocol ping (None) so an event-loop stall can never
-        # trigger a false disconnect; a genuinely dead local client is still
-        # reaped via the WebSocketDisconnect → disconnect/reap path.
-        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
-        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
+        # Half-open detection. On for public binds; off for loopback so an
+        # event-loop stall can never trigger a false disconnect, where a
+        # genuinely dead local client is still reaped via the
+        # WebSocketDisconnect → disconnect/reap path. An explicit
+        # dashboard.ws_ping_* setting turns it on either way, for the
+        # reverse-proxied loopback deployments where the client is remote and
+        # a half-open socket is otherwise undetectable (see above).
+        ws_ping_interval=_ws_ping_setting("ws_ping_interval") if _use_ws_ping else None,
+        ws_ping_timeout=_ws_ping_setting("ws_ping_timeout") if _use_ws_ping else None,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     server = uvicorn.Server(config)

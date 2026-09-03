@@ -83,7 +83,12 @@ npm run dist:linux   # AppImage + deb + rpm
 npm run pack         # unpacked app under release/ (no installer)
 ```
 
-Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
+Installers are built and uploaded to GitHub Releases automatically by the
+`Release Desktop` workflow (`.github/workflows/release-desktop.yml`) whenever a
+release is published; a `workflow_dispatch` run builds verification artifacts
+without publishing. macOS/Windows signing & notarization happen automatically
+when the relevant credentials are present in the environment (`CSC_LINK` /
+`CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
 ### How it works
 

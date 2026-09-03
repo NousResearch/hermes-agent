@@ -24,8 +24,10 @@ remediation hint pointing at ``hermes tools`` or the manual pip command.
 
 Security model:
 
-* **Venv-scoped by default.** Installs target ``sys.executable`` in the
-  active venv. We never touch the system Python.
+* **Venv-scoped by default.** Installs target the venv the process loads
+  its code from, resolved by :func:`_active_venv_root` rather than assumed
+  from ``sys.executable`` — a launcher can start the interpreter from
+  outside that venv. We never touch the system Python.
 * **Durable-target mode (immutable images).** When the deployment seals the
   agent's own venv (the Docker image sets ``HERMES_DISABLE_LAZY_INSTALLS=1``
   and makes ``/opt/hermes`` read-only), setting
@@ -777,6 +779,96 @@ def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> 
                 logger.debug("Bytecode warm skipped for %s: %s", root, exc)
 
 
+def _venv_root_on_syspath() -> Optional[Path]:
+    """Return a venv whose ``site-packages`` this process imports from.
+
+    Covers dual-Python bundles: Hermes Studio Desktop ships
+    ``python/base/python.exe`` next to a separate ``python/venv``, launches
+    the gateway with the BASE interpreter, and puts the venv's
+    ``site-packages`` on ``PYTHONPATH`` (see ``buildDesktopBackendEnv`` in
+    the desktop app). There ``sys.executable``, ``sys.prefix`` and
+    ``sys.base_prefix`` all name ``base``, so none of them can identify the
+    environment whose ``sys.path`` the plugins actually import from — but
+    that environment IS on ``sys.path``, and a real venv is identified by
+    its ``pyvenv.cfg``. Requiring that file is what keeps ``--user`` and
+    conda layouts (also ``.../site-packages`` on ``sys.path``, not venvs)
+    out of the result.
+
+    Returns None when no venv is visible, which is the normal case.
+    """
+    for entry in sys.path:
+        if not entry:
+            continue
+        candidate = Path(entry)
+        if candidate.name != "site-packages":
+            continue
+        # <venv>/Lib/site-packages on Windows,
+        # <venv>/lib/pythonX.Y/site-packages on POSIX.
+        for root in (candidate.parent.parent, candidate.parent.parent.parent):
+            try:
+                if (root / "pyvenv.cfg").is_file():
+                    return root
+            except OSError:
+                continue
+    return None
+
+
+def _active_venv_root() -> Path:
+    """The environment a venv-scoped lazy install has to land in.
+
+    ``sys.executable`` alone is wrong whenever the process was started by an
+    interpreter that lives outside the environment it loads code from, so
+    resolve in order of how directly each signal names that environment:
+
+    1. ``sys.prefix`` when it differs from ``sys.base_prefix`` — the running
+       interpreter is itself inside a venv, which is authoritative.
+    2. ``VIRTUAL_ENV`` — covers ``uv run`` and other launchers that activate
+       a venv without changing ``sys.prefix``. Same ladder (and same reason)
+       as ``hermes_cli.gateway._detect_venv_dir``.
+    3. A venv found on ``sys.path`` — the dual-Python bundle case, where
+       neither of the above can see the venv at all (#88355).
+    4. The historical ``sys.executable``-derived guess.
+    """
+    if sys.prefix != sys.base_prefix:
+        return Path(sys.prefix)
+
+    raw = os.environ.get("VIRTUAL_ENV", "").strip()
+    if raw:
+        venv = Path(raw)
+        try:
+            if venv.is_dir():
+                return venv
+        except OSError:
+            pass
+
+    from_syspath = _venv_root_on_syspath()
+    if from_syspath is not None:
+        return from_syspath
+
+    return Path(sys.executable).parent.parent
+
+
+def _venv_python(venv_root: Path) -> str:
+    """Interpreter inside *venv_root*, or ``sys.executable`` if there is none.
+
+    ``python -m pip`` installs into the environment of the interpreter that
+    runs it, so the pip tier has to be driven by the venv's own python — on
+    a dual-Python bundle ``sys.executable`` is the base interpreter and the
+    install lands in ``base/Lib/site-packages``, invisible to everything
+    that imports from the venv.
+    """
+    windows = os.name == "nt"
+    candidate = venv_root / ("Scripts" if windows else "bin") / (
+        "python.exe" if windows else "python"
+    )
+    try:
+        if candidate.is_file():
+            return str(candidate)
+    except OSError:
+        pass
+    return sys.executable
+
+
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
@@ -814,7 +906,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         constraint_args = ["--constraint", str(constraints)]
 
     try:
-        venv_root = Path(sys.executable).parent.parent
+        venv_root = _active_venv_root()
+        venv_python = _venv_python(venv_root)
         from tools.environments.local import hermes_subprocess_env
         uv_env = hermes_subprocess_env(inherit_credentials=False)
         uv_env["VIRTUAL_ENV"] = str(venv_root)
@@ -866,8 +959,10 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 # valid fallback because uv never evaluated the requirements.
                 logger.debug("uv invocation failed: %s", e)
 
-        # Tier 2: python -m pip (with ensurepip bootstrap if needed)
-        pip_cmd = [sys.executable, "-m", "pip"]
+        # Tier 2: python -m pip (with ensurepip bootstrap if needed).
+        # Driven by the venv's interpreter, not sys.executable — see
+        # _venv_python.
+        pip_cmd = [venv_python, "-m", "pip"]
         try:
             probe = subprocess.run(
                 pip_cmd + ["--version"],
@@ -880,7 +975,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         except (subprocess.TimeoutExpired, FileNotFoundError):
             try:
                 subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    [venv_python, "-m", "ensurepip", "--upgrade", "--default-pip"],
                     capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
                     creationflags=windows_hide_flags(),

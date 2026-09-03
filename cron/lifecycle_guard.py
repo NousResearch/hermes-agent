@@ -427,6 +427,33 @@ def _is_cloud_placeholder_path(path: Path) -> bool:
 _DATA_SINK_EXECUTABLES = frozenset(
     {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
 )
+# git is NOT a generic data sink: `git -c core.pager='systemctl restart
+# hermes-gateway' log` smuggles a command git will execute, so blanket-masking
+# every git argument (as _DATA_SINK_EXECUTABLES does) would open an execution
+# hole. Instead we mask only the two positions git treats as pure, never-executed
+# data — and which produced the real false positives (a clipping commit landing
+# gateway-ops notes: the message text and the `--`-separated pathspec both carry
+# lifecycle-shaped strings that git never runs). Everything else in a git
+# segment (top-level `-c` config, subcommand flags) stays visible and fails
+# closed to the plain regex, so this exemption can only ever ALLOW, never block.
+#
+# Message-carrying flags whose VALUE is arbitrary user text, not a command:
+#   -m/--message <TEXT>, -m<TEXT>, --message=<TEXT>
+# Deliberately excludes -c/-C/--reuse-message/--reedit-message (those take a
+# commit-ish, and top-level `-c` is config injection) and -F/--file (a path we
+# don't want to vouch for) — leaving them visible keeps the guard fail-closed.
+_GIT_MESSAGE_FLAGS = frozenset({"-m", "--message"})
+# Clustered short-flag group ending in a lowercase message `m` whose VALUE is
+# the NEXT token: `-m`, `-am`, `-vam`, ... `git commit -am "msg"` is arguably
+# THE most common real-world commit invocation, so it must be exempted too.
+# Uppercase `-M` is a different flag and stays excluded (the required final
+# char is a lowercase `m`); `--`-prefixed long options never match (second
+# char is `-`, not a letter).
+_GIT_CLUSTERED_MESSAGE_FLAG = re.compile(r"^-[a-zA-Z]*m$")
+# Same cluster with the message glued on (`-mTEXT`, `-amTEXT`): git parses the
+# first `m` as the message flag and the remainder as inert value. group(1) is
+# the flag run up to and including that `m`; group(2) is the value to mask.
+_GIT_ATTACHED_MESSAGE_FLAG = re.compile(r"^(-[a-zA-Z]*?m)(.+)$")
 # Argument shapes that can smuggle execution back INTO a data sink: command
 # and process substitution anywhere, sqlite3 dot-commands (`.shell ...`),
 # psql backslash escapes (`\! ...`). Any hit disables masking for the whole
@@ -716,6 +743,92 @@ def contains_launchctl_submit_command(command: str) -> bool:
     return False
 
 
+def _mask_git_data_positions(segment: list[str]) -> Optional[list[str]]:
+    """Mask ONLY git's pure-data positions (message text, ``--`` pathspec).
+
+    Returns a new token list with lifecycle-shaped strings that git treats as
+    inert data replaced by ``arg``, or ``None`` when this segment's executable
+    is not git (so the caller leaves it untouched). Unlike the blanket
+    data-sink masker, this touches only:
+
+      * the VALUE of a message flag — plain ``-m``/``--message`` and any
+        clustered short group ending in ``m`` (``-am``, ``-vam``), in both
+        detached (``-am X``) and attached (``-amX``, ``--message=X``) forms
+      * every token after a bare ``--`` (pathspec — git never executes a path)
+
+    Top-level ``-c key=val`` config, ``-C``/``--reuse-message`` commit-ish
+    refs, ``-F``/``--file`` paths, and the subcommand itself stay visible, so a
+    real ``git -c core.pager='systemctl restart hermes-gateway' log`` execution
+    vector is NOT masked and still fails closed. Masking here can only ever
+    relax the plain-regex verdict, never tighten it.
+    """
+    index = _command_token_index(segment)
+    if index is None:
+        return None
+    executable = Path(segment[index]).name
+    # Windows git ships as `git.exe` / `git.cmd`; strip the extension so the
+    # exemption applies on Windows checkouts too, not just POSIX `git`.
+    if executable.lower().endswith((".exe", ".cmd")):
+        executable = executable[: executable.rfind(".")]
+    if executable != "git":
+        return None
+    # A git message/pathspec token carrying a command-substitution marker is a
+    # SHELL-level execution vector (`git commit -m "$(systemctl restart
+    # hermes-gateway)"` runs the substitution before git sees anything), so
+    # masking it would ALLOW a real command. Fail closed: if any token in the
+    # segment carries such a marker, don't mask anything here — leave the
+    # segment to the plain regex verdict. Mirrors the data-sink masker's
+    # _UNSAFE_DATA_ARG_MARKERS guard.
+    if any(
+        marker in token
+        for token in segment[index + 1 :]
+        for marker in _UNSAFE_DATA_ARG_MARKERS
+    ):
+        return list(segment)
+    out = list(segment[: index + 1])
+    arguments = segment[index + 1 :]
+    after_separator = False
+    skip_next = False
+    for position, token in enumerate(arguments):
+        if skip_next:
+            out.append("arg")
+            skip_next = False
+            # If the value we just consumed was a literal ``--``, it was the
+            # message text (`git commit -m -- <pathspec>`), NOT the pathspec
+            # separator. git then treats the remaining tokens as pathspecs, so
+            # flip to separator mode here — masking those inert paths too and
+            # keeping a future reader from mis-tightening this position.
+            if token == "--":
+                after_separator = True
+            continue
+        if after_separator:
+            # Everything past `--` is a pathspec: pure data to git.
+            out.append("arg")
+            continue
+        if token == "--":
+            after_separator = True
+            out.append(token)
+            continue
+        # Clustered/aliased message flag whose VALUE is the NEXT token:
+        # `-m`, `-am`, `-vam`, `--message` (`git commit -am "msg"`).
+        if token in _GIT_MESSAGE_FLAGS or _GIT_CLUSTERED_MESSAGE_FLAG.match(token):
+            out.append(token)
+            if position + 1 < len(arguments):
+                skip_next = True
+            continue
+        if token.startswith("--message="):
+            out.append("--message=arg")
+            continue
+        attached = _GIT_ATTACHED_MESSAGE_FLAG.match(token)
+        if attached and not token.startswith("--"):
+            # Attached short form with the message glued on: `-mTEXT`,
+            # `-amTEXT`. Keep the flag run, mask only the value.
+            out.append(f"{attached.group(1)}arg")
+            continue
+        out.append(token)
+    return out
+
+
 def _mask_data_sink_arguments(text: str) -> str:
     """Replace data-sink executables' arguments with a neutral placeholder.
 
@@ -771,6 +884,12 @@ def _mask_data_sink_arguments(text: str) -> str:
         rebuilt: list[str] = []
         for segment in segments:
             if not segment:
+                continue
+            git_masked = _mask_git_data_positions(segment)
+            if git_masked is not None:
+                if git_masked != segment:
+                    changed = True
+                rebuilt.extend(git_masked)
                 continue
             index = _command_token_index(segment)
             if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:

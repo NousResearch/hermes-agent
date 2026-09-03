@@ -160,6 +160,23 @@ class TestTakeCheckpoint:
         assert mgr.ensure_checkpoint("/", "root") is False
         assert mgr.ensure_checkpoint(str(Path.home()), "home") is False
 
+    def test_system_temp_root_is_skipped_but_nested_project_is_allowed(
+        self, tmp_path, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager.tempfile.gettempdir", lambda: str(tmp_path))
+        manager = CheckpointManager(enabled=True, max_snapshots=5)
+
+        assert manager.ensure_checkpoint(str(tmp_path), "temp root") is False
+        assert manager.ensure_checkpoint("/tmp", "shared tmp") is False
+        assert manager.ensure_checkpoint("/var/tmp", "shared var tmp") is False
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        (project / "main.py").write_text("print('ok')\n")
+        assert manager.ensure_checkpoint(str(project), "nested project") is True
+
     def test_new_turn_resets_dedup_but_needs_changes(self, mgr, work_dir):
         assert mgr.ensure_checkpoint(str(work_dir), "turn 1") is True
         mgr.new_turn()

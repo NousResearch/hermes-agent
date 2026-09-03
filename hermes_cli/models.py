@@ -7391,16 +7391,12 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
-            # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
-            if auto:
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": auto[0],
-                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
-                }
+            # Do not auto-correct uncataloged models — see #101975.
+            # A newly released model (e.g. gemini-3.8-flash) is not yet in the
+            # curated list but is valid on the provider API. Auto-correcting it
+            # to an older catalog entry (gemini-3.6-flash) silently changes
+            # pricing, context and capabilities. Accept the requested model
+            # as-is with a warning and offer close matches as suggestions.
             suggestions = get_close_matches(requested_for_lookup, catalog_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -7622,18 +7618,10 @@ def validate_requested_model(
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
 
-            # Auto-correct if the top match is very similar (e.g. typo)
-            auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
-            if auto:
-                corrected = _with_preset_suffix(auto[0])
-                return {
-                    "accepted": True,
-                    "persist": True,
-                    "recognized": True,
-                    "corrected_model": corrected,
-                    "message": f"Auto-corrected `{requested}` → `{corrected}`",
-                }
-
+            # Do not auto-correct unlisted models — see #101975.
+            # The live /v1/models listing may lag a newly released model
+            # (e.g. gemini-3.8-flash). Auto-correcting to a catalog entry
+            # silently swaps pricing/context. Accept as-is with suggestions.
             suggestions = get_close_matches(
                 requested_for_lookup, api_models, n=3, cutoff=0.5
             )

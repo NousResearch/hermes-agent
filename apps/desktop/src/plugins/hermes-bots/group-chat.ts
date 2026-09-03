@@ -11,7 +11,8 @@
 
 import { atom, host } from '@hermes/plugin-sdk'
 
-import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { $botMeta, $lastRoster } from './data'
+import { mergeMemberProjectionIntoRoom, mergeProjectedMemberLists } from './group-member-projection'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -350,6 +351,17 @@ export function groupChatSyncSnapshot(
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
+        ...(member?.hostedIdentity
+          ? {
+              hostedIdentity: { ...member.hostedIdentity },
+              title: String(member.title || '').slice(0, 256),
+              display_name: String(member.display_name || '').slice(0, 256),
+              targetProfile: member.hostedIdentity.profile,
+              remoteSource: true,
+              sourceMissing: member.sourceMissing,
+              sourceReachable: member.sourceReachable
+            }
+          : {}),
         ...(member?.handle
           ? {
               handle: String(member.handle).slice(0, 128)
@@ -544,19 +556,6 @@ export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
   return entries.sort(compareGroupChatSyncEntries)
 }
 
-/** Members dedupe on durable identity — the same (connectionId, name) pair
- *  botRosterKey seats them by everywhere else. `connectionLabel` and `handle`
- *  are display strings each machine re-derives (a connection rename, an older
- *  build with no handle), so keying on them seats one bot twice; both copies
- *  then answer to a single groupMemberKey in watermarks/sessions/stranded and
- *  the round engine gives that bot two turns. Deliberately unconditional,
- *  unlike groupMemberKey: the projection stamps `remoteSource` onto members it
- *  merges in, so a scoped/unscoped branch would fork a member from its own
- *  previously-merged copy. */
-function groupChatSyncMemberKey(member: GroupMember) {
-  return botRosterKey(member)
-}
-
 /** Merge two bounded projections without treating an absent room/message as
  *  deletion. Rooms are identified by durable room keys (id:<roomId> when the
  *  room carries one), so a rename is a same-key field update — never a
@@ -671,13 +670,7 @@ export function mergeGroupChatSyncSnapshots(
       hostedEpoch = remoteHostedPresent ? groupChatHostedEpoch(remoteRoom) : groupChatHostedEpoch(localRoom)
     } else {
       identity = localRoom || remoteRoom
-      const byId = new Map<string, GroupMember>()
-
-      for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
-        byId.set(groupChatSyncMemberKey(member), member)
-      }
-
-      members = [...byId.values()]
+      members = mergeProjectedMemberLists(remoteRoom, localRoom)
       image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
       hostedPresent = localHostedPresent || remoteHostedPresent
       hosted = localHostedPresent ? groupChatHostedGateway(localRoom) : groupChatHostedGateway(remoteRoom)
@@ -862,24 +855,14 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
 
-    const members = new Map<string, GroupMember>(
-      (Array.isArray(existing.members) ? existing.members : []).map(member => [groupChatSyncMemberKey(member), member])
-    )
-
     const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
 
-    if (!isPreserved) {
-      if (remoteRevision > localRevision) {
-        members.clear()
-      }
-
-      for (const member of Array.isArray(projected.members) ? projected.members : []) {
-        members.set(groupChatSyncMemberKey(member), {
-          ...member,
-          remoteSource: true
-        })
-      }
-    }
+    const membership = mergeMemberProjectionIntoRoom(
+      existing,
+      projected,
+      Boolean(isPreserved),
+      remoteRevision > localRevision
+    )
 
     // Projection copies are compact and therefore go first: the local rich
     // twin overlays them while retaining the authoritative hosted sequence.
@@ -906,7 +889,8 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
-      members: [...members.values()],
+      members: membership.members,
+      ...(membership.needsRefresh ? { hostedMembersNeedRefresh: true } : {}),
       ...(projectedRoomId || existing.roomId
         ? {
             roomId: existing.roomId || projectedRoomId
@@ -997,6 +981,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       hostedConnectionId:
         typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
       hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+      hostedMembersVerified: room.hostedMembersVerified === true,
       continuityMode: groupChatContinuityMode(room),
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
@@ -1601,6 +1586,7 @@ export function updateGroupChat(
         hostedConnectionId:
           typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
         hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+        hostedMembersVerified: room.hostedMembersVerified === true,
         continuityMode: groupChatContinuityMode(room),
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,

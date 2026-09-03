@@ -88,6 +88,13 @@ export interface RosterRow {
   /** An offline twin of a selected bot, kept visible so the row doesn't vanish. */
   ghost?: boolean
   handle?: string
+  /** Server member identity is independent of this Desktop's connection aliases. */
+  hostedIdentity?: {
+    installationId: string
+    profile: string
+    roomId: string
+    memberId: string
+  }
   has_avatar?: boolean
   last_session?: SessionPreview | null
   remoteSource?: boolean
@@ -115,6 +122,7 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'hostedIdentity'
   | 'name'
   | 'remoteSource'
   | 'route'
@@ -187,6 +195,10 @@ export interface GroupChat {
   hostedEpoch?: null | number
   /** Last contiguous hosted-room event sequence applied locally. */
   hostedSeq?: number
+  /** Local groups.state verification; never accepted from or sent to ui_meta. */
+  hostedMembersVerified?: boolean
+  /** A conflicting display mirror requires a fresh authoritative membership read. */
+  hostedMembersNeedRefresh?: boolean
   hostedStatus?: null | {
     canReconnect?: boolean
     canRetry?: boolean

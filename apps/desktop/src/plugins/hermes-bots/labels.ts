@@ -12,6 +12,12 @@ import { aliasIdentityFor } from './routing'
 import type { BotMeta, RosterRow } from './types'
 
 export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): string {
+  const hostedName = bot.hostedIdentity && (bot.display_name?.trim() || bot.title?.trim())
+
+  if (hostedName) {
+    return hostedName
+  }
+
   // A configured alias route claiming this row overrides source-derived
   // identity: the friendly alias name must survive hosted-session
   // activation and Cloud-only rosters (#89131).

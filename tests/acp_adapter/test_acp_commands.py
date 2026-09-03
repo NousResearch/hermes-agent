@@ -1,4 +1,6 @@
+import asyncio
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -163,7 +165,133 @@ async def test_acp_cancel_publishes_hard_stop_while_holding_runtime_lock():
     assert state.interrupted_prompt_text == "original request"
 
 
+@pytest.mark.asyncio
+async def test_cancelled_prompt_releases_runtime_and_drains_follow_up_queue():
+    class BlockingFirstRunAgent(FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self._supports_active_turn_redirect = False
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.interrupt_calls = 0
+
+        def interrupt(self):
+            self.interrupt_calls += 1
+
+        def run_conversation(
+            self, *, user_message, conversation_history, task_id, **kwargs
+        ):
+            self.runs.append(user_message)
+            if len(self.runs) == 1:
+                self.started.set()
+                assert self.release.wait(timeout=2), "test did not release first turn"
+                return {
+                    "final_response": "interrupted",
+                    "messages": list(conversation_history or []),
+                    "interrupted": True,
+                }
+            return {
+                "final_response": f"ran: {user_message}",
+                "messages": list(conversation_history or []),
+            }
+
+    fake = BlockingFirstRunAgent()
+    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+    conn = CaptureConn()
+    acp_agent.on_connect(conn)
+
+    active_prompt = asyncio.create_task(
+        acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="review everything")],
+        )
+    )
+    assert await asyncio.to_thread(fake.started.wait, 1)
+
+    active_prompt.cancel()
+    await asyncio.sleep(0)
+    assert state.is_running is True
+    assert fake.interrupt_calls == 1
+
+    queued_response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="continue with the review")],
+    )
+    assert queued_response.stop_reason == "end_turn"
+    assert state.queued_prompts == ["continue with the review"]
+
+    fake.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(active_prompt, timeout=2)
+
+    assert state.is_running is False
+    assert state.queued_prompts == []
+    assert fake.runs == [
+        "review everything",
+        (
+            "review everything\n\n"
+            "User correction/guidance after interrupt: continue with the review"
+        ),
+    ]
 
 
+@pytest.mark.asyncio
+async def test_session_cancel_with_no_final_text_releases_runtime():
+    class InterruptedAgent(FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def interrupt(self):
+            self.release.set()
+
+        def run_conversation(
+            self, *, user_message, conversation_history, task_id, **kwargs
+        ):
+            self.runs.append(user_message)
+            self.started.set()
+            assert self.release.wait(timeout=2), "test did not cancel first turn"
+            return {
+                "final_response": None,
+                "messages": list(conversation_history or []),
+                "interrupted": True,
+            }
+
+    fake = InterruptedAgent()
+    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+    acp_agent.on_connect(CaptureConn())
+
+    active_prompt = asyncio.create_task(
+        acp_agent.prompt(
+            session_id=state.session_id,
+            prompt=[TextContentBlock(type="text", text="wait for cancellation")],
+        )
+    )
+    assert await asyncio.to_thread(fake.started.wait, 1)
+
+    await acp_agent.cancel(state.session_id)
+    response = await asyncio.wait_for(active_prompt, timeout=2)
+
+    assert response.stop_reason == "cancelled"
+    assert state.is_running is False
+    assert state.current_prompt_text == ""
+
+    follow_up = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="follow up")],
+    )
+    assert follow_up.stop_reason == "end_turn"
+    assert fake.runs == [
+        "wait for cancellation",
+        (
+            "wait for cancellation\n\n"
+            "User correction/guidance after interrupt: follow up"
+        ),
+    ]
 
 

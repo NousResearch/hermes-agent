@@ -153,6 +153,55 @@ class TestFeishuExecApproval:
         assert state["message_id"] == "msg_002"
         assert state["chat_id"] == "oc_12345"
 
+    @pytest.mark.asyncio
+    async def test_stores_command_preview_in_approval_state(self):
+        """Verify command_preview is stored in _approval_state when sending card."""
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_preview"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command="echo 'hello world'",
+                session_key="test-session",
+            )
+
+        assert len(adapter._approval_state) == 1
+        approval_id = list(adapter._approval_state.keys())[0]
+        state = adapter._approval_state[approval_id]
+        assert "command_preview" in state
+        assert state["command_preview"] == "echo 'hello world'"
+
+    @pytest.mark.asyncio
+    async def test_command_preview_truncated_if_too_long(self):
+        """Verify long commands are truncated to 500 chars in preview."""
+        adapter = _make_adapter()
+
+        long_command = "echo " + "x" * 1000
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_long"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            await adapter.send_exec_approval(
+                chat_id="oc_12345",
+                command=long_command,
+                session_key="test-session",
+            )
+
+        approval_id = list(adapter._approval_state.keys())[0]
+        state = adapter._approval_state[approval_id]
+        assert len(state["command_preview"]) == 500
+
 
 # ===========================================================================
 # send_update_prompt — interactive card with buttons
@@ -331,6 +380,68 @@ class TestCardActionCallbackResponse:
         assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
+
+    def test_resolved_card_includes_command_preview(self, _patch_callback_card_types):
+        """Verify resolved card displays the command preview in a code block."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_alice"}
+        adapter._approval_state[2] = {
+            "session_key": "sess-2",
+            "message_id": "msg-2",
+            "chat_id": "oc_12345",
+            "command_preview": "rm -rf /tmp/test",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 2},
+            open_id="ou_alice",
+        )
+        adapter._sender_name_cache["ou_alice"] = ("Alice", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        # Should have 2 elements: approval result + command preview
+        assert len(card["elements"]) == 2
+        # First element: approval result
+        assert "Alice" in card["elements"][0]["content"]
+        # Second element: command preview in code block
+        assert "Command:" in card["elements"][1]["content"]
+        assert "rm -rf /tmp/test" in card["elements"][1]["content"]
+        assert "```" in card["elements"][1]["content"]
+
+    def test_resolved_card_without_command_preview_backward_compatible(self, _patch_callback_card_types):
+        """Verify resolved card still works when command_preview is missing (backward compatibility)."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_charlie"}
+        # Old-style state without command_preview
+        adapter._approval_state[3] = {
+            "session_key": "sess-3",
+            "message_id": "msg-3",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "deny", "approval_id": 3},
+            open_id="ou_charlie",
+        )
+        adapter._sender_name_cache["ou_charlie"] = ("Charlie", 9999999999)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        card = response.card.data
+        # Should have only 1 element (no command preview)
+        assert len(card["elements"]) == 1
+        assert "Charlie" in card["elements"][0]["content"]
+        assert "Denied" in card["header"]["title"]["content"]
 
 
     def test_ignores_expired_cached_name(self, _patch_callback_card_types):

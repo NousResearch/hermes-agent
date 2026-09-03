@@ -3687,16 +3687,27 @@ def _post_stream_transform_output(response: str, result: dict | None) -> str:
 
     A transform hook is allowed to replace the final response, not merely append
     to it. When the transformed text retains the streamed response as a prefix,
-    printing only its suffix avoids duplicating the already-rendered body. A
-    replacement has no safe suffix, so deliberately print the complete final
-    response rather than silently dropping it.
+    printing only its suffix avoids duplicating the already-rendered body.
+
+    In-place edits (terminology substitution, punctuation normalization,
+    redaction, ...) share the streamed response's head up to the first edited
+    character. Printing from the first divergence keeps the final text correct
+    without repeating the already-rendered body. A replacement with no shared
+    head has no safe suffix, so deliberately print the complete final response
+    rather than silently dropping it.
     """
     if not result or not result.get("response_transformed"):
         return ""
 
     original = result.get("pre_transform_response") or ""
-    if original and response.startswith(original):
-        return response[len(original):]
+    if original:
+        common_prefix_len = 0
+        for streamed_char, transformed_char in zip(response, original):
+            if streamed_char != transformed_char:
+                break
+            common_prefix_len += 1
+        if common_prefix_len:
+            return response[common_prefix_len:]
 
     return f"\n[Response transformed after streaming]\n{response}"
 

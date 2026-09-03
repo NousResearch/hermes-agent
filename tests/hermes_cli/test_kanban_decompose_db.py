@@ -21,13 +21,21 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
-def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=None):
+def _create_triage(
+    conn,
+    title="rough idea",
+    body=None,
+    assignee=None,
+    tenant=None,
+    skills=None,
+):
     return kb.create_task(
         conn,
         title=title,
         body=body,
         assignee=assignee,
         tenant=tenant,
+        skills=skills,
         triage=True,
     )
 
@@ -86,6 +94,36 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_children_inherit_root_forced_skills(kanban_home):
+    """A decomposition must preserve the workflow contract pinned to its root."""
+    with kb.connect() as conn:
+        tid = _create_triage(
+            conn,
+            title="ship safely",
+            skills=["kanban-workflows", "test-driven-development"],
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "build it", "assignee": "engineer"},
+                {"title": "review it", "assignee": "reviewer", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+
+    assert child_ids is not None
+    with kb.connect() as conn:
+        children = [kb.get_task(conn, child_id) for child_id in child_ids]
+
+    assert all(child is not None for child in children)
+    assert [child.skills for child in children] == [
+        ["kanban-workflows", "test-driven-development"],
+        ["kanban-workflows", "test-driven-development"],
+    ]
 
 
 

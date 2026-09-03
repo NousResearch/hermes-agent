@@ -1403,8 +1403,7 @@ class TestGatewaySessionDbRecovery:
 
     def test_transcript_reroute_follows_multi_hop_compression_chain(self, tmp_path):
         """A stale writer behind >=2 compression hops (root -> mid -> tip) must
-        reroute to the live tip via the transitive ``get_compression_tip`` walk
-        — the depth-1 live-child lookup found nothing here (#82001)."""
+        reroute only when the conservative resolver proves a unique live leaf."""
         import threading
         from types import SimpleNamespace
 
@@ -1477,12 +1476,9 @@ class TestGatewaySessionDbRecovery:
         from hermes_state import CompressionSessionClosedError
 
         class FakeDb:
-            def get_compression_tip(self, session_id):
+            def find_live_compression_child(self, session_id):
                 assert session_id == "parent"
-                return "child"
-
-            def get_session(self, session_id):
-                return {"id": session_id, "ended_at": None}
+                return {"id": "child"}
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()
@@ -1540,6 +1536,114 @@ class TestGatewaySessionDbRecovery:
         assert "parent" not in store._dirty_transcripts
         assert "child" not in store._dirty_transcripts
 
+    def test_fts_retry_success_empty_queue_does_not_duplicate(self):
+        import threading
+
+        store = object.__new__(SessionStore)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        attempts = []
+        first_attempt = True
+
+        def _append(session_id, message):
+            nonlocal first_attempt
+            attempts.append((session_id, message["content"]))
+            if first_attempt:
+                first_attempt = False
+                raise RuntimeError("no such table: messages_fts")
+
+        store._append_transcript_message = _append
+        store._rebuild_fts_once = lambda: True
+
+        store._append_to_transcript_serialized(
+            "session", {"role": "user", "content": "only"}
+        )
+
+        assert attempts == [("session", "only"), ("session", "only")]
+        assert store._dirty_transcripts == {}
+
+    def test_fts_retry_success_advances_to_remaining_message(self):
+        import threading
+
+        store = object.__new__(SessionStore)
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {
+            "session": [{"role": "user", "content": "older"}]
+        }
+        store._transcript_append_failures = {}
+        attempts = []
+        first_attempt = True
+
+        def _append(session_id, message):
+            nonlocal first_attempt
+            attempts.append((session_id, message["content"]))
+            if first_attempt:
+                first_attempt = False
+                raise RuntimeError("no such table: messages_fts")
+
+        store._append_transcript_message = _append
+        store._rebuild_fts_once = lambda: True
+
+        store._append_to_transcript_serialized(
+            "session", {"role": "assistant", "content": "newer"}
+        )
+
+        assert attempts == [
+            ("session", "older"),
+            ("session", "older"),
+            ("session", "newer"),
+        ]
+        assert store._dirty_transcripts == {}
+
+    def test_fts_retry_during_reroute_targets_child(self):
+        import threading
+        from types import SimpleNamespace
+
+        from hermes_state import CompressionSessionClosedError
+
+        class FakeDb:
+            def find_live_compression_child(self, session_id):
+                assert session_id == "parent"
+                return {"id": "child"}
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store.__dict__["_lock"] = threading.RLock()
+        store.__dict__["_entries"] = {
+            "route": SimpleNamespace(session_id="parent")
+        }
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        attempts = []
+        child_first_attempt = True
+
+        def _append(session_id, message):
+            nonlocal child_first_attempt
+            attempts.append((session_id, message["content"]))
+            if session_id == "parent":
+                raise CompressionSessionClosedError("parent")
+            if child_first_attempt:
+                child_first_attempt = False
+                raise RuntimeError("no such table: messages_fts")
+
+        store._append_transcript_message = _append
+        store._rebuild_fts_once = lambda: True
+
+        store.append_to_transcript(
+            "parent", {"role": "assistant", "content": "rerouted"}
+        )
+
+        assert attempts == [
+            ("parent", "rerouted"),
+            ("child", "rerouted"),
+            ("child", "rerouted"),
+        ]
+        assert store._entries["route"].session_id == "child"
+        assert store._dirty_transcripts == {}
 
     def test_fts_corruption_error_requires_fts_provenance(self):
         """_is_fts_corruption_error must not treat a generic malformed-image

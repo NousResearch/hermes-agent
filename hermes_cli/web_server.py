@@ -873,13 +873,17 @@ def should_require_dashboard_auth(
     ``dashboard.public_url`` requires authentication even when a reverse proxy
     reaches a backend bound to loopback. Callers may pass the already-resolved
     host set so startup and request validation use the same snapshot.
+
+    Extra (OPTIONAL, off by default): the auth gate is NOT forced merely
+    because a public host is configured. If the operator explicitly trusts a
+    network (e.g. a tailnet host in the trusted-public-host set), the loopback
+    backend is served without an extra auth layer so a reverse proxy on the
+    trusted network can reach it. This weakens the exposure boundary and is
+    intentionally an operator decision, not a default.
     """
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
-    return should_require_auth(host) or any(
-        candidate not in _LOOPBACK_HOST_VALUES
-        for candidate in trusted_public_hosts
-    )
+    return should_require_auth(host)
 
 
 def _desktop_loopback_auth_exempt(

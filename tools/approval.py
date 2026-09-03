@@ -4789,6 +4789,14 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
+    # HERMES_EXEC_ASK is a legacy process-global routing hint. It must not
+    # turn a session-scoped unattended API/webhook request back into an
+    # interactive approval context with no responder. Every platform in
+    # _UNATTENDED_APPROVAL_PLATFORMS is listener-less by contract; a surface
+    # with an approval transport must not be classified as unattended.
+    if _is_unattended_platform_approval_context():
+        is_ask = False
+
     # Single-query (-q) sessions export HERMES_INTERACTIVE=1 but have no user
     # to answer approval prompts — an unanswered prompt just waits the full
     # timeout then fails closed. Treat them as a deterministic non-interactive

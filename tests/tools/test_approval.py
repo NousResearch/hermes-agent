@@ -831,19 +831,55 @@ class TestWebhookApprovalExclusion:
         assert result["approved"] is True
 
     def test_api_server_dangerous_command_denies_by_default(self, monkeypatch):
-        """api_server sessions get the same instant deny (#87509)."""
+        """api_server sessions deny despite a process-global ask marker."""
+        import tools.approval as approval_mod
         from tools.approval import check_all_command_guards
 
         self._isolate(monkeypatch)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
         monkeypatch.setenv("HERMES_SESSION_KEY", "test-api-session")
 
-        result = check_all_command_guards("sudo systemctl restart nginx", "local")
+        with mock_patch.object(
+            approval_mod, "_smart_approve", return_value="escalate"
+        ) as smart_approve:
+            result = check_all_command_guards(
+                "sudo systemctl restart nginx", "local"
+            )
+
         assert result["approved"] is False
         assert "api_server" in result["message"]
+        smart_approve.assert_not_called()
+        assert "test-api-session" not in approval_mod._pending
+
+    def test_api_server_unattended_approve_overrides_process_ask_mode(
+        self, monkeypatch
+    ):
+        """A listener-less API turn must not inherit process-global ask mode."""
+        import tools.approval as approval_mod
+        from tools.approval import check_all_command_guards
+
+        self._isolate(monkeypatch)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "test-api-session")
+        monkeypatch.setattr(
+            approval_mod, "_get_unattended_approval_mode", lambda: "approve"
+        )
+        with mock_patch.object(
+            approval_mod, "_smart_approve", return_value="escalate"
+        ) as smart_approve:
+            result = check_all_command_guards("pkill -9 -f soffice", "local")
+
+        assert result["approved"] is True
+        smart_approve.assert_not_called()
+        assert "test-api-session" not in approval_mod._pending
 
     def test_execute_code_denied_on_unattended_platform(self, monkeypatch):
         """execute_code is denied instantly on unattended platforms (parity with cron)."""

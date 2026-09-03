@@ -211,14 +211,11 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-// Noisy tools default to a one-line card (chevron-expand) so terminal dumps
-// and search hits don't dominate the transcript.  `/details tools expanded`
-// still shows the card; the user opens it per-call.
-const COLLAPSED_TOOL_KEYS = new Set(['terminal', 'web_search', 'websearch'])
-
+// Tool cards default to a one-line chevron row (OMP-style quiet tape).
+// `/details tools expanded` still lists every call; the user expands per-call.
 export const toolCardKey = (name: string) => name.trim().toLowerCase().replace(/[\s-]+/g, '_')
 
-export const toolCardCollapsedByDefault = (name: string) => COLLAPSED_TOOL_KEYS.has(toolCardKey(name))
+export const toolCardCollapsedByDefault = (_name: string) => true
 
 export const buildToolTrailLine = (
   name: string,

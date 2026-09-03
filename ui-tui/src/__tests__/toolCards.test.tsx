@@ -44,12 +44,12 @@ const mountTrail = (props: Record<string, unknown>) => {
 }
 
 describe('toolCardCollapsedByDefault', () => {
-  it('collapses noisy terminal / web_search names', () => {
+  it('collapses every tool card by default', () => {
     expect(toolCardCollapsedByDefault('terminal')).toBe(true)
     expect(toolCardCollapsedByDefault('web_search')).toBe(true)
     expect(toolCardCollapsedByDefault('Web Search')).toBe(true)
-    expect(toolCardCollapsedByDefault('read_file')).toBe(false)
-    expect(toolCardCollapsedByDefault('patch')).toBe(false)
+    expect(toolCardCollapsedByDefault('read_file')).toBe(true)
+    expect(toolCardCollapsedByDefault('patch')).toBe(true)
   })
 })
 
@@ -67,13 +67,14 @@ describe('ToolTrail compact cards', () => {
     expect(out).toMatch(/Terminal/)
     expect(out).toMatch(/0\.3s/)
     expect(out).toMatch(/total 12/)
+    expect(out).not.toMatch(/●/)
     expect(out).not.toMatch(/Args:/)
 
     instance.unmount()
     instance.cleanup()
   })
 
-  it('keeps non-noisy tools expanded when tools section is expanded', async () => {
+  it('keeps all tools collapsed when tools section is expanded', async () => {
     const { instance, text } = mountTrail({
       sections: { tools: 'expanded' },
       trail: ['Read File("foo.ts") (0.1s) :: export const x ✓']
@@ -82,8 +83,9 @@ describe('ToolTrail compact cards', () => {
     await flushEffects()
 
     const out = text()
-    expect(out).toMatch(/▾/)
+    expect(out).toMatch(/▸/)
     expect(out).toMatch(/Read File/)
+    expect(out).not.toMatch(/●/)
 
     instance.unmount()
     instance.cleanup()

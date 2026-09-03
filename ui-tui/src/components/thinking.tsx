@@ -681,12 +681,10 @@ interface Group {
 function ToolCard({
   defaultOpen,
   group,
-  rails,
   t
 }: {
   defaultOpen: boolean
   group: Group
-  rails: TreeRails
   t: Theme
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -696,38 +694,35 @@ function ToolCard({
 
   return (
     <Box flexDirection="column">
-      <TreeRow branch="last" rails={rails} t={t}>
-        <Box
-          onClick={(e: any) => {
-            e?.stopPropagation?.()
-            setOpen(v => !v)
-          }}
-        >
-          <Text color={t.color.muted} wrap="truncate-end">
-            <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-            <Text color={t.color.tool}>● </Text>
-            {title}
-            {duration ? (
-              <Text color={t.color.statusFg} dim>
-                {duration.startsWith(' ') ? duration : ` ${duration}`}
-              </Text>
-            ) : null}
-            {!open && preview ? (
-              <Text color={t.color.muted} dim>
-                {'  '}
-                {preview}
-              </Text>
-            ) : null}
-          </Text>
-        </Box>
-      </TreeRow>
+      <Box
+        onClick={(e: any) => {
+          e?.stopPropagation?.()
+          setOpen(v => !v)
+        }}
+      >
+        <Text color={t.color.muted} wrap="truncate-end">
+          <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
+          {title}
+          {duration ? (
+            <Text color={t.color.statusFg} dim>
+              {duration.startsWith(' ') ? duration : ` ${duration}`}
+            </Text>
+          ) : null}
+          {!open && preview ? (
+            <Text color={t.color.muted} dim>
+              {'  '}
+              {preview}
+            </Text>
+          ) : null}
+        </Text>
+      </Box>
       {open
         ? group.details.map((detail, detailIndex) => (
             <Detail
               {...detail}
               branch={detailIndex === group.details.length - 1 ? 'last' : 'mid'}
               key={detail.key}
-              rails={[...rails, true]}
+              rails={[]}
               t={t}
             />
           ))
@@ -1203,7 +1198,7 @@ export const ToolTrail = memo(function ToolTrail({
                     t={t}
                   />
                 ) : (
-                  <ToolCard defaultOpen={cardOpenByDefault} group={group} rails={rails} t={t} />
+                  <ToolCard defaultOpen={cardOpenByDefault} group={group} t={t} />
                 )}
                 {hasInlineSubagents ? renderSubagentList(childRails) : null}
               </Box>

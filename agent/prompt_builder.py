@@ -1063,11 +1063,11 @@ PLATFORM_HINTS = {
         "brief and natural. "
         "File/media delivery: images referenced as MEDIA:/absolute/path tags "
         "(.png/.jpg/.jpeg/.gif/.webp/.bmp, up to 5MB) are inlined as base64 data "
-        "URLs in responses on the chat, completions, and responses endpoints. "
-        "Non-image files are NOT intercepted anywhere, and the runs endpoint "
-        "intercepts nothing — a MEDIA: tag there renders as literal text exposing "
-        "a raw host filesystem path. For those cases, state the plain file path "
-        "in your response text instead of a MEDIA: tag."
+        "URLs in responses on the chat, completions, responses, and runs endpoints. "
+        "Non-image files are NOT intercepted on any of them — a MEDIA: tag for a "
+        "non-image file renders as literal text exposing a raw host filesystem "
+        "path. For non-image files, state the plain file path in your response "
+        "text instead of a MEDIA: tag."
     ),
     # NOTE: a "webui" hint lived here until 2026-08-29. It was a ghost
     # (verified in the all-platform hint audit, PR #97873): no code path

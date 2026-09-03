@@ -299,6 +299,45 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
 
 
 @pytest.mark.asyncio
+async def test_session_chat_stream_failure_still_flushes_held_back_media_text(
+    adapter, session_db
+):
+    """A raising turn must not swallow buffered MEDIA-tag text.
+
+    The streaming MEDIA-tag resolver holds back everything from the last
+    "MEDIA:" onward until it can confirm whether a real tag completed. That
+    buffer is only safe if EVERY terminal path releases it: when ``_run_agent``
+    raises, the stream emits ``error``/``done`` without reaching the success
+    flush, so text this endpoint previously delivered (raw, but delivered)
+    would be lost.
+    """
+    session_id = session_db.create_session("flush-on-failure", "api_server")
+    held_back = "MEDIA:/nonexistent/never-completed-"
+
+    async def fake_run(**kwargs):
+        kwargs["stream_delta_callback"]("Saved to ")
+        # Held back: a complete "MEDIA:" prefix whose path never resolves, so
+        # the resolver keeps it pending until an explicit flush.
+        kwargs["stream_delta_callback"](held_back)
+        raise RuntimeError("provider exploded mid-turn")
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "go"}
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    assert "event: error" in body
+    # The pre-MEDIA text was already safe to emit during streaming...
+    assert "Saved to " in body
+    # ...and the held-back remainder must still arrive despite the failure.
+    assert held_back in body
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter, session_db):
     """run.completed must include the full interleaved turn transcript so a
     client that lost intermediate (pre-tool-call) assistant text from the live

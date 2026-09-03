@@ -411,6 +411,28 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    @staticmethod
+    def _backup_file(path: Path) -> None:
+        """Best-effort timestamped backup before a rewrite.
+
+        Covers every write path (save_to_disk AND learning_mutations' direct
+        _write_file call). Uses microsecond-precision timestamps so successive
+        writes in the same second produce distinct recovery points. Failures
+        are logged at debug and swallowed (a backup failure must never block
+        the write).
+        """
+        if not path.exists():
+            return
+        try:
+            import shutil
+            import datetime as _dt
+
+            ts = _dt.datetime.now().strftime("%Y%m%dT%H%M%S%fZ")
+            bak = Path(str(path) + f".bak-{ts}")
+            shutil.copy2(path, bak)
+        except Exception:
+            logger.debug("Memory backup failed for %s", path, exc_info=True)
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -901,6 +923,7 @@ class MemoryStore:
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
         """
+        MemoryStore._backup_file(path)
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
             atomic_write_text(path, content, tmp_prefix=".mem_")

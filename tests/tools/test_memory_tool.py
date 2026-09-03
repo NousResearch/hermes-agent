@@ -706,3 +706,28 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is False
         assert raw == ""
+
+
+class TestBackupBeforeWrite:
+    """A timestamped backup is created before each _write_file call."""
+
+    def test_backup_created_on_second_write(self, store, tmp_path):
+        """The first add creates MEMORY.md (no prior file, no backup). The
+        second add finds the existing file and backs it up."""
+        store.add("memory", "first entry")
+        store.add("memory", "second entry")
+        bak_files = list(tmp_path.glob("MEMORY.md.bak-*"))
+        assert len(bak_files) >= 1
+
+    def test_successive_writes_produce_distinct_backups(self, store, tmp_path):
+        """Two writes in rapid succession must produce two distinct backups
+        (microsecond-precision suffix prevents collision)."""
+        store.add("memory", "entry one")
+        store.add("memory", "entry two")
+        store.add("memory", "entry three")
+        bak_files = sorted(tmp_path.glob("MEMORY.md.bak-*"))
+        assert len(bak_files) >= 2
+        # Each backup must have distinct content (distinct recovery points).
+        contents = {f.read_text() for f in bak_files}
+        assert len(contents) == len(bak_files)
+

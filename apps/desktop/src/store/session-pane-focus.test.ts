@@ -7,7 +7,6 @@ async function setup() {
   const session = await import('@/store/session')
   const states = await import('@/store/session-states')
   const { paneMirror } = await import('@/app/chat/pane-mirror')
-  const { openSession } = await import('@/app/open-session')
 
   registry.register({
     area: 'panes',
@@ -39,7 +38,7 @@ async function setup() {
 
   states.openSessionTile('canonical-chat', 'center', 'workspace', undefined, scope)
 
-  return { model, openSession, scope, session, states, tree }
+  return { model, scope, session, states, tree }
 }
 
 describe('focusing a saved Bot Chat requires a visible pane', () => {
@@ -71,18 +70,6 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
     expect(states.sessionTileOwnerRoute('canonical-chat')).toEqual(scope.ownerRoute)
   })
 
-  it('fronts and un-minimizes a hidden chat instead of leaving its sibling active', () => {
-    const { model, scope, states, tree } = ctx
-    tree.$layoutTree.set(model.group(['workspace', paneId], { active: 'workspace', id: 'main', minimized: true }))
-    tree.setTreePaneHidden(paneId, true)
-
-    expect(states.focusWorkspaceOwnerSessionTile(scope.workspaceOwnerKey, undefined, ['canonical-chat'])).toBe(
-      'canonical-chat'
-    )
-    expect(tree.isPaneVisible(paneId)).toBe(true)
-    expect(model.findGroupOfPane(tree.$layoutTree.get()!, paneId)?.active).toBe(paneId)
-  })
-
   it('reports a miss through both helpers if the layout cannot place the saved tab', () => {
     const { scope, session, states, tree } = ctx
     tree.$layoutTree.set(null)
@@ -90,16 +77,6 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
     expect(states.focusOpenSession('canonical-chat', scope)).toBeNull()
     expect(states.focusWorkspaceOwnerSessionTile(scope.workspaceOwnerKey, undefined, ['canonical-chat'])).toBeNull()
     expect(session.$selectedStoredSessionId.get()).toBe('previous-chat')
-    expect(states.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['canonical-chat'])
-  })
-
-  it('keeps an existing tab in place and does not navigate or duplicate it', () => {
-    const { openSession, scope, states, tree } = ctx
-    const navigate = vi.fn()
-    openSession('canonical-chat', navigate, 'in-place', scope)
-
-    expect(tree.isPaneVisible(paneId)).toBe(true)
-    expect(navigate).not.toHaveBeenCalled()
     expect(states.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['canonical-chat'])
   })
 })

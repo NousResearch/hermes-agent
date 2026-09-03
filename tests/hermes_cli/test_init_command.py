@@ -53,6 +53,43 @@ class TestBuildInitPromptForCwd:
         prompt = build_init_prompt_for_cwd(cwd=str(tmp_path), extra="keep it short")
         assert "keep it short" in prompt
 
+    def test_defaults_to_session_cwd_not_process_cwd(self, tmp_path, monkeypatch):
+        """Regression: /init must target the session's real working directory,
+        not the process launch directory.
+
+        The desktop/gateway process is launched from the user's home (or the
+        app bundle), while sessions can be started inside a project (sidebar
+        project, session.create cwd). Falling back to os.getcwd() wrote
+        AGENTS.md into the home directory instead of the repo.
+        """
+        project = tmp_path / "project"
+        project.mkdir()
+        launcher = tmp_path / "apps" / "desktop"
+        launcher.mkdir(parents=True)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(launcher)
+
+        # Simulate the desktop/gateway pinning the session cwd via the
+        # runtime carrier (agent.runtime_cwd.resolve_agent_cwd reads it).
+        monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+        prompt = build_init_prompt_for_cwd()
+        assert f"project at: {project}" in prompt
+        assert f"{project}/AGENTS.md" in prompt
+
+    def test_explicit_cwd_wins_over_terminal_cwd(self, tmp_path, monkeypatch):
+        """An explicitly passed cwd (e.g. the TUI session's pinned workspace)
+        must override the runtime carrier."""
+        project = tmp_path / "project"
+        project.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(other))
+
+        prompt = build_init_prompt_for_cwd(cwd=str(project))
+        assert f"project at: {project}" in prompt
+        assert str(other) not in prompt
+
 
 class TestInitRegistryWiring:
     def test_init_is_registered_and_resolves(self):

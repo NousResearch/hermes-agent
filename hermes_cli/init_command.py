@@ -133,12 +133,20 @@ def build_init_prompt(
 def build_init_prompt_for_cwd(cwd: str | None = None, extra: str = "") -> str:
     """Convenience wrapper used by the dispatch surfaces.
 
-    Resolves ``cwd`` (defaults to the process working directory), reads an
-    existing ``AGENTS.md`` there if present, and returns the full prompt.
+    Resolves ``cwd`` (defaults to the session's real working directory via
+    :func:`agent.runtime_cwd.resolve_agent_cwd` — NOT ``os.getcwd()``, which on
+    the desktop/gateway is the *process* launch directory and can be the user's
+    home even when the session was started inside a project), reads an existing
+    ``AGENTS.md`` there if present, and returns the full prompt.
     """
     import os
 
-    resolved = os.path.abspath(cwd or os.getcwd())
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    if cwd:
+        resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+    else:
+        resolved = str(resolve_agent_cwd())
     existing: str | None = None
     agents_path = os.path.join(resolved, "AGENTS.md")
     try:

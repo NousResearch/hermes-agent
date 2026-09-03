@@ -39,7 +39,9 @@ from gateway.session import (
     SessionSource,
     TranscriptReadError,
     build_session_key,
+    effective_session_thread_id,
     is_shared_multi_user_session,
+    resolve_session_isolation,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
@@ -133,6 +135,7 @@ class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
+    config: Any
 
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
@@ -1055,8 +1058,8 @@ class GatewaySlashCommandsMixin:
         # WITHIN a thread, never across threads — require thread equality before
         # any sharing logic so a live origin in thread A cannot match a caller in
         # thread B of the same parent chat.
-        if str(getattr(current, "thread_id", "") or "") != str(
-            getattr(origin, "thread_id", "") or ""
+        if str(effective_session_thread_id(current) or "") != str(
+            effective_session_thread_id(origin) or ""
         ):
             return False
         chat_type = (getattr(current, "chat_type", "") or "").lower()
@@ -1078,10 +1081,13 @@ class GatewaySlashCommandsMixin:
         # Non-DM: scope by participant whenever the session key for this source
         # is per-user. is_shared_multi_user_session mirrors build_session_key's
         # isolation rules exactly, so the guard stays in lock-step with the key.
+        group_per_user, thread_per_user = resolve_session_isolation(
+            self.config, current
+        )
         shared = is_shared_multi_user_session(
             current,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_per_user,
+            thread_sessions_per_user=thread_per_user,
         )
         if shared:
             return True
@@ -1158,7 +1164,7 @@ class GatewaySlashCommandsMixin:
         # or an admin override.
         caller_chat = str(getattr(source, "chat_id", "") or "")
         row_chat = str(row.get("chat_id") or "")
-        caller_thread = str(getattr(source, "thread_id", "") or "")
+        caller_thread = str(effective_session_thread_id(source) or "")
         row_thread = str(row.get("thread_id") or "")
         chat_type = (getattr(source, "chat_type", "") or "").lower()
         caller_is_dm = chat_type in {"dm", "direct", "private", ""}
@@ -1233,10 +1239,13 @@ class GatewaySlashCommandsMixin:
             # do NOT also require user-id equality (otherwise a co-member is
             # wrongly blocked from their own shared session). A per-user session
             # still requires the same owner.
+            group_per_user, thread_per_user = resolve_session_isolation(
+                self.config, source
+            )
             shared = is_shared_multi_user_session(
                 source,
-                group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-                thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+                group_sessions_per_user=group_per_user,
+                thread_sessions_per_user=thread_per_user,
             )
             if shared:
                 return True

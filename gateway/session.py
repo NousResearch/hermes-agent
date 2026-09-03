@@ -1054,6 +1054,36 @@ def build_channel_continuity_note(
     )
 
 
+def effective_session_thread_id(source: SessionSource) -> Optional[str]:
+    """Return the thread id used by session routing."""
+    if source.thread_id:
+        return source.thread_id
+    if source.platform == Platform.DISCORD:
+        return source.prospective_thread_id
+    return None
+
+
+def effective_session_chat_type(source: SessionSource) -> str:
+    """Return the chat type represented by the routed session key."""
+    if effective_session_thread_id(source) and not source.thread_id:
+        return "thread"
+    return source.chat_type
+
+
+def resolve_session_isolation(
+    config: Any, source: SessionSource
+) -> tuple[bool, bool]:
+    """Resolve global session-isolation defaults plus platform overrides."""
+    group_per_user = getattr(config, "group_sessions_per_user", True)
+    thread_per_user = getattr(config, "thread_sessions_per_user", False)
+    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
+    extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+    if isinstance(extra, dict):
+        group_per_user = extra.get("group_sessions_per_user", group_per_user)
+        thread_per_user = extra.get("thread_sessions_per_user", thread_per_user)
+    return group_per_user, thread_per_user
+
+
 def is_shared_multi_user_session(
     source: SessionSource,
     *,
@@ -1070,7 +1100,7 @@ def is_shared_multi_user_session(
     """
     if source.chat_type == "dm":
         return False
-    if source.thread_id:
+    if effective_session_thread_id(source):
         return not thread_sessions_per_user
     return not group_sessions_per_user
 
@@ -1193,10 +1223,8 @@ def build_session_key(
     # when keying on a prospective id so the two byte-match. (Real-thread events
     # already carry chat_type="thread", so this only rewrites the initiating
     # channel message's slot.)
-    effective_thread_id = source.thread_id or source.prospective_thread_id
-    chat_type_slot = source.chat_type
-    if source.prospective_thread_id and not source.thread_id:
-        chat_type_slot = "thread"
+    effective_thread_id = effective_session_thread_id(source)
+    chat_type_slot = effective_session_chat_type(source)
     key_parts = [ns, platform, chat_type_slot]
 
     if slack_scope_id:
@@ -2211,13 +2239,22 @@ class SessionStore:
     ) -> bool:
         """Prevent a gateway from reviving another profile's row.
 
-        Single-profile: the recovered row's namespace must match the ACTIVE
-        profile. Multiplexed: several profiles serve traffic at once, so the
-        active profile is meaningless — the requested key carries the profile
-        the turn was routed to, and the recovered row must sit in the same
-        ``agent:<ns>:`` namespace (#74285). Rows with no key namespace stay
-        adoptable in both modes (legacy/keyless data owned by this store).
+        Single-profile: the recovered row's durable owner or key namespace must
+        match the active profile. Multiplexed: several profiles serve traffic at
+        once, so ownership must match the profile namespace in the requested key
+        (#74285). Rows with no durable owner or key namespace remain adoptable as
+        legacy data owned by this store.
         """
+        multiplex_profiles = getattr(self.config, "multiplex_profiles", False)
+        active_profile = self._active_profile_name()
+        requested_profile = self._profile_from_session_key(requested_session_key)
+
+        durable_profile = str(recovered.get("profile_name") or "").strip()
+        if durable_profile:
+            if multiplex_profiles:
+                return requested_profile is None or durable_profile == requested_profile
+            return durable_profile == active_profile
+
         recovered_key = str(recovered.get("session_key") or "")
         if not recovered_key or recovered_key == requested_session_key:
             return True
@@ -2226,20 +2263,35 @@ class SessionStore:
         if recovered_profile is None:
             return True
 
-        if getattr(self.config, "multiplex_profiles", False):
-            requested_profile = self._profile_from_session_key(requested_session_key)
+        if multiplex_profiles:
             return requested_profile is None or recovered_profile == requested_profile
 
-        return recovered_profile == self._active_profile_name()
+        return recovered_profile == active_profile
 
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_sessions_per_user, thread_sessions_per_user = self._resolve_session_isolation(
+            source
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
             profile=self._resolve_profile_for_key(source),
         )
+
+    def _resolve_session_isolation(
+        self, source: SessionSource
+    ) -> tuple[bool, bool]:
+        """Resolve group/thread session isolation for a source.
+
+        Per-platform ``extra.group_sessions_per_user`` /
+        ``extra.thread_sessions_per_user`` overrides win when present,
+        falling back to the global gateway config. This mirrors the
+        resolution the adapters use for text-batching keys so the main
+        dispatch path and the adapter's batching key never diverge.
+        """
+        return resolve_session_isolation(self.config, source)
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Return the pre-workspace Slack key for an explicitly scoped source.
@@ -2379,7 +2431,7 @@ class SessionStore:
                 session_key=session_key,
                 chat_id=source.chat_id if allow_peer_fallback else None,
                 chat_type=source.chat_type if allow_peer_fallback else None,
-                thread_id=source.thread_id,
+                thread_id=effective_session_thread_id(source),
             )
         except Exception as exc:
             logger.debug(
@@ -2557,8 +2609,8 @@ class SessionStore:
                 user_id=source.user_id,
                 session_key=session_key,
                 chat_id=source.chat_id,
-                chat_type=source.chat_type,
-                thread_id=source.thread_id,
+                chat_type=effective_session_chat_type(source),
+                thread_id=effective_session_thread_id(source),
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
                 include_compression_ancestors=include_compression_ancestors,
@@ -2572,8 +2624,8 @@ class SessionStore:
                     user_id=source.user_id,
                     session_key=session_key,
                     chat_id=source.chat_id,
-                    chat_type=source.chat_type,
-                    thread_id=source.thread_id,
+                    chat_type=effective_session_chat_type(source),
+                    thread_id=effective_session_thread_id(source),
                 )
             except Exception as exc:
                 logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
@@ -3180,8 +3232,8 @@ class SessionStore:
                     "user_id": source.user_id,
                     "session_key": session_key,
                     "chat_id": source.chat_id,
-                    "chat_type": source.chat_type,
-                    "thread_id": source.thread_id,
+                    "chat_type": effective_session_chat_type(source),
+                    "thread_id": effective_session_thread_id(source),
                     "profile_name": source.profile,
                     # Identity lands atomically in the INSERT (#82616): a
                     # crash after this write can no longer strand the row
@@ -4554,14 +4606,17 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    group_sessions_per_user, thread_sessions_per_user = resolve_session_isolation(
+        config, source
+    )
     context = SessionContext(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         ),
     )
     

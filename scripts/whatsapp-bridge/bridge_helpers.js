@@ -15,7 +15,16 @@ export const MIME_MAP = {
 
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  const normalized = String(value).trim();
+  const separator = normalized.lastIndexOf('@');
+  if (separator <= 0 || separator === normalized.length - 1) return normalized;
+  let local = normalized.slice(0, separator);
+  const server = normalized.slice(separator + 1);
+  // Baileys account IDs include a device suffix (user:device@server).
+  // Also repair the malformed user@device@server shape emitted by older
+  // bridge builds so native mention IDs compare against a canonical bot ID.
+  local = local.split(':', 1)[0].split('@', 1)[0];
+  return local && server ? `${local}@${server}` : normalized;
 }
 
 export function getMessageContent(msg) {

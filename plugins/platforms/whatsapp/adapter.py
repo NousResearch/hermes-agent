@@ -22,6 +22,7 @@ import platform
 import re
 import signal
 import subprocess
+from datetime import datetime, timezone
 
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
@@ -1392,10 +1393,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # delay message dispatch (matches BlueBubbles
                                 # asyncio.create_task pattern for mark_read).
                                 asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                                await self._dispatch_or_observe_inbound_event(event)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1496,7 +1494,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            should_process = self._should_process_message(data)
+            should_observe = self._should_observe_unmentioned_group_message(data)
+            if not should_process and not should_observe:
                 return None
 
             # Determine message type
@@ -1656,6 +1656,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
             metadata: Dict[str, Any] = {}
+            mentioned_ids = [
+                normalized
+                for candidate in (data.get("mentionedIds") or [])
+                if (normalized := self._normalize_whatsapp_id(candidate))
+            ]
+            if mentioned_ids:
+                metadata["whatsapp_mentioned_ids"] = mentioned_ids
+            metadata["whatsapp_bot_mentioned"] = self._message_has_native_bot_mention(data)
+            if should_observe:
+                metadata["_whatsapp_observed_only"] = True
             native_type = str(data.get("nativeType") or "").strip()
             native_metadata = data.get("nativeMetadata")
             if native_type:
@@ -1677,6 +1687,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
 
+            channel_prompt = None
+            if (
+                should_process
+                and is_group
+                and self._whatsapp_observe_unmentioned_group_messages()
+            ):
+                channel_prompt = self._whatsapp_group_observe_channel_prompt()
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1690,10 +1708,45 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=reply_to_text,
                 reply_to_author_id=reply_to_author_id,
                 reply_to_is_own_message=reply_to_is_own_message,
+                channel_prompt=channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    async def _dispatch_or_observe_inbound_event(self, event: MessageEvent) -> None:
+        """Route an accepted event to exactly one deterministic inbound path."""
+        if event.metadata.pop("_whatsapp_observed_only", False):
+            await asyncio.to_thread(self._observe_unmentioned_group_event, event)
+        elif event.message_type == MessageType.TEXT:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
+    def _observe_unmentioned_group_event(self, event: MessageEvent) -> None:
+        """Persist an authorized group event without invoking the agent."""
+        store = getattr(self, "_session_store", None)
+        if not store:
+            return
+        try:
+            session_entry = store.get_or_create_session(event.source)
+            sender = event.source.user_name or event.source.user_id or "unknown"
+            content_parts = [f"[{sender}] {event.text or ''}".rstrip()]
+            for index, path in enumerate(event.media_urls or []):
+                mime = event.media_types[index] if index < len(event.media_types) else ""
+                kind = mime.split("/", 1)[0] if "/" in mime else "file"
+                content_parts.append(f"[{kind} saved at: {path}]")
+            entry = {
+                "role": "user",
+                "content": "\n".join(content_parts),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = str(event.message_id)
+            store.append_to_transcript(session_entry.session_id, entry)
+        except Exception as exc:
+            logger.warning("[%s] Failed to observe WhatsApp group message: %s", self.name, exc)
 
 
 # ──────────────────────────────────────────────────────────────────────────

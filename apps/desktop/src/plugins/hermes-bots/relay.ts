@@ -667,7 +667,13 @@ async function drainRelayOutboxes() {
   relay.drainBusy = true
 
   try {
-    const connections = await relayConnections()
+    // Delivery targets come from the registered roster union, not only from
+    // renderer-materialized routes. A connect-on-demand peer is valid target
+    // authority even before this renderer has opened its socket; the explicit
+    // route descriptor makes requestProfile perform the lazy dial. Seed-only
+    // connections are never used as senders below, so no RPC can be
+    // misdirected while discovering their outbox.
+    const connections = await relayRosterConnections()
 
     // Retention follows the relay-eligible set: with fewer than two
     // connections there is nothing to relay, so nothing stays pinned.
@@ -677,9 +683,18 @@ async function drainRelayOutboxes() {
       return
     }
 
+    for (const connection of connections) {
+      connection.recoveryRelease?.()
+      delete connection.recoveryRelease
+    }
+
     const byId = new Map(connections.map(connection => [connection.id, connection]))
 
     for (const sender of connections) {
+      if (sender.seedOnly) {
+        continue
+      }
+
       let envelopes: RelayEnvelope[] = []
 
       try {

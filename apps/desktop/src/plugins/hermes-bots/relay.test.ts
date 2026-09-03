@@ -667,7 +667,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
     calls.length = 0
     await pushAndSettle()
 
-    expect(hostMock.warmAgent).toHaveBeenCalledWith('b', 'ops')
+    expect(hostMock.warmAgent).toHaveBeenCalledWith('b', 'default')
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
       params: { message: 'status?', profile: 'ops' }

@@ -556,7 +556,23 @@ export function actInPageCore(
     el.focus()
 
     if (editable) {
-      el.textContent = text
+      // contenteditable rich-text editors (Lexical, ProseMirror, Draft —
+      // used by DeepSeek, ChatZhipu, Kimi) ignore plain DOM writes because
+      // their internal model never sees a `beforeinput`/`insertText`
+      // composition.  Use document.execCommand('insertText') which fires the
+      // real editing pipeline the frameworks subscribe to (#98048).
+      // ExecCommand is still supported in Chromium webviews (Electron ≥ 33).
+      try {
+        document.execCommand('insertText', false, text)
+      } catch {
+        // Fallback: direct textContent write + explicit InputEvent for
+        // environments where execCommand fails (about:blank, some sandboxed
+        // pages).
+        el.textContent = text
+        el.dispatchEvent(
+          new InputEvent('input', { data: text, inputType: 'insertText', bubbles: true })
+        )
+      }
     } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
       // Assign through the prototype's setter: React (and anything else that
       // tracks the DOM value) shadows `value` with its own accessor and ignores
@@ -576,11 +592,16 @@ export function actInPageCore(
       return fail(describe(el) + ' is not a text field.')
     }
 
-    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new InputEvent('input', { data: text, inputType: 'insertText', bubbles: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
 
     if (action.submit) {
-      const enter = { bubbles: true, cancelable: true, code: 'Enter', key: 'Enter' }
+      // Synthetic KeyboardEvent — keyCode and which are read-only on
+      // constructed events (always 0) unless set via defineProperty.
+      // Many React input components (DeepSeek, ChatZhipu, Kimi) still
+      // check keyCode === 13 for Enter; 0 means the event never reaches
+      // the submit handler (#98048).
+      const enter = { bubbles: true, cancelable: true, code: 'Enter', key: 'Enter', keyCode: 13, which: 13 } as KeyboardEventInit
 
       el.dispatchEvent(new KeyboardEvent('keydown', enter))
       el.dispatchEvent(new KeyboardEvent('keyup', enter))

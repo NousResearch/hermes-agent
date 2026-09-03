@@ -50,6 +50,19 @@ def _size_delta_label(saved_mb):
 def _confirm_prompt(prompt: str) -> bool:
     """Prompt for y/N confirmation, safe against non-TTY environments."""
     try:
+        if not sys.stdin.isatty():
+            # Windows service / piped-stdin contexts (#77566): stdin is an
+            # inherited pipe that never yields data or EOF, so input()
+            # below would block forever (0 CPU, no network, nothing on
+            # stderr) instead of failing. Fail fast and point at the
+            # non-interactive flags instead of hanging the caller.
+            print(
+                "Refusing to prompt for confirmation: stdin is not "
+                "interactive. Re-run with --yes to confirm or --dry-run "
+                "to preview.",
+                file=sys.stderr,
+            )
+            return False
         return input(prompt).strip().lower() in {"y", "yes"}
     except (EOFError, KeyboardInterrupt):
         return False

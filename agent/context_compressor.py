@@ -207,6 +207,11 @@ def _response_finish_reason(response: Any) -> str:
 _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 
 
+def _is_transient_summary_upstream_status(status: Any) -> bool:
+    """Return True for temporary upstream statuses that must preserve history."""
+    return isinstance(status, int) and status in {408, 500, 502, 503, 504}
+
+
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
@@ -5720,6 +5725,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 isinstance(e, RuntimeError)
                 and _TRUNCATED_SUMMARY_MARKER in _err_str
             )
+            _is_transient_upstream = _is_transient_summary_upstream_status(_status)
             # Authentication, permission, and exhausted-quota failures are NOT
             # transient or fixable by retrying the same request. Flag them so
             # compress() preserves the session instead of rotating into a
@@ -5830,7 +5836,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             # marker — retrying once the provider recovers is strictly better
             # than dropping context (#29559, #25585, #94448). Mirrors the
             # auth-failure carve-out; independent of abort_on_summary_failure.
-            if _is_streaming_closed:
+            if _is_streaming_closed or _is_transient_upstream:
                 self._last_summary_network_failure = True
             elif _is_truncated_summary:
                 self._last_summary_truncated_failure = True

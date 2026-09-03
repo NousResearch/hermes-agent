@@ -4724,9 +4724,18 @@ def _is_timeout_error(exc: Exception) -> bool:
             return True
     except ImportError:
         pass
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    # HTTP 408/504 consume the request's full critical-path budget just like
+    # SDK timeout exceptions. Treat them as timeouts so compression does not
+    # retry the same origin before fallback.
+    if status in {408, 504}:
+        return True
     if "Timeout" in type(exc).__name__:
         return True
-    return "timed out" in str(exc).lower()
+    err_text = str(exc).lower()
+    return "timed out" in err_text or "time-out" in err_text
 
 
 def _is_connection_error(exc: Exception) -> bool:
@@ -4767,6 +4776,16 @@ def _is_connection_error(exc: Exception) -> bool:
     return False
 
 
+def _is_auxiliary_fallback_transport_error(exc: Exception) -> bool:
+    """Return True when the selected auxiliary route cannot serve this call."""
+    if _is_connection_error(exc):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    return isinstance(status, int) and status in {408, 500, 502, 503, 504}
+
+
 def _is_transient_transport_error(exc: Exception) -> bool:
     """Return True for a one-off transport blip worth retrying ON the
     same provider before any provider/model fallback.
@@ -4783,7 +4802,7 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None) or getattr(
         getattr(exc, "response", None), "status_code", None
     )
-    return isinstance(status, int) and (status == 408 or 500 <= status < 600)
+    return isinstance(status, int) and status in {408, 500, 502, 503, 504}
 
 
 _DEFAULT_TRANSIENT_RETRIES = 2
@@ -11047,7 +11066,7 @@ def _call_llm_impl(
         should_fallback = (
             _is_auth_error(first_err)
             or _is_payment_error(first_err)
-            or _is_connection_error(first_err)
+            or _is_auxiliary_fallback_transport_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
@@ -11070,7 +11089,7 @@ def _call_llm_impl(
         # instead of aborting the auxiliary task and churning the session.
         is_capacity_error = (
             _is_payment_error(first_err)
-            or _is_connection_error(first_err)
+            or _is_auxiliary_fallback_transport_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
@@ -11813,7 +11832,7 @@ async def _async_call_llm_impl(
         should_fallback = (
             _is_auth_error(first_err)
             or _is_payment_error(first_err)
-            or _is_connection_error(first_err)
+            or _is_auxiliary_fallback_transport_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)
@@ -11828,7 +11847,7 @@ async def _async_call_llm_impl(
         is_auto = resolved_provider in {"auto", "", None}
         is_capacity_error = (
             _is_payment_error(first_err)
-            or _is_connection_error(first_err)
+            or _is_auxiliary_fallback_transport_error(first_err)
             or _is_rate_limit_error(first_err)
             or _is_model_incompatible_error(first_err)
             or _is_invalid_aux_response_error(first_err)

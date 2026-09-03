@@ -228,6 +228,15 @@ class SessionSource:
     delivered_via_upstream_relay: bool = False
 
     def __post_init__(self) -> None:
+        # ``platform`` is annotated ``Platform``; enforce that at runtime by
+        # coercing plain-string platforms (external callers, tests, plugins)
+        # instead of letting them crash later on ``platform.value`` access
+        # (e.g. the authz gate). Unknown values raise here, matching
+        # ``from_dict`` — a fail-fast construction error, not a mid-authz
+        # ``AttributeError``.
+        if isinstance(self.platform, str):
+            self.platform = Platform(self.platform)
+
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`
         # is the deprecated alias. Mirror whichever was provided onto the other
         # (scope_id wins on conflict) so internal readers of EITHER field see the

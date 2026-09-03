@@ -27,6 +27,13 @@ logger = logging.getLogger("hermes_cli.plugins")
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 
+# Per-harness manifest directories plugin repos ship for OTHER agent harnesses (e.g. obra/superpowers keeps one
+# plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
+# parsing it on every discovery pass only spams warnings (#101962).
+_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
+    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
+})
+
 
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
     """Return one metadata entry-point group across supported Python APIs."""
@@ -120,6 +127,9 @@ def scan_directory(
         # down every subsequent tool call (#86996).
         if child.name.startswith("__") and child.name.endswith("__"):
             logger.debug("Skipping dunder plugin path %s", child)
+            continue
+        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
+            logger.debug("Skipping %s (foreign-harness manifest convention)", child)
             continue
         # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
         # and test doubles can still raise. Fail closed per child.

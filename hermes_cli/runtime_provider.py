@@ -406,8 +406,6 @@ def _copilot_runtime_api_mode(
 ) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
-        return configured_mode
 
     # Use the model being resolved for this runtime, not the persisted global
     # default. MoA slots, fallback models, and mid-session model switches all
@@ -417,14 +415,31 @@ def _copilot_runtime_api_mode(
     # fail with "model ... does not support Responses API".
     model_name = str(target_model or model_cfg.get("default") or "").strip()
     if not model_name:
+        # No model to route on: fall back to a persisted explicit api_mode if
+        # the user set one, else the endpoint default.
+        if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+            return configured_mode
         return "chat_completions"
 
+    # Copilot is a multi-endpoint provider: GPT-5+ models require the
+    # Responses API (/responses), Claude requires /v1/messages, everything
+    # else /chat/completions. A persisted api_mode was correct only for the
+    # model that was selected when it was written; honouring it for a
+    # different model sends Responses-only models to /chat/completions and
+    # fails with a misleading HTTP 400 that reads like an entitlement
+    # problem (#94881). Per-model routing always wins here; the persisted
+    # mode is only consulted when the model itself cannot be resolved.
     try:
         from hermes_cli.models import copilot_model_api_mode
 
-        return copilot_model_api_mode(model_name, api_key=api_key)
+        resolved = copilot_model_api_mode(model_name, api_key=api_key)
+        if resolved:
+            return resolved
     except Exception:
-        return "chat_completions"
+        pass
+    if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+        return configured_mode
+    return "chat_completions"
 
 
 _VALID_API_MODES = {

@@ -39,9 +39,106 @@ from __future__ import annotations
 import copy
 import logging
 import re
+from collections.abc import Callable, Iterator
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Values under these keywords are instance data or property-name references,
+# never nested schemas.  Every recursive pass must stop at this boundary even
+# when the literal happens to contain schema-looking keys.
+_OPAQUE_SCHEMA_VALUE_KEYS = frozenset({
+    "const",
+    "default",
+    "dependentRequired",
+    "enum",
+    "examples",
+    "required",
+})
+
+# These keywords contain name -> schema maps.  Their names are not schema
+# keywords, so a property or definition literally named ``const`` / ``x-*``
+# must still have its schema visited.
+_SCHEMA_MAP_KEYS = frozenset({
+    "$defs",
+    "definitions",
+    "dependentSchemas",
+    "patternProperties",
+    "properties",
+})
+
+# Keywords whose value is one schema (or, for legacy ``items``, an array of
+# schemas). Unknown object-valued keywords are annotations and must remain
+# opaque: JSON Schema explicitly permits vocabulary extensions that do not use
+# an ``x-`` prefix.
+_SINGLE_SCHEMA_KEYS = frozenset({
+    "additionalItems",
+    "additionalProperties",
+    "contains",
+    "contentSchema",
+    "else",
+    "if",
+    "items",
+    "not",
+    "propertyNames",
+    "then",
+    "unevaluatedItems",
+    "unevaluatedProperties",
+})
+
+_SCHEMA_ARRAY_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+
+
+def _is_opaque_schema_value(key: str) -> bool:
+    return key in _OPAQUE_SCHEMA_VALUE_KEYS or key.startswith("x-")
+
+
+def _map_schema_children(
+    node: dict[str, Any], transform: Callable[[Any], Any]
+) -> dict[str, Any]:
+    """Apply ``transform`` only where a dict/list can contain schemas."""
+    out = {}
+    for key, value in node.items():
+        if _is_opaque_schema_value(key):
+            out[key] = copy.deepcopy(value)
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: transform(schema) for name, schema in value.items()}
+        elif key == "dependencies" and isinstance(value, dict):
+            # Draft-07 dependencies is a mixed map: each value is either a
+            # schema or a literal list of property-name strings.
+            out[key] = {
+                name: transform(dependency)
+                if isinstance(dependency, (dict, bool))
+                else copy.deepcopy(dependency)
+                for name, dependency in value.items()
+            }
+        elif key in _SINGLE_SCHEMA_KEYS:
+            out[key] = transform(value)
+        elif key in _SCHEMA_ARRAY_KEYS and isinstance(value, list):
+            out[key] = transform(value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def _iter_schema_children(node: dict[str, Any]) -> Iterator[Any]:
+    """Yield nested schema positions while skipping literal-value keywords."""
+    for key, value in node.items():
+        if _is_opaque_schema_value(key):
+            continue
+        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            yield from value.values()
+        elif key == "dependencies" and isinstance(value, dict):
+            yield from (
+                dependency
+                for dependency in value.values()
+                if isinstance(dependency, (dict, bool))
+            )
+        elif key in _SINGLE_SCHEMA_KEYS:
+            yield value
+        elif key in _SCHEMA_ARRAY_KEYS and isinstance(value, list):
+            yield from value
 
 
 # Anthropic (and Bedrock/Vertex/Azure fronting it) reject tool input schemas
@@ -194,7 +291,7 @@ def _strip_ref_siblings(node: Any) -> Any:
     if not isinstance(node, dict):
         return node
 
-    out = {key: _strip_ref_siblings(value) for key, value in node.items()}
+    out = _map_schema_children(node, _strip_ref_siblings)
     if "$ref" in out:
         for key in _REF_FORBIDDEN_SIBLINGS:
             if key in out:
@@ -273,10 +370,12 @@ def strip_nullable_unions(
     if not isinstance(schema, dict):
         return schema
 
-    stripped = {
-        k: strip_nullable_unions(v, keep_nullable_hint=keep_nullable_hint)
-        for k, v in schema.items()
-    }
+    stripped = _map_schema_children(
+        schema,
+        lambda value: strip_nullable_unions(
+            value, keep_nullable_hint=keep_nullable_hint
+        ),
+    )
     for key in ("anyOf", "oneOf"):
         variants = stripped.get(key)
         if not isinstance(variants, list):
@@ -370,7 +469,7 @@ def collapse_const_unions(schema: Any) -> Any:
     if not isinstance(schema, dict):
         return schema
 
-    out = {k: collapse_const_unions(v) for k, v in schema.items()}
+    out = _map_schema_children(schema, collapse_const_unions)
     for key in ("anyOf", "oneOf"):
         variants = out.get(key)
         if not isinstance(variants, list) or not variants:
@@ -482,33 +581,54 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out["type"] = "null" if has_null else "object"
             continue
 
-        if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
             renames = prop_renames if key == "properties" else {}
             new_props = {}
             for sub_k, sub_v in value.items():
                 out_k = renames.get(sub_k, sub_k)
                 new_props[out_k] = _sanitize_node(sub_v, f"{path}.{key}.{out_k}")
             out[key] = new_props
-        elif key in {"items", "additionalProperties"}:
+        elif key == "dependencies" and isinstance(value, dict):
+            # Draft-07 dependencies mixes schema dependencies with literal
+            # property-name arrays. Both the source key and names in an array
+            # refer to sibling properties and must track any provider-safe
+            # renames, while only real schema values recurse.
+            dependencies = {}
+            for source, dependency in value.items():
+                out_source = prop_renames.get(source, source)
+                if isinstance(dependency, list):
+                    dependencies[out_source] = [
+                        prop_renames.get(target, target)
+                        if isinstance(target, str) else copy.deepcopy(target)
+                        for target in dependency
+                    ]
+                elif isinstance(dependency, (dict, bool)):
+                    dependencies[out_source] = _sanitize_node(
+                        dependency, f"{path}.dependencies.{out_source}"
+                    )
+                else:
+                    dependencies[out_source] = copy.deepcopy(dependency)
+            out[key] = dependencies
+        elif key in _SINGLE_SCHEMA_KEYS:
             if isinstance(value, bool):
-                # Keep bool ``additionalProperties`` as-is — it's a valid form
-                # and widely accepted. ``items: true/false`` is non-standard
-                # but we preserve rather than drop.
+                # Boolean schemas are valid in every schema position.
                 out[key] = value
             else:
                 out[key] = _sanitize_node(value, f"{path}.{key}")
-        elif key in {"anyOf", "oneOf", "allOf"} and isinstance(value, list):
+        elif key in _SCHEMA_ARRAY_KEYS and isinstance(value, list):
             out[key] = [
                 _sanitize_node(item, f"{path}.{key}[{i}]")
                 for i, item in enumerate(value)
             ]
-        elif key in {"required", "enum", "examples", "dependentRequired"}:
+        elif _is_opaque_schema_value(key):
             # Schema "sibling" keywords whose values are NOT schemas:
             #  - ``required``: list of property-name strings
             #  - ``enum``: list of literal values (any JSON type)
             #  - ``examples``: list of example values (any JSON type)
             #  - ``dependentRequired``: mapping of property names to lists of
             #    required property-name strings (JSON Schema 2020-12)
+            #  - ``const`` / ``default``: a single literal value (any JSON type)
+            #  - ``x-*``: extension data, not a portable schema position
             # Recursing into these with _sanitize_node() would mis-interpret
             # literal strings like "path" as bare-string schemas and replace
             # them with {"type": "object"} dicts. Pass through unchanged
@@ -516,10 +636,23 @@ def _sanitize_node(node: Any, path: str) -> Any:
             if key == "required" and prop_renames and isinstance(value, list):
                 out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r
                             for r in value]
+            elif key == "dependentRequired" and prop_renames and isinstance(value, dict):
+                out[key] = {
+                    prop_renames.get(source, source): [
+                        prop_renames.get(target, target)
+                        if isinstance(target, str) else target
+                        for target in targets
+                    ]
+                    if isinstance(targets, list) else copy.deepcopy(targets)
+                    for source, targets in value.items()
+                }
             else:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
-            out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
+            # Unknown keywords are annotations. JSON Schema permits custom
+            # vocabularies without an ``x-`` prefix, so object/list values in
+            # unknown positions must never be interpreted as schemas.
+            out[key] = copy.deepcopy(value) if isinstance(value, (dict, list)) else value
 
     # Object nodes without properties: inject empty properties dict.
     # llama.cpp's grammar generator can't constrain a free-form object.
@@ -591,7 +724,8 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
                     node.pop(key, None)
                     stripped += 1
                     continue
-                _walk(node[key])
+            for child in _iter_schema_children(node):
+                _walk(child)
         elif isinstance(node, list):
             for item in node:
                 _walk(item)
@@ -659,8 +793,8 @@ def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
             ):
                 node.pop("enum", None)
                 stripped += 1
-            for v in node.values():
-                _walk(v)
+            for child in _iter_schema_children(node):
+                _walk(child)
         elif isinstance(node, list):
             for item in node:
                 _walk(item)

@@ -135,6 +135,13 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Rate-limit retry policy: when present, hold the primary provider
+        # on long exponential backoff for 429s instead of eagerly failing
+        # over. Useful when every fallback rides the same throttled upstream
+        # (single-tenant aggregators, z.ai). Disabled by default (max_retries:
+        # 0 or absent section). See website/docs/user-guide/configuration.md
+        # for the full shape.
+        "rate_limit_retry": {},
         # Empty-response retry guard (NS-503).  The empty-retry loop
         # re-sends the full conversation input at full price on every
         # attempt; these settings stop it from re-billing *deterministic*

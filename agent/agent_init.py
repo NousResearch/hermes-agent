@@ -2142,6 +2142,17 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    # Rate-limit retry policy (agent.rate_limit_retry in config.yaml).
+    # Overrides 429 handling when present: hold the primary provider with
+    # long exponential backoff instead of eagerly failing over (useful when
+    # every fallback rides the same throttled upstream). Disabled by
+    # default — absent/malformed config must preserve legacy behavior
+    # byte-for-byte. See agent/rate_limit_policy.py for the shape.
+    from agent.rate_limit_policy import resolve_rate_limit_retry_policy
+    agent._rate_limit_retry_policy = resolve_rate_limit_retry_policy(
+        _agent_section.get("rate_limit_retry")
+    )
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

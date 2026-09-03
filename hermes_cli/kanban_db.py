@@ -1589,10 +1589,21 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
     )
-    # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
-    # the PRAGMA explicitly so it is observable and survives future wrapper
-    # changes. Parameter binding is not supported for PRAGMA assignments.
-    conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    try:
+        # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
+        # the PRAGMA explicitly so it is observable and survives future wrapper
+        # changes. Parameter binding is not supported for PRAGMA assignments.
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+    except BaseException:
+        # A half-open connection abandoned here would leak its fd AND leave a
+        # stale entry in the connect_tracked live-connection registry (which
+        # only clears on close), permanently blocking byte-level probes of
+        # this database file. Close before re-raising.
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
     return conn
 
 
@@ -11674,8 +11685,8 @@ def purge_stale_done_notify_subs(
     *,
     max_age_days: int = 30,
 ) -> int:
-    """Delete notify subscriptions whose task has sat in ``done`` untouched
-    for longer than ``max_age_days``.
+    """Delete notify subscriptions whose task has sat in ``done`` or
+    ``blocked`` untouched for longer than ``max_age_days``.
 
     The notifier keeps subscriptions alive through ``done`` because a
     completed task can be reopened (review corrections, continuation) and
@@ -11684,7 +11695,10 @@ def purge_stale_done_notify_subs(
     subscription rows forever — each one scanned every notifier tick.
     This GC bounds that: a task that has been ``done`` with no new events
     for the retention window is treated as settled and its subscriptions
-    are purged. Age is measured from the task's most recent event
+    are purged. ``blocked`` tasks (circuit-breaker trips, dead workers)
+    are reaped on the same clock — they are abandoned, not idle, unlike a
+    ``backlog``/``ready`` card that is merely waiting for pickup (#100955).
+    Age is measured from the task's most recent event
     (falling back to ``completed_at`` then ``created_at``), so ANY
     activity — including a reopen, which also moves the task off
     ``done`` — resets or exempts it.
@@ -11703,7 +11717,7 @@ def purge_stale_done_notify_subs(
         cur = conn.execute(
             "DELETE FROM kanban_notify_subs WHERE task_id IN ("
             " SELECT t.id FROM tasks t"
-            " WHERE t.status = 'done'"
+            " WHERE t.status IN ('done', 'blocked')"
             " AND COALESCE("
             "  (SELECT MAX(e.created_at) FROM task_events e"
             "   WHERE e.task_id = t.id),"

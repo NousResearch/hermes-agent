@@ -54,8 +54,8 @@ class SessionPortabilityMixin:
         where = "cwd IS NOT NULL AND TRIM(cwd) != ''"
         if not include_archived:
             where += " AND archived = 0"
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 "SELECT cwd AS cwd, COUNT(*) AS sessions, "
                 "MAX(COALESCE(ended_at, started_at, 0)) AS last_active "
                 f"FROM sessions WHERE {where} GROUP BY cwd"
@@ -119,8 +119,8 @@ class SessionPortabilityMixin:
             ORDER BY s.started_at DESC, s.id DESC
             LIMIT ? OFFSET ?
         """
-        with self._lock:
-            cursor = self._conn.execute(query, (prefix, prefix_hi, limit, offset))
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, (prefix, prefix_hi, limit, offset))
             rows = cursor.fetchall()
 
         runs: List[Dict[str, Any]] = []
@@ -202,8 +202,8 @@ class SessionPortabilityMixin:
             {prompt_join}
             WHERE s.id IN ({placeholders})
         """
-        with self._lock:
-            cursor = self._conn.execute(query, ids)
+        with self._read_ctx() as conn:
+            cursor = conn.execute(query, ids)
             rows = cursor.fetchall()
         result: Dict[str, Dict[str, Any]] = {}
         for row in rows:
@@ -229,8 +229,8 @@ class SessionPortabilityMixin:
         Returns ``id``, ``title``, and the full first-turn ``content`` so a
         caller can re-derive what the user typed. Newest first.
         """
-        with self._lock:
-            rows = self._conn.execute(
+        with self._read_ctx() as conn:
+            rows = conn.execute(
                 """
                 SELECT s.id, s.title, m.content
                 FROM sessions s
@@ -254,8 +254,8 @@ class SessionPortabilityMixin:
         Pairs with :meth:`list_skill_scaffolded_sessions` so a re-title can feed
         the titler the same (request, reply) shape the live path uses.
         """
-        with self._lock:
-            row = self._conn.execute(
+        with self._read_ctx() as conn:
+            row = conn.execute(
                 "SELECT content FROM messages "
                 "WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL "
                 "ORDER BY timestamp, id LIMIT 1",
@@ -394,6 +394,26 @@ class SessionPortabilityMixin:
                 if not seg_id:
                     continue
                 try:
+                    # TOCTOU close-out: the guard above compared EXPORT-TIME
+                    # counts, but another backend can append donor messages
+                    # between export and this loop. Re-read both stores right
+                    # before stamping; a donor-ahead signal here skips the
+                    # stamp so growth never lands behind a non-recoverable
+                    # archive. (Count comparison cannot see equal-count
+                    # CONTENT divergence — e.g. a donor rewind+rewrite; that
+                    # residual case is accepted: bytes stay in the donor
+                    # store either way, only reachability differs.)
+                    donor_now = len(donor_db.get_messages(seg_id))
+                    local_now = len(self.get_messages(seg_id))
+                    if donor_now > local_now:
+                        retire_ok = False
+                        logger.warning(
+                            "adoption divergence at retire time: donor "
+                            "segment %s grew to %d messages (local %d) — "
+                            "leaving donor unretired",
+                            seg_id, donor_now, local_now,
+                        )
+                        continue
                     # First end_reason wins in end_session(); reopen first so
                     # the adoption boundary is stamped even on ended segments
                     # (e.g. 'compression' parents).

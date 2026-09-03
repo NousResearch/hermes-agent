@@ -265,6 +265,32 @@ def _is_cron_approval_context() -> bool:
         return env_var_enabled("HERMES_CRON_SESSION")
 
 
+#: Gateway platforms that are programmatic/unattended: no human is on the
+#: other end to answer an approval prompt, and the adapter has no
+#: ``send_exec_approval`` / ``/approve`` surface. Approval decisions for
+#: these sessions are governed by ``approvals.unattended_mode`` config
+#: (default deny), mirroring ``approvals.cron_mode`` — never by an
+#: interactive round-trip that would block for the full approval timeout
+#: with nobody to answer (#37284, #87509).
+_UNATTENDED_APPROVAL_PLATFORMS = frozenset({
+    "webhook",
+    "msgraph_webhook",
+    "api_server",
+})
+
+
+def _is_unattended_platform_approval_context() -> bool:
+    """True when the session platform is a programmatic/unattended surface.
+
+    Webhook, msgraph_webhook, and api_server sessions bind
+    ``HERMES_SESSION_PLATFORM`` like chat gateways do, but there is no human
+    who can resolve a pending approval. Treating them as gateway approval
+    contexts blocks the session for the full approval timeout (60-300s) and
+    then fails closed anyway — the deadlock in #37284/#87509.
+    """
+    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+
+
 def _is_single_query_approval_context() -> bool:
     """True when the current approval decision is from a single-query (-q) session.
 
@@ -303,8 +329,18 @@ def _is_gateway_approval_context() -> bool:
     ``approvals.cron_mode`` config, not interactive resolve — letting cron
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
+
+    Unattended programmatic platforms (webhook, msgraph_webhook, api_server)
+    are excluded for the same reason: those adapters have no
+    ``send_exec_approval`` and no way to receive ``/approve`` replies.
+    Submitting a pending approval there blocks the session for the full
+    approval timeout (60-300 s) with no human who can resolve it (#37284,
+    #87509). Their dangerous-command handling is governed by
+    ``approvals.unattended_mode`` config (default deny), mirroring cron.
     """
     if _is_cron_approval_context():
+        return False
+    if _is_unattended_platform_approval_context():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -532,15 +568,31 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
-    # Filesystem format
-    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
-    # Raw block device overwrites (dd + redirection)
-    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # Filesystem format — anchor to command position like every other
+    # hardline entry so quoted prose ("echo \"does this workflow use mkfs
+    # anywhere?\"") does not trip the unconditional floor (#93392).
+    (_CMDPOS + r'mkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # Raw block device overwrites (dd + redirection). `dd` is a command-name
+    # token, so anchor it to command position like mkfs/rm/shutdown (#93392):
+    # quoted prose such as `git commit -m "never dd of=/dev/sda"` is an
+    # argument, not a command. The argument tail ([^\n]*of=/dev/...) is kept
+    # so flag order doesn't matter.
+    (_CMDPOS + r'dd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    # The redirect rule has no command-name token to anchor (`>` appears
+    # mid-command: `cat f > /dev/sda`), so command-position anchoring is the
+    # wrong tool. It is instead matched against a QUOTE-MASKED variant of the
+    # command (see _QUOTE_MASKED_HARDLINE / _mask_quoted_strings) so quoted
+    # prose (`echo "cat f > /dev/sda"`) cannot trip it, while shell-carrying
+    # wrappers (sh -c / bash -c / eval) still surface their payload as a raw
+    # detection variant — quoting is not a bypass (#93392).
     (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
-    # Fork bomb (classic shell form)
+    # Fork bomb (classic shell form). Also positionless (the trigger is the
+    # function definition itself, valid anywhere in a command line), so it is
+    # quote-masked like the redirect rule above rather than _CMDPOS-anchored.
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    # Kill every process on the system
-    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # Kill every process on the system — anchor the command-name token so
+    # `echo "kill -1 sends SIGHUP to everything"` doesn't trip (#93392).
+    (_CMDPOS + r'kill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
     # System shutdown / reboot — anchor to command position (start of line,
     # after a command separator, or after sudo/env wrappers) so we don't
     # false-positive on "echo reboot" or "grep 'shutdown' logs".
@@ -558,10 +610,111 @@ HARDLINE_PATTERNS = [
 # regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
 # at the end of this module after DANGEROUS_PATTERNS is defined.
 _RE_FLAGS = re.IGNORECASE | re.DOTALL
+
+# Hardline rules whose trigger has no command-name token to anchor (the
+# redirect target / fork-bomb definition are valid anywhere in a command
+# line). These are matched against QUOTE-MASKED variants of the command so
+# quoted prose (`echo "cat f > /dev/sda"`, `git commit -m "fork bomb
+# :(){ :|:& };:"`) cannot trip the unconditional floor, while the raw
+# payloads of shell-carrying wrappers (sh -c, bash -c, eval) are still
+# scanned unmasked — quoting is not a bypass (#93392).
+_QUOTE_MASKED_HARDLINE_DESCRIPTIONS = frozenset({
+    "redirect to raw block device",
+    "fork bomb",
+})
+
 HARDLINE_PATTERNS_COMPILED = [
-    (re.compile(pattern, _RE_FLAGS), description)
+    (
+        re.compile(pattern, _RE_FLAGS),
+        description,
+        description in _QUOTE_MASKED_HARDLINE_DESCRIPTIONS,
+    )
     for pattern, description in HARDLINE_PATTERNS
 ]
+
+
+# Command names that hand a quoted argument to another shell/parser to
+# EXECUTE. For these, quoted text is code, not prose, so the quote-masked
+# hardline rules must scan the raw string (see detect_hardline_command).
+_SHELL_CARRIER_NAMES = frozenset({
+    "eval", "sh", "bash", "zsh", "ksh", "dash", "source", ".",
+})
+
+
+def _contains_shell_carrier(command: str) -> bool:
+    """Return whether any command-position word is a shell-carrying command."""
+    for _, _, word in _iter_shell_command_word_spans(command):
+        name = os.path.basename(
+            _deobfuscate_shell_word_for_detection(word)
+        ).lower()
+        if name in _SHELL_CARRIER_NAMES:
+            return True
+    return False
+
+
+def _mask_quoted_prose(command: str) -> str:
+    """Blank out quoted string CONTENT for positionless hardline matching.
+
+    Detection-only rewrite used by the quote-masked hardline rules
+    (redirect-to-block-device, fork bomb): text inside single or double
+    quotes is data the shell passes as an argument, so `echo "cat f >
+    /dev/sda"` must not trip the unconditional floor (#93392). Structure is
+    preserved: the quote characters themselves stay, and inside double
+    quotes `$(...)` command substitutions and backtick spans are kept RAW
+    because the shell really executes them (`echo "$(cat f > /dev/sda)"`
+    remains a true positive). Unquoted text is untouched. Quote tracking
+    mirrors _mask_quoted_newlines; an unclosed quote masks to end-of-string,
+    which cannot hide a runnable command (the shell would not run it
+    either).
+    """
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+                out.append(ch)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < n:
+                out.append("  ")
+                i += 2
+                continue
+            if ch == '"':
+                quote = None
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                end = _scan_dollar_paren_end(command, i)
+                if end is not None:
+                    out.append(command[i:end])
+                    i = end
+                    continue
+            if ch == "`":
+                close = command.find("`", i + 1)
+                if close != -1:
+                    out.append(command[i:close + 1])
+                    i = close + 1
+                    continue
+            out.append(" ")
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 # =========================================================================
@@ -614,8 +767,26 @@ def detect_hardline_command(command: str) -> tuple:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
         variant_lower = command_variant.lower()
-        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-            if pattern_re.search(variant_lower):
+        masked_lower: str | None = None
+        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+            if quote_masked:
+                # Positionless rules (redirect-to-block-device, fork bomb)
+                # match a quote-masked variant so quoted prose in echo /
+                # git commit -m / gh --body arguments is DATA (#93392).
+                # Shell-carrying commands (sh/bash -c, eval, source) hand
+                # their quoted argument to another parser, so those scan
+                # the raw variant — quoting is not a bypass. bash/sh -c
+                # payloads additionally surface as their own raw variants
+                # via _execution_flag_findings.
+                if masked_lower is None:
+                    if _contains_shell_carrier(command_variant):
+                        masked_lower = variant_lower
+                    else:
+                        masked_lower = _mask_quoted_prose(command_variant).lower()
+                haystack = masked_lower
+            else:
+                haystack = variant_lower
+            if pattern_re.search(haystack):
                 return (True, description)
     return (False, None)
 
@@ -858,8 +1029,10 @@ DANGEROUS_PATTERNS = [
     (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recur[a-z]*\b.*root', "recursive chown to root (long flag)"),
-    (r'\bmkfs\b', "format filesystem"),
-    (r'\bdd\s+.*if=', "disk copy"),
+    # Anchored to command position like the hardline twins (#93392):
+    # quoted prose mentioning mkfs/dd must not require approval to echo.
+    (_CMDPOS + r'mkfs\b', "format filesystem"),
+    (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
     # Use [^\n]* instead of .* so DOTALL mode does not cause a WHERE clause on the
@@ -2451,6 +2624,11 @@ def human_wait_ceiling() -> float:
     authorization gate's serialization-lock acquire, so the two bounds cannot
     drift. Never call while holding ``_human_wait_lock`` — it reads the
     config cache.
+
+    Platform safety: ``_get_approval_timeout`` caps at
+    ``agent.deadline.MAX_SAFE_TIMEOUT_S``, so this value is always safe to
+    hand to ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``
+    (#83220 macOS time_t overflow).
     """
     return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
 
@@ -2829,6 +3007,23 @@ def clear_session(session_key: str) -> None:
         entry.result = "deny"
         entry.event.set()
     _release_permission_mode_dependents(session_key)
+    # Session-persistent code kernels are owned by this same key: they die
+    # at the same boundary that clears the session's approval and yolo
+    # state, so a finished conversation cannot leak a live interpreter.
+    try:
+        from tools.code_kernel import shutdown_kernels_for_owner
+
+        shutdown_kernels_for_owner(session_key)
+    except Exception:
+        pass
+    # Remote session kernels (docker/ssh/modal) share the owner model and
+    # the disposal boundary.
+    try:
+        from tools.code_kernel_remote import shutdown_remote_kernels_for_owner
+
+        shutdown_remote_kernels_for_owner(session_key)
+    except Exception:
+        pass
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -3254,6 +3449,16 @@ def _get_approval_config() -> dict:
 
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    try:
+        from gateway.hosted_room_execution_policy import (
+            current_room_execution_policy,
+        )
+
+        room_policy = current_room_execution_policy()
+        if room_policy is not None:
+            return room_policy.approval_mode
+    except Exception:
+        pass
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
 
@@ -3293,11 +3498,37 @@ def _get_approval_timeout() -> int:
     approvals arrive as push notifications the user may not see for a couple
     of minutes; 60s proved too tight in practice (Telegram taps landed after
     the wait had already failed closed).
+
+    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (1 year — semantically
+    unbounded): a very large configured value overflows ``time_t`` inside
+    ``Thread.join(timeout=...)`` / ``Lock.acquire(timeout=...)`` on macOS,
+    and before this clamp a single oversized ``approvals.timeout`` crashed
+    every parallel tool batch with OverflowError (#83220). Clamping at the
+    single config-read site keeps every consumer (prompt join, gateway poll
+    deadline, human-wait ceiling, authorization gate) platform-safe at once.
     """
     try:
-        return int(_get_approval_config().get("timeout", 300))
+        raw = int(_get_approval_config().get("timeout", 300))
     except (ValueError, TypeError):
         return 300
+    try:
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+        safe_cap = int(MAX_SAFE_TIMEOUT_S)
+    except Exception:
+        # Fail CLOSED: returning the raw value here would re-open the exact
+        # time_t overflow this clamp exists to prevent. ~1 year, matching
+        # agent.deadline.MAX_SAFE_TIMEOUT_S.
+        safe_cap = 365 * 24 * 3600
+    if raw > safe_cap:
+        logger.warning(
+            "approvals.timeout=%s exceeds the platform-safe maximum; "
+            "clamping to %ss",
+            raw,
+            safe_cap,
+        )
+        return safe_cap
+    return raw
 
 
 def _get_cron_approval_mode() -> str:
@@ -3319,6 +3550,25 @@ def _get_single_query_approval_mode() -> str:
         from hermes_cli.config import load_config_readonly
         config = load_config_readonly()
         mode = str(cfg_get(config, "approvals", "single_query_mode", default="deny")).lower().strip()
+        if mode in {"approve", "off", "allow", "yes"}:
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
+def _get_unattended_approval_mode() -> str:
+    """Read the unattended-platform approval mode from config.
+
+    Governs webhook / msgraph_webhook / api_server sessions (the
+    ``_UNATTENDED_APPROVAL_PLATFORMS`` set). Returns 'deny' or 'approve';
+    default deny — an unattended programmatic session should never silently
+    run a flagged action unless the operator explicitly trusts it.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        mode = str(cfg_get(config, "approvals", "unattended_mode", default="deny")).lower().strip()
         if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
         return "deny"
@@ -3406,8 +3656,22 @@ def _smart_approve(command: str, description: str) -> str:
     Inspired by OpenAI Codex's Smart Approvals guardian subagent
     (openai/codex#13860).
     """
+    _smart_t0 = time.monotonic()
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import _get_task_timeout, call_llm
+
+        # Explicit timeout for the guardian call. This synchronous call gates
+        # EVERY flagged terminal command — relying on the timeout being
+        # resolved correctly inside call_llm has burned users in production:
+        # a stalled provider response silently froze the agent turn for tens
+        # of minutes with zero log output (#82846, #72500). Pass the same
+        # configured value explicitly (belt) and log the call + duration
+        # (suspenders) so a hang is visible in the logs instead of silent.
+        smart_timeout = _get_task_timeout("approval")
+        logger.debug(
+            "Smart approvals: assessing risk for command (timeout=%ss)",
+            smart_timeout,
+        )
 
         # Strip shell comments to remove the easiest injection vector.
         sanitized_command = _strip_shell_comments(command)
@@ -3464,6 +3728,11 @@ def _smart_approve(command: str, description: str) -> str:
             ],
             temperature=0,
             max_tokens=16,
+            timeout=smart_timeout,
+        )
+        logger.debug(
+            "Smart approvals: LLM call completed in %.1fs",
+            time.monotonic() - _smart_t0,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -3476,7 +3745,15 @@ def _smart_approve(command: str, description: str) -> str:
             return "escalate"
 
     except Exception as e:
-        logger.debug("Smart approvals: LLM call failed (%s), escalating", e)
+        # WARNING (was DEBUG): a failed/blocked guardian call is a real event
+        # the operator needs to see — the whole point of #82846 is that the
+        # hang was invisible. Log the elapsed time and error class too.
+        logger.warning(
+            "Smart approvals: LLM call failed after %.1fs (%s: %s), escalating",
+            time.monotonic() - _smart_t0,
+            type(e).__name__,
+            e,
+        )
         return "escalate"
 
 
@@ -3488,6 +3765,7 @@ def _run_approval_gate(
     approval_callback=None,
     cron_deny_message: str,
     single_query_deny_message: str,
+    unattended_deny_message: str = "",
     autoapprove_log_prefix: str,
     fail_closed_when_no_human: bool = False,
     no_human_block_message: str = "",
@@ -3587,6 +3865,26 @@ def _run_approval_gate(
                     "description": description,
                 }
             # cron_mode: approve — fall through to auto-approve below.
+        elif _is_unattended_platform_approval_context():
+            # Unattended programmatic platforms (webhook/msgraph_webhook/
+            # api_server): respect unattended_mode config. Resolves instantly
+            # — never a pending approval nobody can answer (#37284, #87509).
+            if _get_unattended_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": unattended_deny_message or (
+                        f"BLOCKED: approval required ({description}) but this "
+                        "session runs on an unattended platform "
+                        f"({_get_session_platform()}) with no user present to "
+                        "approve it. Find an alternative approach that avoids "
+                        "this action. To allow flagged actions on unattended "
+                        "platforms, set approvals.unattended_mode: approve in "
+                        "config.yaml."
+                    ),
+                    "pattern_key": pattern_key,
+                    "description": description,
+                }
+            # unattended_mode: approve — fall through to auto-approve below.
         elif fail_closed_when_no_human:
             # Non-cron, non-interactive, no gateway: no human can answer.
             # The plugin-escalation path opts in to fail-closed here so a
@@ -3644,6 +3942,8 @@ def _run_approval_gate(
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -3653,9 +3953,11 @@ def _run_approval_gate(
                 if not resolved:
                     reason = "timed out without user response"
                     timeout_addendum = " Silence is not consent."
+                    outcome = "timeout"
                 else:
                     reason = "denied by user"
                     timeout_addendum = ""
+                    outcome = "denied"
                 reason_addendum = ""
                 if resolved and deny_reason:
                     reason_addendum = f' Reason given by the user: "{deny_reason}".'
@@ -3669,7 +3971,9 @@ def _run_approval_gate(
                     ),
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": outcome,
                     "user_consent": False,
+                    "deny_reason": deny_reason,
                 }
 
             if choice == "session":
@@ -4368,6 +4672,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
             # exact thread AIAgent.interrupt() flags — so is_interrupted() here
             # sees the signal. Resolve as "deny" so the agent loop receives a
             # normal denial and unwinds cleanly (#8697).
+            #
+            # NOTE (#85125 2e): is_interrupted() here deliberately does NOT
+            # distinguish a deliberate /stop from a gateway INACTIVITY
+            # timeout — both intentionally resolve as 'deny' (not
+            # outcome='timeout'). The per-thread interrupt flag carries only
+            # an optional free-text reason (tools/interrupt.py
+            # _interrupt_reasons), and the producers do not set a stable,
+            # machine-checkable category for this distinction: the gateway's
+            # inactivity watchdog (gateway/run.py
+            # _watch_gateway_turn_inactivity → request_hard_interrupt with
+            # _INTERRUPT_REASON_TIMEOUT) and a user /stop both funnel through
+            # AIAgent.interrupt(), whose tool_reason strings ("explicit stop
+            # requested" vs the fallback "user sent a new message") are not a
+            # reliable discriminator and would require new plumbing to make
+            # so. Fail-closed deny preserves #8697 semantics; changing this
+            # needs a dedicated interrupt-cause channel, not string matching.
             if is_interrupted():
                 logger.info(
                     "Approval wait interrupted by user signal — "
@@ -4611,6 +4931,66 @@ def check_all_command_guards(command: str, env_type: str,
                                 "cron jobs run without a user present to approve it. "
                                 "Find an alternative approach, install tirith, or set "
                                 "approvals.cron_mode: approve in config.yaml."
+                            ),
+                        }
+                    # else: tirith_fail_open is True — allow as before
+        # Unattended programmatic platforms (webhook/msgraph_webhook/
+        # api_server): respect unattended_mode config (#37284, #87509).
+        # Mirrors the cron branch above, tirith parity included.
+        if _is_unattended_platform_approval_context() and not _is_cron_approval_context():
+            if _get_unattended_approval_mode() == "deny":
+                _ua_platform = _get_session_platform()
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            f"but this session runs on an unattended platform "
+                            f"({_ua_platform}) with no user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands on unattended platforms, "
+                            "set approvals.unattended_mode: approve in config.yaml."
+                        ),
+                    }
+                # Tirith parity with the cron branch: content-level threats
+                # are caught even when pattern detection misses.
+                try:
+                    from tools.tirith_security import check_command_security
+                    _ua_tirith = check_command_security(command)
+                    if _ua_tirith.get("action") in ("block", "warn"):
+                        _ua_desc = _format_tirith_description(_ua_tirith)
+                        return {
+                            "approved": False,
+                            "message": (
+                                f"BLOCKED: {_ua_desc} "
+                                f"but this session runs on an unattended platform "
+                                f"({_ua_platform}) with no user present to approve it. "
+                                "Find an alternative approach that avoids this command. "
+                                "To allow dangerous commands on unattended platforms, "
+                                "set approvals.unattended_mode: approve in config.yaml."
+                            ),
+                        }
+                except ImportError:
+                    _ua_fail_open = True  # safe default if config is unreadable
+                    try:
+                        from hermes_cli.config import load_config_readonly as _load_cfg
+                        _sec = (_load_cfg() or {}).get("security", {}) or {}
+                        if _sec.get("tirith_enabled", True):
+                            _ua_fail_open = _sec.get("tirith_fail_open", True)
+                    except Exception:
+                        pass
+                    if not _ua_fail_open:
+                        return {
+                            "approved": False,
+                            "message": (
+                                "BLOCKED: the Tirith security scanner could not be "
+                                "imported and security.tirith_fail_open is false, "
+                                "so this command cannot be silently allowed — and "
+                                f"this session runs on an unattended platform "
+                                f"({_ua_platform}) with no user present to approve it. "
+                                "Find an alternative approach, install tirith, or set "
+                                "approvals.unattended_mode: approve in config.yaml."
                             ),
                         }
                     # else: tirith_fail_open is True — allow as before
@@ -4864,6 +5244,8 @@ def check_all_command_guards(command: str, env_type: str,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": "notify_failed",
+                    "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -5133,6 +5515,29 @@ def check_execute_code_guard(code: str, env_type: str,
                     "to approve it. Use normal tools instead, or set "
                     "approvals.cron_mode: approve only if this cron profile "
                     "is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
+
+    # Unattended programmatic platforms (webhook/msgraph_webhook/api_server):
+    # no user is present to approve arbitrary code either. Mirrors the cron
+    # branch above; governed by approvals.unattended_mode (#37284, #87509).
+    if _is_unattended_platform_approval_context():
+        if _get_unattended_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). This session runs on an unattended "
+                    f"platform ({_get_session_platform()}) with no user "
+                    "present to approve it. Use normal tools instead, or set "
+                    "approvals.unattended_mode: approve only if sessions on "
+                    "this surface are intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
                 "description": description,

@@ -53,14 +53,18 @@ vi.mock('@/store/session-states', () => reconnectStateMocks)
 
 const {
   activeGateway,
+  closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   openGatewayForProfile,
+  pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  retainGatewayForAgent,
   retireLocalProfileGateways,
   setPrimaryGateway
 } = await import('./gateway')
@@ -163,6 +167,44 @@ describe('disposeSecondariesForConnection', () => {
     expect(getConnectionFor).toHaveBeenCalledTimes(2)
   })
 
+  it('defers edit redials until request and foreground owners release the old sockets', async () => {
+    const foregroundScopes = new Set<string>()
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    configureGatewayRegistry({ foregroundScopes: () => foregroundScopes, onEvent: vi.fn() } as never)
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    await ensureGatewayForAgent('office', 'default')
+    const release = await retainGatewayForAgent('homelab', 'default')
+    await openGatewayForAgent('homelab', 'work')
+    foregroundScopes.add('conn:homelab::work')
+
+    const retainedSocket = gatewayMocks.instances[0]
+    const foregroundSocket = gatewayMocks.instances[2]
+
+    disposeSecondariesForConnection('homelab', { redial: true })
+
+    // An edit may need a new endpoint, but it cannot sever an in-flight turn
+    // or a mounted runtime's owner socket. No replacement is dialed yet.
+    expect(retainedSocket.close).not.toHaveBeenCalled()
+    expect(foregroundSocket.close).not.toHaveBeenCalled()
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(3)
+
+    release()
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(4))
+    expect(retainedSocket.close).toHaveBeenCalledOnce()
+    expect(foregroundSocket.close).not.toHaveBeenCalled()
+
+    foregroundScopes.clear()
+    pruneSecondaryGateways(new Set(['conn:homelab::default']))
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(5))
+    expect(foregroundSocket.close).toHaveBeenCalledOnce()
+  })
+
   it('is a no-op for blank or unknown connection ids', async () => {
     installDesktop({
       getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
@@ -179,7 +221,69 @@ describe('disposeSecondariesForConnection', () => {
   })
 })
 
+describe('legacy secondary teardown', () => {
+  it('closes v1 profile sockets without detaching registered sources', async () => {
+    const getConnection = vi.fn(async (profile: string) => descriptorFor('legacy-local', profile))
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnection, getConnectionFor })
+
+    await openGatewayForProfile('writer')
+    await ensureGatewayForAgent('homelab', 'default')
+
+    const legacy = gatewayMocks.instances[0]
+    const registered = gatewayMocks.instances[1]
+
+    closeLegacySecondaryGateways()
+
+    expect(legacy.close).toHaveBeenCalledOnce()
+    expect(registered.close).not.toHaveBeenCalled()
+    expect(activeGateway()).toBe(registered)
+  })
+})
+
 describe('secondary reconnect runtime scope', () => {
+  it('invalidates stale runtime bindings before a direct secondary reopen publishes open', async () => {
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))
+    })
+
+    await openGatewayForAgent('homelab', 'writer')
+    const firstSocket = gatewayMocks.instances[0]
+    pruneSecondaryGateways(new Set())
+    expect(firstSocket.close).toHaveBeenCalledOnce()
+
+    let finishReconnect!: () => void
+
+    const reconnect = new Promise<void>(resolve => {
+      finishReconnect = resolve
+    })
+
+    gatewayMocks.connect.mockImplementationOnce(() => reconnect)
+
+    // A real user action after the renderer/main-process pool reaped an idle
+    // profile creates a fresh Secondary entry and opens it directly. Runtime
+    // bindings from the previous backend generation must be gone before the
+    // new socket can publish `open`, or the request can immediately reuse a
+    // process-local id the respawned backend never minted.
+    const reopening = openGatewayForAgent('homelab', 'writer')
+
+    await vi.waitFor(() => expect(gatewayMocks.connect).toHaveBeenCalledTimes(2))
+    expect(reconnectStateMocks.resetTileRuntimeBindings).toHaveBeenCalledWith({
+      connectionId: 'homelab',
+      profile: 'writer'
+    })
+    expect(reconnectStateMocks.resetTileRuntimeBindings.mock.invocationCallOrder[0]).toBeLessThan(
+      gatewayMocks.connect.mock.invocationCallOrder[1]
+    )
+
+    finishReconnect()
+    await reopening
+  })
+
   it('rebinds only Bot runtimes owned by the reconnected profile route', async () => {
     installDesktop({
       getConnectionFor: vi.fn(async ({ connectionId, profile }) => descriptorFor(connectionId, profile))

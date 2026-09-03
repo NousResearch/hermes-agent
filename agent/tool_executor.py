@@ -123,8 +123,8 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
 _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
-# Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
-# guard does not preempt a slow-but-valid summarization attempt.
+# Generous ceiling for slow-but-valid tool work (large page fetches, slow
+# remote backends) so the batch guard does not preempt a legitimate attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
 # Upper bound a concurrent worker will wait at the start-order gate for all
 # earlier-ordered tools to advance before proceeding out of order. Long enough
@@ -154,6 +154,12 @@ def _authorization_gate_lock_timeout() -> float:
     try:
         from tools.approval import human_wait_ceiling
 
+        # human_wait_ceiling is platform-safety-capped (agent/deadline.py
+        # MAX_SAFE_TIMEOUT_S): a huge approvals.timeout can no longer overflow
+        # Lock.acquire's time_t on macOS (#83220). Deliberately NOT min()'d
+        # with _AUTHORIZATION_GATE_LOCK_TIMEOUT_S — the gate must never give
+        # up while a legitimate approval prompt is still answerable (#79719),
+        # so a configured approvals.timeout above 360s must extend the gate.
         return human_wait_ceiling()
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
@@ -765,6 +771,7 @@ def _run_agent_tool_execution_middleware(
         function_args,
         _hermes_pipeline,
         session_id=str(getattr(agent, "session_id", "") or ""),
+        tool_call_id=tool_call_id or None,
         metadata={
             "task_id": effective_task_id or "",
             "turn_id": getattr(agent, "_current_turn_id", "") or "",
@@ -1145,6 +1152,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     parsed_calls = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
+        # Legacy tool-name aliases (2026-08 renames) — map BEFORE the
+        # agent-loop branches (todo_list etc. dispatch above the registry).
+        from model_tools import _LEGACY_TOOL_ALIASES as _lta
+        function_name = _lta.get(function_name, function_name)
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -1186,9 +1197,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
-                        # Probe-validate before unwrapping (ironclaw#5149):
-                        # missing required args return the parameter schema
-                        # instead of dispatching into an opaque failure.
+                        # Validate before unwrapping: the generic bridge hides
+                        # the concrete parameter schema from provider-native
+                        # tool-call validation.
                         _probe_err = _ts.validate_deferred_call_args(_underlying, _underlying_args)
                         if _probe_err is not None:
                             _ts_scope_block = _probe_err
@@ -2001,6 +2012,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             break
 
         function_name = tool_call.function.name
+        # Legacy tool-name aliases (2026-08 renames) — map BEFORE the
+        # agent-loop branches (todo_list etc. dispatch above the registry).
+        from model_tools import _LEGACY_TOOL_ALIASES as _lta
+        function_name = _lta.get(function_name, function_name)
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -2042,9 +2057,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
-                        # Probe-validate before unwrapping (ironclaw#5149):
-                        # missing required args return the parameter schema
-                        # instead of dispatching into an opaque failure.
+                        # Validate before unwrapping: the generic bridge hides
+                        # the concrete parameter schema from provider-native
+                        # tool-call validation.
                         _probe_err = _ts.validate_deferred_call_args(_underlying, _underlying_args)
                         if _probe_err is not None:
                             # This path wraps _block_msg in {"error": ...} —
@@ -2075,7 +2090,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if function_name == "todo":
+        if function_name == "todo_list":
             def _execute(next_args: dict) -> Any:
                 from tools.todo_tool import todo_tool as _todo_tool
                 return _todo_tool(
@@ -2095,7 +2110,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('todo_list', function_args, tool_duration, result=function_result)}")
         elif function_name == "message_agent":
             # Bot Mode teammate DM (tools/bot_mode_dm.py) — injected, not
             # registered: only a canonical Bot Chat session carries the
@@ -2236,14 +2251,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
-        elif function_name == "read_preview":
+        elif function_name == "desktop_preview":
             def _execute(next_args: dict) -> Any:
-                from tools.read_preview_tool import read_preview_tool as _read_preview_tool
-                return _read_preview_tool(
-                    start=next_args.get("start"),
-                    count=next_args.get("count"),
-                    callback=getattr(agent, "read_preview_callback", None),
-                )
+                if (next_args.get("action") or "").strip() == "read":
+                    from tools.read_preview_tool import read_preview_tool as _read_preview_tool
+                    return _read_preview_tool(
+                        start=next_args.get("start"),
+                        count=next_args.get("count"),
+                        callback=getattr(agent, "read_preview_callback", None),
+                    )
+                from tools.preview_tool import _handle_preview
+                return _handle_preview(next_args)
             function_result, function_args, middleware_trace, _execution_blocked, _execution_dispatched = _managed_values(_run_agent_tool_execution_middleware(
                 agent,
                 function_name=function_name,
@@ -2256,7 +2274,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('read_preview', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('desktop_preview', function_args, tool_duration, result=function_result)}")
         elif function_name == "drive_preview":
             def _execute(next_args: dict) -> Any:
                 from tools.drive_preview_tool import drive_preview_tool as _drive_preview_tool
@@ -2327,7 +2345,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_window_below', function_args, tool_duration, result=function_result)}")
-        elif function_name == "tour":
+        elif function_name == "gui_tour":
             def _execute(next_args: dict) -> Any:
                 from tools.tour_tool import tour_tool as _tour_tool
                 return _tour_tool(
@@ -2353,7 +2371,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             ))
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
-                agent._vprint(f"  {_get_cute_tool_message_impl('tour', function_args, tool_duration, result=function_result)}")
+                agent._vprint(f"  {_get_cute_tool_message_impl('gui_tour', function_args, tool_duration, result=function_result)}")
         elif function_name == "setup_mcp":
             def _execute(next_args: dict) -> Any:
                 from tools.setup_mcp_tool import setup_mcp_tool as _setup_mcp_tool

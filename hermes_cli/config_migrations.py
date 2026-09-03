@@ -218,25 +218,6 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Migrated legacy stt.model to provider-specific config")
 
 
-def _migrate_to_15(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 14 → 15: add explicit gateway interim-message gate ──
-    _c = _cfg()
-    read_raw_config = _c.read_raw_config
-    _persist_migration = _c._persist_migration
-
-    config = read_raw_config()
-    display = config.get("display", {})
-    if not isinstance(display, dict):
-        display = {}
-    if "interim_assistant_messages" not in display:
-        display["interim_assistant_messages"] = True
-        config["display"] = display
-        results["config_added"].append("display.interim_assistant_messages=true (default)")
-        _persist_migration(config)
-        if not quiet:
-            print("  ✓ Added display.interim_assistant_messages=true")
-
-
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
     # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
     _c = _cfg()
@@ -846,6 +827,64 @@ def _migrate_to_38(results: Dict[str, Any], quiet: bool) -> None:
         print(f"  ⚠ {message}")
 
 
+def _migrate_to_39(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 38 → 39: remove the retired `bfl` toolset from saved lists ──
+    # The six bfl_flux3_* core tools shipped for a free FLUX 3 promotional
+    # period that has since ended server-side, leaving every Nous-signed-in
+    # install paying ~2.7K tokens of schema per API call for tools that can
+    # only refuse. They were removed in favor of the standard video_gen
+    # provider surface (`video_generate`, `hermes tools` → Video Generation).
+    # Strip the toolset key wherever the auto-backfill or a picker save wrote
+    # it, so stale config can't resurrect an unknown toolset.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    changed = False
+    for section in ("platform_toolsets", "known_builtin_toolsets"):
+        mapping = config.get(section)
+        if not isinstance(mapping, dict):
+            continue
+        for platform, toolsets in mapping.items():
+            if isinstance(toolsets, list) and "bfl" in toolsets:
+                mapping[platform] = [ts for ts in toolsets if ts != "bfl"]
+                changed = True
+        if changed:
+            config[section] = mapping
+    if changed:
+        _persist_migration(config)
+        results["config_added"].append("removed retired 'bfl' toolset from saved toolset lists")
+        if not quiet:
+            print(
+                "  ✓ Removed the retired BFL FLUX 3 toolset from saved toolset "
+                "lists — video generation now lives under `hermes tools` → "
+                "Video Generation (Nous Subscription or FAL)."
+            )
+
+
+def _migrate_to_40(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 39 → 40: model_catalog.ttl_hours → ttl_minutes (default 20) ──
+    # The picker catalogs now refresh every 20 minutes (and the gateway
+    # refreshes them in the background on that cadence). Only the OLD default
+    # (ttl_hours: 1, written by the v25 migration) is dropped so the new
+    # default applies; any other explicit ttl_hours is a deliberate choice
+    # and stays honoured by the loader.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    config = read_raw_config()
+    raw_mc = config.get("model_catalog")
+    if isinstance(raw_mc, dict) and raw_mc.get("ttl_hours") == 1 and "ttl_minutes" not in raw_mc:
+        del raw_mc["ttl_hours"]
+        config["model_catalog"] = raw_mc
+        _persist_migration(config)
+        results["config_added"].append("model_catalog.ttl_hours 1 → ttl_minutes 20 (default)")
+        if not quiet:
+            print("  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)")
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: observe earlier steps' writes via read_raw_config() (filesystem state).
@@ -856,7 +895,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),
-    (15, _migrate_to_15),
+    # v15 only added a schema default; runtime merging supplies it without a
+    # write. Registering a migration would falsely report or materialise it.
     (16, _migrate_to_16),
     (17, _migrate_to_17),
     (21, _migrate_to_21),
@@ -871,6 +911,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (36, _migrate_to_36),
     (37, _migrate_to_37),
     (38, _migrate_to_38),
+    (39, _migrate_to_39),
+    (40, _migrate_to_40),
 )
 
 

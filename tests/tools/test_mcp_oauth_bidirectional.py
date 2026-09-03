@@ -28,6 +28,8 @@ the bridge forwards responses correctly into the inner SDK generator.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
@@ -204,6 +206,105 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
 
     # Clean up the generator — we don't need to complete the full dance.
     await flow.aclose()
+
+
+@pytest.mark.asyncio
+async def test_long_lived_resource_request_does_not_block_concurrent_post(
+    tmp_path, monkeypatch
+):
+    """A session-long MCP GET must not hold the provider state lock.
+
+    MCP SDK 2.0.0 wraps its entire auth-flow generator in one lock.  Leaving
+    the GET response pending then prevents a concurrent POST from even
+    acquiring its Bearer token.  Hermes narrows that lock around resource I/O
+    while retaining it for OAuth state transitions.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="access-token",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="refresh-token",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    get_request = httpx.Request("GET", "https://example.com/mcp")
+    get_flow = provider.async_auth_flow(get_request)
+    get_outbound = await get_flow.__anext__()
+
+    # Keep the GET open, as streamable HTTP does for the session lifetime.
+    # The POST must still authenticate and reach HTTPX without waiting for it.
+    post_request = httpx.Request("POST", "https://example.com/mcp")
+    post_flow = provider.async_auth_flow(post_request)
+    post_outbound = await asyncio.wait_for(post_flow.__anext__(), timeout=2.0)
+
+    assert post_outbound is post_request
+    assert post_outbound.headers["authorization"] == "Bearer access-token"
+
+    with pytest.raises(StopAsyncIteration):
+        await post_flow.asend(httpx.Response(200, request=post_outbound))
+
+    # A completed concurrent refresh must make the pending GET retry with the
+    # new token rather than start a second OAuth transition from its stale 401.
+    provider.context.current_tokens = OAuthToken(
+        access_token="new-access-token",
+        token_type="Bearer",
+        expires_in=3600,
+        refresh_token="refresh-token",
+    )
+    provider.context.update_token_expiry(provider.context.current_tokens)
+    get_retry = await get_flow.asend(
+        httpx.Response(
+            401,
+            request=get_outbound,
+            headers={
+                "www-authenticate": (
+                    'Bearer resource_metadata="https://example.com/'
+                    '.well-known/oauth-protected-resource"'
+                )
+            },
+        )
+    )
+    assert get_retry is get_request
+    assert get_retry.headers["authorization"] == "Bearer new-access-token"
+
+    with pytest.raises(StopAsyncIteration):
+        await get_flow.asend(httpx.Response(200, request=get_retry))
 
 
 async def _noop_redirect(_url: str) -> None:

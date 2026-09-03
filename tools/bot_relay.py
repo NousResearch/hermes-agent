@@ -38,6 +38,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import tempfile
 import time
@@ -496,10 +497,18 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     )
     # Encode label with !r so roster fields cannot break out of the generated
     # python -c source (quotes, parens, or extra statements in connection_id).
+    # The raw-string prefix keeps Windows paths viable: repr escapes each
+    # backslash ("C:\\Users\\..."), but the Windows execution layer the
+    # waiter runs under folds "\\" back to "\", which turns "\U" into an
+    # invalid unicode escape and SyntaxErrors the whole script (#93590).
+    # With the r prefix the folded single backslash parses as a literal.
+    # POSIX paths contain no backslashes, so the prefix is a no-op there,
+    # and \' inside a raw literal still cannot terminate the string, so
+    # the injection defense above is unchanged.
     code = (
         "import json,os,sys,time\n"
-        f"p = {reply_path!r}\n"
-        f"label = {label!r}\n"
+        f"p = r{reply_path!r}\n"
+        f"label = r{label!r}\n"
         f"deadline = time.time() + {REPLY_WAIT_SECONDS}\n"
         "while time.time() < deadline:\n"
         "    if os.path.exists(p):\n"
@@ -515,7 +524,10 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
         "        print('Reply from ' + label + ':')\n"
         "        print(d.get('reply') or '(empty reply)')\n"
         "        sys.exit(0)\n"
-        "    time.sleep(2)\n"
+        # 250ms cadence: the reply file is written once by the target
+        # gateway's deliver path; a 2s sleep here added up to 2s of dead
+        # air to every cross-machine reply for no benefit (stat is cheap).
+        "    time.sleep(0.25)\n"
         f"print('No reply from ' + label + ' within {REPLY_WAIT_SECONDS}s. The message may "
         "still be delivered when the Desktop reconnects; do not resend blindly.')\n"
         "sys.exit(1)\n"
@@ -526,10 +538,33 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 # ── delivery command (used by the deliver RPC on the TARGET gateway) ────────
 
 
+def _hermes_cli() -> str:
+    """Resolve the hermes CLI beside this gateway's own interpreter.
+
+    The deliver RPC runs on the target gateway, whose process is the venv
+    python — its bin/Scripts directory holds the matching ``hermes``
+    entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
+    service contexts (systemd units, desktop launchers, non-login SSH
+    shells) do not provide, so delivery died with ENOENT there (#93590).
+    When no sibling exists (e.g. running from a source tree without an
+    installed script), a ``shutil.which`` lookup runs next — it honors
+    whatever PATH the process does have — before falling back to the bare
+    name, preserving today's behavior for interactive shells.
+    """
+    exe = Path(sys.executable or "")
+    sibling = exe.parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    if sibling.is_file():
+        return str(sibling)
+    found = shutil.which("hermes")
+    if found:
+        return found
+    return "hermes"
+
+
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
     return [
-        "hermes",
+        _hermes_cli(),
         "-p",
         profile,
         "chat",

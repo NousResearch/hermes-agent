@@ -54,7 +54,7 @@ def _run_with_current_provider(job, current_provider, tmp_path):
          patch("cron.scheduler._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state.SessionDB", return_value=fake_db), \
+         patch("hermes_state.get_shared_session_db", return_value=fake_db), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
              return_value={
@@ -259,7 +259,7 @@ def _run_with_current_provider_and_model(
          patch("cron.scheduler._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state.SessionDB", return_value=fake_db), \
+         patch("hermes_state.get_shared_session_db", return_value=fake_db), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
              return_value={
@@ -423,7 +423,7 @@ class TestRuntimeResolutionTargetModel:
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state.get_shared_session_db", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  side_effect=_capture,

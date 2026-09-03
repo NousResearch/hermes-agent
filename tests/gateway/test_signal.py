@@ -305,11 +305,11 @@ class TestSignalReadReceipts:
         ("route_profile", "served_profiles", "expected_profile", "rejected", "receipted"),
         [
             ("work", ["default"], None, True, False),
-            ("work", ["default", "work"], "work", False, False),
+            ("work", ["default", "work"], "work", False, True),
             ("default", ["default"], "default", False, True),
         ],
     )
-    async def test_factory_scopes_receipts_to_signal_transport_profile(
+    async def test_factory_routes_before_authorizing_read_receipts(
         self,
         monkeypatch,
         route_profile,
@@ -377,7 +377,6 @@ class TestSignalReadReceipts:
             await asyncio.sleep(0)
 
         assert adapter.gateway_runner is runner
-        assert adapter._signal_transport_profile_name == "default"
         event = adapter.handle_message.await_args.args[0]
         assert event.source.profile == expected_profile
         assert event.source.profile_route_rejected is rejected
@@ -385,22 +384,6 @@ class TestSignalReadReceipts:
             adapter.send_read_receipt.assert_awaited_once()
         else:
             adapter.send_read_receipt.assert_not_awaited()
-
-    def test_secondary_signal_transport_is_profile_stamped(self, monkeypatch):
-        """Secondary reconnects use the same owner-profile receipt boundary."""
-        from gateway.run import GatewayRunner
-
-        runner = MagicMock()
-        adapter = _make_signal_adapter(monkeypatch)
-
-        GatewayRunner._configure_profile_adapter(
-            runner,
-            adapter,
-            "work",
-            Platform.SIGNAL,
-        )
-
-        assert adapter._signal_transport_profile_name == "work"
 
     @pytest.mark.parametrize(
         ("primary_env", "primary_value"),
@@ -439,7 +422,6 @@ class TestSignalReadReceipts:
         runner.pairing_stores = {"work": MagicMock()}
         runner.pairing_stores["work"].is_approved.return_value = False
         adapter.gateway_runner = runner
-        adapter._signal_transport_profile_name = "work"
         with patch(
             "hermes_cli.profiles.get_profile_dir",
             return_value=profile_home,
@@ -985,7 +967,10 @@ class TestSignalAttachmentFetch:
 
         adapter._rpc, captured = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/test.png"):
+        with patch(
+            "gateway.platforms.signal.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/test.png"),
+        ):
             await adapter._fetch_attachment("attachment-123")
 
         call = captured[0]
@@ -1383,9 +1368,129 @@ class TestSignalStreamingCapabilities:
 
         assert adapter.SUPPORTS_MESSAGE_EDITING is False
 
+    def test_signal_declares_long_message_chunking(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert getattr(adapter, "splits_long_messages", False) is True
+
 
 class TestSignalSendReturnsMessageId:
     """Signal send() should not pretend sent messages are editable."""
+
+    @pytest.mark.asyncio
+    async def test_send_chunks_long_messages_without_truncation_footer(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1712345678000}
+
+        adapter._rpc = mock_rpc
+
+        long_content = "x" * (adapter.MAX_MESSAGE_LENGTH + 500)
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is True
+        assert len(captured) >= 2
+        assert all(call["method"] == "send" for call in captured)
+        assert all(
+            len(call["params"]["message"]) <= adapter.MAX_MESSAGE_LENGTH
+            for call in captured
+        )
+        assert all(
+            "truncated, full output saved to" not in call["params"]["message"]
+            for call in captured
+        )
+        assert "".join(
+            call["params"]["message"].rsplit(" (", 1)[0]
+            for call in captured
+        ) == long_content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("open_marker", "close_marker", "style_type"),
+        [
+            ("**", "**", "BOLD"),
+            ("*", "*", "ITALIC"),
+            ("~~", "~~", "STRIKETHROUGH"),
+            ("`", "`", "MONOSPACE"),
+        ],
+    )
+    async def test_send_preserves_formatting_that_crosses_chunk_boundary(
+        self, monkeypatch, open_marker, close_marker, style_type
+    ):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return {"timestamp": 1712345678000 + len(captured)}
+
+        adapter._rpc = mock_rpc
+
+        long_content = (
+            "a" * (adapter.MAX_MESSAGE_LENGTH - 100)
+            + open_marker
+            + "b" * 240
+            + close_marker
+        )
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is True
+        assert len(captured) == 2
+        assert all(open_marker not in call["params"]["message"] for call in captured)
+        assert all(close_marker not in call["params"]["message"] for call in captured)
+        assert captured[0]["params"]["message"].endswith("b" * 90 + " (1/2)")
+        assert captured[1]["params"]["message"].startswith("b" * 150)
+        assert captured[0]["params"]["textStyle"] == (
+            f"{adapter.MAX_MESSAGE_LENGTH - 100}:90:{style_type}"
+        )
+        assert captured[1]["params"]["textStyle"] == f"0:150:{style_type}"
+
+    @pytest.mark.asyncio
+    async def test_send_returns_failure_if_later_chunk_rpc_fails(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        captured = []
+        responses = iter([
+            {"timestamp": 1712345678000},
+            None,
+        ])
+
+        async def mock_rpc(method, params, rpc_id=None, **kwargs):
+            captured.append({"method": method, "params": dict(params)})
+            return next(responses)
+
+        adapter._rpc = mock_rpc
+
+        long_content = "x" * (adapter.MAX_MESSAGE_LENGTH + 500)
+        result = await adapter.send(chat_id="+155****4567", content=long_content)
+
+        assert result.success is False
+        assert result.error == "RPC send failed"
+        assert len(captured) == 2
+        assert "".join(
+            call["params"]["message"].rsplit(" (", 1)[0]
+            for call in captured
+        ) == long_content
+
+    @pytest.mark.asyncio
+    async def test_send_treats_whitespace_only_content_as_noop_success(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._rpc = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="   \n\t  ")
+
+        assert result.success is True
+        assert result.message_id is None
+        adapter._rpc.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
@@ -1922,7 +2027,10 @@ class TestSignalContentlessEnvelope:
         b64_data = base64.b64encode(png_data).decode()
         adapter._rpc, _ = _stub_rpc({"data": b64_data})
 
-        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+        with patch(
+            "gateway.platforms.signal.cache_image_from_bytes_async",
+            new=AsyncMock(return_value="/tmp/img.png"),
+        ):
             await adapter._handle_envelope({
                 "envelope": {
                     "sourceNumber": "+155****9999",

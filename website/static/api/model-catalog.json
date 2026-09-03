@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-21T20:49:36Z",
+  "updated_at": "2026-09-02T16:31:43Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.1",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-fable-5",
           "description": ""
@@ -81,6 +85,10 @@
           "description": ""
         },
         {
+          "id": "google/gemini-3.8-flash",
+          "description": ""
+        },
+        {
           "id": "google/gemini-3.7-flash",
           "description": ""
         },
@@ -109,6 +117,10 @@
           "description": ""
         },
         {
+          "id": "qwen/qwen3.8-flash",
+          "description": ""
+        },
+        {
           "id": "moonshotai/kimi-k3",
           "description": "recommended"
         },
@@ -121,12 +133,20 @@
           "description": ""
         },
         {
+          "id": "z-ai/glm-5.3-flash",
+          "description": ""
+        },
+        {
           "id": "z-ai/glm-5.2",
           "description": "default",
           "default": true
         },
         {
           "id": "xiaomi/mimo-v2.5-pro",
+          "description": ""
+        },
+        {
+          "id": "tencent/hy4-preview",
           "description": ""
         },
         {
@@ -154,11 +174,15 @@
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
         {
-          "id": "stealth/ox-alpha",
+          "id": "thinkingmachines/inkling:free",
           "description": "free"
         },
         {
-          "id": "openrouter/elephant-alpha",
+          "id": "thinkingmachines/inkling-small:free",
+          "description": "free"
+        },
+        {
+          "id": "minimax/minimax-m3:free",
           "description": "free"
         },
         {
@@ -193,6 +217,9 @@
         "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5.1"
+        },
         {
           "id": "anthropic/claude-fable-5"
         },
@@ -239,6 +266,9 @@
           "id": "google/gemini-3.1-pro-preview"
         },
         {
+          "id": "google/gemini-3.8-flash"
+        },
+        {
           "id": "google/gemini-3.7-flash"
         },
         {
@@ -260,6 +290,9 @@
           "id": "qwen/qwen3.8-max"
         },
         {
+          "id": "qwen/qwen3.8-flash"
+        },
+        {
           "id": "moonshotai/kimi-k3"
         },
         {
@@ -269,11 +302,17 @@
           "id": "z-ai/glm-5.3"
         },
         {
+          "id": "z-ai/glm-5.3-flash"
+        },
+        {
           "id": "z-ai/glm-5.2",
           "default": true
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"
+        },
+        {
+          "id": "tencent/hy4-preview"
         },
         {
           "id": "tencent/hy3"
@@ -286,9 +325,6 @@
         },
         {
           "id": "sakana/fugu-ultra"
-        },
-        {
-          "id": "stealth/ox-alpha"
         }
       ]
     }

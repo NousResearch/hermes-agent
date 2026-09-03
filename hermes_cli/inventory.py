@@ -83,26 +83,32 @@ def load_picker_context() -> ConfigContext:
     Replaces the inline 17-LOC config-slice that ``web_server.py`` and
     ``tui_gateway/server.py`` (×2 sites) used to do.
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_cli.config import (
+        coerce_provider_id,
+        get_compatible_custom_providers,
+        load_config,
+        stringify_provider_map,
+    )
 
     cfg = load_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
-        current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
-        current_provider = model_cfg.get("provider", "") or ""
-        current_base_url = model_cfg.get("base_url", "") or ""
+        # PyYAML parses unquoted scalars as int (`provider: 2070`). Keep these
+        # as strings so picker/options paths never call `.strip()` on an int.
+        current_model = str(model_cfg.get("default", model_cfg.get("name", "")) or "")
+        current_provider = coerce_provider_id(model_cfg.get("provider", ""))
+        current_base_url = str(model_cfg.get("base_url", "") or "")
     else:
         # config.model can be a bare string in older configs.
         current_model = str(model_cfg) if model_cfg else ""
         current_provider = ""
         current_base_url = ""
-    raw = cfg.get("providers")
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
         current_provider=current_provider,
         current_model=current_model,
         current_base_url=current_base_url,
-        user_providers=raw if isinstance(raw, dict) else {},
+        user_providers=stringify_provider_map(cfg.get("providers")),
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
     )
@@ -200,6 +206,31 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
     )
 
+    # Managed local runtime: staged GGUFs are selectable like any provider's
+    # models. list_authenticated_providers can't know about them (no
+    # credential, no custom_providers entry — the credential is
+    # reachability), so inject the row here where every picker surface
+    # inherits it. Present whenever models are staged; picking one routes
+    # through the llamacpp alias -> managed/detected server resolution.
+    local_row = _local_runtime_row(ctx)
+    if local_row is not None:
+        rows = [r for r in rows if str(r.get("slug", "")).lower() != "llamacpp"]
+        rows.append(local_row)
+        # A live session on the managed server reports provider "custom"
+        # (the resolution seam's generic label for a raw base_url), which
+        # would otherwise materialize a duplicate "Custom endpoint" row
+        # carrying the same staged models and stealing the checkmark. The
+        # Local row owns the managed server's identity — drop custom rows
+        # that point at the managed endpoint.
+        if local_row.get("is_current"):
+            def _is_managed_custom(row: dict) -> bool:
+                if str(row.get("slug", "")).lower() != "custom":
+                    return False
+                models = {str(m) for m in (row.get("models") or [])}
+                return bool(models) and models <= set(local_row["models"])
+
+            rows = [r for r in rows if not _is_managed_custom(r)]
+
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
         rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
@@ -211,9 +242,15 @@ def build_models_payload(
         # has lost its credential, list_authenticated_providers() omits it;
         # keep that one row visible so the UI can show the saved selection and
         # a re-auth affordance instead of appearing to jump to another provider.
-        rows = list(rows) + _append_unconfigured_rows(
-            rows, ctx, current_only=True
-        )
+        # Exception: a "custom" current whose endpoint is the managed local
+        # server is already represented (with the checkmark) by the Local row
+        # — the skeleton would resurrect the duplicate the dedup above removed.
+        _local_owns_current = bool(local_row and local_row.get("is_current")
+                                   and (ctx.current_provider or "").lower() == "custom")
+        if not _local_owns_current:
+            rows = list(rows) + _append_unconfigured_rows(
+                rows, ctx, current_only=True
+            )
 
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
@@ -729,6 +766,15 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
         if current_slug and slug == current_slug:
             kept.append(row)
             continue
+        if row.get("source") == "local-runtime":
+            # Managed local models are explicit configuration by existence:
+            # the user downloaded gigabytes into the machine-scoped models
+            # dir. There is deliberately no config credential to find
+            # (credential is reachability), so without this clause the row
+            # only survives on the profile where Use was last clicked —
+            # every other profile loses local models from its picker.
+            kept.append(row)
+            continue
         if slug == "moa":
             # MoA is a virtual routing mode, not an independently configured
             # provider. Hide it from explicit-only pickers unless it is the
@@ -752,9 +798,33 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # just accepted those same credentials when building it.
             kept.append(row)
             continue
+        if _external_process_signed_in(slug):
+            # External-process providers (copilot-acp) authenticate through
+            # their own CLI (`copilot login`), which — like the Anthropic
+            # OAuth case above — leaves no trace in active_provider,
+            # model.provider, or env vars. Verified CLI credentials are a
+            # deliberate sign-in; without this the desktop picker drops the
+            # row the picker-discovery side just accepted.
+            kept.append(row)
+            continue
         if is_provider_explicitly_configured(slug):
             kept.append(row)
     return kept
+
+
+def _external_process_signed_in(slug: str) -> bool:
+    """True when an external-process provider has verified CLI credentials."""
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            get_external_process_provider_status,
+        )
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        if not pconfig or pconfig.auth_type != "external_process":
+            return False
+        return bool(get_external_process_provider_status(slug).get("auth_verified"))
+    except Exception:
+        return False
 
 
 def _provider_is_keyless(slug: str) -> bool:
@@ -978,6 +1048,56 @@ def _apply_pricing(
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+    """Build the ``llamacpp`` provider row from staged local models.
+
+    Present whenever GGUFs are staged in the managed models directory —
+    downloaded models must be selectable even before the server is running
+    (selection starts it via the runtime_provider seam / activate flow).
+    Returns ``None`` when nothing is staged.
+    """
+    try:
+        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+        staged = staged_model_ids()
+        if not staged:
+            return None
+        current = (ctx.current_provider or "").strip().lower() in (
+            "llamacpp", "llama.cpp", "llama-cpp")
+        if not current:
+            # A LIVE session on the managed server reports provider "custom"
+            # (the resolution seam's label) with the managed base_url. Match
+            # on the endpoint so the picker still marks this row current —
+            # otherwise the session the user is chatting in shows no
+            # selection.
+            try:
+                from hermes_cli.local_runtime.endpoint import _state_endpoint
+
+                managed = _state_endpoint()
+                current = bool(
+                    managed
+                    and (ctx.current_base_url or "").strip().rstrip("/")
+                    == managed["base_url"].rstrip("/"))
+            except Exception:
+                current = False
+        return {
+            "slug": "llamacpp",
+            # Bare "Local" everywhere user-facing: the engine name is an
+            # implementation detail (the pane brands this "Local models").
+            "name": "Local",
+            "is_current": current,
+            "is_user_defined": False,
+            "models": staged,
+            "total_models": len(staged),
+            "source": "local-runtime",
+            "authenticated": True,       # the credential is reachability
+            "auth_type": "local",
+            "warning": None,
+        }
+    except Exception:
+        return None
 
 
 def _moa_provider_row(current_provider: str = "") -> dict | None:

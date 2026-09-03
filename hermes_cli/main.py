@@ -102,6 +102,34 @@ try:
 except Exception:
     pass
 
+# Startup-liveness watchdog (OOF-298): for gateway runs, arm BEFORE the heavy
+# module-level import graph below — an import-time deadlock (native-extension
+# init, contended import lock) is exactly the "wedged before the event loop,
+# no logs, live PID" class this watchdog exists for. ``hermes_startup_watchdog``
+# is stdlib-only, so importing it here cannot itself wedge on application
+# code. The match requires the ADJACENT token pair ``gateway run`` (the
+# subcommand shape, wherever global flags like ``-p <profile>`` put it) so
+# unrelated commands that merely mention both words in different arguments
+# never arm a 300s hard-exit timer, while flag-carrying invocations still
+# do — under-arming recreates OOF-298. Foreground `hermes gateway run`
+# still arms — a pre-loop wedge is just as dead without a supervisor, and
+# the stack dump plus exit beats a silent hang; GatewayRunner disarms once
+# the event loop is confirmed live.
+def _argv_is_gateway_run(argv: list) -> bool:
+    return any(
+        a == "gateway" and b == "run" for a, b in zip(argv, argv[1:])
+    )
+
+
+if _argv_is_gateway_run(sys.argv[1:]):
+    try:
+        from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw
+
+        _arm_sw()
+        del _arm_sw
+    except Exception:
+        pass
+
 
 def _exit_after_oneshot(rc: object) -> None:
     """Exit one-shot mode without letting late native finalizers change rc.
@@ -433,6 +461,8 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
+import time as _time_mod
 from pathlib import Path
 from typing import Optional
 
@@ -470,7 +500,7 @@ from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
-from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
@@ -572,17 +602,9 @@ def _apply_profile_override() -> None:
     # 1. Check for explicit -p / --profile flag. Historically this worked even
     # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
     # The exception is command-argv passthrough regions such as `mcp add --args`.
-    value_flags = {
-        "-z", "--oneshot",
-        "-m", "--model",
-        "--provider",
-        "-t", "--toolsets",
-        "-r", "--resume",
-        "-s", "--skills",
-        "--usage-file",
-        "--in",
-    }
-    optional_value_flags = {"-c", "--continue"}
+    from hermes_cli._parser import top_level_value_flag_sets
+
+    value_flags, optional_value_flags = top_level_value_flag_sets()
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -640,17 +662,55 @@ def _apply_profile_override() -> None:
 
     # 2. If no flag, check active_profile in the hermes root.
     #
-    # EXCEPTION: a supervised s6 gateway child (exported by the container
-    # run-script as HERMES_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
-    # active_profile. Each supervised slot has a fixed profile identity: named
-    # slots pass ``-p <name>`` explicitly (handled in step 1 above), and the
-    # reserved ``gateway-default`` slot runs bare ``hermes gateway run`` to mean
-    # "the root HERMES_HOME profile". If the reserved default child read
-    # active_profile here, switching the active profile (e.g. via the dashboard)
-    # would silently redirect the default gateway into that profile — yielding a
-    # duplicate gateway for the active profile and no real default gateway. See
-    # the "Docker & Profiles & Dashboard" report.
-    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+    # EXCEPTION: a supervisor-launched gateway child must NOT follow the
+    # sticky active_profile. Each supervised slot has a fixed profile
+    # identity: named slots pass ``-p <name>`` explicitly (handled in step 1
+    # above) or pin ``HERMES_HOME`` to the profile directory (step 1.5), and
+    # a bare invocation means "the root HERMES_HOME profile". If a supervised
+    # default-profile child read active_profile here, switching the active
+    # profile (e.g. via the dashboard or ``hermes profile use``) would
+    # silently redirect the default gateway into that profile — the default
+    # gateway then assumes the other profile's identity/credentials (logs
+    # under the other profile's tree, connects with its Telegram bot token)
+    # and double-polls a token already owned by that profile's own gateway.
+    # See issue #74872 and the "Docker & Profiles & Dashboard" report.
+    #
+    # Supervisor markers honored (see gateway/restart.py
+    # ``is_gateway_supervisor_process`` for the sibling detection used by
+    # restart routing):
+    #   - HERMES_SUPERVISED_CHILD: generalized marker exported by the
+    #     generated systemd unit, launchd plist, and Windows Scheduled-Task
+    #     launchers (#74872).
+    #   - HERMES_S6_SUPERVISED_CHILD: legacy s6 container marker (back-compat;
+    #     exported by S6ServiceManager's run-script).
+    #   - INVOCATION_ID: set by systemd for service children only (never in
+    #     interactive shells) — covers already-installed gateway units that
+    #     predate the HERMES_SUPERVISED_CHILD marker. Consulted ONLY for
+    #     gateway commands: INVOCATION_ID is inherited by every descendant of
+    #     a systemd-launched process (self-hosted CI runners, user services
+    #     running unrelated hermes commands), so honoring it globally would
+    #     silently disable the sticky active_profile for those.
+    #   - HERMES_GATEWAY_EXTERNAL_SUPERVISOR: explicit external-supervisor
+    #     opt-in (``hermes gateway run --external-supervisor``).
+    #
+    # XPC_SERVICE_NAME is deliberately NOT consulted here: interactive macOS
+    # terminals set it too, and a false positive would silently break the
+    # sticky active_profile for every interactive command.
+    def _under_gateway_supervisor() -> bool:
+        if os.environ.get("HERMES_SUPERVISED_CHILD"):
+            return True
+        if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+            return True
+        is_gateway_cmd = next(
+            (a for a in argv if not a.startswith("-")), None
+        ) == "gateway"
+        if is_gateway_cmd and os.environ.get("INVOCATION_ID"):
+            return True
+        return os.environ.get(
+            "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+
+    if profile_name is None and not _under_gateway_supervisor():
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -994,8 +1054,14 @@ def _relative_time(ts) -> str:
     return relative_time(ts)
 
 
-def _has_any_provider_configured() -> bool:
-    """Check if at least one inference provider is usable."""
+def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
+    """Check if at least one inference provider is usable.
+
+    ``strict_profile_scope``: the caller has bound a NAMED profile's home and
+    secret scope and wants an answer for that profile only — launch-process
+    env and host-wide fallbacks (gh auth, Claude Code credentials) must not
+    make it appear ready. Unscoped callers keep the legacy behavior.
+    """
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
@@ -1038,7 +1104,13 @@ def _has_any_provider_configured() -> bool:
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
-    if any(os.getenv(v) for v in provider_env_vars):
+    if strict_profile_scope:
+        from agent.secret_scope import current_secret_scope
+
+        read_provider_env = (current_secret_scope() or {}).get
+    else:
+        read_provider_env = os.getenv
+    if any(read_provider_env(v) for v in provider_env_vars):
         return True
 
     # Check .env file for keys
@@ -1070,7 +1142,10 @@ def _has_any_provider_configured() -> bool:
 
             auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
             active = auth.get("active_provider")
-            if active:
+            active_config = PROVIDER_REGISTRY.get(str(active or "").strip().lower())
+            if active and not (
+                strict_profile_scope and active_config and active_config.auth_type == "api_key"
+            ):
                 status = get_auth_status(active)
                 if status.get("logged_in"):
                     return True
@@ -1089,20 +1164,21 @@ def _has_any_provider_configured() -> bool:
             return True
 
     # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
-    try:
-        for provider_id, pconfig in PROVIDER_REGISTRY.items():
-            if pconfig.auth_type != "api_key":
-                continue
-            status = get_auth_status(provider_id)
-            if status.get("logged_in"):
-                return True
-    except Exception:
-        pass
+    if not strict_profile_scope:
+        try:
+            for provider_id, pconfig in PROVIDER_REGISTRY.items():
+                if pconfig.auth_type != "api_key":
+                    continue
+                status = get_auth_status(provider_id)
+                if status.get("logged_in"):
+                    return True
+        except Exception:
+            pass
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
     # Only count these if Hermes has been explicitly configured — Claude Code
     # being installed doesn't mean the user wants Hermes to use their tokens.
-    if _has_hermes_config:
+    if _has_hermes_config and not strict_profile_scope:
         try:
             from agent.anthropic_adapter import (
                 read_claude_code_credentials,
@@ -1998,7 +2074,24 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset(
+    {
+        "ideallyInert",
+        "peer",
+        # npm writes these boolean annotation fields non-deterministically
+        # between the declarative package-lock.json and the hidden actualized
+        # .package-lock.json.  The intersection comparison (see
+        # _tui_need_npm_install) already handles the "field present in root
+        # but absent in hidden" case for structured fields like version,
+        # dependencies, license, etc.  These boolean flags need explicit
+        # exclusion because when present in *both* lockfiles they may still
+        # differ (e.g. dev: true → stripped in hidden).
+        "dev",
+        "extraneous",
+        "hasInstallScript",
+        "optional",
+    }
+)
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
@@ -2008,6 +2101,14 @@ on dev-dependencies that are *also* declared as peers — the canonical
 it.  Neither key represents a real skew between what was declared and what was
 installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
 to avoid false-positive reinstalls on every launch.
+
+``dev``, ``optional``, ``extraneous``, and ``hasInstallScript`` are boolean
+annotations that npm populates differently in the hidden lock (npm >= 10/11
+writes ``extraneous`` into the hidden lock only, and ``dev: true`` from the
+root lock may be absent or ``false`` in the hidden actualized tree).
+They never indicate a changed dependency — the authoritative check is the
+``resolved``/``integrity`` pair, which the intersection comparison always
+catches.
 """
 
 
@@ -2064,6 +2165,108 @@ def _termux_workspace_install_context(
     return ws_root, tuple(workspace_args)
 
 
+def _npm_lock_workspace_closure(packages: dict, starts) -> Optional[set]:
+    """Package-map keys reachable from the selected workspaces via npm resolution.
+
+    *starts* is the set of workspace keys the launch install explicitly scopes
+    to (a single str is accepted for convenience).  ``devDependencies`` are
+    followed for **each** of those workspaces, since ``npm install`` installs
+    the dev toolchain for every workspace it selects.  Returns ``None`` when
+    none of *starts* are present in *packages* so callers fall back to the
+    full-lockfile comparison.
+
+    The launch install is scoped with ``npm install --workspace ui-tui`` (see
+    ``_make_tui_argv``), so only the ui-tui workspace's dependency closure is
+    written to the hidden ``.package-lock.json``.  On Termux it additionally
+    selects ui-tui's child ``packages/*`` workspaces, so their devDependencies
+    join the closure too.  The shared root ``package-lock.json`` additionally
+    lists every *other* workspace's deps (``apps/desktop``, ``web``, …);
+    comparing the two in full reports those unrelated packages as "missing" and
+    reinstalls on every launch (#66978).
+
+    Keys follow npm's v3 ``packages`` map (``""`` root, ``ui-tui`` /
+    ``apps/desktop`` workspace members, ``node_modules/<name>`` hoisted deps,
+    ``<dir>/node_modules/<name>`` nested deps).  Dependency names resolve to a
+    key by walking up ``node_modules`` ancestors, mirroring node resolution, and
+    workspace symlinks (``link: true``) are followed to their real entry so a
+    linked workspace's own deps join the closure.
+    """
+    start_set = {starts} if isinstance(starts, str) else {s for s in starts if s}
+    present = [s for s in start_set if s in packages]
+    if not present:
+        return None
+
+    def resolve(from_key: str, dep: str) -> Optional[str]:
+        base = from_key
+        while True:
+            prefix = f"{base}/" if base else ""
+            candidate = f"{prefix}node_modules/{dep}"
+            if candidate in packages:
+                return candidate
+            if not base:
+                return None
+            base = base.rsplit("/", 1)[0] if "/" in base else ""
+
+    seen: set = set()
+    stack = list(present)
+    while stack:
+        key = stack.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = packages.get(key)
+        if not isinstance(entry, dict):
+            continue
+        # Workspace symlink (e.g. node_modules/@hermes/ink → ui-tui/packages/…):
+        # follow to the real package entry so its dependencies join the closure.
+        resolved = entry.get("resolved")
+        if entry.get("link") and isinstance(resolved, str) and resolved in packages:
+            stack.append(resolved)
+        # devDependencies are installed for each explicitly-selected workspace
+        # (its build toolchain), but not for transitive deps.
+        fields = ["dependencies", "optionalDependencies", "peerDependencies"]
+        if key in start_set:
+            fields.append("devDependencies")
+        for field in fields:
+            deps = entry.get(field)
+            if not isinstance(deps, dict):
+                continue
+            for dep in deps:
+                target = resolve(key, dep)
+                if target is not None:
+                    stack.append(target)
+    return seen
+
+
+def _tui_selected_workspace_keys(tui_dir: Path, ws_root: Path) -> set:
+    """Lock-map keys for the workspaces the launch install scopes to.
+
+    Mirrors ``_make_tui_argv``: always the ui-tui workspace, plus its child
+    ``packages/*`` workspaces on Termux (where ``include_child_workspaces=True``
+    in ``_termux_workspace_install_context``).  ``npm install`` installs the
+    devDependencies of every workspace it selects, so the freshness closure must
+    treat each as a dev-included root — otherwise a devDependency unique to a
+    selected child is dropped from the closure and a genuine missing package
+    slips past the check.  Returns an empty set when ui-tui can't be located
+    under *ws_root*, so the caller falls back to the full comparison.
+    """
+    try:
+        primary = tui_dir.relative_to(ws_root).as_posix()
+    except ValueError:
+        return set()
+    keys = {primary}
+    if _is_termux_startup_environment():
+        packages_dir = tui_dir / "packages"
+        if packages_dir.is_dir():
+            for child in sorted(packages_dir.iterdir()):
+                if child.is_dir() and (child / "package.json").is_file():
+                    try:
+                        keys.add(child.relative_to(ws_root).as_posix())
+                    except ValueError:
+                        continue
+    return keys
+
+
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
@@ -2087,8 +2290,13 @@ def _tui_need_npm_install(root: Path) -> bool:
     For each entry in the root lock's ``packages`` map:
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
-      - present but with differing fields (excluding npm-written runtime
-        annotations like ``ideallyInert``) → reinstall
+      - present in both → compare only the **intersection** of fields (after
+        stripping ``_NPM_LOCK_RUNTIME_KEYS``).  npm's hidden lock
+        intentionally omits many metadata fields (version, license, engines,
+        dependencies, funding, etc.) — those one-side-only fields are normal
+        npm artefacts, not real skew.  A real version/dependency change will
+        change ``resolved``/``integrity``, which are present in both locks
+        and will be caught by the intersection comparison.
 
     Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
@@ -2122,23 +2330,66 @@ def _tui_need_npm_install(root: Path) -> bool:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
 
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+    def entries_differ(pkg: dict, installed_pkg: dict) -> bool:
+        # Only compare keys present in *both* lockfiles with non-null values.
+        # npm's hidden .package-lock.json intentionally omits many metadata
+        # fields the root lock records (version, dependencies, license,
+        # engines, bin, ...), and npm >= 10/11 writes a further *reduced*
+        # hidden lockfile that stores some of them as null.  Missing- or
+        # null-on-one-side is a normal npm artefact, not a real skew.  The
+        # authoritative fields "resolved" and "integrity" are present in both
+        # locks for installed packages, so a genuinely stale install (root
+        # lockfile bumped while node_modules is behind) still differs on them.
+        a = {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        b = {
+            k: v
+            for k, v in installed_pkg.items()
+            if k not in _NPM_LOCK_RUNTIME_KEYS
+        }
+        for k in a.keys() & b.keys():
+            if a[k] is None or b[k] is None:
+                continue
+            if a[k] != b[k]:
+                return True
+        return False
+
+    # In a shared workspace checkout the launch install is scoped to the ui-tui
+    # workspace (plus its child packages/* workspaces on Termux), so only that
+    # dependency closure lands in the hidden lock.  Limit the comparison to the
+    # same selected-workspace closure so unrelated workspace deps (apps/desktop,
+    # web, …) don't force a reinstall every launch (#66978).  Standalone /
+    # own-lockfile layouts (ws_root == root) do a full install, so keep the full
+    # comparison; a missing/unlocatable workspace falls back to it too.
+    closure: Optional[set] = None
+    if ws_root != root:
+        selected = _tui_selected_workspace_keys(root, ws_root)
+        if selected:
+            closure = _npm_lock_workspace_closure(wanted, selected)
 
     for name, pkg in wanted.items():
         if not name:
+            continue
+
+        if closure is not None and name not in closure:
             continue
 
         if not isinstance(pkg, dict):
             continue
 
         if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
+            # Workspace link entries (`"link": true`, paths outside
+            # node_modules/ like `apps/desktop`, `node_modules/web`) are never
+            # materialized by a partial `npm install --workspace ui-tui` —
+            # they're deliberately skipped (see #38772) and would otherwise
+            # force a reinstall on every launch.
+            if pkg.get("optional") or pkg.get("peer") or pkg.get("link"):
+                continue
+            if not name.startswith("node_modules/"):
                 continue
             return True
 
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
+        if isinstance(installed[name], dict) and entries_differ(
+            pkg, installed[name]
         ):
             return True
 
@@ -2956,9 +3207,10 @@ def _resolve_use_tui(args) -> bool:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = _resolve_use_tui(args)
-
     _apply_safe_mode(args)
+    _apply_user_config_bypass(args)
+    _guard_noninteractive_user_config(args)
+    use_tui = _resolve_use_tui(args)
 
     # --in DIR: run in DIR. Must happen before any session resolution so the
     # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
@@ -3191,14 +3443,6 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
-    # --ignore-user-config: make load_cli_config() / load_config() skip the
-    # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
-    # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
-    # import time). Credentials in .env are still loaded — this flag only
-    # ignores behavioral/config settings.
-    if getattr(args, "ignore_user_config", False):
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-
     # --ignore-rules: skip auto-injection of AGENTS.md/SOUL.md/.cursorrules
     # (rules), memory entries, and any preloaded skills coming from user config.
     # Maps to AIAgent(skip_context_files=True, skip_memory=True).
@@ -3230,9 +3474,6 @@ def cmd_chat(args):
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
         )
-
-    # Import and run the CLI
-    from cli import main as cli_main
 
     # --query-file: read the single query from a file (or stdin via '-') so
     # callers never have to shell-quote message bodies. This is the transport
@@ -3269,6 +3510,7 @@ def cmd_chat(args):
         "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
@@ -3284,10 +3526,23 @@ def cmd_chat(args):
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
 
     try:
+        from cli import main as cli_main
+
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+    except ImportError as e:
+        # Mixed-version installs (new cli.py, older hermes_cli.config) crash
+        # here — e.g. missing resolve_turn_limit / split_model_config_default
+        # (#96900). The agent-setup mixin prints this hint too late: HermesCLI
+        # construction already failed. Fast-chat launch also goes through
+        # cmd_chat, so this one catch covers `hermes` / `hermes chat`.
+        from hermes_constants import emit_partial_update_hint
+
+        if emit_partial_update_hint(e):
+            sys.exit(1)
+        raise
 
 
 def cmd_gateway(args):
@@ -3579,7 +3834,13 @@ def cmd_model(args):
             print("  Cleared model picker cache.")
         except Exception:
             pass
-    select_provider_and_model(args=args)
+    from hermes_cli.setup import run_setup_action_with_navigation
+
+    run_setup_action_with_navigation(
+        "Model & Provider",
+        lambda: select_provider_and_model(args=args),
+        cancelled_message="No change.",
+    )
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:
@@ -4035,6 +4296,7 @@ def select_provider_and_model(args=None):
         "nvidia",
         "ollama-cloud",
         "tencent-tokenhub",
+        "tencent-tokenplan",
         "lmstudio",
     } or _is_profile_api_key_provider(selected_provider):
         _model_flow_api_key_provider(config, selected_provider, current_model)
@@ -4098,7 +4360,6 @@ def _clear_stale_openai_base_url():
 _AUX_TASKS: list[tuple[str, str, str]] = [
     ("vision", "Vision", "image/screenshot analysis"),
     ("compression", "Compression", "context summarization"),
-    ("web_extract", "Web extract", "web page summarization"),
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
@@ -4880,10 +5141,13 @@ _LAZY_COMMAND_EXPORTS = {
     "hermes_cli.update_cmd": (
         "_abort_dependency_sync_if_self_locked",
         "_add_upstream_remote",
+        "_apply_pending_fleet_restart_catchup",
         "_atomic_replace_dir",
         "_capture_active_lazy_features",
         "_capture_active_tool_dependencies",
         "_capture_head_sha",
+        "_classify_concurrent_instance",
+        "_clear_fleet_restart_pending_marker",
         "_assess_parked_branch_switch",
         "_branch_head_label",
         "_branch_head_suffix",
@@ -4903,9 +5167,15 @@ _LAZY_COMMAND_EXPORTS = {
         "_ensure_fhs_path_guard",
         "_ensure_uv_for_termux",
         "_finish_dashboard_update_cleanup",
+        "_fleet_probe_expected_runtimes",
+        "_fleet_restart_pending_marker_path",
+        "_filter_non_gateway_concurrent_instances",
         "_for_each_systemd_gateway_unit",
         "_format_concurrent_instances_message",
         "_format_time_ago",
+        "_gateway_service_matches_profile",
+        "_gateway_recovery_partition",
+        "_gateway_restart_recovery_profiles",
         "_handoff_reapable_backend_pids",
         "_ledger_reapable_backend_pids",
         "_purge_stale_hermes_modules",
@@ -4918,15 +5188,22 @@ _LAZY_COMMAND_EXPORTS = {
         "_is_android_python",
         "_is_fork",
         "_leftover_pausable_gateway_pids",
+        "_ledger_manual_serve_holders",
+        "_relaunch_stopped_serves",
+        "_serve_relaunch_commands",
         "_log_only_write",
         "_mark_skip_upstream_prompt",
         "_npm_bin_exists",
         "_npm_lockfile_changed",
         "_npm_manifest_paths",
         "_npm_manifests_digest",
+        "_ORPHAN_RESCUE_REF_MAX_AGE_DAYS",
+        "_ORPHAN_RESCUE_REFS_TO_KEEP",
         "_orphaned_desktop_backend_pids",
+        "_pending_fleet_restart_needed",
         "_pause_windows_gateways_for_update",
         "_print_curator_first_run_notice",
+        "_prune_orphan_rescue_refs",
         "_print_curator_recent_run_notice",
         "_print_fts_optimize_available_notice",
         "_print_parked_branch_kept_notice",
@@ -4938,6 +5215,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_refresh_active_memory_provider_dependencies",
         "_refresh_bootstrap_cache_scripts",
         "_refresh_windows_gateway_launchers",
+        "_recover_gateway_restart_after_abort",
         "_reload_updated_runtime_modules",
         "_resolve_pre_update_backup_mode",
         "_resolve_stash_selector",
@@ -4945,6 +5223,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_restore_active_tool_dependencies",
         "_restore_stashed_changes",
         "_resume_windows_gateways_after_update",
+        "_run_pending_fleet_restart",
         "_run_logged_subprocess",
         "_run_pre_update_backup",
         "_service_unit_supports_graceful_sigusr1_restart",
@@ -4957,6 +5236,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_sync_with_upstream_if_needed",
         "_update_node_dependencies",
         "_update_via_zip",
+        "_warn_orphaned_update_autostashes",
         "_upgrade_pip_before_lazy_refresh",
         "_validate_critical_files_syntax",
         "_validate_critical_modules_import",
@@ -4965,8 +5245,10 @@ _LAZY_COMMAND_EXPORTS = {
         "_wait_for_windows_update_gateway_exit",
         "_warn_gateway_restart_phase_aborted",
         "_warn_incomplete_gateway_fleet_restart",
+        "_warn_pending_fleet_restart_on_startup",
         "_web_build_toolchain_ready",
         "_web_toolchain_roots",
+        "_write_fleet_restart_pending_marker",
         "_write_lazy_refresh_incomplete_marker",
         "_write_marker_file",
         "_write_update_incomplete_marker",
@@ -5702,7 +5984,16 @@ def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
 
-    config_command(args)
+    try:
+        config_command(args)
+    except RuntimeError as exc:
+        # Safety net for the fail-closed config write guard (unparseable /
+        # non-mapping / unreadable config.yaml raises RuntimeError from
+        # require_readable_config_before_write). set/unset already surface
+        # this per-branch; this covers migrate and future write subcommands
+        # so no path ends in a raw traceback.
+        print(f"✗ {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_skin(args):
@@ -6720,7 +7011,15 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
 
 def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
-    release_dir = desktop_dir / "release"
+    return _desktop_packaged_executable_in(desktop_dir / "release")
+
+
+def _desktop_packaged_executable_in(release_dir: Path) -> Optional[Path]:
+    """Return the unpacked Electron app executable under *release_dir*.
+
+    *release_dir* is electron-builder's ``directories.output`` — the live
+    ``apps/desktop/release`` or a stage-and-swap staging dir (#86443).
+    """
     if sys.platform == "darwin":
         candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
     elif sys.platform == "win32":
@@ -6752,6 +7051,91 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
         if matching:
             existing = matching
     return max(existing, key=lambda p: p.stat().st_mtime)
+
+
+# ─── Desktop stage-and-swap pack (#86443) ───────────────────────────────────
+#
+# electron-builder packs IN PLACE: before-pack.mjs wipes ``release/<platform>-
+# unpacked`` (or the mac ``Hermes.app``) and the Electron unpack + asar + rename
+# then rebuild it. Any failure after that wipe — corrupt cached zip, blocked
+# download, missing dep, disk full — leaves the user with NO app, and
+# ``hermes update`` used to report "partially complete" over an empty
+# release/. Fix the class, not the predicate: build into a STAGING output
+# dir next to release/, verify the staged result, and only then swap it over
+# the live tree with renames. On any failure the live app is untouched.
+
+_DESKTOP_STAGING_PREFIX = ".staging-"
+_DESKTOP_PREVIOUS_SUFFIX = ".previous"
+
+
+def _desktop_staging_dir(desktop_dir: Path) -> Path:
+    """Fresh, unique staging output dir: ``apps/desktop/.staging-<pid>-<ts>``.
+
+    A sibling of ``release/`` (same filesystem → the swap is a rename, not a
+    copy) but NOT inside it, so nothing globbing ``release/*-unpacked`` or
+    ``release/mac*`` can mistake the half-built tree for the live app.
+    Leftovers from a killed earlier build are swept first (best-effort).
+    """
+    for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
+        shutil.rmtree(stale, ignore_errors=True)
+    return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
+
+
+def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
+    """The directory directly under *release_dir* that holds *exe*
+    (``linux-unpacked``, ``win-unpacked``, ``mac-arm64``…) — electron-builder's
+    ``appOutDir``, the unit that gets swapped as a whole."""
+    unpacked = exe
+    while unpacked.parent != release_dir:
+        if unpacked.parent == unpacked:
+            raise ValueError(f"{exe} is not under {release_dir}")
+        unpacked = unpacked.parent
+    return unpacked
+
+
+def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
+    """Promote a VERIFIED staged pack over the live ``release/`` app.
+
+    ``release/<unpacked>`` → ``release/<unpacked>.previous``,
+    ``<staging>/<unpacked>`` → ``release/<unpacked>``, then drop ``.previous``.
+    Two renames; the only window with no live app is between them, and a
+    failure there rolls ``.previous`` back. Returns the live executable, or
+    ``None`` (live app untouched or restored) when the swap could not happen.
+    Best-effort cleanup of the staging dir; never raises.
+    """
+    staged_exe = _desktop_packaged_executable_in(staging_dir)
+    if staged_exe is None:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        return None
+    release_dir = desktop_dir / "release"
+    try:
+        staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
+        live_root = release_dir / staged_root.name
+        previous = release_dir / (staged_root.name + _DESKTOP_PREVIOUS_SUFFIX)
+        release_dir.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(previous, ignore_errors=True)
+        moved_aside = False
+        if live_root.exists():
+            os.rename(live_root, previous)
+            moved_aside = True
+        try:
+            os.rename(staged_root, live_root)
+        except OSError:
+            if moved_aside:
+                os.rename(previous, live_root)  # restore; live app back as it was
+            raise
+        if moved_aside:
+            shutil.rmtree(previous, ignore_errors=True)
+    except (OSError, ValueError) as exc:
+        logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
+        return None
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return live_root / staged_exe.relative_to(staged_root)
+
+
+def _discard_desktop_staging(staging_dir: Path) -> None:
+    shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 # ─── Desktop exe integrity gate (#69179) ────────────────────────────────────
@@ -7070,8 +7454,10 @@ def _ensure_desktop_exe_launchable(
 
     # Self-heal setup for the retry: drop the (likely corrupt) cached Electron
     # zip and the content stamp so the next rebuild is a genuine re-download +
-    # re-stage rather than a replay of the same broken extraction.
-    _purge_electron_build_cache(desktop_dir)
+    # re-stage rather than a replay of the same broken extraction. Only the
+    # exe's OWN output dir is purged (a stage-and-swap staging dir, #86443),
+    # never the live release/ tree that still holds the last working app.
+    _purge_electron_build_cache(desktop_dir, release_dir=packaged_executable.parent.parent)
     try:
         _desktop_stamp_path().unlink()
     except OSError:
@@ -7127,7 +7513,9 @@ def _electron_download_cache_dirs() -> list[Path]:
     return out
 
 
-def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
+def _purge_electron_build_cache(
+    desktop_dir: Path, release_dir: Optional[Path] = None
+) -> list[Path]:
     """Clear the cached Electron download + half-written unpacked dir so the
     next ``pack`` re-downloads and re-stages from scratch.
 
@@ -7173,8 +7561,11 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     # Drop the half-written unpacked dir too: an interrupted prior pack leaves
     # a partial tree that poisons the rename even after the zip is fixed.
     # (before-pack.cjs also handles this, but clearing it here makes the retry
-    # robust even if the hook is somehow skipped.)
-    release_dir = desktop_dir / "release"
+    # robust even if the hook is somehow skipped.) ``release_dir`` lets a
+    # stage-and-swap caller point this at its STAGING output so a mid-retry
+    # purge never touches the live app under ``release/`` (#86443).
+    if release_dir is None:
+        release_dir = desktop_dir / "release"
     if release_dir.is_dir():
         for unpacked in release_dir.glob("*-unpacked"):
             try:
@@ -7553,6 +7944,7 @@ def _desktop_macos_relaunchable_fixup(
     desktop_dir: Path,
     *,
     publisher_signing_configured: Optional[bool] = None,
+    release_dir: Optional[Path] = None,
 ) -> bool:
     """Make a locally-built macOS desktop app survive in-place self-update
     without resetting the user's TCC permission grants.
@@ -7584,7 +7976,9 @@ def _desktop_macos_relaunchable_fixup(
         )
     if publisher_signing_configured:
         return True
-    exe = _desktop_packaged_executable(desktop_dir)
+    # ``release_dir`` (stage-and-swap, #86443): sign the STAGED bundle before
+    # it is promoted, so the live app is never touched mid-sign.
+    exe = _desktop_packaged_executable_in(release_dir or (desktop_dir / "release"))
     if exe is None:
         return True
     # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
@@ -7611,10 +8005,232 @@ def _desktop_macos_relaunchable_fixup(
             )
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
     try:
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        # Legacy ad-hoc fallback: re-sign, but NEVER delete the safeStorage
+        # keychain item. Deleting it would permanently orphan every
+        # credential encrypted under it (gateway token, native OAuth access/
+        # refresh tokens) — and this path is reached exactly when the
+        # entitlement-preserving signer failed, so there is no verified
+        # successor identity to hand the key to. The keychain prompt macOS
+        # shows instead is recoverable ("Always Allow" updates the item's ACL
+        # partition list and preserves the key); deletion is not. The real
+        # fix (proof-carrying rotation/migration) belongs in Electron, where
+        # safeStorage can read the old key. Tracked as follow-up.
+        result = subprocess.run(
+            [codesign, "--force", "--deep", "--sign", "-", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign failed (exit {result.returncode}); "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        verify = subprocess.run(
+            [codesign, "--verify", "--deep", "--strict", str(app)],
+            check=False, capture_output=True, text=True,
+        )
+        if verify.returncode != 0:
+            print(
+                f"  (warning: legacy ad-hoc re-sign did not pass strict verification; "
+                "leaving safeStorage keychain item untouched)"
+            )
+            return False
+        print("  → macOS desktop re-signed (legacy ad-hoc); safeStorage keychain item left untouched")
+        return True
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
     return False
+
+
+def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
+    """True when `identity` appears among VALID code-signing identities.
+
+    ``security find-identity -p codesigning`` (without ``-v``) also lists
+    certificates macOS will refuse to sign with — e.g. a self-signed cert that
+    was imported but never trusted for the codeSign policy. Only the ``-v``
+    listing proves codesign can actually use it, so this is both the
+    idempotency probe and the success postcondition for
+    ``--setup-tcc-identity``. Never raises.
+    """
+    try:
+        result = subprocess.run(
+            [security, "find-identity", "-v", "-p", "codesigning"],
+            capture_output=True, text=True, check=False,
+        )
+    except Exception:
+        return False
+
+    return f'"{identity}"' in (result.stdout or "")
+
+
+def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") -> bool:
+    """Create/import a self-signed code-signing cert and configure Hermes to use it.
+
+    One-shot setup for ``hermes desktop --setup-tcc-identity``. Creates a
+    self-signed "Code Signing" certificate in the login keychain (the same
+    artifact the docs describe creating manually via Keychain Access), grants
+    ``codesign`` access to it, writes ``desktop.macos_signing_identity`` to
+    config.yaml, and re-signs the already-packaged app so the next launch uses
+    the certificate-anchored identity.
+
+    Why this matters: macOS TCC grants (Full Disk Access, Accessibility,
+    Automation, Files and Folders, microphone) persist against the app's
+    code-signing identity, not its path. A plain ad-hoc signature gets a
+    cdhash-only Designated Requirement, so every rebuild looks like a new app
+    and the user must re-grant everything. A certificate-anchored identity is
+    stable across rebuilds — the same mechanism yabai/skhd users rely on.
+
+    Idempotent: re-running after an update finds the existing certificate and
+    only re-points the config + re-signs. Returns True on success (or when
+    already configured), False on failure. Never raises.
+    """
+    if sys.platform != "darwin":
+        print("  (--setup-tcc-identity is macOS-only; skipping)")
+        return False
+
+    openssl = shutil.which("openssl")
+    security = shutil.which("security")
+    codesign = shutil.which("codesign")
+    if not (openssl and security and codesign):
+        print(
+            "  (--setup-tcc-identity requires openssl, security, and codesign; "
+            f"found openssl={bool(openssl)} security={bool(security)} codesign={bool(codesign)})"
+        )
+        return False
+
+    keychain = str(Path.home() / "Library" / "Keychains" / "login.keychain-db")
+    # A certificate that merely EXISTS in the keychain is not enough — macOS
+    # only treats it as a code-signing identity once it is trusted for the
+    # codeSign policy. Probe with `-v` (valid identities only) so a previously
+    # imported-but-untrusted cert is repaired rather than reported as done.
+    already_imported = _macos_codesigning_identity_valid(security, identity)
+
+    if not already_imported:
+        # Create a self-signed code-signing cert (valid 10 years) and import it
+        # into the login keychain with codesign access so signing works without
+        # an interactive unlock prompt.
+        tmp_dir = Path(tempfile.mkdtemp(prefix="hermes-tcc-"))
+        try:
+            key = tmp_dir / "sign.key"
+            crt = tmp_dir / "sign.crt"
+            p12 = tmp_dir / "sign.p12"
+            subprocess.run(
+                [
+                    openssl, "req", "-x509", "-newkey", "rsa:2048",
+                    "-keyout", str(key), "-out", str(crt),
+                    "-days", "3650", "-nodes",
+                    "-subj", f"/CN={identity}",
+                    "-addext", "basicConstraints=critical,CA:TRUE",
+                    "-addext", "keyUsage=critical,digitalSignature,keyCertSign",
+                    "-addext", "extendedKeyUsage=codeSigning",
+                ],
+                capture_output=True, check=True,
+            )
+            # OpenSSL 3 defaults to AES/SHA-2 PKCS#12 encryption that macOS
+            # `security import` rejects with "MAC verification failed during
+            # PKCS12 import (wrong password?)". The `-legacy` flag restores the
+            # RC2/SHA-1 format the importer accepts, but only exists on
+            # OpenSSL 3 — so try the plain export first and fall back to
+            # `-legacy` when the IMPORT fails with that signature. (Verified
+            # E2E on macOS 26.3.1 / OpenSSL 3.6.3 by @ctaylor86 on PR #77189.)
+            def _export_p12(extra_args: list) -> None:
+                subprocess.run(
+                    [
+                        openssl, "pkcs12", "-export", *extra_args,
+                        "-inkey", str(key), "-in", str(crt),
+                        "-out", str(p12), "-passout", "pass:hermeslocal",
+                    ],
+                    capture_output=True, check=True,
+                )
+
+            def _import_p12():
+                return subprocess.run(
+                    [
+                        security, "import", str(p12), "-k", keychain,
+                        "-P", "hermeslocal",
+                        "-T", codesign, "-T", "/usr/bin/codesign_allocate",
+                    ],
+                    capture_output=True, text=True, check=False,
+                )
+
+            _export_p12([])
+            imported = _import_p12()
+            if imported.returncode != 0 and "MAC verification failed" in (imported.stderr or ""):
+                try:
+                    _export_p12(["-legacy"])
+                    imported = _import_p12()
+                except subprocess.CalledProcessError:
+                    # Older OpenSSL without -legacy: keep the original failure.
+                    pass
+            if imported.returncode != 0:
+                print(f"  (could not import signing identity into keychain: {imported.stderr.strip()})")
+                return False
+
+            # Importing is still not enough: without explicit trust for the
+            # codeSign policy, `security find-identity -v -p codesigning`
+            # reports 0 valid identities and codesign refuses the cert. Trust
+            # the self-signed root for code signing. This writes to the user's
+            # trust settings, so macOS may prompt for the login password ONCE
+            # here — that is the one-time setup cost this command exists to
+            # front-load.
+            trusted = subprocess.run(
+                [security, "add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", keychain, str(crt)],
+                capture_output=True, text=True, check=False,
+            )
+            if trusted.returncode != 0:
+                print(
+                    "  (could not trust the certificate for code signing: "
+                    f"{(trusted.stderr or trusted.stdout).strip()})"
+                )
+                return False
+            print(f"  → created, imported, and trusted self-signed identity: {identity!r}")
+        except Exception as exc:
+            print(f"  (certificate creation failed: {exc})")
+            return False
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+    else:
+        print(f"  → identity {identity!r} already valid in keychain")
+
+    # Postcondition gate: only report success once macOS actually agrees the
+    # identity is usable for code signing. Name-in-output checks pass for
+    # invalid identities; this is the check that failed silently before.
+    if not _macos_codesigning_identity_valid(security, identity):
+        print(
+            f"  (identity {identity!r} was imported but is not a VALID code-signing identity; "
+            "run `security find-identity -v -p codesigning` to inspect, and see the manual "
+            "Keychain Access steps in the desktop docs)"
+        )
+        return False
+
+    # Point Hermes at the identity (config.yaml, not .env — it's not a secret).
+    try:
+        from hermes_cli.config import set_config_value
+
+        set_config_value("desktop.macos_signing_identity", identity)
+        print(f"  → set desktop.macos_signing_identity = {identity!r}")
+    except Exception as exc:
+        print(f"  (could not write desktop.macos_signing_identity: {exc})")
+        return False
+
+    # Re-sign the packaged app so the current build already uses the identity.
+    desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+    if _desktop_packaged_executable(desktop_dir) is not None:
+        try:
+            if _desktop_macos_relaunchable_fixup(desktop_dir):
+                print(
+                    "  → packaged app re-signed with certificate-anchored identity; "
+                    "TCC grants persist across rebuilds"
+                )
+        except Exception as exc:
+            print(f"  (could not re-sign packaged app: {exc})")
+
+    print(
+        "\n  Note: macOS will re-prompt for permissions ONE final time (the identity "
+        "changed). Grant them and they persist from then on. If a permission gets "
+        "stuck, reset it with:  tccutil reset All com.nousresearch.hermes"
+    )
+    return True
 
 
 def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
@@ -7675,6 +8291,37 @@ def _desktop_linux_needs_no_sandbox() -> bool:
         return False
 
 
+def _desktop_linux_userns_sandbox_available() -> bool:
+    """Return True when Chromium's unprivileged user-namespace sandbox works.
+
+    When an unprivileged process can create a user namespace, Chromium uses the
+    namespace sandbox and never consults the setuid ``chrome-sandbox`` helper,
+    so requiring the helper to be root-owned 4755 (and prompting for sudo) is
+    unnecessary. Probe the real capability with ``unshare`` instead of reading
+    distro-specific sysctls: the probe fails closed on hosts where user
+    namespaces are disabled or AppArmor-restricted, which then follow the
+    existing setuid-helper path.
+    """
+    if sys.platform != "linux":
+        return False
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+    try:
+        return (
+            subprocess.run(
+                [unshare, "--user", "--map-root-user", "true"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _desktop_linux_sandbox_helper_is_regular_file(packaged_executable: Path) -> bool:
     """Return True when ``chrome-sandbox`` exists as a regular file."""
     if sys.platform != "linux":
@@ -7713,6 +8360,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
         return True
 
+    if _desktop_linux_userns_sandbox_available():
+        print("✓ Using Chromium's user-namespace sandbox (setuid helper not needed).")
+        return True
+
     sudo = shutil.which("sudo")
     if not sudo:
         print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
@@ -7723,6 +8374,29 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
             return False
+    return True
+
+
+def _desktop_linux_needs_disable_setuid_sandbox(packaged_executable: Path) -> bool:
+    """Return True when Chromium should skip the present-but-non-setuid helper.
+
+    A user-owned ``chrome-sandbox`` still makes Chromium abort with
+    ``setuid_sandbox_host`` even when the namespace sandbox works. Passing
+    ``--disable-setuid-sandbox`` keeps the userns sandbox and avoids sudo.
+    Call only after ``_desktop_linux_sandbox_fixup`` succeeded without making
+    the helper root-owned 4755 (the userns path). Does not re-probe userns.
+    """
+    if sys.platform != "linux":
+        return False
+    sandbox = packaged_executable.parent / "chrome-sandbox"
+    try:
+        sandbox_lstat = sandbox.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(sandbox_lstat.st_mode):
+        return False
+    if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
+        return False
     return True
 
 
@@ -7769,26 +8443,29 @@ def _detect_linux_password_store() -> str | None:
     return None
 
 
-def _desktop_launch_options() -> tuple[list[str], str, str]:
+def _desktop_launch_options() -> tuple[list[str], str, str, str]:
     """Read `desktop.*` launch options from config.yaml.
 
-    Returns ``(electron_flags, disable_gpu, password_store)`` where
+    Returns ``(electron_flags, disable_gpu, password_store, ozone_hint)`` where
     ``electron_flags`` is a list of extra Electron CLI flags, ``disable_gpu``
     is one of "auto"/"1"/"0" (normalized for the HERMES_DESKTOP_DISABLE_GPU
-    env var the Electron app reads), and ``password_store`` is "auto" or one
+    env var the Electron app reads), ``password_store`` is "auto" or one
     of the Chromium password-store backends (unknown values normalize to
-    "auto"). Best-effort: any config error yields the safe defaults
-    ``([], "auto", "auto")`` so a malformed config never blocks the launch.
+    "auto"), and ``ozone_hint`` is one of "auto"/"x11"/"wayland" (normalized
+    for ``ELECTRON_OZONE_PLATFORM_HINT``). Best-effort: any config error
+    yields the safe defaults ``([], "auto", "auto", "auto")`` so a malformed
+    config never blocks the launch.
     """
     flags: list[str] = []
     disable_gpu = "auto"
     password_store = "auto"
+    ozone_hint = "auto"
     try:
         from hermes_cli.config import load_config
 
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
-        return flags, disable_gpu, password_store
+        return flags, disable_gpu, password_store, ozone_hint
 
     raw_flags = desktop_cfg.get("electron_flags")
     if isinstance(raw_flags, str):
@@ -7813,7 +8490,13 @@ def _desktop_launch_options() -> tuple[list[str], str, str]:
         low_store = raw_store.strip().lower()
         if low_store in _LINUX_PASSWORD_STORES:
             password_store = low_store
-    return flags, disable_gpu, password_store
+
+    raw_ozone = desktop_cfg.get("ozone_platform_hint", "auto")
+    if isinstance(raw_ozone, str):
+        low_ozone = raw_ozone.strip().lower()
+        if low_ozone in ("auto", "x11", "wayland"):
+            ozone_hint = low_ozone
+    return flags, disable_gpu, password_store, ozone_hint
 
 
 def _register_linux_desktop_entry() -> None:
@@ -7864,12 +8547,18 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_CWD"] = os.getcwd()
 
     # Desktop launch options from config.yaml (`desktop.electron_flags`,
-    # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
-    # Electron app already reads; an explicit env var still wins over config so
-    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` keeps working.
-    config_electron_flags, config_disable_gpu, config_password_store = _desktop_launch_options()
+    # `desktop.disable_gpu`, `desktop.ozone_platform_hint`). The GPU policy
+    # and ozone hint are bridged to env vars the Electron/Chromium process
+    # already reads; an explicit env var still wins over config so
+    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` and
+    # `ELECTRON_OZONE_PLATFORM_HINT=... hermes desktop` keep working.
+    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint = (
+        _desktop_launch_options()
+    )
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
+    if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
+        env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
 
     # Linux keychain backend for safeStorage (`desktop.password_store`).
     # Chromium needs the --password-store switch to pick the right keychain;
@@ -7889,6 +8578,13 @@ def cmd_gui(args: argparse.Namespace):
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)
+
+    # macOS-only one-shot: create a self-signed code-signing identity so TCC
+    # grants survive rebuilds, then exit without building/launching.
+    if getattr(args, "setup_tcc_identity", False):
+        identity = getattr(args, "identity", None) or "Hermes Local Signing"
+        ok = _desktop_macos_setup_tcc_identity(identity)
+        sys.exit(0 if ok else 1)
 
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
@@ -7964,7 +8660,16 @@ def cmd_gui(args: argparse.Namespace):
                 print("  → No Developer ID configured; ad-hoc signing this local rebuild "
                       "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
             npm_build_env = _npm_lifecycle_env(env)
+            # Stage-and-swap (#86443): electron-builder packs IN PLACE and
+            # before-pack.mjs wipes release/<unpacked> first, so a pack that
+            # fails afterwards used to leave the user with NO app. Build into
+            # a fresh staging output dir instead; the live release/ tree is
+            # only replaced — by rename — after the staged result verifies.
+            staging_dir: Optional[Path] = None
+            build_cmd = [npm, "run", build_script]
             if not source_mode:
+                staging_dir = _desktop_staging_dir(desktop_dir)
+                build_cmd += ["--", f"-c.directories.output={staging_dir}"]
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
                 # it ("Access is denied" / ERR_ELECTRON_BUILDER_CANNOT_EXECUTE).
@@ -7973,13 +8678,17 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+
+            def _staged_exe() -> Optional[Path]:
+                return _desktop_packaged_executable_in(staging_dir) if staging_dir else None
+
             build_result = subprocess.run(
-                [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                build_cmd, cwd=desktop_dir, env=npm_build_env, check=False
             )
             if (
                 build_result.returncode != 0
                 and not source_mode
-                and _desktop_packaged_executable(desktop_dir) is None
+                and _staged_exe() is None
             ):
                 # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
                 # stdlib zipfile won't catch the common concat-junk case, so purge
@@ -7993,7 +8702,7 @@ def cmd_gui(args: argparse.Namespace):
                 purged: list[Path] = []
                 restored = False
                 if not _electron_dist_ok(PROJECT_ROOT):
-                    purged = _purge_electron_build_cache(desktop_dir)
+                    purged = _purge_electron_build_cache(desktop_dir, release_dir=staging_dir)
                     restored = _redownload_electron_dist(PROJECT_ROOT, env)
                 if restored:
                     print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
@@ -8003,13 +8712,13 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run(
-                        [npm, "run", build_script], cwd=desktop_dir, env=npm_build_env, check=False
+                        build_cmd, cwd=desktop_dir, env=npm_build_env, check=False
                     )
             if (
                 build_result.returncode != 0
                 and not source_mode
                 and not env.get("ELECTRON_MIRROR")
-                and _desktop_packaged_executable(desktop_dir) is None
+                and _staged_exe() is None
             ):
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Re-downloading via a public mirror "
@@ -8020,9 +8729,13 @@ def cmd_gui(args: argparse.Namespace):
                 if not _electron_dist_ok(PROJECT_ROOT):
                     _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run(build_cmd, cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
+                if staging_dir is not None:
+                    _discard_desktop_staging(staging_dir)
+                    if _desktop_packaged_executable(desktop_dir) is not None:
+                        print("  ↩ The previous desktop app was left untouched and still works.")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
@@ -8030,28 +8743,37 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
-            packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
+                assert staging_dir is not None
+                staged_executable = _staged_exe()
                 # Locally-built apps are ad-hoc signed; make them relaunchable after
                 # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
-                _desktop_macos_relaunchable_fixup(desktop_dir)
+                # Signs the STAGED bundle so the live app is never half-signed.
+                _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
 
                 # Windows integrity gate (#69179): never declare the rebuild a
                 # success on a Hermes.exe Windows cannot load (truncated PE from
                 # a corrupt cached Electron zip, wrong-arch tree, interrupted
-                # rcedit rewrite). Roll back to the .bak tree preserved by
-                # before-pack.mjs when possible, then fail loudly so the
-                # updater's retry-once rebuilds from a fresh Electron download
-                # instead of silently shipping the broken exe.
+                # rcedit rewrite). Verified on the STAGED exe: a failure here
+                # simply discards the staging dir — the live app was never
+                # touched — and fails loudly so the updater's retry-once
+                # rebuilds from a fresh Electron download.
                 verified_executable, rolled_back = _ensure_desktop_exe_launchable(
-                    desktop_dir, packaged_executable
+                    desktop_dir, staged_executable
                 )
-                if packaged_executable is not None and (
-                    rolled_back or verified_executable is None
-                ):
+                if staged_executable is None or rolled_back or verified_executable is None:
+                    _discard_desktop_staging(staging_dir)
+                    if staged_executable is None:
+                        print(f"✗ Desktop build produced no launchable app in {staging_dir}")
+                    print("  ↩ The previous desktop app was left untouched and still works.")
                     sys.exit(1)
-                packaged_executable = verified_executable
+                # Verified: swap the staged tree over the live one (rename).
+                packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir)
+                if packaged_executable is None:
+                    print(f"✗ Could not install the rebuilt desktop app into {desktop_dir / 'release'}")
+                    print("  ↩ The previous desktop app was left untouched and still works.")
+                    sys.exit(1)
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
@@ -8083,7 +8805,10 @@ def cmd_gui(args: argparse.Namespace):
 
     if source_mode:
         print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        electron_argv = [npm, "exec", "--", "electron", "."]
+        if getattr(args, "local", False):
+            electron_argv.append("--local")
+        launch_result = subprocess.run(electron_argv, cwd=desktop_dir, env=env, check=False)
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:
@@ -8098,8 +8823,12 @@ def cmd_gui(args: argparse.Namespace):
             launch_command.append("--no-sandbox")
         else:
             sys.exit(1)
+    elif _desktop_linux_needs_disable_setuid_sandbox(packaged_executable):
+        launch_command.append("--disable-setuid-sandbox")
 
     launch_command.extend(config_electron_flags)
+    if getattr(args, "local", False):
+        launch_command.append("--local")
     print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
@@ -10302,12 +11031,8 @@ def cmd_update(args):
     ``sys.exit`` or unhandled exceptions).
     """
     from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
         is_managed,
-        is_nix_install_method,
         managed_error,
-        recommended_update_command_for_method,
     )
 
     if is_managed():
@@ -10330,20 +11055,23 @@ def cmd_update(args):
         print_update_plan(collect_runtime_inventory())
         return
 
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
-    install_method = detect_install_method(PROJECT_ROOT)
-    if install_method == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
+    # Image-managed / package-managed admission gate (#91277 Phase 3): one
+    # shared decision for every mutation surface. Consults the baked image
+    # provenance marker first (authoritative, fail-closed on malformed),
+    # then the pre-existing docker/nix/apt heuristics. Prints the real
+    # update command, records a `refused` receipt so fleet tooling sees the
+    # blocked attempt, and exits 2 (refused-by-contract, distinct from
+    # exit 1 errors).
+    from hermes_cli.update_contract import (
+        evaluate_update_admission,
+        record_refusal_receipt,
+    )
 
-    if is_nix_install_method(install_method) or install_method == "apt":
-        print(recommended_update_command_for_method(install_method))
-        sys.exit(1)
+    refusal = evaluate_update_admission(PROJECT_ROOT)
+    if refusal is not None:
+        print(refusal.message)
+        record_refusal_receipt(refusal)
+        sys.exit(2)
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
@@ -10379,6 +11107,10 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
+    # Exit code for the Windows hand-off child's hard exit (see finally).
+    # None = not a SystemExit-shaped outcome; real exceptions keep the
+    # normal raise path so their traceback still prints.
+    _update_handoff_exit_code: int | None = None
     try:
         _self()._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
@@ -10395,6 +11127,9 @@ def cmd_update(args):
             finalize_pending_update_receipt(_code, f"sys.exit({_code})")
         except Exception:
             pass
+        _update_handoff_exit_code = (
+            _update_exit.code if isinstance(_update_exit.code, int) else 0
+        )
         raise
     except BaseException as _update_exc:
         try:
@@ -10413,9 +11148,29 @@ def cmd_update(args):
             finalize_pending_update_receipt(0, "completed at command boundary")
         except Exception:
             pass
+        _update_handoff_exit_code = 0
     finally:
         _update_lock.release()
         _finalize_update_output(_update_io_state)
+        # Windows hand-off child (#93581): the re-exec'd venv child cannot
+        # rely on graceful interpreter shutdown — a leftover non-daemon
+        # thread from the update tail keeps the console busy long after
+        # the receipt is durable (success, exit 0, "completed at command
+        # boundary"), freezing the PowerShell window for minutes. By this
+        # point every durable step is done (receipt finalized above, lock
+        # released, stdio restored), so on the hand-off path only, flush
+        # and exit hard instead of waiting for the interpreter to unwind
+        # — the same treatment #79040's cron workaround applies. No-op on
+        # every non-hand-off invocation: the marker env is set solely by
+        # _reexec_dependency_sync_off_windows_shim when it spawns the child.
+        if _update_handoff_exit_code is not None and os.environ.get(_UPDATE_REEXEC_ENV) == "1":
+            logger.debug(
+                "Update hand-off child %s exiting via os._exit(%s)",
+                os.getpid(), _update_handoff_exit_code,
+            )
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(_update_handoff_exit_code)
 
 
 def _coalesce_session_name_args(argv: list) -> list:
@@ -10696,7 +11451,7 @@ def cmd_profile(args):
 
             # Profile dir for display
             try:
-                profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
+                profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
             except ValueError:
                 profile_dir_display = str(profile_dir)
 
@@ -10837,6 +11592,7 @@ def cmd_profile(args):
             profile_exists,
             _read_config_model,
             _check_gateway_running,
+            _served_by_running_multiplexer,
             _count_skills,
             _read_distribution_meta,
             _get_wrapper_dir,
@@ -10850,7 +11606,7 @@ def cmd_profile(args):
             sys.exit(1)
         profile_dir = get_profile_dir(name)
         model, provider = _read_config_model(profile_dir)
-        gw = _check_gateway_running(profile_dir)
+        gw = _check_gateway_running(profile_dir) or _served_by_running_multiplexer(name)
         skills = _count_skills(profile_dir)
         dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
         alias_name = find_alias_for_profile(name)
@@ -10929,14 +11685,14 @@ def cmd_profile(args):
             sys.exit(1)
 
     elif action == "export":
-        from hermes_cli.profiles import export_profile
+        from hermes_cli.profiles import export_profile, get_profile_export_path
 
         name = args.profile_name
-        output = args.output or f"{name}.tar.gz"
         try:
+            output = args.output or str(get_profile_export_path(name))
             result_path = export_profile(name, output)
             print(f"✓ Exported '{name}' to {result_path}")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"Error: {e}")
             sys.exit(1)
 
@@ -11172,30 +11928,35 @@ def _render_distribution_plan(plan) -> None:
 
 
 def _report_dashboard_status() -> int:
-    """Print live listening dashboard processes and return the count."""
+    """Print live listening dashboard/serve processes and return the count.
+
+    Serve-mode backends are INCLUDED (#81564): `--stop` kills them, so
+    `--status` hiding them left Desktop SSH backends invisible to the CLI —
+    an operator could kill what they couldn't see. Ledger-registered serves
+    (profiled launches the argv scan can't match) surface via the
+    spawn-ledger augmentation in _scan_dashboard_processes.
+    """
     from gateway.status import _pid_exists
 
-    live: list[tuple[int, str]] = []
+    live: list[tuple[int, str, str]] = []
     for pid, command in _self()._scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if mode != "dashboard":
-            continue
         if port <= 0 or not _pid_exists(pid):
             continue
         if not _dashboard_listening(host, port):
             continue
-        live.append((pid, command))
+        live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard processes running.")
+        print("No hermes dashboard or serve processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard process(es) running:")
-    for pid, command in live:
-        print(f"    PID {pid}: {command}")
+    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    for pid, command, mode in live:
+        print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
 
 
@@ -11498,6 +12259,23 @@ def cmd_dashboard(args):
     # ready sentinel. Resolved once and threaded through the re-exec, the
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
+    # `hermes serve` is headless/non-interactive: fail closed on a corrupt
+    # config.yaml instead of silently starting on defaults where provider
+    # auto-detection can adopt unnamed .env credentials (issue #81952).
+    # Same policy + escape hatch as _guard_noninteractive_user_config.
+    if _headless_backend:
+        from hermes_cli.config import (
+            InvalidUserConfigError,
+            require_parseable_user_config,
+        )
+
+        try:
+            require_parseable_user_config(
+                ignore_user_config=bool(getattr(args, "ignore_user_config", False))
+            )
+        except InvalidUserConfigError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
     _ssh_owner_nonce = getattr(args, "ssh_owner_nonce", None)
     if _ssh_owner_nonce and not re.fullmatch(r"[0-9a-f]{16}", _ssh_owner_nonce):
         raise SystemExit("--ssh-owner-nonce must be 16 lowercase hex characters")
@@ -11754,18 +12532,29 @@ def cmd_dashboard(args):
     # this, a profile's configured MCP servers never connect, so desktop
     # sessions show no MCP tools.  Spawn discovery in the background here so a
     # slow/dead server can't block dashboard startup.
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
+    #
+    # Desktop-spawned headless backends start it AFTER the socket binds
+    # instead (start_server's ready path): the thread's first act is the
+    # ~350ms `mcp` SDK import, which holds the GIL against the main thread's
+    # own web_server import and pushes the READY sentinel — and every
+    # renderer paint behind it — back by that much. The Desktop can't issue
+    # an agent turn until its WebSocket is up anyway, and _make_agent's
+    # bounded wait_for_mcp_discovery + the late-binding refresh cover a
+    # server that is still connecting when the first turn lands.
+    _mcp_discovery_after_bind = _headless_backend and os.environ.get("HERMES_DESKTOP") == "1"
+    if not _mcp_discovery_after_bind:
+        try:
+            from hermes_cli.mcp_startup import start_background_mcp_discovery
 
-        start_background_mcp_discovery(
-            logger=logger,
-            thread_name="dashboard-mcp-discovery",
-        )
-    except Exception:
-        logger.debug(
-            "Background MCP tool discovery failed at dashboard startup",
-            exc_info=True,
-        )
+            start_background_mcp_discovery(
+                logger=logger,
+                thread_name="dashboard-mcp-discovery",
+            )
+        except Exception:
+            logger.debug(
+                "Background MCP tool discovery failed at dashboard startup",
+                exc_info=True,
+            )
 
     from hermes_cli.web_server import start_server
 
@@ -11788,6 +12577,7 @@ def cmd_dashboard(args):
         headless=_headless_backend,
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
+        start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
     )
 
 
@@ -11893,38 +12683,12 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
+        "browser",
         "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
         "help",
-    }
-)
-
-
-# Top-level flags that take a value. Needed by ``_first_positional_argv``
-# so that in ``hermes -m gpt5 chat``, ``gpt5`` is correctly skipped as a
-# flag value rather than misclassified as a subcommand. Kept in sync with
-# the top-level flags declared in ``hermes_cli/_parser.py``.
-#
-# Correctness-safe either way: missing an entry here only makes the
-# fast-path bail out too eagerly (we run plugin discovery when we didn't
-# need to); extra entries would make us skip a real positional.
-_TOP_LEVEL_VALUE_FLAGS = frozenset(
-    {
-        "-z", "--oneshot",
-        "-m", "--model",
-        "--provider",
-        "-t", "--toolsets",
-        "-r", "--resume",
-        "-s", "--skills",
-        "--usage-file",
-        "--in",
-        # ``-c / --continue`` is nargs='?' (optional value). Treat it as
-        # value-taking: if the next token is a subcommand-looking word
-        # the user almost certainly meant it as the session name, and
-        # either interpretation keeps us on the safe side.
-        "-c", "--continue",
     }
 )
 
@@ -11941,6 +12705,10 @@ def _first_positional_argv() -> str | None:
     bar`` flags degrade gracefully (``bar`` may be wrongly classified as
     a positional, which at worst forces a one-time plugin discovery).
     """
+    from hermes_cli._parser import top_level_value_flag_sets
+
+    required_value_flags, optional_value_flags = top_level_value_flag_sets()
+    value_flags = required_value_flags | optional_value_flags
     argv = sys.argv[1:]
     i = 0
     while i < len(argv):
@@ -11955,7 +12723,7 @@ def _first_positional_argv() -> str | None:
             if "=" in tok:
                 i += 1
                 continue
-            if tok in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(argv):
+            if tok in value_flags and i + 1 < len(argv):
                 i += 2
                 continue
             i += 1
@@ -12023,7 +12791,19 @@ _AGENT_SUBCOMMANDS = {
 
 
 def _is_tui_chat_launch(args) -> bool:
-    return bool(getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1")
+    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+        return True
+    # The chat path decides TUI-vs-classic via _resolve_use_tui (--cli/--tui
+    # flags, TTY gate, HERMES_TUI env, display.interface config). Bare
+    # `hermes`/`hermes chat` with a TUI display config was previously missed
+    # here, so the wrapper pre-warmed its own MCP discovery while the TUI
+    # gateway (spawned moments later) ran a second one — an idle stdio MCP
+    # server copy held dead for the whole session. Only chat commands can
+    # launch the TUI; other commands (mcp serve, gateway, acp, cron) keep
+    # their own discovery behavior untouched.
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+    return _resolve_use_tui(args)
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:
@@ -12054,6 +12834,8 @@ def _prepare_agent_startup(args) -> None:
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
+    _apply_user_config_bypass(args)
+    _guard_noninteractive_user_config(args)
 
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
     if not (
@@ -12082,6 +12864,17 @@ def _prepare_agent_startup(args) -> None:
                 "plugin discovery failed at CLI startup",
                 exc_info=True,
             )
+    # -t/--toolsets narrows which configured MCP servers get spawned, on
+    # every discovery path (inline below, background thread, TUI/desktop
+    # deferred start). Built-in toolset names never match a server key, so
+    # `-t terminal` simply spawns nothing; `-t all` keeps the full set.
+    try:
+        from hermes_cli.mcp_startup import set_mcp_server_filter
+
+        set_mcp_server_filter(getattr(args, "toolsets", None))
+    except Exception:
+        logger.debug("MCP server filter setup failed", exc_info=True)
+
     _run_inline_mcp_discovery = True
     if _is_tui_chat_launch(args):
         # The TUI launcher hands off to a dedicated startup path that already
@@ -12110,9 +12903,14 @@ def _prepare_agent_startup(args) -> None:
         try:
             # MCP tool discovery remains synchronous for entrypoints that do
             # not own a later bounded/executor startup path.
+            from hermes_cli.mcp_startup import get_mcp_server_filter
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            _mcp_filter = get_mcp_server_filter()
+            if _mcp_filter is None:
+                discover_mcp_tools()
+            else:
+                discover_mcp_tools(allowed_mcp_names=_mcp_filter)
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",
@@ -12145,6 +12943,43 @@ def _apply_safe_mode(args) -> None:
     os.environ["HERMES_IGNORE_RULES"] = "1"
 
 
+def _apply_user_config_bypass(args) -> None:
+    """Apply the explicit config bypass before any startup config reads."""
+    if getattr(args, "ignore_user_config", False):
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+
+
+def _guard_noninteractive_user_config(args) -> None:
+    """Fail closed before a non-interactive invocation initializes providers."""
+    if getattr(args, "_noninteractive_config_validated", False):
+        return
+
+    is_noninteractive = (
+        bool(getattr(args, "oneshot", None))
+        or bool(getattr(args, "query", None))
+    )
+    if not is_noninteractive:
+        return
+
+    from hermes_cli.config import (
+        InvalidUserConfigError,
+        require_parseable_user_config,
+    )
+
+    try:
+        require_parseable_user_config(
+            ignore_user_config=bool(
+                getattr(args, "ignore_user_config", False)
+                or getattr(args, "safe_mode", False)
+            )
+        )
+    except InvalidUserConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    setattr(args, "_noninteractive_config_validated", True)
+
+
 def _set_chat_arg_defaults(args) -> None:
     for attr, default in [
         ("query", None),
@@ -12158,6 +12993,47 @@ def _set_chat_arg_defaults(args) -> None:
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
+
+
+def _try_fast_serve_launch() -> bool:
+    """Dispatch an unambiguous built-in ``serve`` without the full CLI tree.
+
+    Desktop launches this exact command on every cold start. Building parsers
+    for unrelated Hermes commands performs thousands of filesystem-backed
+    translation lookups on Windows even though none of those commands are
+    usable in this process. Unknown or globally-scoped arguments fall back to
+    normal parsing so compatibility and error reporting remain unchanged.
+    """
+    if os.environ.get("HERMES_DISABLE_FAST_SERVE_LAUNCH") == "1":
+        return False
+
+    argv = sys.argv[1:]
+    if not argv or argv[0] != "serve" or "-h" in argv or "--help" in argv:
+        return False
+
+    # Container routing is top-level policy and must run before host dispatch.
+    try:
+        from hermes_cli.config import get_container_exec_info
+
+        if get_container_exec_info():
+            return False
+    except Exception:
+        return False
+
+    parser = build_serve_parser(
+        cmd_dashboard=cmd_dashboard,
+        add_help=False,
+        exit_on_error=False,
+    )
+    try:
+        args, unknown = parser.parse_known_args(argv[1:])
+    except (argparse.ArgumentError, ValueError):
+        return False
+    if unknown:
+        return False
+
+    cmd_dashboard(args)
+    return True
 
 
 def _try_fast_chat_launch() -> bool:
@@ -12694,9 +13570,20 @@ def main():
     except Exception:
         pass
 
+    # Cheap hint only (#95294): an interrupted update that pulled code but
+    # never restarted the fleet. Do NOT restart here — that is ``hermes
+    # update`` catch-up work. Skip when the user is already running update.
+    try:
+        if "update" not in sys.argv[1:]:
+            _warn_pending_fleet_restart_on_startup()
+    except Exception:
+        pass
+
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
+        return
+    if _try_fast_serve_launch():
         return
     if _try_fast_chat_launch():
         return
@@ -12811,6 +13698,61 @@ def main():
         return cmd_worktree(_args)
 
     worktree_parser.set_defaults(func=_dispatch_worktree)
+
+
+    # =========================================================================
+    # browser command — real-profile helpers (agent-invoked, user-approved)
+    # =========================================================================
+    browser_parser = subparsers.add_parser(
+        "browser",
+        help="Real-profile browsing helpers (close a browser locking its profile)",
+        description=(
+            "Helpers for real-profile browsing (browser.use_real_profile). "
+            "close-profile terminates the browser process tree holding your "
+            "default profile so Hermes can copy it — DESTRUCTIVE (unsaved tabs "
+            "in that browser are lost). The agent runs this only after you "
+            "approve closing the browser."
+        ),
+    )
+    browser_subparsers = browser_parser.add_subparsers(dest="browser_action")
+    browser_close = browser_subparsers.add_parser(
+        "close-profile",
+        help="Close the browser locking your real profile (asks nothing — "
+             "run only with the user's explicit OK; loses unsaved tabs)",
+    )
+    browser_close.add_argument(
+        "--browser",
+        help="Override detected default browser (chrome/edge/brave/brave-origin/chromium)",
+    )
+
+    def _dispatch_browser(_args):
+        from hermes_cli.browser_connect import (
+            UNSUPPORTED_CHANNEL,
+            close_browser_holding_profile,
+            detect_default_chromium,
+            real_profile_data_dir,
+        )
+
+        action = getattr(_args, "browser_action", None)
+        if action != "close-profile":
+            browser_parser.print_help()
+            return 2
+        browser = getattr(_args, "browser", None) or detect_default_chromium()
+        if not browser or browser == UNSUPPORTED_CHANNEL:
+            print("✗ No supported Chromium default browser detected.", file=sys.stderr)
+            return 1
+        src = real_profile_data_dir(browser)
+        if not src:
+            print(f"✗ Could not resolve the {browser} profile directory.", file=sys.stderr)
+            return 1
+        closed, msg = close_browser_holding_profile(src)
+        if closed:
+            print(f"✓ {msg}")
+            return 0
+        print(f"✗ {msg}", file=sys.stderr)
+        return 1
+
+    browser_parser.set_defaults(func=_dispatch_browser)
 
 
     # =========================================================================

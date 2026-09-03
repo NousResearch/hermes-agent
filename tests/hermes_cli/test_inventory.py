@@ -40,8 +40,34 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
     }
 
 
+def test_load_picker_context_coerces_numeric_yaml_provider():
+    """PyYAML parses unquoted `provider: 2070` as int; picker context must be str.
 
-
+    Desktop GET /api/model/options crashed when a custom endpoint was named
+    after a GPU: current_provider.strip() and providers dict keys .lower().
+    """
+    cfg = _cfg(
+        model={
+            "provider": 2070,
+            "default": "Qwen3.5-9B-Q4_K_M.gguf",
+            "base_url": "http://192.168.1.10:8082/v1",
+        },
+        providers={
+            2070: {
+                "name": 2070,
+                "base_url": "http://192.168.1.10:8082/v1",
+                "model": "Qwen3.5-9B-Q4_K_M.gguf",
+            }
+        },
+    )
+    with patch("hermes_cli.config.load_config", return_value=cfg):
+        ctx = load_picker_context()
+    assert ctx.current_provider == "2070"
+    assert isinstance(ctx.current_provider, str)
+    assert list(ctx.user_providers) == ["2070"]
+    assert all(isinstance(k, str) for k in ctx.user_providers)
+    assert ctx.current_model == "Qwen3.5-9B-Q4_K_M.gguf"
+    assert ctx.current_base_url == "http://192.168.1.10:8082/v1"
 
 
 # ─── with_overrides ────────────────────────────────────────────────────

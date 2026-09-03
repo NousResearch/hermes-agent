@@ -40,6 +40,37 @@ from hermes_cli.browser_connect import (
 )
 
 
+def _print_lightpanda_engine_status() -> None:
+    """One or two ``/browser status`` lines about ``browser.engine: lightpanda``.
+
+    Silent unless the engine is set to lightpanda. Says whether it is in use
+    (and by which driver) or which setting shadows it — the engine is the
+    lowest-precedence browser knob and used to be ignored silently.
+    """
+    try:
+        from tools.browser_tool import lightpanda_engine_status, _using_lightpanda_engine
+
+        if not _using_lightpanda_engine():
+            return
+        used, reason = lightpanda_engine_status()
+    except Exception:
+        return
+    if not used:
+        print(f"   ⚠ browser.engine is 'lightpanda' but it is NOT in use: {reason}")
+        return
+    print(f"   Engine: Lightpanda — {reason} (no screenshots)")
+    try:
+        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
+
+        lightpanda_bin = find_lightpanda_binary()
+    except Exception:
+        return
+    if lightpanda_bin:
+        print(f"   Binary: {lightpanda_bin}")
+    else:
+        print(f"   ⚠ lightpanda binary not found — {LIGHTPANDA_INSTALL_HINT}")
+
+
 class CLICommandsMixin:
     """Mixin holding the interactive-CLI slash-command handlers.
 
@@ -165,6 +196,16 @@ class CLICommandsMixin:
                 more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
                 print(f"  ↷ Kept your hand-edits: {shown}{more}")
                 print("  Use /rollback <N> --all to restore those too.")
+            oversize = result.get("skipped_oversize") or []
+            if oversize:
+                shown = ", ".join(oversize[:5])
+                more = f" (+{len(oversize) - 5} more)" if len(oversize) > 5 else ""
+                print(f"  ↷ Kept (too large for checkpoints, no stored copy to revert to): {shown}{more}")
+            failed = result.get("failed_deletes") or []
+            if failed:
+                shown = ", ".join(failed[:5])
+                more = f" (+{len(failed) - 5} more)" if len(failed) > 5 else ""
+                print(f"  ⚠️ Could not remove (left in place): {shown}{more}")
             print("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
@@ -375,9 +416,24 @@ class CLICommandsMixin:
                     return
             except ValueError:
                 pass
+
+            # Close our local SessionDB connection before restore so the
+            # backup-API restore doesn't contend with a live connection to
+            # state.db from this same process (issue #65942).
+            local_session_db = getattr(self, "_session_db", None)
+            if local_session_db is not None:
+                try:
+                    local_session_db.close()
+                    self._session_db = None
+                except Exception:
+                    pass
+
             if restore_quick_snapshot(snap_id):
                 print(f"  Restored state from: {snap_id}")
-                print("  Restart recommended for state.db changes to take effect.")
+                print(
+                    "  Restart recommended for gateway/dashboard processes "
+                    "to pick up state.db changes."
+                )
             else:
                 print(f"  Snapshot not found: {snap_id}")
 
@@ -404,7 +460,11 @@ class CLICommandsMixin:
             /export <profile>             — export a named profile
             /export [profile] -o <path>   — choose the output path
         """
-        from hermes_cli.profiles import export_profile, get_active_profile_name
+        from hermes_cli.profiles import (
+            export_profile,
+            get_active_profile_name,
+            get_profile_export_path,
+        )
 
         parts = command.split()[1:]
         output = None
@@ -417,14 +477,14 @@ class CLICommandsMixin:
             parts = parts[:idx] + parts[idx + 2:]
 
         name = parts[0] if parts else (get_active_profile_name() or "default")
-        if not output:
-            output = f"{name}.tar.gz"
 
         try:
+            if not output:
+                output = str(get_profile_export_path(name))
             result = export_profile(name, output)
             print(f"  ✓ Exported '{name}' to {result}")
             print("  Share it: the other user runs /import or `hermes profile import <archive>`.")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, OSError) as e:
             print(f"  Error: {e}")
 
     def _handle_import_command(self, command: str):
@@ -819,11 +879,14 @@ class CLICommandsMixin:
           2. Reject if the agent is currently running (the in-flight turn
              would race with the gateway's switch_session).
           3. Write ``handoff_state='pending'`` on this session row.
-          4. Block-poll ``state.db`` for terminal state (timeout 60s).
+          4. Block-poll ``state.db``: 60s for the gateway to CLAIM the row
+             (pending), then up to 15 min for the claimed dispatch to reach a
+             terminal state (running → completed/failed) with heartbeats.
           5. On ``completed`` → print resume hint and signal CLI exit by
              returning False (the caller honors that like ``/quit``).
-          6. On ``failed`` / timeout → print error and return True so the
-             user keeps their CLI session.
+          6. On ``failed`` / pending-timeout → print error and return True so
+             the user keeps their CLI session. A running-timeout leaves the
+             row untouched (the gateway owns it) and returns True.
 
         Returns:
             False to signal CLI exit, True to keep going.
@@ -942,11 +1005,34 @@ class CLICommandsMixin:
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
         _cprint("  Waiting for the gateway to pick it up...")
 
-        # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
+        # Two-phase poll, tick every 0.5s.
+        #
+        # PENDING (nobody claimed the row): 60s deadline. A timeout here
+        # genuinely means no gateway watcher is looking at this state.db —
+        # "Is `hermes gateway` running?" is the correct diagnosis, and the
+        # CAS fail (only_states=("pending",)) can't stomp a claim that lands
+        # in the same instant.
+        #
+        # RUNNING (gateway claimed it): the gateway owns the row and is
+        # replaying the full transcript through a synthetic agent turn —
+        # routinely slower than 60s on long sessions with reasoning models.
+        # Timing out here and failing the row is the bug this replaces: the
+        # CLI printed "Is `hermes gateway` running?" while the gateway was
+        # mid-delivery, then the watcher overwrote failed → completed
+        # (split-brain; the session HAD been switched under the CLI). So in
+        # this phase we wait with a much longer bound and a periodic
+        # heartbeat, and on timeout we do NOT touch the row — the gateway
+        # reaches its own terminal state (or the next gateway startup
+        # reclaims a stranded 'running' row).
         import time as _time
-        deadline = _time.time() + 60.0
+        _PENDING_TIMEOUT = 60.0
+        _RUNNING_TIMEOUT = 900.0  # full synthetic agent turn + delivery
+        _HEARTBEAT_EVERY = 30.0
+        pending_deadline = _time.time() + _PENDING_TIMEOUT
+        running_deadline = None
+        next_heartbeat = None
         last_state = "pending"
-        while _time.time() < deadline:
+        while True:
             try:
                 state_row = self._session_db.get_handoff_state(self.session_id)
             except Exception:
@@ -955,6 +1041,8 @@ class CLICommandsMixin:
             if current != last_state:
                 if current == "running":
                     _cprint("  Gateway picked it up; transferring...")
+                    running_deadline = _time.time() + _RUNNING_TIMEOUT
+                    next_heartbeat = _time.time() + _HEARTBEAT_EVERY
                 last_state = current
             if current == "completed":
                 _cprint("")
@@ -977,11 +1065,41 @@ class CLICommandsMixin:
                 _cprint(f"  Handoff failed: {err}")
                 _cprint("  Your CLI session is intact. Try /handoff again, or /resume on the platform manually.")
                 return True
+            now = _time.time()
+            if current == "pending":
+                if now >= pending_deadline:
+                    break
+            else:  # running
+                if next_heartbeat is not None and now >= next_heartbeat:
+                    _cprint("  Still transferring (the agent is replaying your session on the destination)...")
+                    next_heartbeat = now + _HEARTBEAT_EVERY
+                if running_deadline is not None and now >= running_deadline:
+                    # Do NOT fail the row: the gateway owns it and will record
+                    # its own terminal state (or startup reclaim handles a
+                    # dead gateway). Stomping it here is the split-brain bug.
+                    _cprint("  The gateway is taking unusually long to finish the transfer.")
+                    _cprint(f"  Check {platform_name} — the session may still arrive there.")
+                    _cprint("  This CLI is no longer waiting. Avoid continuing this session here;")
+                    _cprint("  if nothing arrives, retry /handoff once the state settles.")
+                    return True
             _time.sleep(0.5)
 
-        # Timed out. Clear the pending flag so the user can retry.
+        # Pending timed out: nothing ever claimed the row. Clear the pending
+        # flag (CAS — a claim racing this exact moment wins and we just lose
+        # the retry convenience, never the handoff) so the user can retry.
         try:
-            self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+            self._session_db.fail_handoff(
+                self.session_id,
+                "timed out waiting for gateway",
+                only_states=("pending",),
+            )
+        except TypeError:
+            # Older SessionDB without only_states (downgrade/mixed installs):
+            # fall back to the legacy unconditional fail.
+            try:
+                self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
+            except Exception:
+                pass
         except Exception:
             pass
         _cprint("  Timed out waiting for the gateway. Is `hermes gateway` running?")
@@ -1868,7 +1986,13 @@ class CLICommandsMixin:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    status = job.get("last_status") or "?"
+                    # delivery_failed: the agent ran fine but the output never
+                    # reached the target — name the delivery reason, which
+                    # lives in last_delivery_error (last_error is None).
+                    if status == "delivery_failed" and job.get("last_delivery_error"):
+                        status = f"delivery_failed: {job['last_delivery_error']}"
+                    print(f"  Last run: {job['last_run_at']} ({status})")
                 print()
             return
 
@@ -2118,6 +2242,33 @@ class CLICommandsMixin:
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")
 
+    def _handle_plan_command(self, cmd: str):
+        """Handle /plan — write a markdown implementation plan, no execution.
+
+        Mirrors /learn: build the plan-mode prompt and inject it onto the
+        agent's input queue as a normal user turn. The live agent inspects
+        the workspace with read-only tools and saves the plan under
+        ``.hermes/plans/`` via ``write_file``. No engine, no model-tool
+        footprint, works on any terminal backend, and preserves prompt-cache
+        invariants (no system prompt or history mutation).
+        """
+        from agent.plan_prompt import build_plan_prompt
+
+        # Everything after the command word is the task to plan (optional —
+        # empty infers the task from conversation context).
+        parts = cmd.strip().split(None, 1)
+        task = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_plan_prompt(task)
+        if task:
+            print(f"\n📋 Planning: {task[:80]}{'...' if len(task) > 80 else ''}")
+        else:
+            print("\n📋 Planning from this conversation's context...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /plan needs an active chat session to run.")
+
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan.
 
@@ -2178,7 +2329,7 @@ class CLICommandsMixin:
         save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
     def _handle_background_command(self, cmd: str):
-        """Handle /background <prompt> — run a prompt in a separate background session.
+        """Handle /bg <prompt> — run a prompt in a separate background session.
 
         Spawns a new AIAgent in a background thread with its own session.
         When it completes, prints the result to the CLI without modifying
@@ -2187,8 +2338,9 @@ class CLICommandsMixin:
         from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /background <prompt>")
-            _cprint("  Example: /background Summarize the top HN stories today")
+            _cprint("  Usage: /bg <prompt>")
+            _cprint("  Example: /bg Summarize the top HN stories today")
+            _cprint("  (For a side question about this conversation, use /btw <question>.)")
             _cprint("  The task runs in a separate session and results display here when done.")
             return
 
@@ -2331,6 +2483,101 @@ class CLICommandsMixin:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _handle_btw_command(self, cmd: str):
+        """Handle /btw <question> — answer a side question about this conversation.
+
+        Snapshots the live conversation history and asks a one-shot auxiliary
+        LLM call (same model as the session by default) to answer the question
+        against that snapshot. The live session is never touched: no history
+        mutation, no role-alternation risk, no prompt-cache invalidation. The
+        current turn keeps running; the answer prints when ready.
+        """
+        from cli import ChatConsole, _accent_hex, _cprint
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /btw <question>")
+            _cprint("  Example: /btw which file was that error in?")
+            _cprint("  Answers a quick question about this conversation without interrupting it.")
+            _cprint("  (For an independent background task, use /bg <prompt>.)")
+            return
+
+        question = parts[1].strip()
+
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot answer side question: no valid credentials.")
+            return
+
+        # Snapshot NOW, on the UI thread — the foreground turn keeps appending
+        # to conversation_history while the worker runs.
+        history_snapshot = list(self.conversation_history or [])
+        # Live agent → cache-parity fork (full context, warm cache reads).
+        parent_agent = self.agent
+        turn_route = self._resolve_turn_agent_config(question)
+        main_runtime = {
+            "model": turn_route["model"],
+            "provider": turn_route["runtime"].get("provider"),
+            "base_url": turn_route["runtime"].get("base_url"),
+            "api_key": turn_route["runtime"].get("api_key"),
+            "api_mode": turn_route["runtime"].get("api_mode"),
+        }
+
+        preview = question[:60] + ("..." if len(question) > 60 else "")
+        _cprint(f"  💬 Side question: \"{preview}\"")
+        _cprint("  Answering from a snapshot of this conversation — the current work continues.\n")
+
+        def run_side_question():
+            try:
+                from agent.side_question import answer_side_question
+                answer = answer_side_question(
+                    question,
+                    history_snapshot,
+                    parent_agent=parent_agent,
+                    main_runtime=main_runtime,
+                )
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                _cprint(f"  💬 /btw: \"{preview}\"")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                if answer:
+                    from cli import _maybe_remap_for_light_mode, _render_final_assistant_content
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        label = _skin.get_branding("response_label", "⚕ Hermes")
+                        _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+                        _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                    except Exception:
+                        label = "⚕ Hermes"
+                        _resp_color = "#CD7F32"
+                        _resp_text = "#FFF8DC"
+                    ChatConsole().print(Panel(
+                        _render_final_assistant_content(answer, mode=self.final_response_markdown),
+                        title=f"[{_resp_color} bold]{label} (btw)[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 4),
+                        width=self._scrollback_box_width(),
+                    ))
+                else:
+                    _cprint("  (No answer generated)")
+            except Exception as e:
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ /btw failed: {e}")
+            finally:
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        threading.Thread(target=run_side_question, daemon=True, name="btw-side-question").start()
 
     def _handle_bundles_command(self, cmd: str) -> None:
         """In-session ``/bundles`` — show installed skill bundles.
@@ -2591,6 +2838,7 @@ class CLICommandsMixin:
             if _bu_mode:
                 print("🌐 Browser: Browser Use mode (browser_exec via the Browser Use CLI 3.0)")
                 print("   Local Chrome via CDP, or Browser Use cloud browsers")
+                _print_lightpanda_engine_status()
                 print()
                 print("   /browser use off      — revert to the built-in browser tools")
                 print()
@@ -2598,6 +2846,7 @@ class CLICommandsMixin:
             if current:
                 print("🌐 Browser: connected to live Chromium-family browser via CDP")
                 print(f"   Endpoint: {current}")
+                _print_lightpanda_engine_status()
 
                 _port = 9222
                 try:
@@ -2622,6 +2871,7 @@ class CLICommandsMixin:
 
                 if provider is not None:
                     print(f"🌐 Browser: {provider.provider_name()} (cloud)")
+                    _print_lightpanda_engine_status()
                 else:
                     # Show engine info for local mode
                     try:
@@ -2633,6 +2883,7 @@ class CLICommandsMixin:
                         print("🌐 Browser: local Lightpanda (agent-browser --engine lightpanda)")
                         print("   ⚡ Lightpanda: faster navigation, no screenshot support")
                         print("   Automatic Chromium fallback for screenshots and failed commands")
+                        _print_lightpanda_engine_status()
                     elif engine == "chrome":
                         print("🌐 Browser: local headless Chromium (agent-browser --engine chrome)")
                     else:
@@ -2768,6 +3019,7 @@ class CLICommandsMixin:
                 review_memory=True,
                 review_skills=review_skills,
                 focus=focus or None,
+                explicit=True,
             )
         except Exception as exc:
             _cprint(f"  /refine failed to start: {exc}")
@@ -3737,9 +3989,9 @@ class CLICommandsMixin:
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
-            status = "fast" if self.service_tier == "priority" else "normal"
+            status = {"priority": "fast", None: "normal"}.get(self.service_tier, self.service_tier)
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         arg_tokens = parts[1].strip().lower().split()
@@ -3757,9 +4009,13 @@ class CLICommandsMixin:
             self.service_tier = None
             saved_value = "normal"
             label = "NORMAL"
+        elif arg in {"auto", "cold"}:
+            self.service_tier = arg
+            saved_value = arg
+            label = arg.upper()
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|cold|status] [--global]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config

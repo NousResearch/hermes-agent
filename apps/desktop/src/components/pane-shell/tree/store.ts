@@ -13,7 +13,7 @@ import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
-import { isSecondaryWindow } from '@/store/windows'
+import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
@@ -65,7 +65,8 @@ function loadPersisted(): LayoutNode | null {
 function persist(tree: LayoutNode | null) {
   // A secondary window (single-chat pop-out) shares the origin's localStorage;
   // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
-  if (isSecondaryWindow()) {
+  // A popped-out Browser is the same class of window.
+  if (isSecondaryWindow() || isBrowserWindow()) {
     return
   }
 
@@ -75,7 +76,7 @@ function persist(tree: LayoutNode | null) {
 /** The live tree (null until a default is declared). A secondary window ignores
  *  the persisted (primary) layout and boots to the default — nothing but its
  *  own routed session. */
-export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() ? null : loadPersisted())
+export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() || isBrowserWindow() ? null : loadPersisted())
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user
@@ -1325,7 +1326,8 @@ function adoptContributedPanes(): void {
   const panes = registry.getArea('panes')
 
   const dataOf = (paneId: string) =>
-    panes.find(c => c.id === paneId)?.data as { placement?: string; dock?: PaneDockHint } | undefined
+    panes.find(c => c.id === paneId)?.data as
+      { defaultCollapsed?: boolean; dock?: PaneDockHint; placement?: string } | undefined
 
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
@@ -1390,6 +1392,17 @@ function adoptContributedPanes(): void {
 
   if (next !== tree) {
     commit(next)
+  }
+
+  // After the commit, so the zone exists to minimize. `defaultCollapsed` is the
+  // pane's arrival state, not a standing invariant: it runs on the adoption
+  // that put the pane in the tree, and a pane already in the tree is never
+  // re-adopted — so a user's expand persists with the layout and is never
+  // overruled on a later boot.
+  for (const pane of missing) {
+    if (dataOf(pane.id)?.defaultCollapsed) {
+      setPaneCollapsed(pane.id, true)
+    }
   }
 }
 

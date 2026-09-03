@@ -1,21 +1,21 @@
 ---
-title: "Simple English — Rewrite technical text to ASD-STE100 Simplified Technical English"
+title: "Simple English — Rewrite text to ASD-STE100 Simplified Technical English"
 sidebar_label: "Simple English"
-description: "Rewrite technical text to ASD-STE100 Simplified Technical English"
+description: "Rewrite text to ASD-STE100 Simplified Technical English"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Simple English
 
-Rewrite technical text to ASD-STE100 Simplified Technical English.
+Rewrite text to ASD-STE100 Simplified Technical English.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/simple-english` |
-| Path | `optional-skills/creative/simple-english` |
+| Path | `optional-skills/creative\simple-english` |
 | Version | `1.2.0` |
 | Author | AminBlg (https://github.com/AminBlg/SimpleEnglish), ported by Hermes Agent |
 | License | MIT |
@@ -128,7 +128,7 @@ Break long noun chains with prepositions (of, on, in, for):
 | 3.6 | Active voice. In descriptive text, passive is legal only when the agent is unknown. |
 | 3.7 | Describe an action with a verb, not a noun ("compress the file", not "perform compression of the file"). |
 
-**Approved modals: can, will, must. Banned: should, would, may, might, could.**
+**Approved modals: can, will, must. Banned: should, would, may, might, could (Rule 3.2).**
 The standard rejects "could" even for possibility: write "an explosion can occur", never "could occur". For "should": a requirement becomes "must"; a suggestion is stated as fact or deleted. This matters double for agent instructions — models read "should" as optional.
 
 **Before:** The migration has completed and the table is being rebuilt.
@@ -255,7 +255,7 @@ This table is ours, not the ASD dictionary. It maps the words AI-generated docs 
 | leverage, utilize | use |
 | in order to | to |
 | prior to | before |
-| ensure | make sure that |
+| ensure | make sure that (strict mode; in pragmatic mode, ensure is an allowed pick if it is your one chosen check-verb) |
 | it is worth noting that | (delete) |
 | it's important to, crucially | (delete — state the fact) |
 | simply, just, easily, seamlessly, effortlessly | (delete) |

@@ -133,7 +133,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
             return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
 
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, reprobe_tool_availability
 
         def _refresh_session_agent() -> None:
             """Rebuild THIS session's cached tool snapshot from the live
@@ -184,6 +184,7 @@ def _(rid, params: dict) -> dict:
             loaded = _compute_mcp_rev()
             for _ in range(_MCP_RELOAD_MAX_PASSES):
                 shutdown_mcp_servers()
+                reprobe_tool_availability()
                 discover_mcp_tools()
                 after = _compute_mcp_rev()
                 if after == loaded:
@@ -260,15 +261,22 @@ def _(rid, params: dict) -> dict:
             COMMAND_REGISTRY,
             SUBCOMMANDS,
             _build_description,
+            command_desktop_meta,
         )
 
         all_pairs: list[list[str]] = []
         canon: dict[str, str] = {}
+        commands: dict[str, dict[str, str | None]] = {}
         categories: list[dict] = []
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
 
         for cmd in COMMAND_REGISTRY:
+            meta = command_desktop_meta(cmd)
+            commands[f"/{cmd.name}"] = dict(meta)
+            for alias in cmd.aliases:
+                commands[f"/{alias}"] = dict(meta)
+
             if cmd.name in _TUI_HIDDEN or cmd.gateway_only:
                 continue
 
@@ -328,6 +336,35 @@ def _(rid, params: dict) -> dict:
             if not warning:
                 warning = f"quick_commands discovery unavailable: {e}"
 
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_cmds = get_plugin_commands() or {}
+            if plugin_cmds:
+                bucket = "Plugin commands"
+                if bucket not in cat_map:
+                    cat_map[bucket] = []
+                    cat_order.append(bucket)
+                for pname, info in sorted(plugin_cmds.items()):
+                    if not isinstance(info, dict):
+                        continue
+                    key = f"/{pname}"
+                    if key.lower() in canon:
+                        continue
+                    canon[key.lower()] = key
+                    pdesc = str(info.get("description") or "Plugin command")
+                    pdesc = pdesc[:120] + ("…" if len(pdesc) > 120 else "")
+                    all_pairs.append([key, pdesc])
+                    cat_map[bucket].append([key, pdesc])
+                    hint = str(info.get("args_hint") or "").strip()
+                    mode = info.get("argument_mode")
+                    if mode not in {"options", "text", "mixed"}:
+                        mode = "text" if hint else None
+                    commands[key] = {"argument_mode": mode, "desktop": None}
+        except Exception as e:
+            if not warning:
+                warning = f"plugin command discovery unavailable: {e}"
+
         skill_count = 0
         skills: dict[str, dict] = {}
         try:
@@ -358,6 +395,7 @@ def _(rid, params: dict) -> dict:
                 "pairs": all_pairs,
                 "sub": sub,
                 "canon": canon,
+                "commands": commands,
                 "categories": categories,
                 "skills": skills,
                 "skill_count": skill_count,
@@ -585,6 +623,14 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "plan":
+        # Plan mode: build the plan-mode prompt and submit it as a normal
+        # agent turn (same pattern as /learn). The live agent inspects the
+        # workspace read-only and saves the markdown plan under
+        # .hermes/plans/ via write_file. Works on any backend.
+        from agent.plan_prompt import build_plan_prompt
+
+        return _ok(rid, {"type": "send", "message": build_plan_prompt(arg)})
     if name == "init":
         # Generate-or-update AGENTS.md: build the guidance-laden prompt and
         # submit it as a normal agent turn (same pattern as /learn). The live
@@ -706,41 +752,55 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /retry"
             )
-        history = session.get("history", [])
-        if not history:
-            return _err(rid, 4018, "no previous user message to retry")
-        # Walk backwards to the last *real* user turn. Timeline bookkeeping
-        # rows (display_kind set) and compaction handoffs are durable
-        # role=user but must not count as user-originated asks — same
-        # predicate as CLI resume/count and the prompt.submit ordinal fix.
-        # Without this, /retry re-sends opaque markers (model_switch /
-        # async_delegation_complete / auto_continue / CONTEXT COMPACTION
-        # handoffs) and truncates only the marker instead of the failed
-        # exchange (#80622).
-        from agent.context_compressor import is_user_originated_turn
+        from agent.context_compressor import (
+            history_before_user_originated_turn,
+            retryable_user_text,
+            user_originated_turn_view,
+        )
 
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            msg = history[i]
-            if is_user_originated_turn(msg):
-                last_user_idx = i
-                break
-        if last_user_idx is None:
-            return _err(rid, 4018, "no previous user message to retry")
-        content = history[last_user_idx].get("content", "")
-        if isinstance(content, list):
-            content = " ".join(
-                p.get("text", "")
-                for p in content
-                if isinstance(p, dict) and p.get("type") == "text"
-            )
-        if not content:
-            return _err(rid, 4018, "last user message is empty")
-        # Truncate history: remove everything from the last user message onward
-        # (mirrors CLI retry_last() which strips the failed exchange)
         with session["history_lock"]:
-            session["history"] = history[:last_user_idx]
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            if session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before /retry",
+                )
+            if session.get("attached_images"):
+                return _err(
+                    rid,
+                    4018,
+                    "retry cannot safely reconstruct or combine attached media",
+                )
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(history)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return _err(rid, 4018, "no previous user message to retry")
+            _prefix, live_view = history_before_user_originated_turn(
+                history, user_indices[-1]
+            )
+            try:
+                content = retryable_user_text(live_view.get("content"))
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
+            try:
+                _active, durable_live_view, _rewound_count = (
+                    _rewind_active_session_history(
+                        session,
+                        len(user_indices) - 1,
+                        require_retryable=True,
+                    )
+                )
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
+            except Exception as exc:
+                return _err(rid, 5008, f"retry: failed to persist history: {exc}")
+            content = retryable_user_text(durable_live_view.get("content"))
         return _ok(rid, {"type": "send", "message": content})
 
     if name == "steer":
@@ -887,58 +947,52 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
-        # _session_db, not _get_db(): every read and write below is scoped by
-        # session id, and a profile session (app-global remote mode) keeps its
-        # rows in its own profile's state.db. Against the launch handle
-        # list_recent_user_messages finds nothing, so /undo fails closed with
-        # 4018 for the whole session instead of rewinding anything.
-        with _session_db(session) as db:
-            if db is None:
-                return _db_unavailable_error(rid, code=5008)
-            session_key = session.get("session_key", "")
-            if not session_key:
-                return _err(rid, 4001, "no session key for undo")
-            # Parse the optional count argument (e.g. "/undo 3" → 3).
+        session_key = session.get("session_key", "")
+        if not session_key:
+            return _err(rid, 4001, "no session key for undo")
+        # Parse the optional count argument (e.g. "/undo 3" → 3).
+        n = 1
+        arg_str = (arg or "").strip()
+        if arg_str:
+            try:
+                n = int(arg_str.split()[0])
+            except (ValueError, IndexError):
+                return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+        if n < 1:
             n = 1
-            arg_str = (arg or "").strip()
-            if arg_str:
-                try:
-                    n = int(arg_str.split()[0])
-                except (ValueError, IndexError):
-                    return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
-            if n < 1:
-                n = 1
-            try:
-                recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
-            except Exception as e:
-                return _err(rid, 5008, f"undo: failed to load history: {e}")
-            if not recents:
-                return _err(rid, 4018, "no user messages to undo")
-            # recents[0] is the most-recent user turn; pick the Nth-from-last.
-            # If N exceeds the number of user turns, back up to the oldest.
-            target_idx = min(n - 1, len(recents) - 1)
-            target_id = recents[target_idx]["id"]
-            try:
-                result = db.rewind_to_message(session_key, target_id)
-            except ValueError as e:
-                return _err(rid, 4004, f"undo: {e}")
-            except Exception as e:
-                return _err(rid, 5008, f"undo: {e}")
-            # Reload the active-only transcript into the in-memory session
-            # history so subsequent turns see the truncated view.
-            # repair_alternation: this reload feeds LIVE REPLAY — session["history"]
-            # is the working conversation for subsequent turns, and a rewind that
-            # lands on a durable user;user pair would otherwise re-fire the
-            # pre-request repair on every request from here on.
-            try:
-                active = db.get_messages_as_conversation(
-                    session_key, repair_alternation=True, include_row_ids=True
-                )
-            except Exception:
-                active = []
+        from agent.context_compressor import (
+            user_originated_turn_view,
+        )
+        from agent.message_content import flatten_message_text
+
         with session["history_lock"]:
-            session["history"] = list(active)
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            if session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before /undo",
+                )
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
+            user_indices = [
+                index
+                for index, message in enumerate(history)
+                if user_originated_turn_view(message) is not None
+            ]
+            if not user_indices:
+                return _err(rid, 4018, "no user messages to undo")
+            turns_undone = min(n, len(user_indices))
+            target_position = len(user_indices) - turns_undone
+            try:
+                active, live_view, rewound_count = _rewind_active_session_history(
+                    session, target_position
+                )
+            except ValueError as exc:
+                return _err(rid, 4004, f"undo: {exc}")
+            except Exception as exc:
+                return _err(rid, 5008, f"undo: {exc}")
+            target_text = flatten_message_text(live_view.get("content"))
         # Notify memory providers — same hook /branch fires, plus the
         # rewound flag so providers caching per-turn document state
         # know to invalidate. See #6672 + #21910.
@@ -965,18 +1019,6 @@ def _(rid, params: dict) -> dict:
                     agent._last_flushed_db_idx = len(active)
                 except Exception:
                     pass
-        target_msg = result.get("target_message") or {}
-        target_text = target_msg.get("content") or ""
-        if isinstance(target_text, list):
-            parts = [
-                p.get("text", "") for p in target_text
-                if isinstance(p, dict) and p.get("type") == "text"
-            ]
-            target_text = "\n".join(t for t in parts if t)
-        if not isinstance(target_text, str):
-            target_text = ""
-        rewound_count = result.get("rewound_count", 0)
-        turns_undone = target_idx + 1
         turn_word = "turn" if turns_undone == 1 else "turns"
         notice = (
             f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). "
@@ -1016,12 +1058,31 @@ def _(rid, params: dict) -> dict:
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
+            _late_session = session
+
+            def _on_late_ack(late: dict, _sid=sid) -> None:
+                _adopt_late_compute_host_compress_ack(_sid, _late_session, late, route_name="slash.compress")
+
             try:
                 ack = _send_compute_host_control(
                     sid,
                     route_name="slash.compress",
                     command=command,
                     wait=True,
+                    timeout=_compute_host_compress_wait_seconds(),
+                    on_late_ack=_on_late_ack,
+                )
+            except queue.Empty:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "status": "pending",
+                        "output": (
+                            "compression still running in the background; "
+                            "the transcript will refresh when it finishes"
+                        ),
+                    },
                 )
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host slash.compress failed: {exc}")
@@ -1359,27 +1420,28 @@ def _(rid, params: dict) -> dict:
             if result.get("success") and not file_path:
                 removed = 0
                 with session["history_lock"]:
-                    history = session.get("history", [])
-                    # Truncate from the last *real* user turn. Same predicate
-                    # as list_recent_user_messages / /undo / /retry —
-                    # is_user_originated_turn also excludes compaction
-                    # handoffs (durable role=user, sometimes without
-                    # display_kind on legacy sessions; #80622).
-                    from agent.context_compressor import is_user_originated_turn
+                    history = _history_without_ephemeral_scaffolding(
+                        session.get("history", [])
+                    )
+                    from agent.context_compressor import user_originated_turn_view
 
-                    last_user_idx = None
-                    for i in range(len(history) - 1, -1, -1):
-                        msg = history[i]
-                        if is_user_originated_turn(msg):
-                            last_user_idx = i
-                            break
-                    if last_user_idx is not None:
-                        removed = len(history) - last_user_idx
-                        del history[last_user_idx:]
-                    if removed:
-                        session["history_version"] = (
-                            int(session.get("history_version", 0)) + 1
-                        )
+                    user_indices = [
+                        index
+                        for index, message in enumerate(history)
+                        if user_originated_turn_view(message) is not None
+                    ]
+                    if user_indices:
+                        try:
+                            _active, _live_view, removed = (
+                                _rewind_active_session_history(
+                                    session, len(user_indices) - 1
+                                )
+                            )
+                        except Exception as exc:
+                            raise RuntimeError(
+                                "checkpoint restored, but session history rewind "
+                                f"failed: {exc}"
+                            ) from exc
                 result["history_removed"] = removed
             return result
 
@@ -2280,7 +2342,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Begin a session-backed OAuth flow for an MCP server in a profile.
 
-    Params: optional ``profile``, ``name`` (required). Result:
+    Params: optional ``profile``, ``name`` (required), optional
+    ``client_redirect_uri``. Result:
     ``{ok: true, session_id, auth_url, flow: "pkce"}``.
 
     The client (desktop) opens ``auth_url`` in the native browser
@@ -2292,12 +2355,21 @@ def _(rid, params: dict) -> dict:
     (``_probe_single_server`` under ``force_interactive_oauth``), and a loopback
     listener captures the browser redirect — no FastAPI request object needed.
 
+    ``client_redirect_uri`` (remote backends): a loopback URL the CLIENT hosts
+    on its own machine (``http://127.0.0.1:<port>/callback``). When supplied,
+    the gateway binds NO listener — the provider redirects to the client's
+    listener and the client relays the code via ``mcp.servers.oauth.callback``.
+    This is the only flow that works when the desktop app and the gateway run
+    on different machines (SSH/Tailscale remote backend), where the gateway's
+    own 127.0.0.1 listener is unreachable from the user's browser.
+
     Runs on the RPC thread pool (see _LONG_HANDLERS): start blocks briefly for
     the authorization URL to be published.
     """
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4063, "name required")
+    client_redirect_uri = str(params.get("client_redirect_uri") or "").strip() or None
     token, err = _mcp_resolve_profile(rid, params)
     if err:
         return err
@@ -2321,7 +2393,9 @@ def _(rid, params: dict) -> dict:
         cfg["auth"] = "oauth"
 
         hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
-        result = mcp_oauth_sessions.start_flow(hermes_home, name, cfg)
+        result = mcp_oauth_sessions.start_flow(
+            hermes_home, name, cfg, client_redirect_uri=client_redirect_uri
+        )
         return _ok(
             rid,
             {
@@ -2331,6 +2405,8 @@ def _(rid, params: dict) -> dict:
                 "flow": result["flow"],
             },
         )
+    except ValueError as e:
+        return _err(rid, 4001, str(e))
     except Exception as e:
         return _err(rid, 5024, str(e))
     finally:
@@ -2364,6 +2440,44 @@ def _(rid, params: dict) -> dict:
 
         result = mcp_oauth_sessions.poll_flow(session_id, name)
         return _ok(rid, {"ok": True, **result})
+    except Exception as e:
+        return _err(rid, 5024, str(e))
+    finally:
+        _mcp_reset_profile(token)
+
+
+@method("mcp.servers.oauth.callback")
+def _(rid, params: dict) -> dict:
+    """Relay a client-captured OAuth redirect into a running MCP OAuth flow.
+
+    Remote-backend companion to ``mcp.servers.oauth.start`` with
+    ``client_redirect_uri``: the desktop app's local loopback listener caught
+    the provider redirect on the user's machine and forwards its query params
+    here. Params: optional ``profile``, ``name`` (required), ``session_id``
+    (required), ``code``, ``state``, ``error``. Result: ``{ok: true}`` once the
+    callback is accepted (state verified inside the flow bridge), or
+    ``{ok: false, error_message}`` on mismatch/expiry.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    session_id = str(params.get("session_id") or "").strip()
+    if not session_id:
+        return _err(rid, 4063, "session_id required")
+    token, err = _mcp_resolve_profile(rid, params)
+    if err:
+        return err
+    try:
+        from tui_gateway import mcp_oauth_sessions
+
+        result = mcp_oauth_sessions.deliver_callback_flow(
+            session_id,
+            name,
+            code=str(params.get("code") or "") or None,
+            state=str(params.get("state") or "") or None,
+            error=str(params.get("error") or "") or None,
+        )
+        return _ok(rid, result)
     except Exception as e:
         return _err(rid, 5024, str(e))
     finally:

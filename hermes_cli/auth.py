@@ -526,6 +526,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("TOKENHUB_API_KEY",),
         base_url_env_var="TOKENHUB_BASE_URL",
     ),
+    "tencent-tokenplan": ProviderConfig(
+        id="tencent-tokenplan",
+        name="Tencent TokenPlan",
+        auth_type="api_key",
+        inference_base_url="https://api.lkeap.cloud.tencent.com/plan/anthropic",
+        api_key_env_vars=("TOKENPLAN_API_KEY",),
+        base_url_env_var="TOKENPLAN_BASE_URL",
+    ),
     "ollama-cloud": ProviderConfig(
         id="ollama-cloud",
         name="Ollama Cloud",
@@ -570,6 +578,24 @@ try:
     from providers import list_providers as _list_providers_for_registry
     for _pp in _list_providers_for_registry():
         if _pp.name in PROVIDER_REGISTRY:
+            continue
+        if _pp.auth_type == "external_process":
+            # An external-process provider (an ACP CLI driven over stdio) has no
+            # API-key env vars to resolve — its credentials come from
+            # resolve_external_process_provider_credentials(), keyed on this
+            # auth_type. Registering it here is what lets a provider shipped
+            # outside this tree pass resolve_provider()'s known-provider gate;
+            # without it, `hermes -m <that provider>` dies with
+            # "Unknown provider" before any client is ever built.
+            PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
+                id=_pp.name,
+                name=_pp.display_name or _pp.name,
+                auth_type="external_process",
+                inference_base_url=_pp.base_url,
+            )
+            for _alias in _pp.aliases:
+                if _alias not in PROVIDER_REGISTRY:
+                    PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
             continue
         if _pp.auth_type != "api_key" or not _pp.env_vars:
             continue
@@ -684,6 +710,42 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+# Known API-key prefixes per provider.  Only providers listed here get
+# prefix validation; everyone else is fail-open (unknown formats pass).
+# This exists so an obviously malformed key in .env (truncated paste, wrong
+# provider's key in the wrong var, etc.) doesn't silently shadow a valid
+# credential-pool entry and produce opaque 401s (#93593).
+KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
+    # All OpenRouter keys are issued as sk-or-... (currently sk-or-v1-).
+    "openrouter": ("sk-or-",),
+}
+
+
+def _secret_matches_declared_prefix(provider_id: str, value: str) -> bool:
+    """Return False only when the provider declares key prefixes and none match.
+
+    Providers without a declared prefix always pass (fail-open): we never
+    hard-reject unknown key formats, only skip values that provably don't
+    belong to a provider whose key format we know.
+    """
+    prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
+    if not prefixes:
+        return True
+    return any(value.startswith(p) for p in prefixes)
+
+
+def _warn_malformed_secret(provider_id: str, source: str) -> None:
+    prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ())
+    logger.warning(
+        "Ignoring %s for provider %r: value does not match the expected key "
+        "prefix (%s). Falling back to the next credential source. Fix or "
+        "remove the malformed key to silence this warning.",
+        source,
+        provider_id,
+        " or ".join(prefixes),
+    )
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -708,20 +770,42 @@ def _resolve_api_key_provider_secret(
         # in the user's .env file isn't shadowed by a stale shell export
         # inherited from a parent process (Codex CLI, test runners, etc.).
         val = (get_env_value_prefer_dotenv(env_var) or "").strip()
-        if has_usable_secret(val):
-            return val, env_var
+        if not has_usable_secret(val):
+            continue
+        if not _secret_matches_declared_prefix(provider_id, val):
+            # A provably malformed key (declared prefix mismatch) must not
+            # shadow a valid credential-pool entry (#93593). Warn and keep
+            # looking instead of returning it.
+            _warn_malformed_secret(provider_id, env_var)
+            continue
+        return val, env_var
 
     # Fallback: try credential pool (e.g. zai key stored via auth.json)
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider_id)
         if pool and pool.has_credentials():
+            # Prefer the pool's own selection (peek), but iterate the rest of
+            # the entries too so one malformed entry doesn't block a valid one.
+            candidates = []
             entry = pool.peek()
-            if entry:
+            if entry is not None:
+                candidates.append(entry)
+            try:
+                for extra in pool.entries():
+                    if extra is not None and all(extra is not c for c in candidates):
+                        candidates.append(extra)
+            except Exception:
+                pass
+            for entry in candidates:
                 key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
                 key = str(key).strip()
-                if has_usable_secret(key):
-                    return key, f"credential_pool:{provider_id}"
+                if not has_usable_secret(key):
+                    continue
+                if not _secret_matches_declared_prefix(provider_id, key):
+                    _warn_malformed_secret(provider_id, f"credential_pool:{provider_id}")
+                    continue
+                return key, f"credential_pool:{provider_id}"
     except Exception:
         pass
 
@@ -743,8 +827,8 @@ ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
     ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.3", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
 ]
 
 
@@ -1176,6 +1260,22 @@ def _same_path(left: Path, right: Path) -> bool:
         return left == right
 
 
+def _is_same_auth_store(left: Path, right: Path) -> bool:
+    """True when two auth paths name ONE store rather than two copies.
+
+    ``_same_path`` resolves symlinks and ``..``; ``samefile`` adds hardlinks
+    and bind-mounts (same inode under two resolved names). Used by the
+    forked-grant heal: a shared store has no "other side" to consolidate
+    (#101356).
+    """
+    if _same_path(left, right):
+        return True
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 def _auth_lock_holder_for(target_path: Path) -> threading.local:
     """Return a reentrancy tracker keyed to one canonical auth-store path."""
     try:
@@ -1222,8 +1322,20 @@ def _file_lock(
 
     # On Windows, msvcrt.locking needs the file to have content and the
     # file pointer at position 0. Ensure the lock file has at least 1 byte.
+    # Under real concurrency (many threads/processes racing this same
+    # ensure-content check) this write can collide with another holder's
+    # msvcrt byte-range lock on the same file and raise PermissionError --
+    # uncaught, since it happens before the retry loop below even starts.
+    # A stress test with 20 concurrent Hermes processes reproduced this
+    # deterministically on Windows. It's a best-effort convenience write
+    # (whoever gets there first wins); losing the race here just means the
+    # lock file already has content, so swallow the failure and proceed
+    # straight to the acquire-with-retry loop.
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
+        try:
+            lock_path.write_text(" ", encoding="utf-8")
+        except (OSError, PermissionError):
+            pass
 
     with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
         deadline = time.monotonic() + max(1.0, timeout_seconds)
@@ -1366,7 +1478,8 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
-    # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+    # secure_parent_dir refuses to chmod /, top-level dirs, or the
+    # hermes-agent install tree (#25821, #93050).
     secure_parent_dir(auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1606,6 +1719,520 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     except AuthError:
         return False
     return True
+
+
+# Pool providers whose OAuth refresh tokens are SINGLE-USE: redeeming the
+# refresh token rotates the pair and revokes the old one. A grant forked into
+# two auth.json files is therefore not two credentials but one credential with
+# two owners — the first owner to refresh strands the other with
+# ``invalid_grant`` / ``refresh_token_reused`` (#100339; same class as the
+# ``providers.<id>`` write-through hazard in #48415 / #43589). Profiles must
+# never receive a copy of these grants: ONE grant lives at the global root and
+# named profiles read it through the ``read_credential_pool`` root fallback.
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({
+    "anthropic",
+    "openai-codex",
+    "xai-oauth",
+})
+
+# Singleton credential files that hold the same single-use grants outside
+# ``auth.json``. Copying one into a profile re-seeds a forked pool row on the
+# profile's next ``load_pool()``.
+SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
+
+
+def _is_oauth_pool_payload(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    auth_type = str(entry.get("auth_type") or "").strip().lower()
+    if auth_type == "oauth":
+        return True
+    # Legacy rows predating ``auth_type``: an Anthropic OAuth access token or
+    # any row carrying a refresh token is an OAuth grant.
+    if str(entry.get("refresh_token") or "").strip():
+        return True
+    return str(entry.get("access_token") or "").startswith("sk-ant-oat")
+
+
+def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> Dict[str, Any]:
+    """Remove forked single-use OAuth grants from a freshly cloned profile.
+
+    Called after any code path that copies credential files from one profile
+    into another (``hermes profile create --clone-all``, the dashboard/TUI
+    ``mirror_credentials`` flow). API-key pool rows are kept — a static key is
+    safe to duplicate. OAuth rows for the providers in
+    ``SINGLE_USE_REFRESH_POOL_PROVIDERS``, the matching ``providers.<id>``
+    device-code blocks, and the ``.anthropic_oauth.json`` singleton are
+    dropped so the clone reads the grant from the global root instead of
+    holding its own doomed copy (#100339).
+
+    Returns a summary ``{"pool": [...provider ids], "providers": [...],
+    "files": [...]}`` of what was stripped (empty lists when nothing was).
+    Never raises: a clone must not fail because credential hygiene could not
+    run — the caller logs the summary.
+    """
+    stripped: Dict[str, Any] = {"pool": [], "providers": [], "files": []}
+    profile_dir = Path(profile_dir)
+    for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
+        try:
+            target = profile_dir / name
+            if target.is_file() or target.is_symlink():
+                target.unlink()
+                stripped["files"].append(name)
+        except OSError:
+            logger.debug("Could not remove cloned %s from %s", name, profile_dir, exc_info=True)
+
+    auth_path = profile_dir / "auth.json"
+    if not auth_path.is_file():
+        return stripped
+    try:
+        store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return stripped
+    if not isinstance(store, dict):
+        return stripped
+
+    changed = False
+    pool = store.get("credential_pool")
+    if isinstance(pool, dict):
+        for provider_id in list(pool):
+            if provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+                continue
+            entries = pool.get(provider_id)
+            if not isinstance(entries, list):
+                continue
+            kept = [e for e in entries if not _is_oauth_pool_payload(e)]
+            if len(kept) != len(entries):
+                changed = True
+                stripped["pool"].append(provider_id)
+                if kept:
+                    pool[provider_id] = kept
+                else:
+                    # No local rows at all → read_credential_pool falls back
+                    # to the root slice for this provider.
+                    del pool[provider_id]
+    providers = store.get("providers")
+    if isinstance(providers, dict):
+        # Device-code grants for these providers live under providers.<id>;
+        # _load_provider_state has the same root fallback, so dropping the
+        # copy keeps the profile working while removing the fork.
+        for provider_id in ("openai-codex", "xai-oauth"):
+            block = providers.get(provider_id)
+            if isinstance(block, dict) and block:
+                del providers[provider_id]
+                stripped["providers"].append(provider_id)
+                changed = True
+    if not changed:
+        return stripped
+    try:
+        _save_auth_store(store, target_path=auth_path)
+    except Exception:
+        logger.debug(
+            "Failed to strip cloned single-use OAuth grants from %s",
+            auth_path,
+            exc_info=True,
+        )
+    return stripped
+
+
+# ── One-time heal for installs that ALREADY forked a single-use grant ────────
+#
+# Fleets created before the clone-strip / root-write-through above have
+# profile-local copies of the root grant. Those copies are the same credential
+# with several owners: whichever profile rotated last holds the only live
+# refresh token and every other copy (root included) is spent. Upgrading alone
+# does not fix that — the first load in each profile would keep using its own
+# doomed copy. ``heal_forked_single_use_oauth_grants`` runs at profile
+# ``load_pool()`` time: it finds the profile rows that share LINEAGE with a
+# root row (same pool id — clone-all and the old borrowed-persist both kept
+# it — or the same account identity / token material), keeps the copy most
+# likely to still be live (freshest rotation), writes that copy into ROOT when
+# root's is older, and strips the profile's copy so the profile borrows root
+# from then on. Idempotent (a healed profile has no matched rows), never
+# touches API-key rows, never deletes a row that has no root counterpart
+# (an independent ``hermes -p <p> auth add`` grant, or the only surviving
+# copy), and reads only the two auth.json files the existing root fallback
+# already reads — no environ / secret-scope reads.
+
+_OAUTH_TOKEN_FIELDS = (
+    "access_token",
+    "refresh_token",
+    "expires_at",
+    "expires_at_ms",
+    "last_refresh",
+)
+
+_oauth_heal_notices: List[str] = []
+# provider -> (profile auth.json path, auth.json mtime_ns, singleton mtime_ns)
+# of the last store verified fork-free; lets load_pool() skip the locked scan.
+_oauth_heal_clean_marks: Dict[str, Tuple[str, Optional[int], Optional[int]]] = {}
+
+
+def consume_oauth_heal_notices() -> List[str]:
+    """Return (and clear) human-readable notes about heals run in this process.
+
+    ``hermes auth list`` / ``hermes auth status`` print them so the user sees
+    that a forked grant was consolidated rather than only finding it in logs.
+    """
+    notes = list(_oauth_heal_notices)
+    _oauth_heal_notices.clear()
+    return notes
+
+
+def _oauth_identity(entry: Dict[str, Any]) -> Optional[str]:
+    """Stable account identity for an OAuth row when the token carries one.
+
+    Codex / xAI access tokens are JWTs with ``sub`` / ``email`` /
+    ``chatgpt_account_id`` claims; Anthropic ``sk-ant-oat`` tokens carry no
+    claims (returns None — lineage then rests on id / token material).
+    """
+    if not isinstance(entry, dict):
+        return None
+    for token in (entry.get("access_token"), entry.get("id_token")):
+        claims = _decode_jwt_claims(token)
+        if not claims:
+            continue
+        nested = claims.get("https://api.openai.com/auth")
+        account = nested.get("chatgpt_account_id") if isinstance(nested, dict) else None
+        for value in (account, claims.get("sub"), claims.get("email")):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _oauth_freshness(entry: Dict[str, Any]) -> float:
+    """Best-effort 'how recently was this pair issued' score (epoch seconds).
+
+    A rotation always issues a later-expiring access token, so ``expires_at``
+    ordering identifies the live copy; ``last_refresh`` and the JWT ``exp``
+    claim are fallbacks for rows that do not persist expiry.
+    """
+    from agent.credential_pool import _parse_absolute_timestamp
+
+    best = 0.0
+    for key in ("expires_at_ms", "expires_at", "last_refresh"):
+        ts = _parse_absolute_timestamp(entry.get(key))
+        if ts and ts > best:
+            best = ts
+    if best == 0.0:
+        exp = _decode_jwt_claims(entry.get("access_token")).get("exp")
+        ts = _parse_absolute_timestamp(exp)
+        if ts:
+            best = ts
+    return best
+
+
+def _find_root_counterpart(
+    profile_row: Dict[str, Any], root_rows: List[Dict[str, Any]]
+) -> Optional[int]:
+    """Index of the root OAuth row that shares a grant lineage with *profile_row*.
+
+    Strongest evidence first: same pool ``id`` (clone-all and the pre-fix
+    borrowed-persist both preserved it), same account identity from JWT
+    claims, same token material (an unrotated copy). Fallback per the
+    one-grant-at-root rule: same provider + same OAuth client — every
+    Anthropic ``hermes_pkce`` grant uses one client id and carries no claims,
+    so two Anthropic OAuth rows with no contrary identity are one lineage.
+    Only a row whose identity claims name a DIFFERENT account is left alone
+    (an independent ``hermes -p <p> auth add`` login for another account).
+    """
+    candidates = [i for i, r in enumerate(root_rows) if _is_oauth_pool_payload(r)]
+    if not candidates:
+        return None
+    pid = profile_row.get("id")
+    for i in candidates:
+        if pid and root_rows[i].get("id") == pid:
+            return i
+    p_ident = _oauth_identity(profile_row)
+    for i in candidates:
+        r_ident = _oauth_identity(root_rows[i])
+        if p_ident and r_ident and p_ident == r_ident:
+            return i
+    for key in ("refresh_token", "access_token"):
+        p_val = profile_row.get(key)
+        if not (isinstance(p_val, str) and p_val.strip()):
+            continue
+        for i in candidates:
+            if root_rows[i].get(key) == p_val:
+                return i
+    # Fallback: same provider + same client. Only a contradicting identity
+    # (both sides carry claims and they differ from every root row) blocks it.
+    if p_ident:
+        for i in candidates:
+            if not _oauth_identity(root_rows[i]):
+                return i
+        return None
+    return candidates[0]
+
+
+def _adopt_oauth_material(target: Dict[str, Any], winner: Dict[str, Any]) -> Dict[str, Any]:
+    """Return *target* carrying *winner*'s token pair, status markers cleared."""
+    merged = dict(target)
+    for key in _OAUTH_TOKEN_FIELDS:
+        if winner.get(key) is not None:
+            merged[key] = winner[key]
+        else:
+            merged.pop(key, None)
+    for status_field in _POOL_STATUS_FIELDS:
+        merged[status_field] = None
+    return merged
+
+
+def _singleton_as_row(path: Path) -> Optional[Dict[str, Any]]:
+    """Read a ``.anthropic_oauth.json`` as a pool-row-shaped dict, or None."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not str(data.get("accessToken") or "").strip():
+        return None
+    return {
+        "access_token": data.get("accessToken"),
+        "refresh_token": data.get("refreshToken"),
+        "expires_at_ms": data.get("expiresAt"),
+    }
+
+
+def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, Any]]:
+    """Consolidate a profile's forked copy of a single-use OAuth grant into root.
+
+    Runs only in profile mode for ``SINGLE_USE_REFRESH_POOL_PROVIDERS``.
+    Returns a summary ``{"adopted": bool, "stripped_ids": [...], "files": [...],
+    "providers_block": bool}`` when something was healed, else ``None``.
+    Never raises.
+    """
+    if provider_id not in SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        return None
+    try:
+        return _heal_forked_single_use_oauth_grants(provider_id)
+    except Exception:
+        logger.debug("%s: forked-OAuth heal skipped", provider_id, exc_info=True)
+        return None
+
+
+def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, Any]]:
+    root_path = _global_auth_file_path()
+    if root_path is None:
+        return None  # classic mode: nothing to consolidate into
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # Same seat belt as the write-through paths: never touch the real
+        # user's ~/.hermes/auth.json from a test that forgot to isolate HOME.
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env and _same_path(root_path, Path(real_home_env) / ".hermes" / "auth.json"):
+            return None
+    profile_path = _auth_file_path()
+    profile_home = profile_path.parent
+    root_home = root_path.parent
+    profile_singleton = profile_home / ".anthropic_oauth.json" if provider_id == "anthropic" else None
+
+    # Hot-path short-circuit: load_pool() runs per model call. Once this
+    # profile's store was verified clean for *provider_id*, skip the locked
+    # read-modify-write until the profile's own files change (mtime key).
+    def _stamp(p: Optional[Path]) -> Optional[int]:
+        try:
+            return p.stat().st_mtime_ns if p is not None else None
+        except OSError:
+            return None
+
+    fingerprint = (str(profile_path), _stamp(profile_path), _stamp(profile_singleton))
+    if _oauth_heal_clean_marks.get(provider_id) == fingerprint:
+        return None
+    if fingerprint[1] is None and fingerprint[2] is None:
+        _oauth_heal_clean_marks[provider_id] = fingerprint
+        return None
+    if _is_same_auth_store(profile_path, root_path):
+        # The profile's auth.json IS the root store (symlink/hardlink alias —
+        # a deliberate way to share one grant). Both "sides" below would read
+        # the same file, every OAuth row would match itself, and the strip
+        # would write through the alias and delete the shared credential.
+        # Nothing to consolidate (#101356); the mtime mark keeps this off the
+        # per-call hot path until the shared file changes.
+        _oauth_heal_clean_marks[provider_id] = fingerprint
+        logger.debug("%s: forked-OAuth heal skipped, %s is the root store", provider_id, profile_path)
+        return None
+
+    summary: Dict[str, Any] = {"adopted": False, "stripped_ids": [], "files": [], "providers_block": False}
+    log_bits: List[str] = []
+
+    # Lock order: active (profile) store first, then the root source store —
+    # the same order ``_provider_state_transaction`` uses.
+    with _auth_store_lock():
+        profile_store = _load_auth_store(profile_path) if profile_path.exists() else {"providers": {}}
+        with _auth_store_lock(target_path=root_path):
+            root_store = _load_auth_store(root_path) if root_path.exists() else {"providers": {}}
+            profile_changed = False
+            root_changed = False
+
+            p_pool = profile_store.get("credential_pool")
+            p_rows = p_pool.get(provider_id) if isinstance(p_pool, dict) else None
+            p_rows = p_rows if isinstance(p_rows, list) else []
+            r_pool = root_store.get("credential_pool")
+            r_rows = r_pool.get(provider_id) if isinstance(r_pool, dict) else None
+            r_rows = r_rows if isinstance(r_rows, list) else []
+            r_oauth = [r for r in r_rows if _is_oauth_pool_payload(r)]
+
+            root_singleton = root_home / ".anthropic_oauth.json" if provider_id == "anthropic" else None
+            root_singleton_row = (
+                _singleton_as_row(root_singleton)
+                if root_singleton is not None and root_singleton.exists() else None
+            )
+
+            # ── credential_pool rows ────────────────────────────────────
+            kept_rows: List[Any] = []
+            for row in p_rows:
+                if not _is_oauth_pool_payload(row):
+                    kept_rows.append(row)  # API keys are safe to duplicate
+                    continue
+                match_idx = _find_root_counterpart(row, r_rows)
+                if match_idx is not None:
+                    root_row = r_rows[match_idx]
+                    if _oauth_freshness(row) > _oauth_freshness(root_row):
+                        r_rows[match_idx] = _adopt_oauth_material(root_row, row)
+                        root_changed = True
+                        summary["adopted"] = True
+                    summary["stripped_ids"].append(row.get("id"))
+                    profile_changed = True
+                    continue
+                # No root pool counterpart. Root's grant may live only in its
+                # .anthropic_oauth.json (the ``hermes auth`` PKCE shape); a
+                # profile hermes_pkce-family row is that grant's copy.
+                is_pkce = str(row.get("source") or "").endswith("hermes_pkce")
+                if is_pkce and root_singleton_row is not None and not r_oauth:
+                    if _oauth_freshness(row) > _oauth_freshness(root_singleton_row):
+                        root_singleton_row = _adopt_oauth_material(root_singleton_row, row)
+                        summary["adopted"] = True
+                    summary["stripped_ids"].append(row.get("id"))
+                    profile_changed = True
+                    continue
+                # Root holds no copy of this lineage (independent account, or
+                # root never had the grant): the profile's row may be the
+                # only surviving copy — leave it alone.
+                kept_rows.append(row)
+            if profile_changed and isinstance(p_pool, dict):
+                if kept_rows:
+                    p_pool[provider_id] = kept_rows
+                else:
+                    p_pool.pop(provider_id, None)
+
+            # ── providers.<id> device-code blocks (Codex / xAI) ─────────
+            if provider_id in ("openai-codex", "xai-oauth"):
+                p_providers = profile_store.get("providers")
+                r_providers = root_store.get("providers")
+                if isinstance(p_providers, dict) and isinstance(r_providers, dict):
+                    p_block = p_providers.get(provider_id)
+                    r_block = r_providers.get(provider_id)
+                else:
+                    p_block = r_block = None
+                if isinstance(p_block, dict) and p_block and isinstance(r_block, dict) and r_block:
+                    p_tokens = p_block.get("tokens") if isinstance(p_block.get("tokens"), dict) else {}
+                    r_tokens = r_block.get("tokens") if isinstance(r_block.get("tokens"), dict) else {}
+                    p_flat = {**p_tokens, "last_refresh": p_block.get("last_refresh")}
+                    r_flat = {**r_tokens, "last_refresh": r_block.get("last_refresh")}
+                    p_ident, r_ident = _oauth_identity(p_flat), _oauth_identity(r_flat)
+                    same_account = (p_ident == r_ident) if (p_ident and r_ident) else True
+                    if same_account:
+                        if _oauth_freshness(p_flat) > _oauth_freshness(r_flat):
+                            r_providers[provider_id] = dict(p_block)
+                            root_changed = True
+                            summary["adopted"] = True
+                        del p_providers[provider_id]
+                        profile_changed = True
+                        summary["providers_block"] = True
+
+            # ── profile-local .anthropic_oauth.json singleton ───────────
+            if (
+                profile_singleton is not None
+                and profile_singleton.exists()
+                # An aliased singleton pair is one shared grant, not a fork
+                # (#101356): never self-compare or unlink it.
+                and not (root_singleton is not None and _is_same_auth_store(profile_singleton, root_singleton))
+            ):
+                p_single = _singleton_as_row(profile_singleton)
+                root_has_grant = bool(r_oauth) or root_singleton_row is not None
+                if p_single is not None and root_has_grant:
+                    if root_singleton_row is not None:
+                        if _oauth_freshness(p_single) > _oauth_freshness(root_singleton_row):
+                            root_singleton_row = _adopt_oauth_material(root_singleton_row, p_single)
+                            summary["adopted"] = True
+                    else:
+                        # Root only has pool rows: fold the singleton's pair
+                        # into the freshest-matching root pkce row, if any.
+                        idx = next(
+                            (i for i, r in enumerate(r_rows)
+                             if _is_oauth_pool_payload(r)
+                             and str(r.get("source") or "").endswith("hermes_pkce")),
+                            None,
+                        )
+                        if idx is not None and _oauth_freshness(p_single) > _oauth_freshness(r_rows[idx]):
+                            r_rows[idx] = _adopt_oauth_material(r_rows[idx], p_single)
+                            root_changed = True
+                            summary["adopted"] = True
+                    try:
+                        profile_singleton.unlink()
+                        summary["files"].append(profile_singleton.name)
+                    except OSError:
+                        logger.debug("could not remove %s", profile_singleton, exc_info=True)
+                # Otherwise root has NO grant for this provider (or the file
+                # is not a grant): the profile's singleton may be the only
+                # surviving copy — never delete it.
+
+            if not (profile_changed or root_changed or summary["adopted"]):
+                _oauth_heal_clean_marks[provider_id] = fingerprint
+                return None
+
+            if summary["adopted"] and root_singleton is not None and root_singleton_row is not None:
+                # Keep root's singleton and its ``hermes_pkce``-seeded pool row
+                # in step: root's next load_pool() re-seeds that row FROM the
+                # singleton file, so a stale file would resurrect the spent
+                # pair (and a stale row would be overwritten by a fresh file).
+                pkce_idx = next(
+                    (i for i, r in enumerate(r_rows)
+                     if _is_oauth_pool_payload(r) and r.get("source") == "hermes_pkce"),
+                    None,
+                )
+                if pkce_idx is not None:
+                    pkce_row = r_rows[pkce_idx]
+                    if _oauth_freshness(pkce_row) > _oauth_freshness(root_singleton_row):
+                        root_singleton_row = _adopt_oauth_material(root_singleton_row, pkce_row)
+                    elif _oauth_freshness(root_singleton_row) > _oauth_freshness(pkce_row):
+                        r_rows[pkce_idx] = _adopt_oauth_material(pkce_row, root_singleton_row)
+                        root_changed = True
+
+            if root_changed:
+                if isinstance(r_pool, dict):
+                    r_pool[provider_id] = r_rows
+                else:
+                    root_store["credential_pool"] = {provider_id: r_rows}
+                _save_auth_store(root_store, target_path=root_path)
+            if summary["adopted"] and root_singleton is not None and root_singleton_row is not None:
+                from agent.anthropic_credentials import _write_hermes_oauth_credentials
+                _write_hermes_oauth_credentials(
+                    root_singleton_row.get("access_token") or "",
+                    root_singleton_row.get("refresh_token"),
+                    root_singleton_row.get("expires_at_ms"),
+                    target=root_singleton,
+                )
+            if profile_changed and profile_path.exists():
+                _save_auth_store(profile_store, target_path=profile_path)
+
+    if summary["stripped_ids"]:
+        log_bits.append(f"pool rows {summary['stripped_ids']}")
+    if summary["providers_block"]:
+        log_bits.append(f"providers.{provider_id} block")
+    if summary["files"]:
+        log_bits.append(", ".join(summary["files"]))
+    verdict = (
+        "profile copy was the live pair; root updated"
+        if summary["adopted"] else "root copy already newest; profile copy dropped"
+    )
+    message = (
+        f"profile {profile_home.name}: consolidated forked {provider_id} OAuth grant "
+        f"({'; '.join(log_bits) or 'no-op'}) into the root grant — {verdict}; "
+        f"this profile now borrows the root grant (#100339)"
+    )
+    logger.info(message)
+    _oauth_heal_notices.append(message)
+    return summary
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
@@ -2127,6 +2754,38 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         return ""
 
 
+def _refuse_env_adoption_if_config_corrupt() -> None:
+    """Refuse env-key/pool auto-adoption of openrouter while config.yaml is corrupt.
+
+    When ``~/.hermes/config.yaml`` EXISTS but fails to parse, ``load_config()``
+    falls back to ``DEFAULT_CONFIG`` — so the tier-2 config check above finds
+    no ``model.provider`` and the env-var sniff / pool probe silently adopts
+    the PAID openrouter provider, even though the user's real (broken) config
+    may name a completely different provider (e.g. ``openai-codex``). That is
+    silent real-money spend against the user's actual intent (#81952).
+
+    This probe fires ONLY on the auto path — explicitly requested providers
+    never reach it — and clears itself as soon as the file changes (a fixed
+    config resolves normally on the next call).
+    """
+    try:
+        from hermes_cli.config import get_active_config_parse_failure, get_config_path
+
+        err = get_active_config_parse_failure()
+        if not err:
+            return
+        path = get_config_path()
+    except Exception as e:
+        logger.debug("Could not probe config parse-failure state: %s", e)
+        return
+    raise AuthError(
+        f"config.yaml at {path} is corrupt ({err}) — refusing to auto-select "
+        f"an inference provider from environment keys. Fix the YAML (a backup "
+        f"was saved next to it) or run hermes setup.",
+        code="corrupt_config",
+    )
+
+
 def resolve_provider(
     requested: Optional[str] = None,
     *,
@@ -2178,6 +2837,7 @@ def resolve_provider(
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
         "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
+        "tokenplan": "tencent-tokenplan", "tencent-lkeap": "tencent-tokenplan",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
@@ -2264,6 +2924,7 @@ def resolve_provider(
     if has_usable_secret(_scoped_key_env("OPENAI_API_KEY")) or has_usable_secret(
         _scoped_key_env("OPENROUTER_API_KEY")
     ):
+        _refuse_env_adoption_if_config_corrupt()
         return "openrouter"
 
     # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
@@ -2276,10 +2937,13 @@ def resolve_provider(
     try:
         from agent.credential_pool import load_pool as _load_pool
 
-        if _load_pool("openrouter").has_credentials():
-            return "openrouter"
+        _pool_has_creds = _load_pool("openrouter").has_credentials()
     except Exception as e:
+        _pool_has_creds = False
         logger.debug("Could not check OpenRouter credential pool: %s", e)
+    if _pool_has_creds:
+        _refuse_env_adoption_if_config_corrupt()
+        return "openrouter"
 
     # Determine the logged-in OAuth provider up front so the env-key loop below
     # can WARN when an exported API key preempts it (#29285 transparency). The
@@ -2754,7 +3418,8 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
 def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
     auth_path = _qwen_cli_auth_path()
     auth_path.parent.mkdir(parents=True, exist_ok=True)
-    # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+    # secure_parent_dir refuses to chmod /, top-level dirs, or the
+    # hermes-agent install tree (#25821, #93050).
     secure_parent_dir(auth_path)
     # Per-process random temp suffix avoids collisions between concurrent
     # writers and stale leftovers from a crashed prior write.
@@ -3934,6 +4599,32 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     return dict(imported)
 
 
+def _codex_http_client(**kwargs: Any) -> "httpx.Client":
+    """Build an ``httpx.Client`` for Codex OAuth/probe endpoints with racing.
+
+    Same broken-IPv6 failure mode as the chat transport (#13834): a host that
+    advertises AAAA records but blackholes IPv6 makes each serial connect
+    attempt eat the full connect timeout before IPv4 is tried, so token
+    refresh / device login / usage probes time out where the official Codex
+    CLI (which races families per RFC 8305) works. Install the same
+    Happy-Eyeballs sync backend #94388 added for the chat transport.
+
+    Best-effort: if the racing backend can't be installed (unexpected
+    httpx/httpcore internals, mocked client in tests), the client still works
+    with the default serial connect behavior. Proxy-backed transports are
+    intentionally left on the default backend (the TCP connect goes to the
+    proxy, not to auth.openai.com/chatgpt.com).
+    """
+    client = httpx.Client(**kwargs)
+    try:
+        from agent.process_bootstrap import enable_happy_eyeballs_on_client
+
+        enable_happy_eyeballs_on_client(client)
+    except Exception:
+        pass
+    return client
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -3951,7 +4642,7 @@ def refresh_codex_oauth_pure(
         )
 
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(
+    with _codex_http_client(
         timeout=timeout,
         headers={
             "Accept": "application/json",
@@ -4400,7 +5091,7 @@ def _probe_codex_quota_restored(
         )
         if isinstance(account_id, str) and account_id.strip():
             headers["ChatGPT-Account-Id"] = account_id.strip()
-        with httpx.Client(timeout=10.0) as client:
+        with _codex_http_client(timeout=10.0) as client:
             response = client.get(_codex_usage_probe_url(base_url), headers=headers)
         if response.status_code == 200:
             payload = response.json() or {}
@@ -5570,7 +6261,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+            # secure_parent_dir refuses to chmod /, top-level dirs, or the
+            # hermes-agent install tree (#25821, #93050).
             secure_parent_dir(path)
             tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
             # Create with 0o600 atomically via os.open(O_EXCL) — closes the TOCTOU
@@ -6376,6 +7068,7 @@ def resolve_nous_runtime_credentials(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     force_refresh: bool = False,
+    stale_access_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Resolve Nous inference credentials for runtime use.
@@ -6383,8 +7076,14 @@ def resolve_nous_runtime_credentials(
     Ensures access_token is a valid inference-scoped JWT, refreshing it when
     needed. Concurrent processes coordinate through the auth store file lock.
 
-    Returns dict with: provider, base_url, api_key, key_id, expires_at,
-    expires_in, source ("invoke_jwt"), and auth_path.
+    ``stale_access_token`` is the bearer that just failed upstream (401). When
+    set together with ``force_refresh``, the refresh POST is skipped if the
+    store — re-read under the lock — already holds a *different*, usable
+    token: another process won the rotation, so this caller adopts it
+    instead of rotating the shared grant again. Without this, N concurrent
+    processes hitting the same hourly expiry issue N refreshes, and each
+    rotation invalidates the token a sibling just adopted (Sep 2026: 120
+    subagents, 81 refreshes, ~540 401s in eight minutes).
     """
     sequence_id = uuid.uuid4().hex[:12]
 
@@ -6397,6 +7096,20 @@ def resolve_nous_runtime_credentials(
         if not state:
             raise AuthError("Hermes is not logged into Nous Portal.",
                             provider="nous", relogin_required=True)
+
+        def _already_rotated_by_peer(token: Any) -> bool:
+            return bool(
+                force_refresh
+                and stale_access_token
+                and isinstance(token, str)
+                and token
+                and token != stale_access_token
+                and _nous_invoke_jwt_status(
+                    token,
+                    scope=state.get("scope"),
+                    expires_at=state.get("expires_at"),
+                ) is None
+            )
 
         persisted_state = dict(state)
         state_persisted = False
@@ -6543,6 +7256,16 @@ def resolve_nous_runtime_credentials(
                 scope=state.get("scope"),
                 expires_at=state.get("expires_at"),
             )
+            # Under the store lock: if the bearer that failed upstream is no
+            # longer the one on disk and the on-disk one is usable, a peer
+            # already rotated — adopt, never re-POST the shared grant.
+            if _already_rotated_by_peer(access_token):
+                _oauth_trace(
+                    "refresh_skipped_peer_rotated",
+                    sequence_id=sequence_id,
+                    access_token_fp=_token_fingerprint(access_token),
+                )
+                force_refresh = False
             if force_refresh or invoke_jwt_status is not None:
                 with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
                     if _merge_shared_nous_oauth_state(state):
@@ -6560,6 +7283,13 @@ def resolve_nous_runtime_credentials(
                             expires_at=state.get("expires_at"),
                         )
                         _persist_state("post_shared_merge_access_unusable")
+                        if _already_rotated_by_peer(access_token):
+                            _oauth_trace(
+                                "refresh_skipped_peer_rotated",
+                                sequence_id=sequence_id,
+                                access_token_fp=_token_fingerprint(access_token),
+                            )
+                            force_refresh = False
 
                     if force_refresh or invoke_jwt_status is not None:
                         if not isinstance(refresh_token, str) or not refresh_token:
@@ -7199,8 +7929,73 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def _external_process_auth_evidence(provider_id: str) -> tuple[bool, Optional[str]]:
+    """Best-effort POSITIVE evidence that an external-process provider's CLI
+    is authenticated.
+
+    Returns ``(verified, source)``. ``verified`` is only ever True on hard
+    evidence (a supported env token, or a known on-disk credential store).
+    False means "not verifiable from here", NOT "signed out" — the Copilot
+    CLI may hold its session in an OS keychain Hermes can't read. Callers
+    must therefore treat False as unknown, never as proof of absence.
+
+    Deliberately subprocess-free: this runs from status endpoints and pickers,
+    and spawning ``gh auth token`` there re-creates the cold-start stall
+    (#60800) that copilot_auth.py works to avoid.
+    """
+    if provider_id != "copilot-acp":
+        return False, None
+    # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
+    try:
+        from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
+        for env_var in COPILOT_ENV_VARS:
+            val = os.getenv(env_var, "").strip()
+            if val and validate_copilot_token(val)[0]:
+                return True, f"env: {env_var}"
+    except Exception as exc:
+        logger.debug("copilot-acp env token evidence check failed: %s", exc)
+    # 2. The Copilot CLI's own plaintext token store (~/.copilot/config.json,
+    #    written by `copilot login` when no OS keychain is available). The file
+    #    is JSONC — strip //-comment lines before parsing.
+    try:
+        cli_config = os.path.expanduser("~/.copilot/config.json")
+        if os.path.isfile(cli_config):
+            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+                raw = "\n".join(
+                    line for line in fh.read().splitlines()
+                    if not line.lstrip().startswith("//")
+                )
+            data = json.loads(raw) if raw.strip() else {}
+            tokens = data.get("copilotTokens")
+            if isinstance(tokens, dict) and any(
+                isinstance(v, str) and v.strip() for v in tokens.values()
+            ):
+                return True, "~/.copilot/config.json"
+    except Exception as exc:
+        logger.debug("copilot-acp CLI config evidence check failed: %s", exc)
+    # 3. Known on-disk GitHub Copilot credential stores (the same locations
+    #    models.py already fingerprints as external credential files).
+    for cred_path in (
+        "~/.config/github-copilot/hosts.json",
+        "~/.config/github-copilot/apps.json",
+    ):
+        try:
+            expanded = os.path.expanduser(cred_path)
+            if os.path.isfile(expanded) and os.path.getsize(expanded) > 2:
+                return True, cred_path
+        except OSError:
+            continue
+    return False, None
+
+
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
-    """Status snapshot for providers that run a local subprocess."""
+    """Status snapshot for providers that run a local subprocess.
+
+    ``configured``/``logged_in`` stay structural (the executable resolves or a
+    TCP endpoint is set) because the spawned subprocess owns its real auth.
+    ``auth_verified``/``auth_source`` carry positive credential evidence when
+    Hermes can actually see some — absence of evidence is not absence of auth.
+    """
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
@@ -7217,6 +8012,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         base_url = pconfig.inference_base_url
 
     resolved_command = shutil.which(command) if command else None
+    auth_verified, auth_source = _external_process_auth_evidence(provider_id)
     return {
         "configured": bool(resolved_command or base_url.startswith("acp+tcp://")),
         "provider": provider_id,
@@ -7226,6 +8022,8 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         "resolved_command": resolved_command,
         "base_url": base_url,
         "logged_in": bool(resolved_command or base_url.startswith("acp+tcp://")),
+        "auth_verified": auth_verified,
+        "auth_source": auth_source,
     }
 
 
@@ -7246,12 +8044,16 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
-        return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
-    # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
+    # External-process providers (copilot-acp today; kiro/devin/junie-style ACP
+    # backends tomorrow) — dispatch on auth_type, not a hardcoded slug, so every
+    # provider of this class gets a real status instead of the
+    # ``{"logged_in": False}`` fallthrough.
+    if pconfig and pconfig.auth_type == "external_process":
+        return get_external_process_provider_status(target)
+    # API-key providers
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
@@ -7436,25 +8238,52 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     if not base_url:
         base_url = pconfig.inference_base_url
 
-    command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
-        or "copilot"
-    )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
-    args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
+    # How to launch the CLI comes from the provider's own profile, so a provider
+    # shipped outside this tree describes its binary/args instead of inheriting
+    # another vendor's. copilot-acp's values live in its profile, which is why
+    # HERMES_COPILOT_ACP_COMMAND / COPILOT_CLI_PATH / HERMES_COPILOT_ACP_ARGS
+    # keep working unchanged.
+    profile = None
+    try:
+        from providers import get_provider_profile as _get_provider_profile
+
+        profile = _get_provider_profile(provider_id)
+    except Exception:
+        profile = None
+
+    command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
+    default_command = str(getattr(profile, "process_command", "") or "")
+    default_args = list(getattr(profile, "process_args", ()) or [])
+    args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
+
+    command = ""
+    for _var in command_env_vars:
+        command = os.getenv(_var, "").strip()
+        if command:
+            break
+    if not command:
+        command = default_command
+
+    raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
+    args = shlex.split(raw_args) if raw_args else list(default_args)
+
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
+        _hint = (
+            " or set " + "/".join(command_env_vars) if command_env_vars else ""
+        )
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the '{provider_id}' CLI command "
+            f"'{command or '(none configured)'}'. Install it{_hint}.",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_external_process_cli",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        # Placeholder credential: the subprocess owns real auth. Keyed on the
+        # provider id so each external-process provider gets a distinct value.
+        "api_key": pconfig.id or provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,
@@ -8306,7 +9135,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
                 resp = client.post(
                     f"{issuer}/api/accounts/deviceauth/usercode",
                     json={"client_id": client_id},
@@ -8381,7 +9210,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -8422,7 +9251,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={
@@ -9316,6 +10145,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             from hermes_cli.models import (
                 get_curated_nous_model_ids, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
+                nous_policy_allowed_ids, restrict_to_nous_policy,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -9330,6 +10160,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 # purchases are reflected immediately.
                 free_tier = check_nous_free_tier(force_fresh=True)
                 _portal_for_recs = auth_state.get("portal_base_url", "")
+                # Narrow before the tier split, so a rescued id still has to
+                # pass the free/paid predicate.
+                _policy_allowed = nous_policy_allowed_ids()
+                _policy_narrowed = False
                 if free_tier:
                     try:
                         from hermes_cli.nous_account import (
@@ -9355,6 +10189,11 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_free_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    _before_policy = model_ids
+                    model_ids = restrict_to_nous_policy(
+                        model_ids, _policy_allowed, rescue_empty=True,
+                    )
+                    _policy_narrowed = model_ids != _before_policy
                     model_ids, unavailable_models = partition_nous_models_by_tier(
                         model_ids, pricing, free_tier=True,
                     )
@@ -9366,8 +10205,18 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing = union_with_portal_paid_recommendations(
                         model_ids, pricing, _portal_for_recs,
                     )
+                    _before_policy = model_ids
+                    model_ids = restrict_to_nous_policy(
+                        model_ids, _policy_allowed, rescue_empty=True,
+                    )
+                    _policy_narrowed = model_ids != _before_policy
             _portal = auth_state.get("portal_base_url", "")
             if model_ids:
+                from hermes_cli.nous_account import nous_policy_notice
+
+                _policy_notice = nous_policy_notice(removed=_policy_narrowed)
+                if _policy_notice:
+                    print(_policy_notice)
                 print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
                 selected_model = _prompt_model_selection(
                     model_ids, pricing=pricing,

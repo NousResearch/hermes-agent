@@ -81,14 +81,5 @@ READ_PREVIEW_SCHEMA = {
 }
 
 
-registry.register(
-    name="read_preview",
-    toolset="desktop_ui",
-    schema=READ_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: read_preview_tool(
-        start=args.get("start"),
-        count=args.get("count"),
-        callback=kw.get("callback"),
-    ),
-    emoji="🔍",
-)
+# Registration removed: consolidated into the `preview` tool (#95681);
+# this module keeps its functions for the agent-level preview action=read dispatch.

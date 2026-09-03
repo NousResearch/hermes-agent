@@ -2,10 +2,11 @@
 """
 Todo Tool Module - Planning & Task Management
 
-Provides an in-memory task list the agent uses to decompose complex tasks,
-track progress, and maintain focus across long conversations. The state
-lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+Provides an in-memory, revisioned task list the agent uses to decompose
+complex tasks, track progress, and maintain focus across long conversations.
+The state lives on the AIAgent instance (one per session), is re-injected into
+the conversation after context compression events, and every write bumps a
+monotonic revision so UI clients can reject stale updates.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -15,7 +16,7 @@ Design:
 """
 
 import json
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 # Valid status values for todo items
@@ -51,10 +52,12 @@ class TodoStore:
       - id: unique string identifier (agent-chosen)
       - content: task description
       - status: pending | in_progress | completed | cancelled
+      - parent: optional id of another item, for nested subtasks
     """
 
     def __init__(self):
         self._items: List[Dict[str, str]] = []
+        self._revision = 0
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """
@@ -65,6 +68,7 @@ class TodoStore:
             merge: if False, replace the entire list. If True, update
                    existing items by id and append new ones.
         """
+        before = self.read()
         if not merge:
             # Replace mode: new list entirely
             self._items = self._normalize_order(
@@ -86,6 +90,12 @@ class TodoStore:
                         status = str(t["status"]).strip().lower()
                         if status in VALID_STATUSES:
                             existing[item_id]["status"] = status
+                    if "parent" in t:
+                        parent = str(t["parent"] or "").strip()
+                        if parent:
+                            existing[item_id]["parent"] = parent
+                        else:
+                            existing[item_id].pop("parent", None)
                 else:
                     # New item -- validate fully and append to end
                     validated = self._validate(t)
@@ -105,6 +115,9 @@ class TodoStore:
         # (list order is priority).
         if len(self._items) > MAX_TODO_ITEMS:
             self._items = self._items[:MAX_TODO_ITEMS]
+        self._sanitize_parents(self._items)
+        if self._items != before:
+            self._revision += 1
         return self.read()
 
     def read(self) -> List[Dict[str, str]]:
@@ -114,6 +127,26 @@ class TodoStore:
     def has_items(self) -> bool:
         """Check if there are any items in the list."""
         return bool(self._items)
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return the full state clients can reconcile atomically."""
+        return {"todos": self.read(), "revision": self._revision}
+
+    def restore(
+        self,
+        todos: List[Dict[str, Any]],
+        *,
+        revision: Any = 0,
+    ) -> List[Dict[str, str]]:
+        """Restore a trusted snapshot without manufacturing a new revision."""
+        self._items = self._normalize_order(
+            [self._validate(t) for t in self._dedupe_by_id(todos)]
+        )[:MAX_TODO_ITEMS]
+        try:
+            self._revision = max(0, int(revision or 0))
+        except (TypeError, ValueError):
+            self._revision = 0
+        return self.read()
 
     def format_for_injection(self) -> Optional[str]:
         """
@@ -134,18 +167,39 @@ class TodoStore:
         }
 
         # Only inject pending/in_progress items — completed/cancelled ones
-        # cause the model to re-do finished work after compression.
-        active_items = [
-            item for item in self._items
-            if item["status"] in {"pending", "in_progress"}
-        ]
-        if not active_items:
-            return None
+        # cause the model to re-do finished work after compression. A parent
+        # is kept (with its real status marker) when any descendant is
+        # active, so subtasks keep their context.
+        active = {"pending", "in_progress"}
+        children: Dict[str, List[Dict[str, str]]] = {}
+        roots: List[Dict[str, str]] = []
+        for item in self._items:
+            parent = item.get("parent")
+            if parent:
+                children.setdefault(parent, []).append(item)
+            else:
+                roots.append(item)
+
+        def render(item: Dict[str, str], depth: int, out: List[str]) -> bool:
+            kid_lines: List[str] = []
+            has_active_kid = False
+            for kid in children.get(item["id"], []):
+                has_active_kid |= render(kid, depth + 1, kid_lines)
+            keep = item["status"] in active or has_active_kid
+            if keep:
+                marker = markers.get(item["status"], "[?]")
+                out.append(
+                    f"{'  ' * depth}- {marker} {item['id']}. "
+                    f"{item['content']} ({item['status']})"
+                )
+                out.extend(kid_lines)
+            return keep
 
         lines = [TODO_INJECTION_HEADER]
-        for item in active_items:
-            marker = markers.get(item["status"], "[?]")
-            lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
+        for item in roots:
+            render(item, 0, lines)
+        if len(lines) == 1:
+            return None
 
         return "\n".join(lines)
 
@@ -187,7 +241,34 @@ class TodoStore:
         if status not in VALID_STATUSES:
             status = "pending"
 
-        return {"id": item_id, "content": content, "status": status}
+        result = {"id": item_id, "content": content, "status": status}
+        parent = str(item.get("parent") or "").strip()
+        if parent and parent != item_id:
+            result["parent"] = parent
+        return result
+
+    @staticmethod
+    def _sanitize_parents(items: List[Dict[str, str]]) -> None:
+        """Drop dangling parent refs and break cycles (in place).
+
+        A parent pointing at a missing id, or a chain that loops back on
+        itself, would corrupt tree rendering — such items become roots.
+        """
+        ids = {item["id"] for item in items}
+        by_id = {item["id"]: item for item in items}
+        for item in items:
+            parent = item.get("parent")
+            if parent and parent not in ids:
+                item.pop("parent", None)
+        for item in items:
+            seen = {item["id"]}
+            node = item
+            while node.get("parent"):
+                if node["parent"] in seen:
+                    item.pop("parent", None)
+                    break
+                seen.add(node["parent"])
+                node = by_id[node["parent"]]
 
     @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -205,6 +286,10 @@ class TodoStore:
     @staticmethod
     def _normalize_order(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Lift the active step ahead of any earlier unfinished placeholders."""
+        # Nested lists keep authored order — reordering a flat position would
+        # tear a subtask away from its siblings.
+        if any(item.get("parent") for item in items):
+            return items
         active_index = next(
             (i for i, item in enumerate(items) if item["status"] == "in_progress"),
             None,
@@ -270,6 +355,7 @@ def todo_tool(
 
     return json.dumps({
         "todos": items,
+        "revision": store.snapshot()["revision"],
         "summary": {
             "total": len(items),
             "pending": pending,
@@ -292,37 +378,33 @@ def check_todo_requirements() -> bool:
 # static tool schema (cached, never changes mid-conversation).
 
 TODO_SCHEMA = {
-    "name": "todo",
+    "name": "todo_list",
+    # Dieted (#95681): the item shape and merge semantics live ONLY in the
+    # parameter schema below — the description teaches behavior, not
+    # structure the params already define.
     "description": (
-        "Manage your task list for the current session. Use for complex tasks "
+        "Track a task list for multi-step work (3+ steps). Use for complex tasks "
         "with 3+ steps or when the user provides multiple tasks. "
         "For 'all N items' tasks, enumerate every instance as its own checklist "
         "item so none are silently dropped. "
-        "Call with no parameters to read the current list.\n\n"
-        "Writing:\n"
-        "- Provide 'todos' array to create/update items\n"
-        "- merge=false (default): replace the entire list with a fresh plan\n"
-        "- merge=true: update existing items by id, add any new ones\n\n"
-        "Each item: {id: string, content: string, "
-        "status: pending|in_progress|completed|cancelled}\n"
-        "List order is priority. Only ONE item in_progress at a time.\n"
+        "Call with no parameters to read the current list.\n"
+        "List order is priority. Only ONE item in_progress at a time. "
+        "Break large phases into subtasks via parent. "
         "Mark an item completed only after the work is verified done, never "
-        "based on intent. If something fails, "
-        "cancel it and add a revised item.\n\n"
-        "Always returns the full current list."
+        "based on intent. If something fails, cancel it and add a revised "
+        "item. Always returns the full current list."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "todos": {
                 "type": "array",
-                "description": "Task items to write. Omit to read current list.",
+                "description": "Task items to write.",
                 "items": {
                     "type": "object",
                     "properties": {
                         "id": {
-                            "type": "string",
-                            "description": "Unique item identifier"
+                            "type": "string"
                         },
                         "content": {
                             "type": "string",
@@ -330,8 +412,11 @@ TODO_SCHEMA = {
                         },
                         "status": {
                             "type": "string",
-                            "enum": ["pending", "in_progress", "completed", "cancelled"],
-                            "description": "Current status"
+                            "enum": ["pending", "in_progress", "completed", "cancelled"]
+                        },
+                        "parent": {
+                            "type": "string",
+                            "description": "Optional id of another item, making this a nested subtask. Omit for top-level."
                         }
                     },
                     "required": ["id", "content", "status"]
@@ -341,7 +426,7 @@ TODO_SCHEMA = {
                 "type": "boolean",
                 "description": (
                     "true: update existing items by id, add new ones. "
-                    "false (default): replace the entire list."
+                    "false (default): replace the entire list with a fresh plan."
                 ),
                 "default": False
             }
@@ -355,7 +440,7 @@ TODO_SCHEMA = {
 from tools.registry import registry, tool_error
 
 registry.register(
-    name="todo",
+    name="todo_list",
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(

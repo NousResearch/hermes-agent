@@ -43,6 +43,10 @@ import uuid
 from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
+# systemd transient scopes exist only on Linux. Gate every scope-path branch
+# on this constant (not merely "not Windows") so macOS and other POSIX
+# platforms provably never touch systemd code (#70716 cross-platform audit).
+_IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
@@ -72,6 +76,16 @@ MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_m
 # semantics (one notification when the process actually exits).
 WATCH_MIN_INTERVAL_SECONDS = 15   # Minimum spacing between consecutive watch matches
 WATCH_STRIKE_LIMIT = 3            # Strikes in a row → disable watch + promote to notify_on_complete
+
+# Lifetime cap — independent of the strike counter above. A process whose
+# pattern recurs at a cadence just above WATCH_MIN_INTERVAL_SECONDS (e.g. a
+# service restarted repeatedly over a day) never trips the consecutive-strike
+# limit, since each match lands in its own clean cooldown window, yet still
+# forces a full-context agent turn every single time (#93513). watch_patterns
+# is documented as "ONLY for rare one-shot mid-process signals", so once a
+# session has delivered this many matches over its whole life we disable it
+# and fall back to notify_on_complete, same as the strike-limit path.
+WATCH_LIFETIME_MAX_HITS = 8
 
 # Global circuit breaker — across all sessions. Secondary safety net so concurrent
 # siblings can't collectively flood the user even when each is under its own cap.
@@ -205,7 +219,7 @@ def _systemd_run_user_scope_available() -> bool:
             return False
 
         available = False
-        if not _IS_WINDOWS:
+        if _IS_LINUX:
             try:
                 import shutil
 
@@ -369,6 +383,10 @@ class ProcessSession:
     id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
     command: str                                 # Original command string
     task_id: str = ""                           # Task/sandbox isolation key
+    owner_task_id: str = ""                     # RAW spawning task id (e.g. subagent "sa-...");
+                                                # task_id is the CONTAINER key and may be collapsed
+                                                # to "default"/session key by _resolve_container_task_id,
+                                                # so ownership checks must use this field (#child-notify)
     session_key: str = ""                       # Gateway session key (for reset protection)
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -526,6 +544,12 @@ class ProcessRegistry:
         disabled for this session and the session is promoted to
         notify_on_complete semantics — one notification when the process
         actually exits, no more mid-process spam.
+
+        Independently, WATCH_LIFETIME_MAX_HITS caps the total number of
+        matches ever delivered for a session, so a pattern that keeps
+        recurring at a cadence just above the cooldown (e.g. a service
+        restarted repeatedly over a day) still gets disabled instead of
+        forcing a full-context agent turn indefinitely.
         """
         if not session.watch_patterns or session._watch_disabled:
             return
@@ -552,6 +576,7 @@ class ProcessRegistry:
 
         now = time.time()
         should_disable = False
+        lifetime_exhausted = False
         with session._lock:
             # Case 1: still inside the cooldown from the last emission.
             # Count this as a strike for the current window (only once per window)
@@ -590,6 +615,13 @@ class ProcessRegistry:
                 suppressed = session._watch_suppressed
                 session._watch_suppressed = 0
                 return_early = False
+                # Lifetime cap: this match is delivered (it already earned it),
+                # but disable further ones regardless of how cleanly spaced
+                # they are — see WATCH_LIFETIME_MAX_HITS above.
+                lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
+                if lifetime_exhausted:
+                    session._watch_disabled = True
+                    session.notify_on_complete = True
 
         if return_early:
             if should_disable:
@@ -598,6 +630,8 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
+                    "task_id": session.task_id,
+                    "owner_task_id": session.owner_task_id or session.task_id,
                     "command": session.command,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
@@ -624,12 +658,19 @@ class ProcessRegistry:
 
         # Global circuit breaker — across all sessions (secondary safety net).
         if not self._global_watch_admit(now):
+            if lifetime_exhausted:
+                # The final match was dropped by the global breaker, but the
+                # session is already disabled — still tell the user why things
+                # went quiet (the strike path emits its summary unconditionally
+                # too).
+                self._emit_lifetime_watch_disabled(session)
             return
 
         notification = {
             "session_id": session.id,
             "session_key": session.session_key,
             "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id or session.task_id,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -644,6 +685,35 @@ class ProcessRegistry:
         }
         _redact_process_result(notification)
         self.completion_queue.put(notification)
+
+        if lifetime_exhausted:
+            # Same "why things went quiet" summary as the strike-limit path,
+            # queued right after the final delivered match.
+            self._emit_lifetime_watch_disabled(session)
+
+    def _emit_lifetime_watch_disabled(self, session: ProcessSession) -> None:
+        """Queue the watch_disabled summary for the lifetime-cap path (#93513)."""
+        self.completion_queue.put({
+            "session_id": session.id,
+            "session_key": session.session_key,
+            "task_id": session.task_id,
+            "owner_task_id": session.owner_task_id or session.task_id,
+            "command": session.command,
+            "type": "watch_disabled",
+            "suppressed": 0,
+            "platform": session.watcher_platform,
+            "chat_id": session.watcher_chat_id,
+            "user_id": session.watcher_user_id,
+            "user_name": session.watcher_user_name,
+            "thread_id": session.watcher_thread_id,
+            "message_id": session.watcher_message_id,
+            "message": (
+                f"Watch patterns disabled for process {session.id} — "
+                f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered "
+                f"matches. Falling back to notify_on_complete semantics; you'll get "
+                f"exactly one notification when the process exits."
+            ),
+        })
 
     def _global_watch_admit(self, now: float) -> bool:
         """Return True if this watch_match event is allowed through the global breaker.
@@ -979,6 +1049,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -1003,6 +1074,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
@@ -1019,13 +1091,18 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
+                # PTY mode is a real TTY, so pager-happy tools (git log/diff,
+                # man) WILL page and hang waiting for `q` — default them to
+                # cat, honoring any pager the user already exported.
+                pty_env.setdefault("GIT_PAGER", "cat")
+                pty_env.setdefault("PAGER", "cat")
                 pty_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
 
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
                 pty_in_supervised_gateway = (
-                    not _IS_WINDOWS and _is_supervised_gateway_process()
+                    _IS_LINUX and _is_supervised_gateway_process()
                 )
                 pty_use_systemd_scope = (
                     pty_in_supervised_gateway and _systemd_run_user_scope_available()
@@ -1103,7 +1180,7 @@ class ProcessRegistry:
         # cgroup (and the messaging control plane with it). This applies to
         # both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
-        in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
+        in_supervised_gateway = _IS_LINUX and _is_supervised_gateway_process()
         use_systemd_scope = (
             in_supervised_gateway and _systemd_run_user_scope_available()
         )
@@ -1217,6 +1294,7 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        owner_task_id: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -1233,6 +1311,7 @@ class ProcessRegistry:
             id=f"proc_{uuid.uuid4().hex[:12]}",
             command=command,
             task_id=task_id,
+            owner_task_id=owner_task_id or task_id,
             session_key=session_key,
             cwd=cwd,
             started_at=time.time(),
@@ -1443,6 +1522,51 @@ class ProcessRegistry:
                 session.completion_reason = "exited"
             self._move_to_finished(session)
 
+    @staticmethod
+    def _log_delta_command(quoted_log_path: str, offset: int) -> str:
+        """Build the shell command that reads only new bytes from a log file.
+
+        The old version ran ``cat`` on the whole file every poll, so a job
+        that keeps writing pays for its entire output again and again. Over a
+        long run that turns into a lot of wasted traffic on the docker/SSH
+        channel, since only the new part is ever used.
+
+        The command prints one header line, ``"<size> <offset>"``, then the
+        bytes between ``offset`` and ``size``. Reading the size first and
+        cutting the tail at that same size keeps the two numbers in step, so
+        a file that grows while the command runs never sends a byte twice.
+        A file that shrank was rotated or truncated, so the offset drops back
+        to 0 and the reader starts over.
+
+        The end of the window is pulled back to a UTF-8 character boundary:
+        the backend decodes each ``execute()`` result on its own, so a
+        multibyte character straddling two polls would otherwise come back
+        as replacement characters (and break watch patterns near the seam).
+        Up to 3 trailing continuation bytes are held for the next poll; the
+        header reports the trimmed size so the offset stays consistent.
+        """
+        return (
+            f"O={offset}; "
+            f"S=$({{ wc -c < {quoted_log_path}; }} 2>/dev/null | tr -dc '0-9'); "
+            f"S=${{S:-0}}; "
+            f'if [ "$S" -lt "$O" ]; then O=0; fi; '
+            # Hold back an INCOMPLETE trailing UTF-8 sequence for the next
+            # poll. Scan back up to 3 continuation bytes (octal 200-277) to
+            # the lead byte; if the lead byte's declared length (3xx=2, 34x-35x
+            # =3, 36x-37x=4) exceeds the bytes present, trim to before it.
+            # Complete sequences and ASCII tails are left untouched.
+            f'N=0; P=$S; while [ "$P" -gt "$O" ] && [ "$N" -lt 3 ]; do '
+            f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
+            f'case "$B" in 2[0-7][0-7]) P=$((P-1)); N=$((N+1));; *) break;; esac; done; '
+            f'if [ "$N" -gt 0 ] || [ "$P" -eq "$S" ]; then '
+            f"B=$(tail -c +$P {quoted_log_path} 2>/dev/null | head -c 1 | od -An -to1 | tr -dc '0-9'); "
+            f'case "$B" in 3[0-3][0-7]) L=2;; 3[4-5][0-7]) L=3;; 3[6-7][0-7]) L=4;; *) L=1;; esac; '
+            f'if [ "$L" -gt $((N+1)) ]; then S=$((P-1)); fi; fi; '
+            f'echo "$S $O"; '
+            f'if [ "$S" -gt "$O" ]; then '
+            f"tail -c +$((O+1)) {quoted_log_path} 2>/dev/null | head -c $((S-O)); fi"
+        )
+
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
     ):
@@ -1450,24 +1574,44 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
-        prev_output_len = 0  # track delta for watch pattern scanning
+        # Byte offset already read from the log. Bytes, not characters: the
+        # shell counts bytes, and a log with non-ASCII text has more bytes
+        # than characters.
+        prev_output_bytes = 0
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
             try:
-                # Read new output from the log file
-                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
-                new_output = result.get("output", "")
-                if new_output:
-                    # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
-                    prev_output_len = len(new_output)
+                # Read only the bytes written since the last poll.
+                result = env.execute(
+                    self._log_delta_command(quoted_log_path, prev_output_bytes),
+                    timeout=10,
+                )
+                raw = result.get("output", "")
+                header, _, delta = raw.partition("\n")
+                try:
+                    size_str, offset_str = header.split()
+                    new_size = int(size_str)
+                    used_offset = int(offset_str)
+                except ValueError:
+                    # No usable header (command failed, shell missing a tool).
+                    # Skip this poll rather than act on a half-read value.
+                    new_size = None
+                    used_offset = None
+                    delta = ""
+                if new_size is not None:
+                    if used_offset < prev_output_bytes:
+                        # The log was rotated or truncated, so what we hold no
+                        # longer lines up with the file. Drop it and restart.
+                        with session._lock:
+                            session.output_buffer = ""
+                    prev_output_bytes = new_size
+                if delta:
                     with session._lock:
-                        session.output_buffer = new_output
+                        session.output_buffer += delta
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    if delta:
-                        self._check_watch_patterns(session, delta)
-                        self._emit_output(session, delta)
+                    self._check_watch_patterns(session, delta)
+                    self._emit_output(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -1576,6 +1720,7 @@ class ProcessRegistry:
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "task_id": session.task_id,
+                "owner_task_id": session.owner_task_id or session.task_id,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -1780,6 +1925,26 @@ class ProcessRegistry:
             skip_poll_observed and session_id in self._poll_observed
         )
 
+    @staticmethod
+    def _surface_child_process_notifications() -> bool:
+        """Whether subagent-owned process notifications surface in the parent.
+
+        Read from ``delegation.surface_child_process_notifications`` in
+        config.yaml (default false = suppress). On any config read error the
+        DEFAULT applies (suppress) — never crash the drain loop.
+        """
+        try:
+            from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "delegation", "surface_child_process_notifications")
+            if val is None:
+                val = DEFAULT_CONFIG["delegation"][
+                    "surface_child_process_notifications"
+                ]
+            return bool(val)
+        except Exception:
+            return False
+
     def drain_notifications(
         self,
         session_key: str = "",
@@ -1818,6 +1983,10 @@ class ProcessRegistry:
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
+        # Lazily-read flag for subagent-owned process notifications
+        # (delegation.surface_child_process_notifications, default false).
+        # Read at most once per drain, and only when an sa- event shows up.
+        surface_child: "bool | None" = None
         while not self.completion_queue.empty():
             try:
                 evt = self.completion_queue.get_nowait()
@@ -1859,6 +2028,34 @@ class ProcessRegistry:
                 _evt_sid, skip_poll_observed=skip_poll_observed
             ):
                 continue
+
+            # Subagent-owned process notifications are suppressed from the
+            # parent conversation by default — the child's consolidated
+            # delegation result is the deliverable; "npm ci finished" walls
+            # mid-chat are noise. Ownership is judged on owner_task_id (the
+            # RAW spawning task id): the container key in task_id is
+            # deliberately collapsed to "default"/the session key by
+            # _resolve_container_task_id, which previously let child events
+            # bypass this gate. Dropped, NOT requeued (children never drain
+            # notify events, so requeueing would pin them in the queue
+            # forever). Type 'async_delegation' is the delegation result
+            # itself and is NEVER suppressed.
+            _evt_task_id = str(
+                evt.get("owner_task_id") or evt.get("task_id") or ""
+            )
+            if not is_async_delegation and _evt_task_id.startswith("sa-"):
+                if surface_child is None:
+                    surface_child = self._surface_child_process_notifications()
+                if not surface_child:
+                    logger.debug(
+                        "Suppressed subagent-owned process notification "
+                        "(delegation.surface_child_process_notifications=false): "
+                        "type=%s session_id=%s task_id=%s",
+                        evt.get("type", "completion"),
+                        _evt_sid,
+                        _evt_task_id,
+                    )
+                    continue
 
             text = format_process_notification(evt)
             if text:
@@ -2696,6 +2893,7 @@ class ProcessRegistry:
                             "cwd": s.cwd,
                             "started_at": s.started_at,
                             "task_id": s.task_id,
+                            "owner_task_id": s.owner_task_id or s.task_id,
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
@@ -2786,6 +2984,7 @@ class ProcessRegistry:
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
+                owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
                 session_key=entry.get("session_key", ""),
                 pid=pid,
                 host_start_time=recorded_start,
@@ -2850,6 +3049,95 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" if m == 0 else f"{h}h{m}m"
 
 
+def _model_not_found_patterns() -> "list[str]":
+    """Model-not-found phrases from the failover classifier.
+
+    Imported from ``agent.error_classifier`` so the batch renderer applies
+    the SAME classification the failover path consumes — no hand-copied
+    pattern list to drift. Fails open to a minimal built-in set so a
+    classifier import problem never hides the per-task blocks.
+    (Import approach from PR #97667 by @liuhao1024.)
+    """
+    try:
+        from agent.error_classifier import _MODEL_NOT_FOUND_PATTERNS
+
+        return list(_MODEL_NOT_FOUND_PATTERNS)
+    except Exception:
+        return ["is not a valid model", "model not found", "model_not_found"]
+
+
+def _delegation_config() -> dict:
+    """Load the active delegation config (model/provider/fallbacks), fail-open.
+
+    Mirrors ``tools.delegate_tool._load_config`` so the renderer sees the same
+    ``model`` / ``provider`` the dispatcher used, without importing the heavy
+    delegation module at import time. Returns ``{}`` on any error so callers
+    fail open to "no notice" rather than dropping the per-task blocks.
+    """
+    try:
+        from tools.delegate_tool import _load_config as _cfg
+
+        return _cfg() or {}
+    except Exception:
+        return {}
+
+
+def _delegation_model_not_found(results, config) -> bool:
+    """True when a result entry reflects a config-level model_not_found rejection.
+
+    Matches when at least one entry's error/summary text contains both a
+    model-not-found phrase AND the name of the currently-configured delegation
+    model — so a stale task failing on a *different* (removed) model is not
+    mis-attributed to the config-level root cause.
+    """
+    model = (config or {}).get("model")
+    if not model:
+        return False
+    model = str(model).lower()
+    for r in results or []:
+        text = " ".join(
+            str(part) for part in (r.get("error"), r.get("summary")) if part
+        ).lower()
+        if not text or model not in text:
+            continue
+        if any(p in text for p in _model_not_found_patterns()):
+            return True
+    return False
+
+
+def _delegation_model_not_found_notice(results) -> "list[str] | None":
+    """Build the config-level model_not_found notice lines, or None.
+
+    Returns ``None`` unless at least one result entry shows the configured
+    delegation model being rejected by its provider, in which case a short
+    actionable block is returned. Every failure path fails open to ``None`` so
+    a config hiccup never hides the per-task blocks. Emit once per batch.
+    """
+    config = _delegation_config()
+    if not _delegation_model_not_found(results, config):
+        return None
+    model = config.get("model") or "?"
+    provider = config.get("provider") or "configured provider"
+    lines = [
+        "⚠ SUBAGENT MODEL REJECTED: the configured Subagent Model "
+        f'"{model}" was rejected by provider "{provider}" '
+        "(HTTP 400: not a valid model ID).",
+        "Every task in this batch failed for this reason before doing any work.",
+        "Check Settings → Advanced → Subagent Model (or: "
+        "hermes config get delegation.model).",
+    ]
+    try:
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        if not get_fallback_chain(config):
+            lines.append(
+                "No fallback chain is configured, so no failover was attempted."
+            )
+    except Exception:
+        pass
+    return lines
+
+
 def _format_async_delegation(evt: dict) -> str:
     """Format an async-delegation completion into a self-contained re-injection.
 
@@ -2908,6 +3196,13 @@ def _format_async_delegation(evt: dict) -> str:
             lines.append("--- ERROR ---")
             lines.append(f"The batch did not complete successfully: {error}")
             return "\n".join(lines)
+        # Config-level rejection notice BEFORE the per-task wall — a rejected
+        # delegation model fails every task identically before doing any
+        # work, and that signal must not stay buried in the task blocks.
+        _notice = _delegation_model_not_found_notice(results)
+        if _notice:
+            lines.append("")
+            lines.extend(_notice)
         for r in sorted(results, key=lambda x: x.get("task_index", 0)):
             idx = r.get("task_index", 0)
             r_status = r.get("status", "?")
@@ -2975,6 +3270,10 @@ def _format_async_delegation(evt: dict) -> str:
     if toolsets:
         lines.append(f"Toolsets: {', '.join(toolsets)}")
     lines.append(f"Role: {role}   Model: {model}")
+    _notice = _delegation_model_not_found_notice([evt])
+    if _notice:
+        lines.append("")
+        lines.extend(_notice)
     _trunc = " [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""
     lines.append(f"Status: {status}   API calls: {api_calls}   Duration: {duration}s{_trunc}")
     lines.append("--- RESULT ---")
@@ -3019,7 +3318,7 @@ def _delegation_attribution_line(evt: dict) -> "str | None":
     the task_id against the live + recently-finished subagent registry and
     return a short provenance line, or None for parent-owned processes.
     """
-    task_id = str(evt.get("task_id") or "")
+    task_id = str(evt.get("owner_task_id") or evt.get("task_id") or "")
     if not task_id.startswith("sa-"):
         return None
     try:
@@ -3132,42 +3431,46 @@ def format_process_notification(evt: dict) -> "str | None":
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
-    "name": "process",
+    "name": "process_manage",
+    # Dieted (#95681): the action enum names the verbs; the description
+    # keeps only non-obvious semantics. write-vs-submit is the tool's one
+    # real trap (a lone \n on a Windows PTY is not a line terminator) —
+    # that teaching gains emphasis rather than losing it.
     "description": (
-        "Manage background processes started with terminal(background=true). "
-        "Actions: 'list' (show all), 'poll' (check status + new output), "
-        "'log' (full output with pagination), 'wait' (block until done or timeout), "
-        "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
+        "Poll, wait on, or kill background terminal processes (from "
+        "terminal(background=true)). "
+        "poll: status + new output. log: full output, paged. wait: block "
+        "until exit or timeout (partial output on timeout). write vs "
+        "submit: submit appends Enter — use it to answer prompts; write "
+        "sends raw bytes, no newline. close: EOF stdin. kill: terminate."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"],
-                "description": "Action to perform on background processes"
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"]
             },
             "session_id": {
                 "type": "string",
-                "description": "Process session ID (from terminal background output). Required for all actions except 'list'. A unique ID prefix works too (e.g. 'proc_4dae' or just '4dae' for proc_4dae56ca81f6)."
+                "description": "From terminal background output; any unique prefix works ('4dae' for proc_4dae56ca81f6). Required except for 'list'."
             },
             "data": {
                 "type": "string",
-                "description": "Text to send to process stdin (for 'write' and 'submit' actions)"
+                "description": "Stdin text for write/submit."
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds to block for 'wait' action. Returns partial output on timeout.",
+                "description": "Max seconds for 'wait'.",
                 "minimum": 1
             },
             "offset": {
                 "type": "integer",
-                "description": "Line offset for 'log' action (default: last 200 lines)"
+                "description": "Log line offset (default: last 200)."
             },
             "limit": {
                 "type": "integer",
-                "description": "Max lines to return for 'log' action",
+                "description": "Max log lines.",
                 "minimum": 1
             }
         },
@@ -3250,7 +3553,7 @@ def _handle_process(args, **kw):
 
 
 registry.register(
-    name="process",
+    name="process_manage",
     toolset="terminal",
     schema=PROCESS_SCHEMA,
     handler=_handle_process,

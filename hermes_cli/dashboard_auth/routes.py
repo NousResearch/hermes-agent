@@ -1077,6 +1077,12 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
                 "dashboard-auth: provider %r unreachable during native refresh: %s",
                 provider.name, e,
             )
+            audit_log(
+                AuditEvent.REFRESH_FAILURE,
+                provider=provider.name,
+                reason="provider_unreachable",
+                ip=_client_ip(request),
+            )
             continue
         audit_log(
             AuditEvent.REFRESH_SUCCESS,

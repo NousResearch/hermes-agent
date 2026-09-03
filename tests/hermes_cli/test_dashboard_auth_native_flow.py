@@ -17,8 +17,10 @@ Run: pytest tests/hermes_cli/test_dashboard_auth_native_flow.py
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import base64
+import json
 import time
 from urllib.parse import parse_qs, urlparse
 
@@ -31,8 +33,8 @@ from hermes_cli.dashboard_auth import (
     register_provider,
 )
 from hermes_cli.dashboard_auth import native_flow
-from hermes_cli.dashboard_auth.base import Session
-from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+from hermes_cli.dashboard_auth.base import ProviderError, Session
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
 
 # ---------------------------------------------------------------------------
@@ -596,3 +598,127 @@ def test_native_refresh_dead_token_returns_401(gated_client):
     )
     assert r.status_code == 401
     assert r.json()["error"] == "session_expired"
+
+
+class _UnreachableRefreshProvider(StubAuthProvider):
+    """A session provider whose IDP is unreachable during refresh."""
+
+    name = "flaky"
+
+    def refresh_session(self, *, refresh_token: str) -> Session:
+        raise ProviderError("stub IDP unreachable")
+
+
+# A deliberately recognizable token value, so any regression that leaked the
+# submitted refresh token into the audit log would be unmissable.
+_CANARY_RT = "canary-refresh-token-must-not-be-logged-0123456789"
+
+
+@contextlib.contextmanager
+def _native_refresh_home(tmp_path, monkeypatch, *providers, block_audit_dir=False):
+    """Point the audit log at ``tmp_path`` and register ``providers``, mirroring
+    ``gated_client`` but with control over ``HERMES_HOME`` for log inspection."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    if block_audit_dir:
+        # Simulate an unavailable audit sink: "logs" already exists as a
+        # plain file, so audit.py's own ``mkdir(parents=True, exist_ok=True)``
+        # raises inside its try/except.
+        (home / "logs").write_text("not a directory")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    clear_providers()
+    for provider in providers:
+        register_provider(provider)
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    web_server.app.state.auth_required = True
+    client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
+    try:
+        yield client, home
+    finally:
+        clear_providers()
+        web_server.app.state.bound_host = prev_host
+        web_server.app.state.bound_port = prev_port
+        web_server.app.state.auth_required = prev_required
+
+
+def test_native_refresh_provider_unreachable_is_audited(tmp_path, monkeypatch):
+    """A provider outage on ``/auth/native/refresh`` must reach the audit
+    log, not just agent.log — mirroring ``_attempt_refresh``'s dual-logging
+    in middleware.py. Before the fix, the 503 path here returned without
+    ever calling ``audit_log``, so an unreachable-IDP refresh storm was
+    invisible in the audit trail. Also covers repeated failures and proves
+    the submitted refresh token never reaches the audit record."""
+    with _native_refresh_home(
+        tmp_path, monkeypatch, _UnreachableRefreshProvider(),
+    ) as (client, home):
+        for _ in range(2):
+            r = client.post(
+                "/auth/native/refresh",
+                json={"refresh_token": _CANARY_RT, "provider": "flaky"},
+            )
+            assert r.status_code == 503
+
+    log_path = home / "logs" / "dashboard-auth.log"
+    assert log_path.exists(), "provider-unreachable native refresh must be audited"
+    raw = log_path.read_text()
+    assert _CANARY_RT not in raw, "submitted refresh token leaked into audit log"
+    records = [json.loads(line) for line in raw.splitlines()]
+    failures = [
+        rec for rec in records
+        if rec["event"] == "refresh_failure" and rec.get("reason") == "provider_unreachable"
+    ]
+    assert len(failures) == 2, f"expected one audit record per failed request: {records}"
+    for rec in failures:
+        assert "refresh_token" not in rec
+        assert "authorization" not in rec and "Authorization" not in rec
+
+
+def test_native_refresh_survives_audit_sink_failure(tmp_path, monkeypatch):
+    """``audit_log()`` guarantees it never raises, even on a write failure
+    (see its docstring) — this proves that guarantee holds at the
+    ``/auth/native/refresh`` boundary: a broken audit sink must still yield
+    the intended 503, never a 500."""
+    with _native_refresh_home(
+        tmp_path, monkeypatch, _UnreachableRefreshProvider(), block_audit_dir=True,
+    ) as (client, _home):
+        r = client.post(
+            "/auth/native/refresh",
+            json={"refresh_token": _CANARY_RT, "provider": "flaky"},
+        )
+        assert r.status_code == 503, r.text
+
+
+def test_native_refresh_outage_then_success_both_audited(tmp_path, monkeypatch):
+    """When one provider is unreachable but a later one rotates the token,
+    the outage is audited and the existing success event (provider, user_id,
+    no token fields) still fires unchanged."""
+    valid_rt = _sign({
+        "sub": "stub-user-1", "kind": "refresh", "exp": int(time.time()) + 3600,
+    })
+    with _native_refresh_home(
+        tmp_path, monkeypatch, _UnreachableRefreshProvider(), StubAuthProvider(),
+    ) as (client, home):
+        r = client.post("/auth/native/refresh", json={"refresh_token": valid_rt})
+        assert r.status_code == 200, r.text
+        assert r.json()["provider"] == "stub"
+
+    records = [
+        json.loads(line)
+        for line in (home / "logs" / "dashboard-auth.log").read_text().splitlines()
+    ]
+    assert any(
+        rec["event"] == "refresh_failure" and rec.get("reason") == "provider_unreachable"
+        for rec in records
+    )
+    successes = [rec for rec in records if rec["event"] == "refresh_success"]
+    assert len(successes) == 1, f"expected exactly one success event: {records}"
+    success = successes[0]
+    assert success.get("provider") == "stub"
+    assert success.get("user_id") == "stub-user-1"
+    assert "refresh_token" not in success and "access_token" not in success

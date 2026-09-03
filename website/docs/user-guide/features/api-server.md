@@ -259,6 +259,37 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+Enabled plugins may add metadata under `extensions.plugins.<plugin-key>`.
+Each value is supplied by that plugin's capability provider; clients should
+treat unknown plugin keys as optional extension data.
+
+Plugins may also register HTTP handlers under their canonical
+`/v1/plugins/<plugin-key>/...` namespace. These
+routes use the same `API_SERVER_KEY` bearer authentication as core API-server
+routes. Plugin handlers receive the native `aiohttp.web.Request` and must
+return an `aiohttp.web.StreamResponse` (synchronously or asynchronously).
+Hermes rejects non-callable handlers, invalid methods and paths, duplicate
+method/path pairs, duplicate route names, and plugin namespaces containing
+unsafe URL path segments or route-template syntax during registration. A
+handler exception or invalid response produces a stable JSON `500` response
+without exposing the exception to the API client.
+
+Capability providers are synchronous, one per plugin, and must return a
+JSON-serializable object or `None`. Invalid or failing providers are skipped so
+they cannot break the core capability response. Plugin routes cannot leave the
+registering plugin's namespace or replace a core route. Synchronous handlers
+and capability providers run off the API event loop, and both surfaces have
+bounded execution time and bounded worker admission. Timed-out synchronous
+callbacks retain their worker slot until they really exit, preventing repeated
+hung plugin calls from accumulating threads. Providers receive only an
+immutable, non-secret capability context—not the live adapter, request,
+headers, or bearer key.
+
+In multiplex mode, plugin API routes and capability extensions are available
+only on the unprefixed default-profile listener. Hermes does not expose the
+default profile's enabled plugins through `/p/<profile>/` or advertise them in
+a named profile's `/v1/capabilities` response.
+
 ## Browser-extension control
 
 Hermes can route browser tools through an authenticated extension that controls
@@ -410,7 +441,6 @@ Example:
   ]
 }
 ```
-
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.

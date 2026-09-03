@@ -41,6 +41,7 @@ import importlib.metadata
 import importlib.util
 import inspect
 import json
+import keyword
 import logging
 import os
 import queue
@@ -681,6 +682,15 @@ def _get_enabled_plugins() -> Optional[set]:
 # ---------------------------------------------------------------------------
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
+_API_PLUGIN_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+def is_safe_api_server_plugin_id(plugin_id: str) -> bool:
+    """Return whether a plugin id is safe to embed as literal URL segments."""
+    return bool(plugin_id) and all(
+        _API_PLUGIN_ID_SEGMENT_RE.fullmatch(segment)
+        for segment in plugin_id.split("/")
+    )
 
 
 def _portable_skill_namespace(key: str) -> str:
@@ -1268,6 +1278,23 @@ class PluginRegistration:
         finally:
             if self._on_dispose is not None:
                 self._on_dispose(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ApiServerCapabilityContext:
+    """Stable, non-secret context exposed to API capability providers.
+
+    Capability discovery runs outside the aiohttp event loop.  Passing the
+    live adapter or request into that worker would expose mutable server state,
+    credentials, and a request object owned by another thread.  This value
+    object is the complete provider contract instead.
+    """
+
+    server_name: str
+    request_method: str
+    request_path: str
+    auth_required: bool
+    profile: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -3591,6 +3618,94 @@ class PluginContext:
         logger.debug("Plugin %s registered middleware: %s", self.manifest.name, kind)
         return handle
 
+    # -- API server registration --------------------------------------------
+
+    def register_api_server_route(
+        self,
+        method: str,
+        path: str,
+        handler: Callable,
+        *,
+        name: str | None = None,
+    ) -> None:
+        """Register an aiohttp route contribution for the API server adapter."""
+        if not callable(handler):
+            raise TypeError("API server route handler must be callable")
+        normalized_method = str(method or "").upper()
+        if normalized_method not in {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}:
+            raise ValueError(f"unsupported method: {normalized_method or '<empty>'}")
+        if not isinstance(path, str):
+            raise TypeError("API server route path must be a string")
+        if not path.startswith("/v1/plugins/"):
+            raise ValueError("API server route path must be under /v1/plugins/")
+        if path == "/v1/plugins/":
+            raise ValueError("API server route path must include a route name")
+        plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
+        if not is_safe_api_server_plugin_id(plugin_id):
+            raise ValueError(
+                "API server plugin namespace must contain safe URL path segments"
+            )
+        plugin_namespace = f"/v1/plugins/{plugin_id}/"
+        if not plugin_id or not path.startswith(plugin_namespace):
+            raise ValueError(
+                "API server route path must stay under the plugin's own namespace: "
+                f"{plugin_namespace}"
+            )
+        if name is not None and (not isinstance(name, str) or not name.strip()):
+            raise TypeError("API server route name must be a non-empty string or None")
+        if name is not None and any(
+            not part.isidentifier() or keyword.iskeyword(part)
+            for part in re.split(r"[.:-]", name)
+        ):
+            raise ValueError(
+                "API server route name must contain Python identifiers separated "
+                "by dash, dot, or colon"
+            )
+        for route in self._manager._api_server_routes:
+            if (route.get("method"), route.get("path")) == (normalized_method, path):
+                raise ValueError(f"API server route already registered: {normalized_method} {path}")
+            if name is not None and route.get("name") == name:
+                raise ValueError(f"API server route name already registered: {name}")
+        self._manager._api_server_routes.append(
+            {
+                "method": normalized_method,
+                "path": path,
+                "handler": handler,
+                "name": name,
+                "plugin": plugin_id,
+            }
+        )
+        logger.debug(
+            "Plugin %s registered API server route: %s %s",
+            self.manifest.name,
+            normalized_method,
+            path,
+        )
+
+    def register_api_server_capability(self, provider: Callable) -> None:
+        """Register a provider callback for /v1/capabilities extensions."""
+        if not callable(provider):
+            raise TypeError("API server capability provider must be callable")
+        if inspect.iscoroutinefunction(provider) or inspect.iscoroutinefunction(
+            getattr(provider, "__call__", None)
+        ):
+            raise TypeError("API server capability provider must be synchronous")
+        plugin_id = str(self.manifest.key or self.manifest.name).strip("/")
+        if any(
+            entry.get("plugin") == plugin_id
+            for entry in self._manager._api_server_capability_providers
+        ):
+            raise ValueError(
+                f"API server capability provider already registered for plugin: {plugin_id}"
+            )
+        self._manager._api_server_capability_providers.append(
+            {
+                "plugin": plugin_id,
+                "provider": provider,
+            }
+        )
+        logger.debug("Plugin %s registered API server capability provider", self.manifest.name)
+
     # -- skill registration -------------------------------------------------
 
     @_serialized_replacement
@@ -3835,6 +3950,8 @@ class PluginManager:
         # ``register_telegram_handler`` is a thin alias writing into the
         # "telegram" bucket.
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
+        self._api_server_routes: List[Dict[str, Any]] = []
+        self._api_server_capability_providers: List[Dict[str, Any]] = []
 
     # -----------------------------------------------------------------------
     # Registration ledger internals
@@ -4182,6 +4299,8 @@ class PluginManager:
             self._predeclared_modules.clear()
             self._predeclared_tools.clear()
             self._platform_handler_factories.clear()
+            self._api_server_routes.clear()
+            self._api_server_capability_providers.clear()
             self._context_engine = None
             with self._hook_timeout_lock:
                 self._hook_running_callbacks.clear()
@@ -6096,6 +6215,52 @@ class PluginManager:
                 }
             )
         return result
+
+    def get_api_server_routes(self) -> List[Dict[str, Any]]:
+        """Return plugin-contributed API server routes in registration order."""
+        return list(self._api_server_routes)
+
+    def get_api_server_capabilities(
+        self,
+        *,
+        context: ApiServerCapabilityContext,
+    ) -> List[Dict[str, Any]]:
+        """Resolve plugin capability contributions for /v1/capabilities."""
+        if not isinstance(context, ApiServerCapabilityContext):
+            raise TypeError("context must be an ApiServerCapabilityContext")
+        results: List[Dict[str, Any]] = []
+        for entry in self._api_server_capability_providers:
+            plugin_name = entry.get("plugin", "unknown")
+            provider = entry.get("provider")
+            if not callable(provider):
+                continue
+            try:
+                payload = provider(context=context)
+            except Exception as exc:
+                logger.warning(
+                    "Plugin '%s' API server capability provider failed (%s); skipping",
+                    plugin_name,
+                    type(exc).__name__,
+                )
+                continue
+            if payload is None:
+                continue
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned non-dict payload; skipping",
+                    plugin_name,
+                )
+                continue
+            try:
+                json.dumps(payload)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Plugin '%s' API server capability provider returned a non-JSON-serializable payload; skipping",
+                    plugin_name,
+                )
+                continue
+            results.append({"plugin": plugin_name, "capabilities": payload})
+        return results
 
     # -----------------------------------------------------------------------
     # Plugin skill lookups

@@ -2681,7 +2681,7 @@ class MCPServerTask:
         "_reconnect_retries", "_session_proven", "_was_parked",
         "_inflight_tasks", "_reconnecting", "_suspect_reason",
         "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected",
+        "_ever_connected", "_dropped_tools",
     )
 
     def __init__(self, name: str):
@@ -2703,6 +2703,10 @@ class MCPServerTask:
         self._sampling: Optional[SamplingHandler] = None
         self._elicitation: Optional[ElicitationHandler] = None
         self._registered_tool_names: list[str] = []
+        # Tools the server offered but the tool-listing guard discarded
+        # because their definition fails the SDK's wire schema:
+        # ``{tool_name: reason}``. Reset on every (re)discovery.
+        self._dropped_tools: Dict[str, str] = {}
         self._reconnect_retries: int = 0
         # Rapid-drop budget (#62212): a freshly (re)established session is
         # UNPROVEN until it demonstrates real health — it survived at least
@@ -2957,6 +2961,33 @@ class MCPServerTask:
         task.add_done_callback(self._pending_refresh_tasks.discard)
         return task
 
+    def _guard_read_stream(self, read_stream):
+        """Wrap a transport's read stream so one bad tool can't park the server.
+
+        The mcp 2.x SDK validates each ``tools/list`` page as a whole
+        against the negotiated protocol version's wire schema *before* the
+        client sees it, so one tool the schema rejects fails the entire
+        response and the server parks with zero tools (#101669). The guard
+        validates each tool on its own with the same versioned model and
+        drops just the offending ones, by name, recording them in
+        ``_dropped_tools`` for status. Wrapping the stream covers every
+        ``list_tools`` caller at once: discovery, ``tools/list_changed``
+        refreshes and the keepalive fallback.
+        """
+        from tools.mcp_listing_guard import ToolListingGuard
+
+        return ToolListingGuard(
+            read_stream,
+            server_name=self.name,
+            version_getter=lambda: getattr(self.session, "protocol_version", None),
+            on_drop=self._record_dropped_tools,
+        )
+
+    def _record_dropped_tools(self, dropped) -> None:
+        """Remember guard-dropped tools so status can show what went missing."""
+        for name, reason in dropped:
+            self._dropped_tools[name] = reason
+
     def _make_logging_callback(self):
         """Build a ``logging_callback`` for ``ClientSession``.
 
@@ -3064,6 +3095,7 @@ class MCPServerTask:
 
             # 1. Fetch current tool list from server (follow nextCursor)
             async with self._rpc_lock:
+                self._dropped_tools = {}
                 new_mcp_tools = await _paginate_full_list(
                     self.session.list_tools, "tools", self.name
                 )
@@ -3672,7 +3704,7 @@ class MCPServerTask:
                 # (#81995).
                 self._stdio_child_pids = set(new_pids)
                 async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
+                    self._guard_read_stream(read_stream), write_stream, **sampling_kwargs
                 ) as session:
                     # Bound the MCP handshake. A stdio server that never
                     # completes ``initialize`` (e.g. emits a non-JSON-RPC frame
@@ -4063,7 +4095,7 @@ class MCPServerTask:
             try:
                 async with sse_client(**_sse_kwargs) as (read_stream, write_stream):
                     async with ClientSession(
-                        read_stream, write_stream, **sampling_kwargs
+                        self._guard_read_stream(read_stream), write_stream, **sampling_kwargs
                     ) as session:
                         # Bound the handshake — same orphaned-task hang as the
                         # stdio path (#59349): an endpoint that accepts the
@@ -4133,7 +4165,7 @@ class MCPServerTask:
                     # and get_session_id was never used here.
                     async with streamable_http_client(url, http_client=http_client) as _streams:
                         read_stream, write_stream = _streams[0], _streams[1]
-                        async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                        async with ClientSession(self._guard_read_stream(read_stream), write_stream, **sampling_kwargs) as session:
                             # Bound the handshake (#59349) — see stdio path.
                             self.initialize_result = await self._negotiate_session(
                                 session, float(connect_timeout)
@@ -4181,7 +4213,7 @@ class MCPServerTask:
                 async with streamablehttp_client(url, **_http_kwargs) as (
                     read_stream, write_stream, _get_session_id,
                 ):
-                    async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
+                    async with ClientSession(self._guard_read_stream(read_stream), write_stream, **sampling_kwargs) as session:
                         # Bound the handshake (#59349) — see stdio path.
                         self.initialize_result = await self._negotiate_session(
                             session, float(connect_timeout)
@@ -4235,6 +4267,7 @@ class MCPServerTask:
             return
         async with self._rpc_lock:
             self._list_cache_meta = {}
+            self._dropped_tools = {}
             self._tools = await _paginate_full_list(
                 self.session.list_tools, "tools", self.name,
                 cache_meta_out=self._list_cache_meta,
@@ -8565,6 +8598,11 @@ def get_mcp_status() -> List[dict]:
             }
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
+            if server._dropped_tools:
+                # Offered by the server but discarded because their
+                # definition fails the SDK's wire schema (see
+                # tools/mcp_listing_guard.py); agent.log has the reasons.
+                entry["dropped_tools"] = sorted(server._dropped_tools)
             result.append(entry)
         elif not enabled:
             # A server with enabled: false is intentionally not connected — it is

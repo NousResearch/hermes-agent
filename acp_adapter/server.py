@@ -1594,7 +1594,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        state = await self.session_manager.create_session_async(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
@@ -1616,7 +1616,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> LoadSessionResponse | None:
-        state = self.session_manager.update_cwd(session_id, cwd)
+        state = await self.session_manager.update_cwd_async(session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
             return None
@@ -1664,10 +1664,10 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> ResumeSessionResponse:
-        state = self.session_manager.update_cwd(session_id, cwd)
+        state = await self.session_manager.update_cwd_async(session_id, cwd)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
-            state = self.session_manager.create_session(cwd=cwd)
+            state = await self.session_manager.create_session_async(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         self._schedule_mcp_late_refresh(state)
         logger.info("Resumed session %s", state.session_id)
@@ -1694,7 +1694,7 @@ class HermesACPAgent(acp.Agent):
         )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
-        state = self.session_manager.get_session(session_id)
+        state = await self.session_manager.get_session_async(session_id)
         if state and state.cancel_event:
             with state.runtime_lock:
                 if state.is_running and state.current_prompt_text:
@@ -1721,7 +1721,7 @@ class HermesACPAgent(acp.Agent):
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> ForkSessionResponse:
-        state = self.session_manager.fork_session(session_id, cwd=cwd)
+        state = await self.session_manager.fork_session_async(session_id, cwd=cwd)
         new_id = state.session_id if state else ""
         if state is not None:
             await self._register_session_mcp_servers(state, mcp_servers)
@@ -1794,7 +1794,7 @@ class HermesACPAgent(acp.Agent):
         **kwargs: Any,
     ) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
-        state = self.session_manager.get_session(session_id)
+        state = await self.session_manager.get_session_async(session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
             return PromptResponse(stop_reason="refusal")
@@ -2571,7 +2571,7 @@ class HermesACPAgent(acp.Agent):
         self, model_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModelResponse | None:
         """Switch the model for a session (called by ACP protocol)."""
-        state = self.session_manager.get_session(session_id)
+        state = await self.session_manager.get_session_async(session_id)
         if state:
             current_provider = getattr(state.agent, "provider", None)
             requested_provider, resolved_model = self._resolve_model_selection(
@@ -2605,7 +2605,7 @@ class HermesACPAgent(acp.Agent):
         self, mode_id: str, session_id: str, **kwargs: Any
     ) -> SetSessionModeResponse | None:
         """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
-        state = self.session_manager.get_session(session_id)
+        state = await self.session_manager.get_session_async(session_id)
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
@@ -2621,7 +2621,7 @@ class HermesACPAgent(acp.Agent):
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
         """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
-        state = self.session_manager.get_session(session_id)
+        state = await self.session_manager.get_session_async(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None

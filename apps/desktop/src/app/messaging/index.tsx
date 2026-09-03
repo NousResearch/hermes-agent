@@ -9,16 +9,20 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import {
   approvePairing,
+  getHermesConfigRecord,
   getMessagingPlatforms,
   getPairing,
+  type HermesConfigRecord,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
   type PairingUser,
   revokePairing,
+  saveHermesConfig,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
@@ -47,6 +51,95 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 }
 
 type EditMap = Record<string, Record<string, string>>
+
+type ToolProgressMode = 'all' | 'log' | 'new' | 'off' | 'verbose'
+type TelegramDisplayBooleanKey =
+  'interim_assistant_messages' | 'long_running_notifications' | 'show_reasoning' | 'streaming'
+type TelegramDisplayKey = TelegramDisplayBooleanKey | 'tool_progress'
+
+interface TelegramDisplaySettings {
+  interim_assistant_messages: boolean
+  long_running_notifications: boolean
+  show_reasoning: boolean
+  streaming: boolean
+  tool_progress: ToolProgressMode
+}
+
+const TELEGRAM_DISPLAY_DEFAULTS: TelegramDisplaySettings = {
+  interim_assistant_messages: true,
+  long_running_notifications: true,
+  show_reasoning: false,
+  streaming: false,
+  tool_progress: 'off'
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+function booleanSetting(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+      return true
+    }
+
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+      return false
+    }
+  }
+
+  return fallback
+}
+
+function toolProgressSetting(value: unknown, fallback: ToolProgressMode): ToolProgressMode {
+  if (value === true) {
+    return 'all'
+  }
+
+  if (value === false) {
+    return 'off'
+  }
+
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+
+  return ['all', 'log', 'new', 'off', 'verbose'].includes(normalized) ? (normalized as ToolProgressMode) : fallback
+}
+
+/** Mirror gateway/display_config.py's Telegram resolution order so the page
+ *  shows the effective value even when no explicit Telegram override exists. */
+export function telegramDisplaySettings(config: HermesConfigRecord): TelegramDisplaySettings {
+  const display = isRecord(config.display) ? config.display : {}
+  const platforms = isRecord(display.platforms) ? display.platforms : {}
+  const telegram = isRecord(platforms.telegram) ? platforms.telegram : {}
+  const streaming = isRecord(config.streaming) ? config.streaming : {}
+
+  return {
+    tool_progress: toolProgressSetting(
+      telegram.tool_progress ?? display.tool_progress,
+      TELEGRAM_DISPLAY_DEFAULTS.tool_progress
+    ),
+    interim_assistant_messages: booleanSetting(
+      telegram.interim_assistant_messages ?? display.interim_assistant_messages,
+      TELEGRAM_DISPLAY_DEFAULTS.interim_assistant_messages
+    ),
+    show_reasoning: booleanSetting(
+      telegram.show_reasoning ?? display.show_reasoning,
+      TELEGRAM_DISPLAY_DEFAULTS.show_reasoning
+    ),
+    streaming: booleanSetting(telegram.streaming ?? streaming.enabled, TELEGRAM_DISPLAY_DEFAULTS.streaming),
+    long_running_notifications: booleanSetting(
+      telegram.long_running_notifications ?? display.long_running_notifications,
+      TELEGRAM_DISPLAY_DEFAULTS.long_running_notifications
+    )
+  }
+}
 
 const PILL_TONE: Record<StatusTone, string> = {
   good: 'bg-primary/10 text-primary',
@@ -141,6 +234,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   })
 
   const [approving, setApproving] = useState<null | string>(null)
+  const [displayConfig, setDisplayConfig] = useState<HermesConfigRecord | null>(null)
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -185,6 +279,17 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [scopeProfile])
 
+  const refreshDisplayConfig = useCallback(async () => {
+    try {
+      setDisplayConfig(await getHermesConfigRecord(scopeProfile))
+    } catch {
+      // Messaging setup remains usable on older backends without config
+      // reads. The controls render from canonical Telegram defaults and a
+      // failed write still surfaces through handleDisplaySettingChange.
+      setDisplayConfig({})
+    }
+  }, [scopeProfile])
+
   const refreshAll = useCallback(
     async (silent = false) => {
       await Promise.all([refreshPlatforms(silent), refreshPairing()])
@@ -197,6 +302,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   useEffect(() => {
     void refreshAll()
   }, [refreshAll])
+
+  useEffect(() => {
+    void refreshDisplayConfig()
+  }, [refreshDisplayConfig])
 
   // Scope switch: the mounted list still shows the PREVIOUS profile's
   // platforms/pairing while the new fetch is in flight — blank it so stale
@@ -213,6 +322,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setPlatforms(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
+    setDisplayConfig(null)
   }, [scopeProfile])
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
@@ -370,6 +480,55 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
+  async function handleDisplaySettingChange(
+    platform: MessagingPlatformInfo,
+    key: TelegramDisplayKey,
+    value: boolean | ToolProgressMode
+  ) {
+    const previous = displayConfig ?? {}
+    const display = isRecord(previous.display) ? previous.display : {}
+    const platformsConfig = isRecord(display.platforms) ? display.platforms : {}
+    const currentPlatformConfig = platformsConfig[platform.id]
+    const platformConfig = isRecord(currentPlatformConfig) ? currentPlatformConfig : {}
+
+    const next = {
+      ...previous,
+      display: {
+        ...display,
+        platforms: {
+          ...platformsConfig,
+          [platform.id]: { ...platformConfig, [key]: value }
+        }
+      }
+    }
+
+    setSaving(`display:${platform.id}:${key}`)
+    setDisplayConfig(next)
+
+    try {
+      await saveHermesConfig(
+        {
+          display: {
+            platforms: {
+              [platform.id]: { [key]: value }
+            }
+          }
+        },
+        scopeProfile
+      )
+      notify({
+        kind: 'success',
+        title: m.displaySaved(platform.name),
+        message: m.displaySavedHint
+      })
+    } catch (err) {
+      setDisplayConfig(previous)
+      notifyError(err, m.failedDisplaySave(platform.name))
+    } finally {
+      setSaving(null)
+    }
+  }
+
   // Approve/revoke paint from a snapshot immediately, then let the
   // authoritative refresh have the last word. A failed write restores the
   // snapshot so the row never silently disappears on an error.
@@ -471,9 +630,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   <PlatformDetail
                     approved={approvedByPlatform[selected.id] ?? []}
                     approving={approving}
+                    displaySettings={
+                      selected.id === 'telegram' && displayConfig ? telegramDisplaySettings(displayConfig) : null
+                    }
                     edits={edits[selected.id] || {}}
                     onApprove={user => void handleApprove(user)}
                     onClear={key => void handleClear(selected, key)}
+                    onDisplaySettingChange={(key, value) => void handleDisplaySettingChange(selected, key, value)}
                     onEdit={(key, value) =>
                       setEdits(current => ({
                         ...current,
@@ -559,9 +722,11 @@ function PlatformRow({
 function PlatformDetail({
   approved,
   approving,
+  displaySettings,
   edits,
   onApprove,
   onClear,
+  onDisplaySettingChange,
   onEdit,
   onRevoke,
   pending,
@@ -570,9 +735,11 @@ function PlatformDetail({
 }: {
   approved: PairingUser[]
   approving: null | string
+  displaySettings: TelegramDisplaySettings | null
   edits: Record<string, string>
   onApprove: (user: PairingUser) => void
   onClear: (key: string) => void
+  onDisplaySettingChange: (key: TelegramDisplayKey, value: boolean | ToolProgressMode) => void
   onEdit: (key: string, value: string) => void
   onRevoke: (user: PairingUser) => void
   pending: PairingUser[]
@@ -608,6 +775,14 @@ function PlatformDetail({
       </header>
 
       {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
+
+      {platform.id === 'telegram' && displaySettings && (
+        <TelegramDisplayControls
+          disabled={Boolean(saving?.startsWith(`display:${platform.id}:`))}
+          onChange={onDisplaySettingChange}
+          settings={displaySettings}
+        />
+      )}
 
       {/* Pending pairing requests. Rendered only when someone is actually
           waiting — an empty-state card here would be permanent chrome on a
@@ -768,6 +943,90 @@ function PlatformDetail({
         </section>
       )}
     </>
+  )
+}
+
+function TelegramDisplayControls({
+  disabled,
+  onChange,
+  settings
+}: {
+  disabled: boolean
+  onChange: (key: TelegramDisplayKey, value: boolean | ToolProgressMode) => void
+  settings: TelegramDisplaySettings
+}) {
+  const { t } = useI18n()
+  const m = t.messaging
+
+  const toolProgressOptions: { label: string; value: ToolProgressMode }[] = [
+    { label: m.toolProgressOff, value: 'off' },
+    { label: m.toolProgressNew, value: 'new' },
+    { label: m.toolProgressAll, value: 'all' },
+    { label: m.toolProgressVerbose, value: 'verbose' },
+    { label: m.toolProgressLog, value: 'log' }
+  ]
+
+  const booleanRow = (key: TelegramDisplayBooleanKey, title: string, description: string, checked: boolean) => (
+    <ListRow
+      action={
+        <Switch
+          aria-label={title}
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={value => onChange(key, value)}
+          size="xs"
+        />
+      }
+      description={description}
+      title={title}
+    />
+  )
+
+  return (
+    <section>
+      <SectionTitle>{m.clientExperience}</SectionTitle>
+      <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+        {m.clientExperienceDesc}
+      </p>
+      <div className="mt-3 grid gap-1">
+        <ListRow
+          action={
+            <Select
+              disabled={disabled}
+              onValueChange={value => onChange('tool_progress', value as ToolProgressMode)}
+              value={settings.tool_progress}
+            >
+              <SelectTrigger aria-label={m.toolActivity} className="h-8 min-w-32 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {toolProgressOptions.map(option => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          }
+          description={m.toolActivityDesc}
+          title={m.toolActivity}
+        />
+        {booleanRow(
+          'interim_assistant_messages',
+          m.interimMessages,
+          m.interimMessagesDesc,
+          settings.interim_assistant_messages
+        )}
+        {booleanRow('show_reasoning', m.reasoningVisibility, m.reasoningVisibilityDesc, settings.show_reasoning)}
+        {booleanRow('streaming', m.streamResponses, m.streamResponsesDesc, settings.streaming)}
+        {booleanRow(
+          'long_running_notifications',
+          m.longRunningStatus,
+          m.longRunningStatusDesc,
+          settings.long_running_notifications
+        )}
+      </div>
+    </section>
   )
 }
 

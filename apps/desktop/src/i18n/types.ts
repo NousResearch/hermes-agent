@@ -1600,6 +1600,26 @@ export interface Translations {
     failedUpdate: (name: string) => string
     failedSave: (name: string) => string
     failedClear: (key: string) => string
+    clientExperience: string
+    clientExperienceDesc: string
+    toolActivity: string
+    toolActivityDesc: string
+    toolProgressOff: string
+    toolProgressNew: string
+    toolProgressAll: string
+    toolProgressVerbose: string
+    toolProgressLog: string
+    interimMessages: string
+    interimMessagesDesc: string
+    reasoningVisibility: string
+    reasoningVisibilityDesc: string
+    streamResponses: string
+    streamResponsesDesc: string
+    longRunningStatus: string
+    longRunningStatusDesc: string
+    displaySaved: (name: string) => string
+    displaySavedHint: string
+    failedDisplaySave: (name: string) => string
     pendingRequests: (count: number) => string
     pendingAria: (count: number) => string
     approvedUsers: (count: number) => string

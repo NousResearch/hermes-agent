@@ -54,6 +54,10 @@ class AuditEvent(enum.Enum):
     NATIVE_CODE_ISSUED = "native_code_issued"
     NATIVE_TOKEN_SUCCESS = "native_token_success"
     NATIVE_TOKEN_FAILURE = "native_token_failure"
+    # Browser-session → Android native-app PKCE handoff (/mobile-handoff/start).
+    # Distinct from NATIVE_TOKEN_FAILURE so alerting on code-redemption attacks
+    # at /auth/native/token isn't diluted by routine authenticated throttling.
+    MOBILE_HANDOFF_RATE_LIMITED = "mobile_handoff_rate_limited"
 
 
 def _resolve_log_path() -> Path:

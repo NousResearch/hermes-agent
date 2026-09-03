@@ -544,8 +544,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
                name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None) -> Optional[int]:
     """Fetch, quarantine, scan, confirm, and install a skill.
+
+    Returns ``1`` when short-name resolution can't produce a single
+    identifier (no match, or multiple candidates) so callers that propagate
+    this as a process exit code -- notably the Desktop hub picker, which
+    posts a bare catalog name and treats any non-zero exit as a failed
+    install -- see it as one instead of an apparent success with nothing
+    installed. Other early-exit paths (already installed, scan-blocked,
+    user-declined) keep returning ``None`` (exit 0): they already print a
+    clear reason and aren't the ambiguous-identifier failure mode this
+    guards.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
     scripts) supply a skill name when the upstream SKILL.md lacks a valid
@@ -591,7 +601,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
         if not identifier:
-            return
+            return 1
 
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
@@ -1817,7 +1827,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
 # CLI argparse entry point
 # ---------------------------------------------------------------------------
 
-def skills_command(args) -> None:
+def skills_command(args) -> Optional[int]:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     action = getattr(args, "skills_action", None)
 
@@ -1827,7 +1837,7 @@ def skills_command(args) -> None:
         do_search(args.query, source=args.source, limit=args.limit,
                   as_json=getattr(args, "json", False))
     elif action == "install":
-        do_install(args.identifier, category=args.category, force=args.force,
+        return do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
                    name_override=getattr(args, "name", "") or "")
     elif action == "inspect":

@@ -13404,7 +13404,7 @@ def cmd_skills(args):
     else:
         from hermes_cli.skills_hub import skills_command
 
-        skills_command(args)
+        return skills_command(args)
 
 
 def _cmd_skills_trust(args):

@@ -98,6 +98,7 @@ export interface WorldAssetManifest {
   heroAssetPreview?: string
   masterAssetManifest?: string
   masterAssetMaskManifest?: string
+  masterAssetMaskReviewPreview?: string
   masterAssetRejectedCandidates?: string
   profileManifest: string
   productionAssetPipeline: WorldProductionAssetPipeline
@@ -278,6 +279,7 @@ export const LUNAR_CITY_ASSET_MANIFEST: WorldAssetManifest = {
   heroAssetPreview: 'lunar-city/hero-assets/lunar-city-hero-assets.png',
   masterAssetManifest: 'lunar-city/master-assets/master-asset-manifest.json',
   masterAssetMaskManifest: 'lunar-city/master-assets/masks/mask-manifest.json',
+  masterAssetMaskReviewPreview: 'lunar-city/master-assets/masks/mask-review-contact-sheet.png',
   masterAssetRejectedCandidates: 'lunar-city/master-assets/rejected-candidates.json',
   profileManifest: 'lunar-city/profile-assets.json',
   productionAssetPipeline: {

@@ -10,6 +10,7 @@
   "generated3dBoardPreview": "lunar-city/generated-3d/lunar-city-generated-assets-board.png",
   "masterAssetManifest": "lunar-city/master-assets/master-asset-manifest.json",
   "masterAssetMaskManifest": "lunar-city/master-assets/masks/mask-manifest.json",
+  "masterAssetMaskReviewPreview": "lunar-city/master-assets/masks/mask-review-contact-sheet.png",
   "masterAssetRejectedCandidates": "lunar-city/master-assets/rejected-candidates.json",
   "profileManifest": "lunar-city/profile-assets.json",
   "productionAssetPipeline": {

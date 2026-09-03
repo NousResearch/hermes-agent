@@ -18,6 +18,8 @@ Mask artifacts live in `masks/` and are indexed by `masks/mask-manifest.json`:
 
 - `*-mask.png` is the grayscale silhouette mask.
 - `*-silhouette.png` is the visual review card for silhouette approval.
+- `mask-review-contact-sheet.png` shows every crop/mask/silhouette side by
+  side so broad or wrong silhouettes are visible before generation.
 
 Run mask prep before any image-to-3D generation:
 

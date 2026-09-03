@@ -9,12 +9,14 @@
   },
   "masks": [
     {
-      "coverageRatio": 0.7486,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.6206,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-library",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-library-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-library-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -27,12 +29,14 @@
       "targetMasterAssetId": "building-library"
     },
     {
-      "coverageRatio": 0.5994,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.3906,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-research-lab",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-research-lab-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-research-lab-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -45,12 +49,14 @@
       "targetMasterAssetId": "building-research-lab"
     },
     {
-      "coverageRatio": 0.7281,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.4207,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-arts-studio",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-arts-studio-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-arts-studio-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -63,12 +69,14 @@
       "targetMasterAssetId": "building-arts-studio"
     },
     {
-      "coverageRatio": 0.7009,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.2986,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-engineering",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-engineering-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-engineering-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -81,12 +89,14 @@
       "targetMasterAssetId": "building-engineering-workshop"
     },
     {
-      "coverageRatio": 0.6437,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.3563,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-operations-depot",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-operations-depot-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-operations-depot-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -99,12 +109,14 @@
       "targetMasterAssetId": "building-operations-depot"
     },
     {
-      "coverageRatio": 0.8663,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.1089,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-release-gatehouse",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-release-gatehouse-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-release-gatehouse-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -117,12 +129,14 @@
       "targetMasterAssetId": "building-release-gatehouse"
     },
     {
-      "coverageRatio": 0.8316,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.4707,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-triage-clinic",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-triage-clinic-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-triage-clinic-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -135,12 +149,14 @@
       "targetMasterAssetId": "building-triage-clinic"
     },
     {
-      "coverageRatio": 0.6691,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.5037,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-council-hall",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-council-hall-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-council-hall-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -153,12 +169,14 @@
       "targetMasterAssetId": "building-council-hall"
     },
     {
-      "coverageRatio": 0.5982,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.2861,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-review-office",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-review-office-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-review-office-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -171,12 +189,14 @@
       "targetMasterAssetId": "building-review-office"
     },
     {
-      "coverageRatio": 0.7207,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.4615,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "building-archive",
       "kind": "building",
       "mask": "lunar-city/master-assets/masks/building-archive-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/building-archive-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -189,12 +209,14 @@
       "targetMasterAssetId": "building-archive"
     },
     {
-      "coverageRatio": 0.7419,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.4393,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "leader-owl-archivist",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-owl-archivist-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/leader-owl-archivist-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -207,12 +229,14 @@
       "targetMasterAssetId": "leader-owl-archivist"
     },
     {
-      "coverageRatio": 0.7877,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.1343,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "leader-fox-scientist",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-fox-scientist-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/leader-fox-scientist-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -225,15 +249,18 @@
       "targetMasterAssetId": "leader-fox-scientist"
     },
     {
-      "coverageRatio": 0.8198,
+      "approvedForGeneration": false,
+      "coverageRatio": 0.6469,
+      "generationInputStatus": "needs_refined_subject_crop",
       "id": "leader-raccoon-artist",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-raccoon-artist-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/leader-raccoon-artist-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review"
+        "requires_human_silhouette_review",
+        "broad_scene_crop_not_subject_isolated"
       ],
       "requiresHumanMaskReview": true,
       "role": "creative",
@@ -243,7 +270,9 @@
       "targetMasterAssetId": "leader-raccoon-artist"
     },
     {
+      "approvedForGeneration": false,
       "coverageRatio": 0.8675,
+      "generationInputStatus": "needs_refined_subject_crop",
       "id": "leader-eagle-councillor",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-eagle-councillor-mask.png",
@@ -251,7 +280,9 @@
       "method": "background_delta_fallback",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review"
+        "requires_human_silhouette_review",
+        "broad_scene_crop_not_subject_isolated",
+        "rembg_alpha_unavailable_or_unusable"
       ],
       "requiresHumanMaskReview": true,
       "role": "governance",
@@ -261,15 +292,18 @@
       "targetMasterAssetId": "leader-eagle-councillor"
     },
     {
-      "coverageRatio": 0.7342,
+      "approvedForGeneration": false,
+      "coverageRatio": 0.7298,
+      "generationInputStatus": "needs_refined_subject_crop",
       "id": "leader-badger-engineer",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-badger-engineer-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/leader-badger-engineer-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review"
+        "requires_human_silhouette_review",
+        "broad_scene_crop_not_subject_isolated"
       ],
       "requiresHumanMaskReview": true,
       "role": "engineering",
@@ -279,16 +313,17 @@
       "targetMasterAssetId": "leader-badger-engineer"
     },
     {
-      "coverageRatio": 0.9498,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.3211,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "leader-hawk-reviewer",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-hawk-reviewer-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/leader-hawk-reviewer-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review",
-        "high_coverage_possible_background_leak"
+        "requires_human_silhouette_review"
       ],
       "requiresHumanMaskReview": true,
       "role": "review",
@@ -298,15 +333,18 @@
       "targetMasterAssetId": "leader-hawk-reviewer"
     },
     {
-      "coverageRatio": 0.8256,
+      "approvedForGeneration": false,
+      "coverageRatio": 0.6348,
+      "generationInputStatus": "needs_refined_subject_crop",
       "id": "leader-owl-historian",
       "kind": "leader",
       "mask": "lunar-city/master-assets/masks/leader-owl-historian-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/leader-owl-historian-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review"
+        "requires_human_silhouette_review",
+        "broad_scene_crop_not_subject_isolated"
       ],
       "requiresHumanMaskReview": true,
       "role": "archive",
@@ -316,12 +354,14 @@
       "targetMasterAssetId": "leader-owl-historian"
     },
     {
-      "coverageRatio": 0.7402,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.1508,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "worker-bot-round",
       "kind": "worker",
       "mask": "lunar-city/master-assets/masks/worker-bot-round-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/worker-bot-round-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -334,15 +374,18 @@
       "targetMasterAssetId": "worker-research"
     },
     {
-      "coverageRatio": 0.6592,
+      "approvedForGeneration": false,
+      "coverageRatio": 0.6491,
+      "generationInputStatus": "needs_refined_subject_crop",
       "id": "worker-bot-carrying",
       "kind": "worker",
       "mask": "lunar-city/master-assets/masks/worker-bot-carrying-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/worker-bot-carrying-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review"
+        "requires_human_silhouette_review",
+        "broad_scene_crop_not_subject_isolated"
       ],
       "requiresHumanMaskReview": true,
       "role": "delivery",
@@ -352,12 +395,14 @@
       "targetMasterAssetId": "worker-release"
     },
     {
-      "coverageRatio": 0.7321,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.0898,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "worker-bot-review",
       "kind": "worker",
       "mask": "lunar-city/master-assets/masks/worker-bot-review-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/worker-bot-review-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -370,15 +415,18 @@
       "targetMasterAssetId": "worker-review"
     },
     {
-      "coverageRatio": 0.7348,
+      "approvedForGeneration": false,
+      "coverageRatio": 0.305,
+      "generationInputStatus": "needs_refined_subject_crop",
       "id": "child-bot-garden",
       "kind": "child",
       "mask": "lunar-city/master-assets/masks/child-bot-garden-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/child-bot-garden-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
-        "requires_human_silhouette_review"
+        "requires_human_silhouette_review",
+        "broad_scene_crop_not_subject_isolated"
       ],
       "requiresHumanMaskReview": true,
       "role": "child",
@@ -388,12 +436,14 @@
       "targetMasterAssetId": "child-curious"
     },
     {
-      "coverageRatio": 0.5247,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.1839,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "vehicle-bus",
       "kind": "vehicle",
       "mask": "lunar-city/master-assets/masks/vehicle-bus-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/vehicle-bus-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -406,12 +456,14 @@
       "targetMasterAssetId": "vehicle-bus"
     },
     {
-      "coverageRatio": 0.7457,
+      "approvedForGeneration": true,
+      "coverageRatio": 0.5213,
+      "generationInputStatus": "ready_for_generation_review",
       "id": "prop-break-garden",
       "kind": "prop",
       "mask": "lunar-city/master-assets/masks/prop-break-garden-mask.png",
       "maskedSourceCachePath": "/private/tmp/lunar-city-master-asset-masked-sources/prop-break-garden-masked.png",
-      "method": "background_delta_fallback",
+      "method": "rembg_alpha",
       "productionUse": "silhouette_prep_only",
       "qualityFlags": [
         "requires_human_silhouette_review"
@@ -430,6 +482,7 @@
   },
   "productionEligibility": "not_production_master_asset",
   "productionUse": "silhouette_prep_only",
+  "reviewPreview": "lunar-city/master-assets/masks/mask-review-contact-sheet.png",
   "schemaVersion": 1,
   "source": "approved_lunar_city_reference_crop_masks",
   "sourceManifest": "lunar-city/generated-3d/reference-crops/reference-crops-manifest.json",

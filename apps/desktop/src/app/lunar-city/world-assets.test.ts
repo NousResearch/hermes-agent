@@ -32,6 +32,9 @@ describe('Lunar City asset manifest', () => {
     expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetMaskManifest).toBe(
       'lunar-city/master-assets/masks/mask-manifest.json'
     )
+    expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetMaskReviewPreview).toBe(
+      'lunar-city/master-assets/masks/mask-review-contact-sheet.png'
+    )
     expect(LUNAR_CITY_ASSET_MANIFEST.masterAssetRejectedCandidates).toBe(
       'lunar-city/master-assets/rejected-candidates.json'
     )
@@ -327,7 +330,9 @@ describe('Lunar City asset manifest', () => {
         requiredBeforeImageTo3DGeneration: boolean
       }
       masks: Array<{
+        approvedForGeneration: boolean
         coverageRatio: number
+        generationInputStatus: string
         id: string
         mask: string
         maskedSource?: string
@@ -347,6 +352,7 @@ describe('Lunar City asset manifest', () => {
       }
       productionEligibility: string
       productionUse: string
+      reviewPreview: string
     }
     const masterManifest = JSON.parse(
       readFileSync(join(process.cwd(), 'public/lunar-city/master-assets/master-asset-manifest.json'), 'utf8')
@@ -361,6 +367,7 @@ describe('Lunar City asset manifest', () => {
     )
     expect(maskManifest.maskCount).toBe(23)
     expect(maskManifest.masks).toHaveLength(23)
+    expect(maskManifest.reviewPreview).toBe('lunar-city/master-assets/masks/mask-review-contact-sheet.png')
     expect(maskManifest.productionUse).toBe('silhouette_prep_only')
     expect(maskManifest.productionEligibility).toBe('not_production_master_asset')
     expect(maskManifest.maskingPolicy.requiredBeforeImageTo3DGeneration).toBe(true)
@@ -370,6 +377,15 @@ describe('Lunar City asset manifest', () => {
     expect(maskManifest.maskingPolicy.humanReviewRequiredBeforeMasterPromotion).toBe(true)
     expect(maskManifest.privacy.usesRawSoulContent).toBe(false)
     expect(maskManifest.privacy.containsPrivateProfileIdentifiers).toBe(false)
+
+    const statusCounts = maskManifest.masks.reduce<Record<string, number>>((counts, mask) => {
+      counts[mask.generationInputStatus] = (counts[mask.generationInputStatus] ?? 0) + 1
+      return counts
+    }, {})
+
+    expect(statusCounts.ready_for_generation_review).toBe(17)
+    expect(statusCounts.needs_refined_subject_crop).toBe(6)
+    expect(existsSync(join(process.cwd(), 'public', maskManifest.reviewPreview))).toBe(true)
 
     for (const mask of maskManifest.masks) {
       expect(mask.productionUse).toBe('silhouette_prep_only')
@@ -384,7 +400,8 @@ describe('Lunar City asset manifest', () => {
       expect(mask.maskedSourceCachePath).toBe(`/private/tmp/lunar-city-master-asset-masked-sources/${mask.id}-masked.png`)
       expect(mask.silhouettePreview).toBe(`lunar-city/master-assets/masks/${mask.id}-silhouette.png`)
       expect(mask.sourceReferenceCrop).toBe(`lunar-city/generated-3d/reference-crops/${mask.id}.png`)
-      expect(['background_delta_fallback', 'rembg_alpha_then_background_delta_union']).toContain(mask.method)
+      expect(['background_delta_fallback', 'rembg_alpha']).toContain(mask.method)
+      expect(mask.approvedForGeneration).toBe(mask.generationInputStatus === 'ready_for_generation_review')
       expect(existsSync(join(process.cwd(), 'public', mask.mask))).toBe(true)
       expect(existsSync(mask.maskedSourceCachePath)).toBe(true)
       expect(existsSync(join(process.cwd(), 'public', mask.silhouettePreview))).toBe(true)
@@ -396,6 +413,12 @@ describe('Lunar City asset manifest', () => {
     )
     expect(maskManifest.masks.find(mask => mask.id === 'prop-break-garden')?.targetMasterAssetId).toBe(
       'building-break-garden'
+    )
+    expect(maskManifest.masks.find(mask => mask.id === 'leader-eagle-councillor')?.generationInputStatus).toBe(
+      'needs_refined_subject_crop'
+    )
+    expect(maskManifest.masks.find(mask => mask.id === 'worker-bot-review')?.generationInputStatus).toBe(
+      'ready_for_generation_review'
     )
   })
 

@@ -1392,8 +1392,11 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
         (so the user has not edited it).
 
     Anything user-modified, hub-installed, or locally authored is left
-    untouched and reported under ``skipped``. The manifest entry for each
-    removed skill is dropped so a later opt-in re-seed treats it as new.
+    untouched and reported under ``skipped``. Essential skills
+    (``_essential_names()``, e.g. the ``hermes-agent`` operating manual) are
+    ALWAYS kept — they are required to run the agent at all and must survive
+    even a blank-slate cleanup. The manifest entry for each removed skill is
+    dropped so a later opt-in re-seed treats it as new.
 
     Args:
         dry_run: When True, compute what would be removed without deleting.
@@ -1406,11 +1409,16 @@ def remove_pristine_bundled_skills(dry_run: bool = False) -> dict:
     manifest = _read_manifest()
     bundled_dir = _get_bundled_dir()
     bundled_by_name = dict(_discover_bundled_skills(bundled_dir))
+    essential = _essential_names()
 
     removed: List[str] = []
     skipped: List[dict] = []
 
     for name, origin_hash in sorted(manifest.items()):
+        if name in essential:
+            # Essential skills are always required; never remove them.
+            skipped.append({"name": name, "reason": "essential (kept)"})
+            continue
         src = bundled_by_name.get(name)
         if src is None:
             # Tracked but no longer bundled upstream — leave it; not ours to judge.

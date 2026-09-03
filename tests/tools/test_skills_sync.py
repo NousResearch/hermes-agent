@@ -817,6 +817,54 @@ class TestOptOutToggleAndRemove:
             # non-bundled local skill never considered
             assert (skills_dir / "mine" / "SKILL.md").exists()
 
+    def test_remove_always_keeps_essential_skills(self, tmp_path):
+        """Regression: `hermes skills opt-out --remove` (and blank-slate
+        cleanup) must NEVER remove essential skills like `hermes-agent`,
+        even when they are pristine and manifest-tracked. The essential
+        `hermes-agent` operating manual is required to run the agent at all
+        and must survive a blank-slate cleanup (#98027).
+        """
+        from tools.skills_sync import (
+            _essential_names,
+            sync_skills, remove_pristine_bundled_skills,
+        )
+        bundled = tmp_path / "bundled"
+        for n in ("alpha", *sorted(_essential_names())):
+            d = bundled / n
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {n}\n---\nbody {n}\n")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+             patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"), \
+             patch("tools.skills_sync.SKILLS_DIR", skills_dir), \
+             patch("tools.skills_sync.MANIFEST_FILE", manifest_file), \
+             patch("tools.skills_sync.HERMES_HOME", home):
+            sync_skills(quiet=True)
+            essential_names = sorted(_essential_names())
+            # essential skill is seeded and tracked
+            for n in essential_names:
+                assert (skills_dir / n / "SKILL.md").exists()
+
+            preview = remove_pristine_bundled_skills(dry_run=True)
+            assert "alpha" in preview["removed"]
+            # essential skills never listed for removal
+            for n in essential_names:
+                assert n not in preview["removed"]
+
+            result = remove_pristine_bundled_skills(dry_run=False)
+            assert "alpha" in result["removed"]
+            assert not (skills_dir / "alpha").exists()
+            # essential skill survives the destructive removal
+            for n in essential_names:
+                assert (skills_dir / n / "SKILL.md").exists()
+                # and its manifest entry is preserved
+            kept_reasons = {s["name"]: s["reason"] for s in result["skipped"]}
+            for n in essential_names:
+                assert kept_reasons.get(n) == "essential (kept)"
+
 
 class TestUpdateBackupRecovery:
     """Regression tests for backup handling in the bundled-update path.

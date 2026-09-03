@@ -128,3 +128,40 @@ class TestBlankSlateFork:
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
 
+    def test_finish_now_removes_already_seeded_bundled_skills(self, monkeypatch, tmp_path):
+        """Regression: Blank Slate must delete the bundled skills the installer
+        already seeded, not just write the opt-out marker.
+
+        The installer (`setup-hermes.sh`) seeds the full bundled catalog into
+        ~/.hermes/skills/ *before* the first-run wizard runs. Selecting Blank
+        Slate therefore used to only write .no-bundled-skills and re-sync
+        (which seeds nothing new but leaves the 80+ installer-seeded skills on
+        disk), so the user still saw every bundled skill — and blamed the next
+        `hermes update` for "re-injecting" them. The finish-now path must also
+        call remove_pristine_bundled_skills() so a Blank Slate is actually blank.
+        """
+        import hermes_cli.setup as s
+        self._patch_common(monkeypatch)
+        # Fork prompt returns 0 = finish now.
+        monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)
+        monkeypatch.setattr(
+            s, "_blank_slate_walkthrough", lambda cfg, home: None
+        )
+
+        calls = {"opt_out": [], "remove_dry_run": [], "sync": 0}
+        import tools.skills_sync as ss
+        monkeypatch.setattr(ss, "set_bundled_skills_opt_out",
+                            lambda enabled: calls["opt_out"].append(enabled))
+        monkeypatch.setattr(ss, "remove_pristine_bundled_skills",
+                            lambda dry_run: calls["remove_dry_run"].append(dry_run))
+        monkeypatch.setattr(ss, "sync_skills",
+                            lambda quiet: calls.__setitem__("sync", calls["sync"] + 1))
+
+        s._run_blank_slate_setup({}, tmp_path, is_existing=False)
+
+        # Wrote the opt-out marker, removed the already-seeded bundled skills
+        # (destructive, dry_run=False), then re-synced (restores essential only).
+        assert calls["opt_out"] == [True]
+        assert calls["remove_dry_run"] == [False]
+        assert calls["sync"] == 1
+

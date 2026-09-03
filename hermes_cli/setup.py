@@ -3659,8 +3659,18 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
         # `hermes update` runs don't re-inject them. Essential skills (the
         # `hermes-agent` operating manual) are still seeded by the sync.
         try:
-            from tools.skills_sync import set_bundled_skills_opt_out, sync_skills
+            from tools.skills_sync import (
+                remove_pristine_bundled_skills,
+                set_bundled_skills_opt_out,
+                sync_skills,
+            )
             set_bundled_skills_opt_out(True)
+            # The installer seeds the full bundled catalog before this wizard
+            # runs, so opt-out alone is not enough: delete the already-seeded
+            # bundled skills (only pristine, manifest-tracked, unmodified ones
+            # are removed — user/hub/local skills are preserved), then re-sync
+            # to restore just the essential `hermes-agent` operating manual.
+            remove_pristine_bundled_skills(dry_run=False)
             sync_skills(quiet=True)
         except Exception as exc:
             logger.debug("blank-slate skill opt-out error: %s", exc)
@@ -3693,7 +3703,11 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
         default=False,
     )
     try:
-        from tools.skills_sync import set_bundled_skills_opt_out, sync_skills
+        from tools.skills_sync import (
+            remove_pristine_bundled_skills,
+            set_bundled_skills_opt_out,
+            sync_skills,
+        )
         if seed_skills:
             # Make sure no stale opt-out marker blocks the seed, then sync.
             set_bundled_skills_opt_out(False)
@@ -3702,11 +3716,18 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
             print_success(f"Seeded {copied} bundled skills.")
         else:
             set_bundled_skills_opt_out(True)
+            # The installer seeds the full bundled catalog before this wizard
+            # runs, so opt-out alone is not enough: delete the already-seeded
+            # bundled skills (only pristine, manifest-tracked, unmodified ones
+            # are removed — user/hub/local skills are preserved), then re-sync
+            # to restore just the essential `hermes-agent` operating manual.
+            remove_pristine_bundled_skills(dry_run=False)
             # Essential skills (the `hermes-agent` operating manual) are
             # still seeded even for an opted-out profile.
             sync_skills(quiet=True)
             print_info("No skills seeded (except the essential `hermes-agent`")
-            print_info("skill). A .no-bundled-skills marker keeps future")
+            print_info("skill). Bundled skills seeded earlier by the installer")
+            print_info("were removed. A .no-bundled-skills marker keeps future")
             print_info("`hermes update` runs from re-injecting them. Opt back in any")
             print_info("time with `hermes skills opt-in --sync`.")
     except Exception as exc:

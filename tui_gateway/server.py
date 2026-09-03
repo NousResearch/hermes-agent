@@ -10621,7 +10621,14 @@ def _handle_busy_submit(
     with session["history_lock"]:
         if not session.get("running"):
             return None
-        image_paths = list(session.get("attached_images", []))
+        # Staged attachments belong to the interactive Desktop composer. An
+        # external controller may enqueue text into the same session, but it
+        # must never consume or expose files the owner has not submitted.
+        image_paths = (
+            []
+            if external_submission_id
+            else list(session.get("attached_images", []))
+        )
         if image_paths:
             # Claim at submission time. A later paste must not be consumed by
             # this prompt after the active turn finally yields.
@@ -10755,6 +10762,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                 "external_submission_id": external_submission_id,
             },
         )
+        # The head slot was already advanced before liveness was checked. Keep
+        # draining so a following interactive prompt is not stranded forever
+        # merely because this external envelope lost its Desktop owner.
+        _drain_queued_prompt(rid, sid, session)
         return True
     # External submissions were admitted only for the in-process Desktop owner.
     # A config flip while queued must not silently move them to an isolated host
@@ -13291,45 +13302,65 @@ def _run_prompt_submit(
         )
         with session["history_lock"]:
             session["running"] = False
-        _emit(
-            "error",
-            sid,
-            {
-                "message": str(ownership_refusal),
-                **(
-                    {"external_submission_id": external_submission_id}
-                    if external_submission_id
-                    else {}
-                ),
-            },
-        )
+        if external_submission_id:
+            _emit(
+                "message.start",
+                sid,
+                {"external_submission_id": external_submission_id},
+            )
+            _emit_terminal_turn_error(
+                sid,
+                session,
+                ownership_refusal,
+                external_submission_id=external_submission_id,
+            )
+        else:
+            _emit("error", sid, {"message": str(ownership_refusal)})
         return False
+    prestart_error = None
+    images: list[str] = []
+    agent = session.get("agent")
     with session["history_lock"]:
         if session.get("_closing"):
             session["running"] = False
-            return False
-        if (
+            prestart_error = "Session closed before the external turn started"
+        elif (
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation
         ):
             session["running"] = False
-            return False
-        if image_paths is None:
-            images = list(session.get("attached_images", []))
-            session["attached_images"] = []
+            prestart_error = "Queued external turn was cancelled before it started"
         else:
-            images = list(image_paths)
-        inflight = session.get("inflight_turn")
-        # A retained failed turn (see _fail_inflight_turn) is a stale leftover
-        # by the time a new turn starts — replace it, never append onto it.
-        if not isinstance(inflight, dict) or inflight.get("status") == "error":
-            _start_inflight_turn(session, text)
-        agent = session["agent"]
-        if hasattr(agent, "clear_interrupt"):
-            try:
-                agent.clear_interrupt()
-            except Exception:
-                pass
+            if image_paths is None:
+                images = list(session.get("attached_images", []))
+                session["attached_images"] = []
+            else:
+                images = list(image_paths)
+            inflight = session.get("inflight_turn")
+            # A retained failed turn (see _fail_inflight_turn) is a stale leftover
+            # by the time a new turn starts — replace it, never append onto it.
+            if not isinstance(inflight, dict) or inflight.get("status") == "error":
+                _start_inflight_turn(session, text)
+            agent = session["agent"]
+            if hasattr(agent, "clear_interrupt"):
+                try:
+                    agent.clear_interrupt()
+                except Exception:
+                    pass
+    if prestart_error:
+        if external_submission_id:
+            _emit(
+                "message.start",
+                sid,
+                {"external_submission_id": external_submission_id},
+            )
+            _emit_terminal_turn_error(
+                sid,
+                session,
+                prestart_error,
+                external_submission_id=external_submission_id,
+            )
+        return False
     # Desktop/TUI observability (#86647): this is the ONE INFO record proving
     # a Desktop/TUI prompt was accepted by THIS process, and it ties together
     # every id a rotation-mute trace needs — the UI session id, the gateway
@@ -13503,14 +13534,18 @@ def _run_prompt_submit(
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
-                    _emit(
-                        "error",
-                        sid,
-                        {
-                            "message": "\n".join(ctx.warnings)
-                            or "Context injection refused."
-                        },
+                    blocked_message = (
+                        "\n".join(ctx.warnings) or "Context injection refused."
                     )
+                    if external_submission_id:
+                        _emit_terminal_turn_error(
+                            sid,
+                            session,
+                            blocked_message,
+                            external_submission_id=external_submission_id,
+                        )
+                    else:
+                        _emit("error", sid, {"message": blocked_message})
                     return
                 prompt = ctx.message
 

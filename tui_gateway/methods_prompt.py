@@ -1060,32 +1060,52 @@ def _(rid, params: dict) -> dict:
                 session["last_active"] = time.time()
             _emit("session.info", sid, _session_info(session.get("agent"), session))
             return
+        cancelled_message = None
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
-                _clear_inflight_turn(session)
+                if not external_submission_id:
+                    _clear_inflight_turn(session)
                 # Surface the cancellation to the client. Without this emit the
                 # turn vanishes silently — the Desktop sees `prompt.submit`
                 # return `{"status": "streaming"}` but never receives a
                 # `message.start` or `error` event, so the composer shows no
                 # feedback (issue #63078 server-side half). Match the
                 # `_wait_agent` error branch above: emit, then bail.
+                cancelled_message = (
+                    "Turn cancelled before the agent was ready"
+                    if session.get("_turn_cancel_requested")
+                    else "Session no longer running before the agent was ready"
+                )
+        if cancelled_message:
+            if external_submission_id:
+                _emit(
+                    "message.start",
+                    sid,
+                    {"external_submission_id": external_submission_id},
+                )
+                _emit_terminal_turn_error(
+                    sid,
+                    session,
+                    cancelled_message,
+                    external_submission_id=external_submission_id,
+                )
+            else:
                 _emit(
                     "error",
                     sid,
-                    {
-                        "message": "Turn cancelled before the agent was ready"
-                        if session.get("_turn_cancel_requested")
-                        else "Session no longer running before the agent was ready"
-                    },
+                    {"message": cancelled_message},
                 )
-                return
+            return
         _run_prompt_submit(
             rid,
             sid,
             session,
             text,
             display_kind=display_kind,
+            # Files staged in the Desktop composer belong to its human owner;
+            # an external text-only turn must neither consume nor expose them.
+            image_paths=[] if external_submission_id else None,
             terminal_callback=hosted_terminal_callback,
             external_submission_id=external_submission_id,
         )

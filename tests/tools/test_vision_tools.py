@@ -702,6 +702,43 @@ class TestErrorClassification:
         assert "rejected the image" in result["analysis"].lower()
         assert "smaller" in result["analysis"].lower()
 
+    @pytest.mark.asyncio
+    async def test_model_access_denied_points_at_base_url_entitlement(self, tmp_path):
+        """#100897: a 403 model_access_denied is a routing/entitlement problem.
+
+        The raw provider error blames the model name; the friendly mapping
+        must steer the reader toward the base_url/key-entitlement pairing
+        instead of letting the request fall through to the generic hint.
+        """
+        img = tmp_path / "test.png"
+        img.write_bytes(VALID_PNG + b"\x00" * 8)
+
+        api_error = Exception(
+            "Error code: 403 - {'error': {'code': 'model_access_denied', "
+            "'message': 'No permission to access model: glm-5.3'}}"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "glm-5.3"))
+
+        assert result["success"] is False
+        analysis = result["analysis"].lower()
+        assert "denied access" in analysis
+        assert "base_url" in analysis
+        assert "not a bad model name" in analysis
+        # It must NOT fall into the generic catch-all.
+        assert "there was a problem with the request" not in analysis
+
 
 class TestVisionRegistration:
     def test_vision_analyze_registered_with_schema(self):

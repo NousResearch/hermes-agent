@@ -1724,6 +1724,26 @@ async def vision_analyze_tool(
                 f"{model} does not support vision or our request was not "
                 f"accepted by the server. Error: {e}"
             )
+        elif any(hint in err_str for hint in (
+            "model_access_denied", "permission denied", "permissiondenied",
+            "no permission to access model", "403",
+        )):
+            # A 403 / model_access_denied from an OpenAI-wire surface usually
+            # means the KEY is not entitled to the surface the request landed
+            # on, not that the model name is wrong (#100897: a coding-plan
+            # key configured against an /anthropic base_url was routed to a
+            # general OpenAI-wire endpoint it had no access to, and the raw
+            # error blamed the model for two months). Point at the base_url /
+            # entitlement pairing so the next reader checks routing first.
+            analysis = (
+                f"The vision provider denied access to {model} (403 / "
+                "model_access_denied). This is usually an entitlement or "
+                "routing problem, not a bad model name: check that your "
+                "auxiliary.vision base_url points at the surface your API key "
+                "is entitled to (Anthropic-wire /anthropic endpoints are "
+                "rewritten to the provider's OpenAI-wire sibling for vision), "
+                f"and that the key has access to this model there. Error: {e}"
+            )
         elif "invalid_request" in err_str or "image_url" in err_str:
             analysis = (
                 "The vision API rejected the image. This can happen when the "

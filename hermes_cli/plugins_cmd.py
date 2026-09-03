@@ -1319,6 +1319,16 @@ def _get_enabled_set() -> set:
         if not isinstance(plugins_cfg, dict):
             return set()
         enabled = plugins_cfg.get("enabled", [])
+        if isinstance(enabled, str):
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                "plugins.enabled is a string (%r) instead of a list. "
+                "All user plugin APIs are unmounted. "
+                "Fix: remove the quotes around the value in config.yaml.",
+                enabled,
+            )
+            return set()
         return set(enabled) if isinstance(enabled, list) else set()
     except Exception:
         return set()

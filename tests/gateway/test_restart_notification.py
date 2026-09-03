@@ -8,7 +8,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import MessageEvent, MessageType, PrivateReply, SendResult
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
@@ -60,6 +60,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
+    assert data["user_id"] == "u1"
     assert data["message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
 
@@ -243,6 +244,21 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     assert relay.send_for_platform.await_args.kwargs["metadata"]["scope_id"] == "T123"
 
 
+@pytest.mark.asyncio
+async def test_private_reply_without_source_is_dropped_without_sending():
+    _runner, adapter = make_restart_runner()
+    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=None)
+
+    result = await adapter._send_private_reply_or_fallback(
+        event,
+        PrivateReply("private restart state"),
+    )
+
+    assert result.success is False
+    assert result.error == "missing message source"
+    assert adapter.sent == []
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 
@@ -283,6 +299,150 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
     metadata = relay.send_for_platform.await_args.kwargs["metadata"]
     assert metadata["user_id"] == "U123"
     assert metadata["scope_id"] == "T123"
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_shared_relay_restart_notification_uses_neutral_logical_fallback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(
+        json.dumps(
+            {
+                "platform": "slack",
+                "chat_id": "C123",
+                "chat_type": "channel",
+                "user_id": "U123",
+                "scope_id": "T123",
+                "delivered_via_upstream_relay": True,
+            }
+        )
+    )
+
+    runner, _native = make_restart_runner()
+    relay = MagicMock()
+    relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
+    relay._supports_private_notice_delivery.return_value = False
+    relay.send_private_notice = AsyncMock()
+    relay.send_for_platform = AsyncMock(
+        return_value=SendResult(success=True, message_id="restart")
+    )
+    runner.adapters = {Platform.RELAY: relay}
+    runner.config.platforms = {
+        Platform.RELAY: PlatformConfig(enabled=True),
+        Platform.SLACK: PlatformConfig(enabled=False),
+    }
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("slack", "C123", None)
+    relay.send_for_platform.assert_awaited_once()
+    relay.send_private_notice.assert_not_awaited()
+    assert relay.send_for_platform.await_args.args[0:2] == (Platform.SLACK, "C123")
+    public_text = relay.send_for_platform.await_args.args[2]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
+    metadata = relay.send_for_platform.await_args.kwargs["metadata"]
+    assert metadata["user_id"] == "U123"
+    assert metadata["scope_id"] == "T123"
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_prefers_private_notice(
+    tmp_path, monkeypatch
+):
+    """Restart lifecycle output from a shared chat is owner-private."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(
+        return_value=SendResult(success=True, message_id="private")
+    )
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send_private_notice.assert_awaited_once()
+    private_args = adapter.send_private_notice.await_args
+    assert private_args.args[:3] == (
+        "-100",
+        "owner-1",
+        "♻ Gateway restarted successfully. Your session continues.",
+    )
+    adapter.send.assert_not_awaited()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_falls_back_when_private_notice_raises(
+    tmp_path, monkeypatch
+):
+    """A raising private delivery still emits only the neutral public fallback."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(side_effect=RuntimeError("private send failed"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send_private_notice.assert_awaited_once()
+    adapter.send.assert_awaited_once()
+    public_text = adapter.send.await_args.args[1]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_without_private_notice_uses_neutral_fallback(
+    tmp_path, monkeypatch
+):
+    """A shared chat never receives the backend restart lifecycle text by default."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send.assert_awaited_once()
+    public_text = adapter.send.await_args.args[1]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
     assert not notify_path.exists()
 
 

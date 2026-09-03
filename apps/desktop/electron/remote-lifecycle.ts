@@ -1067,7 +1067,11 @@ function buildSpawnCommandParts(hermesPath, profile, opts: any = {}) {
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
     `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
 
-  const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
+  // Keep Hermes in the foreground of the detached setsid/nohup shell. The
+  // outer shell backgrounds that process and emits the only PID. If this inner
+  // shell also echoes `$!`, command substitution captures two PIDs and the
+  // lockfile substitution becomes invalid under POSIX sh.
+  const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
 
   if (!opts.ownershipId || !opts.lockMetadata) {
@@ -1110,16 +1114,17 @@ function buildSpawnCommandParts(hermesPath, profile, opts: any = {}) {
         `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
         `${markerClear}; marker_clear || exit 75; mkdir -p "$(dirname ${logPath})" && ` +
         `${detachedSpawn}; ` +
+        `case "$child" in ''|*[!0-9]*) exit 76;; esac; ` +
         `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
         // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
         // on Ubuntu), which aborts the whole script on it with "Bad
         // substitution" AFTER the child was spawned, orphaning the backend and
         // skipping the lockfile publication. Substitute with sed instead, and
-        // replace the QUOTED placeholder ("__PID__") so the published record
-        // carries a real JSON number pid: readLockfile requires an integer
+        // replace only the JSON pid field's quoted placeholder so the published
+        // record carries a real JSON number pid: readLockfile requires an integer
         // (malformed-pid skew fails closed otherwise) and the reuse regex only
         // matches "pid":<digits>.
-        `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/\\"__PID__\\"/\${child}/"); ` +
+        `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/\\"pid\\":\\"__PID__\\"/\\"pid\\":\${child}/") || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
         `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
         `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
         `echo "$child"`

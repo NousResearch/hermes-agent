@@ -887,7 +887,7 @@ test('buildSpawnCommand publishes the initial lockfile with an integer pid', () 
   // carries a real number: readLockfile requires an integer pid (a quoted
   // string yields malformed-pid skew, which fails closed on the next connect)
   // and the in-payload reuse regex only matches "pid":<digits>.
-  assert.ok(cmd.includes('sed "s/\\"__PID__\\"/${child}/"'))
+  assert.ok(cmd.includes('sed "s/\\"pid\\":\\"__PID__\\"/\\"pid\\":${child}/"'))
 })
 
 test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
@@ -1564,31 +1564,102 @@ test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)'
 
   // ${var//pat/rep} is bash-only; dash aborts the payload on it AFTER the
   // serve was spawned, so the client sees an unknown failure, deletes the
-  // token file, and orphans the backend. The sed swap must target the QUOTED
-  // placeholder so the published pid is a JSON integer (readLockfile rejects
-  // a quoted-string pid as malformed-pid skew and fails closed).
+  // token file, and orphans the backend. The sed swap must target only the
+  // quoted JSON pid field so the published pid is a JSON integer (readLockfile
+  // rejects a quoted-string pid as malformed-pid skew and fails closed).
   assert.doesNotMatch(cmd, /\$\{lock_json\/\//, 'must not use ${var//} substitution under sh')
-  assert.ok(cmd.includes('sed "s/\\"__PID__\\"/${child}/"'), 'pid substitution must use sed on the quoted placeholder')
+  assert.ok(
+    cmd.includes('sed "s/\\"pid\\":\\"__PID__\\"/\\"pid\\":${child}/"'),
+    'pid substitution must target the JSON pid field'
+  )
 })
 
-test.skipIf(process.platform !== 'linux')('buildSpawnPayload parses as POSIX sh under dash', async () => {
-  const payload = buildSpawnPayload('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+test.skipIf(process.platform !== 'linux')('buildSpawnPayload publishes a runtime-valid lockfile pid under dash', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-remote-payload-runtime-'))
+  const home = path.join(directory, 'home')
+  const hermesPath = path.join(directory, 'hermes')
+  const pidPath = path.join(directory, 'hermes.pid')
+  const hermesHome = '~/.hermes'
+  const logPath = spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
+  const lockDirectory = path.join(home, '.hermes', 'desktop-ssh', OWNERSHIP_ID)
+  const lockPath = path.join(lockDirectory, 'backend.lock.json')
+  const tokenPath = path.join(lockDirectory, `${SPAWN_NONCE}.token`)
+  const payload = buildSpawnPayload(hermesPath, 'work', {
+    hermesHome,
+    logPath,
     ownershipId: OWNERSHIP_ID,
     reservationNonce: SPAWN_NONCE,
     spawnNonce: SPAWN_NONCE,
     tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
+    lockMetadata: {
+      ownershipId: OWNERSHIP_ID,
+      spawnNonce: SPAWN_NONCE,
+      port: 0,
+      profile: 'work',
+      hermesPath,
+      hermesHome,
+      logPath,
+      tokenFingerprint: fingerprintToken('stored-token'),
+      protocolVersion: PROTOCOL_VERSION,
+      startedAt: '2026-07-14T00:00:00.000Z'
+    }
   })
-
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-remote-payload-'))
-  const payloadPath = path.join(directory, 'payload.sh')
+  let hermesPid = 0
 
   try {
-    await writeFile(payloadPath, payload, { mode: 0o700 })
-    await execFile('dash', ['-n', payloadPath])
+    await mkdir(lockDirectory, { recursive: true, mode: 0o700 })
+    await writeFile(tokenPath, 'token', { mode: 0o600 })
+    await writeFile(
+      hermesPath,
+      '#!/bin/sh\nprintf \'%s\\n\' "$$" > "$PID_FILE"\nexec sleep 30\n',
+      { mode: 0o700 }
+    )
+
+    const { stdout } = await execFile('dash', ['-c', payload, 'hermes-update-mutex', '3'], {
+      env: { ...process.env, HOME: home, PID_FILE: pidPath },
+      timeout: 10_000
+    })
+
+    assert.match(stdout.trim(), /^[0-9]+$/)
+    const lock = JSON.parse(await readFile(lockPath, 'utf8'))
+    assert.equal(Number.isInteger(lock.pid), true)
+
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        const candidate = Number((await readFile(pidPath, 'utf8')).trim())
+
+        if (Number.isInteger(candidate) && candidate > 0) {
+          hermesPid = candidate
+          break
+        }
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') {
+          throw error
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+
+    assert.ok(hermesPid > 0, 'the fake Hermes backend did not start')
+    assert.equal(lock.pid, hermesPid)
   } finally {
+    if (!hermesPid) {
+      try {
+        hermesPid = Number((await readFile(pidPath, 'utf8')).trim())
+      } catch {
+        void 0
+      }
+    }
+
+    if (Number.isInteger(hermesPid) && hermesPid > 0) {
+      try {
+        process.kill(hermesPid, 'SIGTERM')
+      } catch {
+        void 0
+      }
+    }
+
     await rm(directory, { recursive: true, force: true })
   }
 })

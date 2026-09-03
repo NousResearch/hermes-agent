@@ -2181,6 +2181,14 @@ def fetch_openrouter_models(
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
+    # Cold process: serve from the persisted disk cache when fresh so the
+    # picker doesn't re-download the full ~686KB catalog on every open.
+    if not force_refresh:
+        disk = _read_openrouter_catalog_disk()
+        if disk:
+            _openrouter_catalog_cache = disk
+            return list(disk)
+
     # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
     # snapshot when the manifest is unreachable. Both are curated lists that
     # drive the picker; the OpenRouter live /v1/models filter (tool support,
@@ -2251,6 +2259,7 @@ def fetch_openrouter_models(
     if not first_desc:
         curated[0] = (first_id, "recommended")
     _openrouter_catalog_cache = curated
+    _write_openrouter_catalog_disk(curated)
     return list(curated)
 
 
@@ -2382,6 +2391,52 @@ _pricing_provider_cache_keys: dict[tuple[str, str], str] = {}
 # backend. Every caller falls back to a curated list meanwhile, so the cost of
 # the stale entry is silent and invisible.
 _FAILED_CATALOG_TTL_SECONDS = 120.0
+
+# On-disk TTL for the curated OpenRouter picker catalog. The in-memory
+# ``_openrouter_catalog_cache`` is per-process, so without a disk cache every
+# cold picker open re-downloads the full ~686KB /api/v1/models catalog
+# (~1.4-7s). Persisting the *curated* result (post-filter) lets fresh
+# processes serve the picker from disk within the TTL instead.
+_OPENROUTER_CATALOG_DISK_TTL = 3600.0  # 1h, matches provider-models cache
+
+
+def _openrouter_catalog_disk_path() -> "Path":
+    """Disk path for the persisted curated OpenRouter catalog."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "openrouter_curated_catalog.json"
+
+
+def _read_openrouter_catalog_disk() -> list[tuple[str, str]] | None:
+    """Return the last-known-good curated catalog from disk if fresh, else None."""
+    try:
+        path = _openrouter_catalog_disk_path()
+        with open(path, encoding="utf-8") as fh:
+            obj = json.load(fh)
+        if time.time() - float(obj.get("fetched_at", 0)) > _OPENROUTER_CATALOG_DISK_TTL:
+            return None
+        items = obj.get("curated")
+        if not isinstance(items, list):
+            return None
+        out: list[tuple[str, str]] = []
+        for it in items:
+            if isinstance(it, (list, tuple)) and len(it) == 2:
+                out.append((str(it[0]), str(it[1])))
+        return out or None
+    except Exception:
+        return None
+
+
+def _write_openrouter_catalog_disk(curated: list[tuple[str, str]]) -> None:
+    """Persist the curated catalog so the next cold picker open is instant."""
+    try:
+        path = _openrouter_catalog_disk_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"fetched_at": time.time(), "curated": [list(c) for c in curated]}, fh)
+        os.replace(tmp, path)
+    except Exception as exc:
+        logger.debug("openrouter curated catalog disk write failed: %s", exc)
 _pricing_cache_retry_after: dict[str, float] = {}
 
 
@@ -7066,6 +7121,18 @@ def validate_requested_model(
             requested,
             api_key=api_key,
         ) or requested
+    elif normalized == "openrouter":
+        # OpenRouter routing shortcuts are request-time model suffixes, not
+        # separate entries in /v1/models.  Validate the underlying model while
+        # preserving the requested value so the suffix still reaches the API.
+        # https://openrouter.ai/docs/guides/routing/provider-selection
+        base_model, separator, routing_suffix = requested.rpartition(":")
+        if (
+            separator
+            and "/" in base_model
+            and routing_suffix.lower() in {"nitro", "floor"}
+        ):
+            requested_for_lookup = base_model
 
     if not requested:
         return {

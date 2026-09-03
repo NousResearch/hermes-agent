@@ -106,6 +106,130 @@ class TestFetchOpenRouterModels:
 
 
 
+class TestOpenRouterCatalogDiskCache:
+    """The curated OpenRouter catalog must persist to disk so a fresh process
+    (every cold model-picker open) serves it from cache instead of
+    re-downloading the full ~686KB /api/v1/models catalog each time."""
+
+    def _resp(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["tools","temperature"]},'
+                    b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"},'
+                    b'"supported_parameters":["tools","temperature"]}'
+                    b']}'
+                )
+
+        return _Resp()
+
+    def _isolate(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        return home
+
+    def test_refresh_persists_catalog_to_disk(self, monkeypatch, tmp_path):
+        home = self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("anthropic/claude-opus-4.6", ""), ("qwen/qwen3.7-max", "")],
+        )
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=self._resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models
+        disk = home / "cache" / "openrouter_curated_catalog.json"
+        assert disk.exists(), "successful refresh must persist the curated catalog"
+        import json as _json
+        blob = _json.loads(disk.read_text())
+        assert blob["fetched_at"] > 0
+        assert [tuple(c) for c in blob["curated"]] == list(models)
+
+    def test_cold_process_reads_disk_without_network(self, monkeypatch, tmp_path):
+        """Simulated fresh process: empty in-memory cache + fresh disk cache
+        must be served from disk with NO catalog HTTP request."""
+        home = self._isolate(monkeypatch, tmp_path)
+        import json as _json
+        import time as _time
+
+        cached = [("anthropic/claude-opus-4.6", "recommended"), ("qwen/qwen3.7-max", "")]
+        disk = home / "cache" / "openrouter_curated_catalog.json"
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        disk.write_text(_json.dumps({"fetched_at": _time.time(), "curated": [list(c) for c in cached]}))
+
+        def _boom(*a, **k):
+            raise AssertionError("network must not be touched when disk cache is fresh")
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_boom):
+            models = fetch_openrouter_models()
+
+        assert models == cached
+
+    def test_stale_disk_cache_triggers_refetch(self, monkeypatch, tmp_path):
+        home = self._isolate(monkeypatch, tmp_path)
+        import json as _json
+        import time as _time
+
+        disk = home / "cache" / "openrouter_curated_catalog.json"
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        stale_ts = _time.time() - (_models_mod._OPENROUTER_CATALOG_DISK_TTL + 10)
+        disk.write_text(_json.dumps({"fetched_at": stale_ts, "curated": [["old/model", ""]]}))
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("anthropic/claude-opus-4.6", ""), ("qwen/qwen3.7-max", "")],
+        )
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=self._resp()),
+        ):
+            models = fetch_openrouter_models()
+
+        ids = [mid for mid, _ in models]
+        assert "old/model" not in ids, "stale disk cache must be ignored"
+        assert "qwen/qwen3.7-max" in ids
+
+    def test_force_refresh_bypasses_disk_cache(self, monkeypatch, tmp_path):
+        home = self._isolate(monkeypatch, tmp_path)
+        import json as _json
+        import time as _time
+
+        cached = [("stale/model", "")]
+        disk = home / "cache" / "openrouter_curated_catalog.json"
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        disk.write_text(_json.dumps({"fetched_at": _time.time(), "curated": [list(c) for c in cached]}))
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [("anthropic/claude-opus-4.6", ""), ("qwen/qwen3.7-max", "")],
+        )
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[]),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=self._resp()),
+        ):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "stale/model" not in ids
+        assert "qwen/qwen3.7-max" in ids
+
+
 class TestOpenRouterToolSupportHelper:
     """Unit tests for _openrouter_model_supports_tools (Kilo port #9068)."""
 

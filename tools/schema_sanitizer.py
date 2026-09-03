@@ -158,6 +158,10 @@ def _sanitize_single_tool(tool: dict) -> dict:
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
+            # Free-form top-level declaration (see _sanitize_node): keep
+            # "any keys allowed" semantics for schema-literal models.
+            if "additionalProperties" not in top:
+                top["additionalProperties"] = True
     # Final pass: collapse nullable anyOf/oneOf unions that the recursive
     # sanitizer above leaves intact (it only handles the array-form
     # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
@@ -403,7 +407,8 @@ def _sanitize_node(node: Any, path: str) -> Any:
 
     - Replaces bare-string schema values ("object", "string", ...) with
       ``{"type": <value>}`` so downstream consumers see a dict.
-    - Injects ``properties: {}`` into object-typed nodes missing it.
+    - Injects ``properties: {}`` into object-typed nodes missing it, stamping
+      ``additionalProperties: True`` on those free-form object nodes.
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping
       ``nullable: true`` as a hint), and multi-type arrays like
       ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no
@@ -422,6 +427,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             return {"type": node} if node != "object" else {
                 "type": "object",
                 "properties": {},
+                "additionalProperties": True,
             }
         # Any other stray string is not a schema — drop it by replacing with
         # a permissive object schema rather than propagate something the
@@ -430,7 +436,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             "schema_sanitizer[%s]: replacing non-schema string %r "
             "with empty object schema", path, node,
         )
-        return {"type": "object", "properties": {}}
+        return {"type": "object", "properties": {}, "additionalProperties": True}
 
     if isinstance(node, list):
         return [_sanitize_node(item, f"{path}[{i}]") for i, item in enumerate(node)]
@@ -525,6 +531,16 @@ def _sanitize_node(node: Any, path: str) -> Any:
     # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
+        # The empty-properties shape reads as "object with zero properties"
+        # to schema-literal models, which then emit {} for intentionally
+        # free-form params (e.g. delegate_task's per-task output_schema) and
+        # silently defeat them. ``additionalProperties: true`` keeps the
+        # llama.cpp-safe closed shape while restoring "any keys allowed"
+        # semantics for models that follow the schema literally. Nodes that
+        # explicitly declare ``additionalProperties`` (bool false, or a value
+        # schema) already constrain themselves — don't overwrite them.
+        if "additionalProperties" not in out:
+            out["additionalProperties"] = True
 
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but

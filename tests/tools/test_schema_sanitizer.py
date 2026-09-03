@@ -20,10 +20,14 @@ def _tool(name: str, parameters: dict) -> dict:
     return {"type": "function", "function": {"name": name, "parameters": parameters}}
 
 
-def test_object_without_properties_gets_empty_properties():
+def test_freeform_object_gets_empty_properties_and_marker():
     tools = [_tool("t", {"type": "object"})]
     out = sanitize_tool_schemas(tools)
-    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert out[0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    }
 
 
 def test_nested_object_without_properties_gets_empty_properties():
@@ -56,6 +60,7 @@ def test_bare_string_object_value_replaced_with_schema_dict():
     assert isinstance(payload, dict)
     assert payload["type"] == "object"
     assert payload["properties"] == {}
+    assert payload["additionalProperties"] is True
 
 
 def test_nullable_type_array_collapsed_to_single_string():
@@ -130,7 +135,7 @@ def test_anyof_nested_objects_sanitized():
     })]
     out = sanitize_tool_schemas(tools)
     variants = out[0]["function"]["parameters"]["properties"]["opt"]["anyOf"]
-    assert variants[0] == {"type": "object", "properties": {}}
+    assert variants[0] == {"type": "object", "properties": {}, "additionalProperties": True}
     assert variants[1] == {"type": "string"}
 
 
@@ -182,7 +187,11 @@ def test_additional_properties_schema_sanitized():
     })]
     out = sanitize_tool_schemas(tools)
     field = out[0]["function"]["parameters"]["properties"]["dict_field"]
-    assert field["additionalProperties"] == {"type": "object", "properties": {}}
+    assert field["additionalProperties"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    }
 
 
 def test_items_sanitized_in_array_schema():
@@ -197,7 +206,75 @@ def test_items_sanitized_in_array_schema():
     })]
     out = sanitize_tool_schemas(tools)
     items = out[0]["function"]["parameters"]["properties"]["bag"]["items"]
-    assert items == {"type": "object", "properties": {}}
+    assert items == {"type": "object", "properties": {}, "additionalProperties": True}
+
+
+def test_freeform_object_param_not_flattened_for_schema_literal_models():
+    """Issue #96734 regression: a free-form object param (delegate_task's
+    per-task output_schema shape) must keep ``additionalProperties: true``
+    after sanitizing, so a schema-literal model still reads it as
+    "any keys allowed" instead of "object with zero properties" and emits
+    {} for the payload."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "output_schema": {
+                "type": "object",
+                "description": "Optional JSON Schema the child's answer must validate against.",
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["output_schema"]
+    assert prop["type"] == "object"
+    assert prop["description"].startswith("Optional JSON Schema")
+    assert prop["properties"] == {}
+    assert prop["additionalProperties"] is True
+
+
+def test_top_level_freeform_declaration_gets_additional_properties():
+    tools = [_tool("t", {"type": "object", "description": "free-form args"})]
+    out_params = sanitize_tool_schemas(tools)[0]["function"]["parameters"]
+    assert out_params["type"] == "object"
+    assert out_params["properties"] == {}
+    assert out_params["additionalProperties"] is True
+    assert out_params["description"] == "free-form args"
+
+
+def test_missing_parameters_fallback_stays_conservative():
+    """A tool that declared NO parameters keeps the plain empty-object
+    fallback — the free-form marker is only for declared schemas."""
+    tools = [{"type": "function", "function": {"name": "t"}}]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_explicit_additional_properties_schema_not_overwritten():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "tags": {"type": "object", "additionalProperties": {"type": "string"}},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["tags"]
+    # properties dict present -> node is not free-form; explicit
+    # additionalProperties value schema must survive untouched.
+    assert prop["additionalProperties"] == {"type": "string"}
+    assert "additionalProperties" not in out[0]["function"]["parameters"] or \
+        out[0]["function"]["parameters"]["properties"] != {}
+
+
+def test_closed_empty_object_not_reopened():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "sealed": {"type": "object", "additionalProperties": False},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    prop = out[0]["function"]["parameters"]["properties"]["sealed"]
+    assert prop["additionalProperties"] is False
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -343,7 +420,11 @@ def test_dependent_schemas_still_recursively_sanitized():
     tools = [_tool("t", copy.deepcopy(schema))]
     out = sanitize_tool_schemas(tools)
     dep_schemas = out[0]["function"]["parameters"]["dependentSchemas"]
-    assert dep_schemas["owner"] == {"type": "object", "properties": {}}, (
+    assert dep_schemas["owner"] == {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    }, (
         f"dependentSchemas['owner'] was not fully sanitized: {dep_schemas['owner']!r}"
     )
 

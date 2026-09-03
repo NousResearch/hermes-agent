@@ -19,6 +19,8 @@ import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { LazyShiki as ShikiHighlighter } from '@/components/chat/shiki-highlighter'
 import { PageLoader } from '@/components/page-loader'
+import { Button } from '@/components/ui/button'
+import { CopyButton } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow, useI18n } from '@/i18n'
 import {
@@ -1115,17 +1117,25 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           modes={modes}
           onSelect={setUserMode}
           trailing={
-            canEdit ? (
-              <Tip label={`${t.preview.edit} (e)`}>
-                <button
-                  className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                  onClick={beginEdit}
-                  type="button"
-                >
-                  <Pencil className="size-3" />
-                  {t.preview.edit}
-                </button>
-              </Tip>
+            isMarkdown || canEdit ? (
+              <>
+                {isMarkdown && !state.truncated && state.text.length > 0 && (
+                  <CopyButton appearance="icon" buttonSize="icon-xs" text={state.text} />
+                )}
+                {canEdit && (
+                  <Tip label={`${t.preview.edit} (e)`}>
+                    <Button
+                      aria-label={t.preview.edit}
+                      onClick={beginEdit}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Pencil />
+                    </Button>
+                  </Tip>
+                )}
+              </>
             ) : null
           }
         />

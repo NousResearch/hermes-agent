@@ -10437,7 +10437,7 @@ def _enqueue_prompt(
     # Never queue a text-only self-copy of the live inflight user prompt. The
     # live turn already owns that text; draining it after settle would restart
     # the same user turn as a fresh agent invocation.
-    if not image_paths and isinstance(text, str):
+    if not external_submission_id and not image_paths and isinstance(text, str):
         turn = session.get("inflight_turn")
         original = (
             str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
@@ -10483,7 +10483,7 @@ def _sanitize_queued_entry_vs_inflight_user(
     """
     if not original or not isinstance(entry, dict):
         return entry if isinstance(entry, dict) else None
-    if entry.get("image_paths"):
+    if entry.get("image_paths") or entry.get("external_submission_id"):
         return entry
     text = entry.get("text")
     if not isinstance(text, str):
@@ -10608,7 +10608,10 @@ def _handle_busy_submit(
     unwinding the turn) redirected the live turn with next-turn text — queue
     semantics betrayed by a millisecond race the user can't see.
     """
-    mode = "queue" if queued else _load_busy_input_mode()
+    # External controllers submit a next visible Desktop turn. They must never
+    # inherit the interactive client's steer/redirect preference and disappear
+    # into a turn that has no correlated terminal event.
+    mode = "queue" if queued or external_submission_id else _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
         if not session.get("running"):
@@ -10707,6 +10710,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     lower-priority follow-ups this cycle — the user's message wins). Mirrors the
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
+    missing_external_owner = False
     with session["history_lock"]:
         if session.get("_closing"):
             return False
@@ -10718,10 +10722,46 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         session["queued_prompt"] = queued_prompts.pop(0) if queued_prompts else None
         if not queued_prompts:
             session.pop("queued_prompts", None)
-        session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
-    use_compute_host = _session_uses_compute_host(session)
+        external_submission_id = queued.get("external_submission_id")
+        if external_submission_id:
+            # The Desktop owner may have reconnected while this envelope was
+            # waiting. Never restore the controller's stale transport pin.
+            delivery_transport = session.get("transport")
+            if not is_live_transport(delivery_transport):
+                session["running"] = False
+                missing_external_owner = True
+        else:
+            session["running"] = True
+            if queued.get("transport") is not None:
+                session["transport"] = queued["transport"]
+        if not missing_external_owner:
+            session["running"] = True
+    if missing_external_owner:
+        # Replay records the correlated terminal result even though there is no
+        # live owner transport to receive it. Emit only after releasing the
+        # session lock: transports and replay storage may perform their own
+        # synchronization.
+        _emit(
+            "message.start",
+            sid,
+            {"external_submission_id": external_submission_id},
+        )
+        _emit(
+            "message.complete",
+            sid,
+            {
+                "text": "",
+                "status": "error",
+                "external_submission_id": external_submission_id,
+            },
+        )
+        return True
+    # External submissions were admitted only for the in-process Desktop owner.
+    # A config flip while queued must not silently move them to an isolated host
+    # that cannot preserve their correlation identity or visible transport.
+    use_compute_host = (
+        False if external_submission_id else _session_uses_compute_host(session)
+    )
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
             # Generation cancelled the claim (Stop, compress re-anchor, …).
@@ -14138,7 +14178,18 @@ def _run_prompt_submit(
                     file=sys.stderr,
                     flush=True,
                 )
-                _emit("error", sid, {"message": str(e)})
+                _emit(
+                    "error",
+                    sid,
+                    {
+                        "message": str(e),
+                        **(
+                            {"external_submission_id": external_submission_id}
+                            if external_submission_id
+                            else {}
+                        ),
+                    },
+                )
         finally:
             # Drop both local snapshots of the pre-turn history before asking
             # glibc to return pages. session["history"] already points at the

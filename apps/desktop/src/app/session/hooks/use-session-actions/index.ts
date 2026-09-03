@@ -1437,14 +1437,18 @@ export function useSessionActions({
             }
 
             if (!isSessionGoneError(error)) {
-              publishDegradedWarmCache()
-
-              return
+              // #101408: a timeout / transport blip during reconnect storm used
+              // to publish the warm cache and return — the pane looked live
+              // while the gateway still held the session on the drop sentinel,
+              // so typed input never reached `prompt accepted` until a remount.
+              // Drop only the stored→runtime mapping and fall through to
+              // session.resume, which rebinds the transport on this socket.
+              runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            } else {
+              runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+              sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
+              dropSessionState(cachedRuntimeId)
             }
-
-            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
-            dropSessionState(cachedRuntimeId)
           } finally {
             releaseTranscriptView()
           }

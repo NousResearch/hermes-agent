@@ -8,7 +8,9 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { notify } from '@/store/notifications'
+import { setApprovalRequest } from '@/store/prompts'
 import {
   isReadOnlyRuntimeId,
   readOnlyRuntimeIdFor,
@@ -218,15 +220,61 @@ export function useSessionTileDelegate({
         // warm snapshot is whatever the tile last painted, and cron bot-chat
         // deliveries that landed while the panel's WS was down never arrive
         // as realtime events (#96183).
+        //
+        // Cache warmth is not transport attachment (#101408). After a WS drop
+        // the map can be re-seeded by reconnect busy-reconcile while the
+        // gateway still holds the session on the drop sentinel — returning
+        // here without session.activate left the tile looking live and
+        // silently dropping typed input. Always rebind first; fall through
+        // to cold resume when activate proves the runtime dead.
+        const rebindWarmRuntime = async (runtimeId: string): Promise<'ok' | 'missing' | 'dead'> => {
+          try {
+            const activated = await requestForStoredSession<SessionResumeResponse>(storedSessionId, 'session.activate', {
+              session_id: runtimeId,
+              cols: 96,
+              omit_messages: true
+            })
+
+            const pending = activated?.pending_approval
+
+            if (pending) {
+              setApprovalRequest({
+                allowPermanent: pending.allow_permanent !== false,
+                choices: pending.choices,
+                command: pending.command ?? '',
+                description: pending.description ?? 'dangerous command',
+                requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
+                sessionId: runtimeId,
+                smartDenied: pending.smart_denied === true
+              })
+              updateSessionState(runtimeId, state => ({ ...state, needsInput: true }), storedSessionId)
+            }
+
+            return 'ok'
+          } catch (error) {
+            if (isMissingRpcMethod(error)) {
+              return 'missing'
+            }
+
+            return 'dead'
+          }
+        }
+
         if (
           existing &&
           cached?.storedSessionId === storedSessionId &&
           (cached.busy || cached.messages.length > 0) &&
           !refreshTranscript
         ) {
-          publishSessionState(existing, cached)
+          const rebind = await rebindWarmRuntime(existing)
 
-          return existing
+          if (rebind !== 'dead') {
+            publishSessionState(existing, sessionStateByRuntimeIdRef.current.get(existing) ?? cached)
+
+            return existing
+          }
+
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
         }
 
         // Resolve the owning profile before binding a runtime. A tile can open a
@@ -243,17 +291,31 @@ export function useSessionTileDelegate({
 
         const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
-          const prefetch = await prefetchPromise
-          const merged = mergeTileTranscript(cached.messages, prefetch?.messages)
+        const warmAfterAwait = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const warmCached = warmAfterAwait ? sessionStateByRuntimeIdRef.current.get(warmAfterAwait) : undefined
 
-          if (!chatMessageArraysEquivalent(cached.messages, merged)) {
-            updateSessionState(existing, state => ({ ...state, messages: merged }), storedSessionId)
-          } else {
-            publishSessionState(existing, cached)
+        if (
+          warmAfterAwait &&
+          warmCached?.storedSessionId === storedSessionId &&
+          (warmCached.busy || warmCached.messages.length > 0)
+        ) {
+          const rebind = await rebindWarmRuntime(warmAfterAwait)
+
+          if (rebind !== 'dead') {
+            const prefetch = await prefetchPromise
+            const latest = sessionStateByRuntimeIdRef.current.get(warmAfterAwait) ?? warmCached
+            const merged = mergeTileTranscript(latest.messages, prefetch?.messages)
+
+            if (!chatMessageArraysEquivalent(latest.messages, merged)) {
+              updateSessionState(warmAfterAwait, state => ({ ...state, messages: merged }), storedSessionId)
+            } else {
+              publishSessionState(warmAfterAwait, latest)
+            }
+
+            return warmAfterAwait
           }
 
-          return existing
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
         }
 
         // #94724 no-owner recovery: dispatching the resume through the same
@@ -320,12 +382,26 @@ export function useSessionTileDelegate({
         }
 
         const info = resumed?.info
+        const pending = resumed?.pending_approval
+
+        if (pending) {
+          setApprovalRequest({
+            allowPermanent: pending.allow_permanent !== false,
+            choices: pending.choices,
+            command: pending.command ?? '',
+            description: pending.description ?? 'dangerous command',
+            requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
+            sessionId: runtimeId,
+            smartDenied: pending.smart_denied === true
+          })
+        }
 
         updateSessionState(
           runtimeId,
           state => ({
             ...state,
             busy: Boolean(info?.running),
+            needsInput: Boolean(pending) || state.needsInput,
             // Persist the session's own model/provider from resume so the tile
             // pill does not wait on a chrome-scoped catalog read (#93892).
             ...(typeof info?.model === 'string' ? { model: info.model } : {}),

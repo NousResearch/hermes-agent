@@ -822,6 +822,39 @@ def _install_ssrf_guard_on_client(client: Any) -> None:
     )
 
 
+# Identifying UA for Hermes-owned direct downloads (media caches, platform
+# adapter fallbacks, skill installs, ...). CDNs with basic bot detection —
+# upload.wikimedia.org confirmed in #89260 — 403 the bare httpx default
+# (``python-httpx/x``). Wikimedia's UA policy
+# (meta.wikimedia.org/wiki/User-Agent_policy) asks clients to identify
+# themselves rather than impersonate a browser, so this names the agent
+# instead of spoofing Chrome/Firefox. Applied as a client-level default by
+# both factories below rather than re-typed per call site (#93242) — a
+# caller that needs a different UA still overrides it per-request, since
+# httpx merges request headers over client headers.
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; HermesAgent/1.0)"
+
+
+def _with_default_user_agent(kwargs: dict) -> dict:
+    """Return ``kwargs`` with a client-level ``User-Agent`` default filled in.
+
+    Uses ``httpx.Headers`` rather than plain-dict ``setdefault`` for two
+    reasons: it never mutates a caller-supplied headers object (a dict passed
+    by reference would otherwise be permanently poisoned across requests),
+    and it's case-insensitive plus accepts every form httpx's ``headers=``
+    already accepts (dict, list of tuples, or another ``Headers``) — a plain
+    dict's ``setdefault`` would raise on a list and would miss a caller's
+    lowercase ``"user-agent"``, adding a duplicate header instead of leaving
+    it alone.
+    """
+    import httpx
+
+    headers = httpx.Headers(kwargs.get("headers"))
+    headers.setdefault("User-Agent", DEFAULT_USER_AGENT)
+    kwargs["headers"] = headers
+    return kwargs
+
+
 def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     """Create an ``httpx.AsyncClient`` with connect-time SSRF validation.
 
@@ -830,19 +863,26 @@ def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     SNI, and certificate verification.  If httpx routes through a proxy, final
     target resolution is delegated to that configured proxy; treat the proxy as
     a trusted egress boundary.
+
+    Sends ``DEFAULT_USER_AGENT`` by default (see above) unless the caller
+    already set a ``User-Agent``.
     """
     import httpx
 
-    client = httpx.AsyncClient(**kwargs)
+    client = httpx.AsyncClient(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_async_client(client)
     return client
 
 
 def create_ssrf_safe_client(**kwargs: Any) -> Any:
-    """Create an ``httpx.Client`` with connect-time SSRF validation."""
+    """Create an ``httpx.Client`` with connect-time SSRF validation.
+
+    Sends ``DEFAULT_USER_AGENT`` by default (see above) unless the caller
+    already set a ``User-Agent``.
+    """
     import httpx
 
-    client = httpx.Client(**kwargs)
+    client = httpx.Client(**_with_default_user_agent(kwargs))
     _install_ssrf_guard_on_client(client)
     return client
 

@@ -13,6 +13,7 @@ Subcommands:
   info     Show Portal auth state + which Tool Gateway tools are routed.
   open     Open the Portal subscription page in the user's default browser.
   tools    List Tool Gateway tools and which are active in the current config.
+  usage    Show sanitized balance/allowance telemetry; add --json for automation.
 
 This command is intentionally minimal — it does not duplicate functionality
 already in ``hermes auth`` or ``hermes tools``. It's the onboarding + discovery
@@ -20,11 +21,13 @@ surface for the Portal subscription itself.
 """
 from __future__ import annotations
 
+import json
 import sys
 import webbrowser
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
+from agent.billing_usage import build_usage_model
 
 DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
@@ -102,6 +105,103 @@ def _cmd_status(args) -> int:
         print()
         print(color(f"  Docs: {DOCS_URL}", Colors.DIM))
     return 0
+
+
+_USAGE_SCHEMA_VERSION = 1
+
+
+def build_usage_payload(model) -> dict[str, object]:
+    """Return the stable, sanitized ``portal usage --json`` payload.
+
+    The payload deliberately exposes only account-level display values. It never
+    serializes raw Portal responses, identifiers, OAuth credentials, tool state,
+    or inference routes. A percentage is emitted only when Portal supplied a
+    positive monthly allowance; top-ups have no denominator and remain a dollar
+    balance rather than a fabricated percentage.
+    """
+    unavailable = not bool(model and getattr(model, "available", False))
+    if unavailable:
+        return {
+            "schema_version": _USAGE_SCHEMA_VERSION,
+            "available": False,
+            "status": "unavailable",
+            "plan": None,
+            "renews_at": None,
+            "subscription": None,
+            "top_up": None,
+            "total_usable_usd": None,
+        }
+
+    plan_bar = getattr(model, "plan_bar", None)
+    subscription = None
+    if plan_bar is not None:
+        monthly_allowance = _finite_number(getattr(plan_bar, "total_usd", None))
+        remaining = _finite_number(getattr(plan_bar, "remaining_usd", None))
+        used_percent = getattr(plan_bar, "pct_used", None)
+        if monthly_allowance is not None and monthly_allowance > 0 and remaining is not None:
+            subscription = {
+                "remaining_usd": remaining,
+                "monthly_allowance_usd": monthly_allowance,
+                "used_percent": used_percent if isinstance(used_percent, int) else None,
+            }
+
+    topup_remaining = _finite_number(getattr(model, "topup_remaining_usd", None))
+    top_up = {"remaining_usd": topup_remaining} if topup_remaining is not None else None
+
+    return {
+        "schema_version": _USAGE_SCHEMA_VERSION,
+        "available": True,
+        "status": getattr(model, "status", None) or "unknown",
+        "plan": _clean_text(getattr(model, "plan_name", None)),
+        "renews_at": _clean_text(getattr(model, "renews_at", None)),
+        "subscription": subscription,
+        "top_up": top_up,
+        "total_usable_usd": _finite_number(getattr(model, "total_spendable_usd", None)),
+    }
+
+
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    import math
+
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _clean_text(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _cmd_usage(args) -> int:
+    """Print safe Portal balance/allowance telemetry without exposing OAuth state."""
+    model = build_usage_model(timeout=8.0)
+    payload = build_usage_payload(model)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    elif not payload["available"]:
+        print("Nous Portal usage is unavailable. Log in with `hermes portal` and try again.")
+    else:
+        print("Nous Portal usage")
+        if payload["plan"]:
+            print(f"Plan: {payload['plan']}")
+        if payload["subscription"]:
+            subscription = payload["subscription"]
+            print(
+                "Subscription allowance: "
+                f"${subscription['remaining_usd']:.2f} remaining of "
+                f"${subscription['monthly_allowance_usd']:.2f}"
+            )
+        if payload["top_up"]:
+            print(f"Top-up balance: ${payload['top_up']['remaining_usd']:.2f}")
+        if payload["total_usable_usd"] is not None:
+            print(f"Total usable: ${payload['total_usable_usd']:.2f}")
+        if payload["renews_at"]:
+            print(f"Renews: {payload['renews_at']}")
+    return 0 if payload["available"] else 1
 
 
 def _cmd_open(args) -> int:
@@ -204,6 +304,8 @@ def portal_command(args) -> int:
         return _cmd_open(args)
     if sub == "tools":
         return _cmd_tools(args)
+    if sub == "usage":
+        return _cmd_usage(args)
     print(f"Unknown portal subcommand: {sub}", file=sys.stderr)
     print("Run `hermes portal -h` for usage.", file=sys.stderr)
     return 1
@@ -219,7 +321,7 @@ def add_parser(subparsers) -> None:
             "and set it up — pick a model, set Nous as your provider, and offer "
             "the Tool Gateway (the human-readable alias for `hermes auth add "
             "nous --type oauth`, identical to `hermes setup --portal`). "
-            "Subcommands: login (default), info, open, tools."
+            "Subcommands: login (default), info, open, tools, usage."
         ),
     )
     portal_sub = portal_parser.add_subparsers(dest="portal_command")
@@ -241,6 +343,15 @@ def add_parser(subparsers) -> None:
     portal_sub.add_parser(
         "tools",
         help="List Tool Gateway tools and which are routed via Nous",
+    )
+    usage_parser = portal_sub.add_parser(
+        "usage",
+        help="Show Portal balance/allowance telemetry (use --json for scripts)",
+    )
+    usage_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the stable, sanitized JSON usage contract",
     )
 
     portal_parser.set_defaults(func=portal_command)

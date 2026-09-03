@@ -86,6 +86,28 @@ def _estimate_cost(
 
 
 
+_DAY_SECONDS = 86400
+
+
+def _local_day_label(timestamp: float) -> str:
+    """Return the local YYYY-MM-DD label for a unix timestamp."""
+    from datetime import datetime
+
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+
+
+def _billing_cost(entry) -> float:
+    """Return the best stored cost for a session_model_usage row."""
+    stored = entry.get("estimated_cost_usd")
+    if stored is None:
+        return 0.0
+    try:
+        value = float(stored)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if value >= 0 else 0.0
+
+
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     """Create simple horizontal bar chart strings from values."""
     peak = max(values) if values else 1
@@ -763,6 +785,126 @@ class InsightsEngine:
         result.sort(key=lambda x: (x["total_tokens"], x["sessions"]), reverse=True)
         return result
 
+    def compute_model_usage(self, days: int = 30, source: str = None) -> Dict[str, Any]:
+        """Per-model usage report: totals by model plus a daily cost time series.
+
+        Reuses the token/cost attribution from `_compute_model_breakdown` and
+        adds a per-model, per-local-day cost series suitable for terminal bar
+        charts or JSON consumers. Never raises: an empty window yields
+        ``{"empty": True}``.
+        """
+        cutoff = time.time() - (days * _DAY_SECONDS)
+        flush = getattr(self.db, "flush_token_counts", None)
+        if callable(flush):
+            flush()
+
+        sessions = self._get_sessions(cutoff, source)
+        if not sessions:
+            return {
+                "days": days,
+                "source_filter": source,
+                "empty": True,
+                "models": [],
+                "daily": [],
+                "generated_at": time.time(),
+            }
+
+        models = self._compute_model_breakdown(sessions, cutoff, source)
+        daily = self._compute_daily_model_cost(cutoff, source)
+        # Fold per-session aggregate rows without per-model usage rows into the
+        # daily series so legacy sessions still appear (best effort).
+        daily = self._reconcile_daily_from_sessions(sessions, daily)
+
+        for entry in models:
+            entry.setdefault("api_calls", 0)
+            entry.setdefault("cost", 0.0)
+            entry.setdefault("actual_cost", 0.0)
+            entry.setdefault("has_pricing", False)
+
+        return {
+            "days": days,
+            "source_filter": source,
+            "empty": False,
+            "models": models,
+            "daily": daily,
+            "generated_at": time.time(),
+        }
+
+    def _compute_daily_model_cost(self, cutoff: float, source: str = None) -> List[Dict]:
+        """Daily estimated-cost series per model from session_model_usage."""
+        daily: Dict[str, Dict[str, Any]] = {}
+        rows = self._get_model_usage(cutoff, source)
+        for row in rows:
+            model = row.get("model") or "unknown"
+            display = model.split("/")[-1] if "/" in model else model
+            session_id = row.get("session_id")
+            started = self._session_started_at(session_id)
+            if started is None:
+                continue
+            day = _local_day_label(started)
+            bucket = daily.setdefault(
+                (display, day),
+                {"model": display, "date": day, "cost_usd": 0.0,
+                 "input_tokens": 0, "output_tokens": 0, "api_calls": 0},
+            )
+            bucket["cost_usd"] += _billing_cost(row)
+            bucket["input_tokens"] += int(row.get("input_tokens") or 0)
+            bucket["output_tokens"] += int(row.get("output_tokens") or 0)
+            bucket["api_calls"] += int(row.get("api_call_count") or 0)
+        # Return a stable, sorted list.
+        result = list(daily.values())
+        result.sort(key=lambda r: (r["model"], r["date"]))
+        return result
+
+    def _reconcile_daily_from_sessions(
+        self, sessions: List[Dict], daily: List[Dict]
+    ) -> List[Dict]:
+        """Fold session aggregates into the daily series when per-model rows are missing."""
+        by_key = {(d["model"], d["date"]): d for d in daily}
+        for s in sessions:
+            started = s.get("started_at")
+            if not started:
+                continue
+            model = s.get("model") or "unknown"
+            display = model.split("/")[-1] if "/" in model else model
+            day = _local_day_label(started)
+            key = (display, day)
+            if key in by_key:
+                continue
+            cost = 0.0
+            stored = s.get("estimated_cost_usd")
+            if stored is not None:
+                try:
+                    cost = max(0.0, float(stored))
+                except (TypeError, ValueError):
+                    cost = 0.0
+            by_key[key] = {
+                "model": display,
+                "date": day,
+                "cost_usd": cost,
+                "input_tokens": int(s.get("input_tokens") or 0),
+                "output_tokens": int(s.get("output_tokens") or 0),
+                "api_calls": int(s.get("api_call_count") or 0),
+            }
+        result = list(by_key.values())
+        result.sort(key=lambda r: (r["model"], r["date"]))
+        return result
+
+    def _session_started_at(self, session_id) -> Optional[float]:
+        try:
+            cursor = self._conn.execute(
+                "SELECT started_at FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if not row or row["started_at"] is None:
+            return None
+        try:
+            return float(row["started_at"])
+        except (TypeError, ValueError):
+            return None
+
     def _compute_platform_breakdown(self, sessions: List[Dict]) -> List[Dict]:
         """Break down usage by platform/source."""
         platform_data = defaultdict(lambda: {
@@ -1210,3 +1352,64 @@ class InsightsEngine:
                 lines.append(f"**Best streak:** {act['max_streak']} consecutive days")
 
         return "\n".join(lines)
+
+
+
+
+def format_model_usage_terminal(report: Dict[str, Any], top: int = 5) -> str:
+    """Human-readable per-model usage view with cost bars and daily charts."""
+    if report.get("empty"):
+        days = report.get("days", 30)
+        src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
+        return f"  No sessions found in the last {days} days{src}."
+
+    lines = [""]
+    lines.append("  📊 Per-model usage")
+    period_label = f"Last {report.get('days', 30)} days"
+    if report.get("source_filter"):
+        period_label += f" ({report['source_filter']})"
+    lines.append("  " + "─" * max(len(period_label) + 4, 40))
+    lines.append(f"  {period_label}")
+    lines.append("")
+
+    models = report.get("models") or []
+    by_cost = sorted(
+        models, key=lambda m: float(m.get("cost") or 0.0), reverse=True
+    )[: max(1, int(top))]
+    if by_cost:
+        lines.append("  Models by estimated cost")
+        lines.append("  " + "─" * 56)
+        peak = max((float(m.get("cost") or 0.0) for m in by_cost), default=0.0)
+        for m in by_cost:
+            name = (m.get("model") or "unknown")[:24]
+            cost = float(m.get("cost") or 0.0)
+            width = 0
+            if peak > 0:
+                width = max(1, int(cost / peak * 20))
+            bar = "█" * width
+            tokens = int(m.get("total_tokens") or 0)
+            calls = int(m.get("api_calls") or 0)
+            lines.append(f"  {name:<26} ${cost:>9,.2f} {tokens:>11,} tok {calls:>5} calls {bar}")
+        lines.append("")
+
+    daily = report.get("daily") or []
+    if daily:
+        lines.append("  Daily estimated cost")
+        lines.append("  " + "─" * 56)
+        by_model: Dict[str, List[Dict[str, Any]]] = {}
+        for row in daily:
+            by_model.setdefault(row["model"], []).append(row)
+        for model, rows in sorted(by_model.items(), key=lambda kv: -sum(r["cost_usd"] for r in kv[1]))[: max(1, int(top))]:
+            rows = sorted(rows, key=lambda r: r["date"])
+            costs = [float(r["cost_usd"] or 0.0) for r in rows]
+            labels = [r["date"][5:] for r in rows]
+            bars = _bar_chart([int(c * 100) for c in costs], max_width=24)
+            name = model[:20]
+            header = f"  {name:<22} " + " ".join(labels)
+            lines.append(header)
+            for bar, cost in zip(bars, costs):
+                lines.append(f"  {'':<22} ▏{bar:<24} ${cost:>8,.2f}")
+            lines.append("")
+
+    lines.append("  $ values are local estimates; Portal billing is authoritative.")
+    return "\n".join(lines)

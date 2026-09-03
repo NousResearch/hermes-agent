@@ -5130,9 +5130,41 @@ async def gateway_drain(request: Request):
     }
 
 
+def _stable_tag_update_settings() -> Optional[Dict[str, str]]:
+    """Return configured stable tag settings, or None for branch mode."""
+    try:
+        from hermes_cli.stable_update import (
+            stable_tag_settings,
+            stable_updates_enabled,
+        )
+
+        config = load_config()
+        if stable_updates_enabled(config):
+            return stable_tag_settings(config)
+    except Exception:
+        _log.exception("Failed to read stable tag update settings")
+    return None
+
+
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    if _stable_tag_update_settings() is not None:
+        message = (
+            "Stable tag mode checks release tags but does not apply them. "
+            "Update the checkout to the selected stable tag outside the dashboard."
+        )
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "stable_tag_update_unsupported",
+            "mode": "stable-tags",
+            "message": message,
+            "update_command": None,
+        }
+
     if _dashboard_local_update_managed_externally():
         message = (
             "Hermes updates are managed outside this dashboard in "
@@ -5289,6 +5321,8 @@ async def check_hermes_update(force: bool = False):
                  desktop's remote update overlay renders this as "what's
                  changed". Additive: existing consumers ignore it.
     """
+    stable_settings = _stable_tag_update_settings()
+
     if _dashboard_local_update_managed_externally():
         return {
             "install_method": "managed-runtime",
@@ -5301,6 +5335,7 @@ async def check_hermes_update(force: bool = False):
                 "Hermes updates are managed outside this dashboard in "
                 "containerized environments."
             ),
+            **({"mode": "stable-tags"} if stable_settings is not None else {}),
         }
 
     install_method = detect_install_method(PROJECT_ROOT)
@@ -5315,6 +5350,42 @@ async def check_hermes_update(force: bool = False):
         "update_command": update_command,
         "message": None,
     }
+
+    if stable_settings is not None:
+        from hermes_cli.stable_update import stable_update_status
+
+        status = await asyncio.to_thread(
+            stable_update_status,
+            PROJECT_ROOT,
+            remote=stable_settings["remote"],
+            pattern=stable_settings["pattern"],
+        )
+        update_available = bool(status["update_available"])
+        error = status.get("error")
+        payload.update(
+            {
+                "mode": "stable-tags",
+                "current_tag": status.get("current_tag"),
+                "latest_tag": status.get("latest_tag"),
+                "behind": None if error else (-1 if update_available else 0),
+                "update_available": update_available,
+                "can_apply": False,
+                "update_command": None,
+                "message": (
+                    "Couldn't reach the stable release tags; try again later."
+                    if error
+                    else (
+                        f"Stable release {status['latest_tag']} is available. "
+                        "Apply stable tag updates outside the dashboard."
+                        if update_available
+                        else "You're on the latest stable release."
+                    )
+                ),
+            }
+        )
+        if error:
+            payload["error"] = error
+        return payload
 
     if install_method == "docker":
         payload["message"] = format_docker_update_message()

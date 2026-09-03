@@ -1299,6 +1299,71 @@ class TestWebServerEndpoints:
         assert check_data["update_command"] == "pkg upgrade hermes-agent"
         assert "Termux APT" in check_data["message"]
 
+    def test_stable_tag_update_check_is_read_only(self, monkeypatch):
+        import hermes_cli.stable_update as stable_update
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"updates": {"check_strategy": "stable-tags"}},
+        )
+        monkeypatch.setattr(
+            stable_update,
+            "stable_update_status",
+            lambda *_args, **_kwargs: {
+                "mode": "stable-tags",
+                "current_tag": "v1.0.0",
+                "latest_tag": "v1.1.0",
+                "update_available": True,
+                "error": None,
+            },
+        )
+
+        resp = self.client.get("/api/hermes/update/check?force=true")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "stable-tags"
+        assert data["current_tag"] == "v1.0.0"
+        assert data["latest_tag"] == "v1.1.0"
+        assert data["update_available"] is True
+        assert data["can_apply"] is False
+        assert data["update_command"] is None
+        assert "commits" not in data
+
+    def test_stable_tag_update_apply_never_spawns_branch_updater(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        spawned = False
+
+        def fail_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("stable tag mode must not run the branch updater")
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"updates": {"check_strategy": "stable-tags"}},
+        )
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["pid"] is None
+        assert data["mode"] == "stable-tags"
+        assert data["error"] == "stable_tag_update_unsupported"
+        assert data["update_command"] is None
+        assert spawned is False
+
     def test_update_status_recovers_completed_result_after_dashboard_restart(self, monkeypatch, tmp_path):
         import hermes_cli.web_server as web_server
 

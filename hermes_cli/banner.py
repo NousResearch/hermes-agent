@@ -418,6 +418,44 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     return None
 
 
+def _stable_tag_mode() -> bool:
+    """Return True when config opts update checks into stable release tags."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.stable_update import stable_updates_enabled
+
+        return stable_updates_enabled(load_config())
+    except Exception:
+        return False
+
+
+def _check_via_stable_tag(repo_dir: Path) -> Optional[int]:
+    """Report updates by newest stable release tag, not commit distance.
+
+    Returns ``0`` if on/above the latest stable release,
+    ``UPDATE_AVAILABLE_NO_COUNT`` if a newer release exists, or ``None`` if
+    the check could not run (fails soft to show nothing).
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.stable_update import (
+            stable_tag_settings,
+            stable_update_status,
+        )
+
+        settings = stable_tag_settings(load_config())
+        status = stable_update_status(
+            repo_dir,
+            remote=settings["remote"],
+            pattern=settings["pattern"],
+        )
+    except Exception:
+        return None
+    if status.get("error"):
+        return None
+    return UPDATE_AVAILABLE_NO_COUNT if status["update_available"] else 0
+
+
 def check_for_updates() -> Optional[int]:
     """Check whether a Hermes update is available.
 
@@ -476,6 +514,9 @@ def check_for_updates() -> Optional[int]:
             # update status. This is the Docker path (already short-circuited
             # above) or an unsupported install without a source tree.
             behind = None
+        elif _stable_tag_mode():
+            # Opt-in: notify only on stable releases, not every commit.
+            behind = _check_via_stable_tag(repo_dir)
         else:
             behind = _check_via_local_git(repo_dir)
 

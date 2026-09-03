@@ -3705,6 +3705,17 @@ DEFAULT_CONFIG = {
         # upstream installer is not appropriate for the machine, for example
         # on non-admin accounts where `/Applications` is not writable.
         "refresh_cua_driver": True,
+        # Update-check strategy. Default "branch" preserves the historical
+        # behaviour: compare the checkout against moving origin/main and
+        # offer an update for every commit pushed upstream. Set to
+        # "stable-tags" (or stable_tags: true) to instead compare against
+        # the newest stable release *tag* on the remote and notify only on
+        # actual releases, not every commit. Pattern/remote are overridable
+        # for forks that tag differently.
+        "check_strategy": "branch",
+        "stable_tags": False,
+        "stable_tag_pattern": "v[0-9]*",
+        "stable_tag_remote": "origin",
     },
 
     # Language Server Protocol — semantic diagnostics from real

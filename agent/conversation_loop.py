@@ -989,6 +989,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 bot_mode_session_state,
                 stored_bot_chat_prompt_needs_upgrade,
                 stored_prompt_capability_stale,
+                stored_prompt_has_bot_mode_protocol,
             )
 
             _home_for_epoch = None
@@ -1001,7 +1002,15 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             _routed_bot_mode = bool(
                 bot_mode_session_state(agent)["session_kind"]
             )
-            if _routed_bot_mode:
+            if not _routed_bot_mode and stored_prompt_has_bot_mode_protocol(
+                stored_prompt
+            ):
+                # A persisted Bot Mode prompt must not cross into a denied
+                # source (API/A2A/tool/etc.) for the same session ID. Rebuild
+                # once so the protocol and roster are removed; same-source
+                # continuations still restore byte-for-byte.
+                _bot_stale = True
+            elif _routed_bot_mode:
                 _bot_stale = stored_prompt_capability_stale(
                     stored_prompt, _home_for_epoch
                 )

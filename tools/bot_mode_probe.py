@@ -51,6 +51,9 @@ BOT_CHAT_TITLE = "Bot Chat"
 _lock = threading.Lock()
 _cached: dict[str, str] = {}
 _session_state_lock = threading.Lock()
+# Process bridge for agent recreation. The agent-local entry owns active-session
+# stability; this LRU only preserves a bounded window across object recreation.
+_SESSION_STATE_CACHE_MAX = 1024
 _session_state_cache: dict[tuple[str, str, str], dict] = {}
 
 
@@ -200,9 +203,12 @@ _MESSAGING_GATEWAY_SESSION_SOURCES = frozenset({
 
 def _session_source(agent: object) -> str:
     try:
-        return str(getattr(agent, "platform", "") or "").strip().lower()
+        from gateway.session_context import resolve_session_source
+
+        return str(resolve_session_source(getattr(agent, "platform", None))).strip().lower()
     except Exception:
-        return ""
+        # Resolver failures are authorization failures, never legacy CLI trust.
+        return "__untrusted__"
 
 
 def is_messaging_gateway_session(agent: object) -> bool:
@@ -214,6 +220,33 @@ def is_messaging_gateway_session(agent: object) -> bool:
     """
     try:
         return _session_source(agent) in _MESSAGING_GATEWAY_SESSION_SOURCES
+    except Exception:
+        return False
+
+
+def bot_mode_dispatch_authorized(
+    agent: object, home: str | os.PathLike | None = None
+) -> bool:
+    """Live, fail-closed authorization for a ``message_agent`` delivery.
+
+    Unlike the frozen presentation gate, this re-reads revocable config and
+    roster state immediately before dispatch. A cached prompt/schema may remain
+    byte-stable, but it cannot preserve delivery authority after Bot Mode is
+    disabled, the sender leaves the roster, or the authoritative source changes.
+    """
+    try:
+        if not bool(getattr(agent, "_bot_mode_protocol", True)):
+            return False
+        resolved = _absolute_without_symlink_resolution(
+            Path(home if home is not None else _agent_home(agent))
+        )
+        if not is_bot_mode_managed(resolved) or not is_bot_mode_roster_profile(resolved):
+            return False
+        source = _session_source(agent)
+        return (
+            source in _CANONICAL_BOT_CHAT_SESSION_SOURCES
+            and _session_title(agent) == BOT_CHAT_TITLE
+        ) or source in _MESSAGING_GATEWAY_SESSION_SOURCES
     except Exception:
         return False
 
@@ -273,14 +306,14 @@ def bot_mode_session_state(
     - ``None``        — gated: unmanaged installs, paths outside the profile
       roster, self-owned sessions, machine/API adapters, arbitrary sources.
 
-    The answer is frozen by profile home + persisted session identity +
-    normalized source for the process lifetime. The source component keeps the
-    API/A2A deny boundary intact when one persisted session is resumed by
-    agents on different platform adapters, and keeps a denied source from
-    poisoning a trusted classification; same-source recreation still hits the
-    cache, so the system prompt and tool schema stay byte-stable across a
-    conversation. Explicit ``home`` probes are uncached. Never raises; fails
-    closed to ``None``.
+    The answer is frozen on the agent by normalized source, and bridged across
+    same-session agent recreation by a bounded process LRU keyed by profile
+    home + persisted session identity + normalized source. The source component
+    keeps the API/A2A deny boundary intact when one persisted session is resumed
+    by agents on different adapters, and keeps a denied source from poisoning a
+    trusted classification. Eviction only ends cross-object reuse; a live
+    agent's local copy remains byte-stable for prompt/schema caching. Explicit
+    ``home`` probes are uncached. Never raises; fails closed to ``None``.
     """
     cache_key = None
     cached = None
@@ -318,7 +351,11 @@ def bot_mode_session_state(
             # persisted session reclassifies instead of reusing trust.
             cache_key = (resolved, session_id, source)
             with _session_state_lock:
-                cached = _session_state_cache.get(cache_key)
+                cached = _session_state_cache.pop(cache_key, None)
+                if cached is not None:
+                    # Dict insertion order is the LRU order. Refresh hits so
+                    # active conversations survive traffic-driven eviction.
+                    _session_state_cache[cache_key] = cached
             if cached is not None:
                 try:
                     setattr(agent, "_bot_mode_session_state", (source, cached))
@@ -349,7 +386,13 @@ def bot_mode_session_state(
     if home is None:
         if cache_key is not None:
             with _session_state_lock:
-                state = _session_state_cache.setdefault(cache_key, state)
+                existing = _session_state_cache.pop(cache_key, None)
+                if existing is not None:
+                    state = existing
+                _session_state_cache[cache_key] = state
+                limit = max(1, int(_SESSION_STATE_CACHE_MAX))
+                while len(_session_state_cache) > limit:
+                    _session_state_cache.pop(next(iter(_session_state_cache)), None)
         try:
             # Bind the agent-local copy to its normalized source so a later
             # call from a different platform adapter on the same persisted
@@ -667,6 +710,15 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
 def epoch_line(home: str | os.PathLike | None = None) -> str:
     """The epoch stamp appended to a Bot Chat prompt."""
     return f"{_EPOCH_PREFIX}{capability_fingerprint(home)}"
+
+
+def stored_prompt_has_bot_mode_protocol(stored_prompt: str) -> bool:
+    """True only for prompts stamped with the generated Bot Mode protocol."""
+    try:
+        prompt = stored_prompt or ""
+        return _EPOCH_PREFIX in prompt and _PROTOCOL_HEADING in prompt
+    except Exception:
+        return False
 
 
 def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:

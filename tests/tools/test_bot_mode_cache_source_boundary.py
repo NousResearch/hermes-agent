@@ -6,8 +6,11 @@ source must not poison a later trusted Bot Chat classification for that
 session. Covers the state helper, prompt injection, and dispatch.
 """
 
+import json
+
 import pytest
 
+from gateway.session_context import clear_session_vars, set_session_vars
 from tools import bot_mode_dm, bot_mode_probe
 
 
@@ -53,7 +56,7 @@ def _fresh():
     _reset()
 
 
-def test_cli_bot_chat_then_api_server_same_session_denied(tmp_path):
+def test_cli_bot_chat_then_api_server_same_session_denied(tmp_path, monkeypatch):
     """Trusted CLI Bot Chat cache entry must not leak to an API-server agent."""
     yuki_home, _Agent = _persisted_session(tmp_path)
 
@@ -70,12 +73,26 @@ def test_cli_bot_chat_then_api_server_same_session_denied(tmp_path):
     assert bot_mode_dm.ensure_message_agent_tool(api_agent) is False
     assert api_agent.tools == []
 
+    dispatched = False
+
+    def fake_spawn(*args, **kwargs):
+        nonlocal dispatched
+        dispatched = True
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setattr(bot_mode_dm, "_spawn_delivery", fake_spawn)
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="coder", message="blocked", agent=api_agent)
+    )
+    assert "error" in result
+    assert dispatched is False
+
     a2a_agent = _Agent("a2a", "Bot Chat")
     assert bot_mode_probe.bot_mode_session_state(a2a_agent)["session_kind"] is None
     assert bot_mode_dm.ensure_message_agent_tool(a2a_agent) is False
 
 
-def test_denied_source_does_not_poison_later_trusted_bot_chat(tmp_path):
+def test_denied_source_does_not_poison_later_trusted_bot_chat(tmp_path, monkeypatch):
     """A denied-source first classification must not suppress trusted routing."""
     yuki_home, _Agent = _persisted_session(tmp_path)
 
@@ -89,6 +106,19 @@ def test_denied_source_does_not_poison_later_trusted_bot_chat(tmp_path):
         "session_kind": "bot_chat",
     }
     assert bot_mode_dm.ensure_message_agent_tool(cli_agent) is True
+
+    captured = {}
+
+    def fake_spawn(command, label, *, dm_file=None, task_id=None, agent=None):
+        captured["label"] = label
+        return json.dumps({"status": "sent", "to": label})
+
+    monkeypatch.setattr(bot_mode_dm, "_spawn_delivery", fake_spawn)
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="coder", message="route", agent=cli_agent)
+    )
+    assert result["status"] == "sent"
+    assert captured["label"] == "@coder"
 
 
 def test_gateway_state_also_bound_to_source(tmp_path):
@@ -131,3 +161,94 @@ def test_gateway_state_also_bound_to_source(tmp_path):
     trusted = _Agent2("discord")
     assert bot_mode_probe.bot_mode_session_state(trusted)["session_kind"] == "gateway"
     assert bot_mode_dm.ensure_message_agent_tool(trusted) is True
+
+
+def test_authoritative_task_source_overrides_cli_platform(tmp_path, monkeypatch):
+    """A machine task source cannot borrow canonical Bot Chat CLI trust."""
+    _yuki_home, _Agent = _persisted_session(tmp_path)
+    agent = _Agent("cli", "Bot Chat")
+    dispatched = False
+
+    def fake_spawn(*args, **kwargs):
+        nonlocal dispatched
+        dispatched = True
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setattr(bot_mode_dm, "_spawn_delivery", fake_spawn)
+    tokens = set_session_vars(source="tool")
+    try:
+        assert bot_mode_probe.bot_mode_session_state(agent)["session_kind"] is None
+        assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+        result = json.loads(
+            bot_mode_dm.message_agent_tool(target="coder", message="blocked", agent=agent)
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert "error" in result
+    assert dispatched is False
+
+
+def test_same_agent_source_change_denies_dispatch_without_schema_churn(
+    tmp_path, monkeypatch
+):
+    """Source trust may tighten, but a live tool list stays byte-stable."""
+    _yuki_home, _Agent = _persisted_session(tmp_path)
+    agent = _Agent("cli", "Bot Chat")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    schema = json.dumps(agent.tools, sort_keys=True)
+    dispatched = False
+
+    def fake_spawn(*args, **kwargs):
+        nonlocal dispatched
+        dispatched = True
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setattr(bot_mode_dm, "_spawn_delivery", fake_spawn)
+    tokens = set_session_vars(source="tool")
+    try:
+        assert bot_mode_dm.ensure_message_agent_tool(agent) is False
+        assert json.dumps(agent.tools, sort_keys=True) == schema
+        result = json.loads(
+            bot_mode_dm.message_agent_tool(target="coder", message="blocked", agent=agent)
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert "error" in result
+    assert dispatched is False
+
+
+def test_dispatch_rechecks_live_bot_mode_authorization(tmp_path, monkeypatch):
+    """A cached schema grant cannot deliver after Bot Mode is revoked."""
+    yuki_home, _Agent = _persisted_session(tmp_path)
+    agent = _Agent("cli", "Bot Chat")
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+    (yuki_home / "profile.yaml").unlink()
+    dispatched = False
+
+    def fake_spawn(*args, **kwargs):
+        nonlocal dispatched
+        dispatched = True
+        return json.dumps({"status": "sent"})
+
+    monkeypatch.setattr(bot_mode_dm, "_spawn_delivery", fake_spawn)
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="coder", message="blocked", agent=agent)
+    )
+    assert "error" in result
+    assert dispatched is False
+
+
+def test_process_session_state_cache_evicts_oldest_entry(tmp_path, monkeypatch):
+    """Traffic-controlled session IDs cannot grow the process cache unbounded."""
+    _yuki_home, _Agent = _persisted_session(tmp_path)
+    monkeypatch.setattr(bot_mode_probe, "_SESSION_STATE_CACHE_MAX", 3)
+    for index in range(4):
+        agent = _Agent("discord", "Group: 1")
+        agent.session_id = f"traffic-{index}"
+        assert bot_mode_probe.bot_mode_session_state(agent)["session_kind"] == "gateway"
+    assert len(bot_mode_probe._session_state_cache) == 3
+    keys = list(bot_mode_probe._session_state_cache)
+    assert all(key[1] != "traffic-0" for key in keys)
+    assert any(key[1] == "traffic-3" for key in keys)

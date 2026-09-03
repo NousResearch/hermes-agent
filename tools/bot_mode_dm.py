@@ -24,9 +24,11 @@ Containment contract (MUST hold — reviewers check all three):
   excludes CLI, TUI, desktop, cron, kanban, subagent, webhook/API, agent-task,
   automation, and arbitrary sources. It is NOT registered in the global tool
   registry and is NOT part of any toolset.
-- Dispatch uses the same shared gate again at execution time (defense in
-  depth): a forged call from a session that shouldn't have the tool returns
-  a structured error instead of delivering.
+- Dispatch rechecks the frozen session classification and live authorization at
+  execution time (defense in depth): disabling Bot Mode, removing the sender
+  from the roster, or crossing to an API/task source revokes delivery without
+  mutating the prompt/tool schema. A forged or stale call returns a structured
+  error instead of delivering.
 - Everything here is additive. The legacy protocol transports
   (``hermes -p`` / ``hermes peer dm``) keep working for older prompts.
 
@@ -244,17 +246,19 @@ def message_agent_tool(
     the Bot Chat gate, the sender identity, and the session key so the
     spawned transport is tracked against the right session.
     """
-    # ── defense-in-depth gate: only a routed Bot Mode session may deliver ──
-    # Same shared answer as the injection gate (canonical Bot Chat, or a
-    # messaging-gateway chat of a managed profile); a forged call from a
-    # session that shouldn't have the tool returns a structured error
-    # instead of delivering.
+    # ── defense in depth: frozen presentation + live authorization ──────────
+    # The frozen answer keeps the prompt/schema stable. The live check revokes
+    # execution when Bot Mode, roster membership, or authoritative source trust
+    # changes after that schema was presented.
     home = _agent_home(agent)
     try:
-        from tools.bot_mode_probe import bot_mode_session_state
+        from tools.bot_mode_probe import (
+            bot_mode_dispatch_authorized,
+            bot_mode_session_state,
+        )
 
         state = bot_mode_session_state(agent)
-        if not state["session_kind"]:
+        if not state["session_kind"] or not bot_mode_dispatch_authorized(agent, home):
             return _err(
                 "message_agent is only available in a Bot Mode session — a "
                 "canonical 'Bot Chat' or a classified human messaging chat "

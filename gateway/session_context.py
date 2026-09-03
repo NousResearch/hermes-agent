@@ -416,6 +416,25 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def resolve_session_source(platform: str | None) -> str:
+    """Return the authoritative source for an agent-backed session.
+
+    A task-local ``HERMES_SESSION_SOURCE`` takes precedence over the agent's
+    platform. This is shared by persistence and authorization callers so a
+    machine/task turn cannot inherit trust from a human-facing platform hint.
+    """
+    try:
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        import os
+
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    source = str(source or "").strip()
+    if source:
+        return source
+    return platform or "cli"
+
+
 # Surfaces that are not a human chat channel. The gateway binds a platform
 # value (``telegram``) to HERMES_SESSION_PLATFORM, while the CLI, TUI, and
 # desktop bind HERMES_SESSION_SOURCE (``cli``, ``tui``, ``desktop``) and leave

@@ -290,6 +290,38 @@ class TestBotModeGatewayPromptRestore:
         agent._build_system_prompt.assert_not_called()
         agent._session_db.update_system_prompt.assert_not_called()
 
+    def test_bot_mode_prompt_is_not_restored_into_denied_task_source(
+        self, tmp_path, monkeypatch
+    ):
+        """A trusted CLI Bot Chat prompt cannot cross into a tool-owned turn."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import bot_mode_probe
+
+        bot_mode_probe._reset_cache_for_tests()
+        yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
+        stored = (
+            "trusted prompt\n"
+            "## Messaging other agents\n"
+            f"{bot_mode_probe.epoch_line(yuki_home)}\n"
+            "Platform: cli"
+        )
+        agent = self._gateway_agent(tmp_path, stored)
+        agent.platform = "cli"
+        agent._session_db.get_session_title.return_value = "Bot Chat"
+
+        tokens = set_session_vars(source="tool")
+        try:
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert agent._cached_system_prompt == "REBUILT GATEWAY PROMPT"
+        agent._session_db.update_system_prompt.assert_called_once_with(
+            agent.session_id, "REBUILT GATEWAY PROMPT"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Byte-stability invariant

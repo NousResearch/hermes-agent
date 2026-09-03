@@ -121,8 +121,8 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
         return False
 
 
-def _kill_port_process(port: int) -> None:
-    """Kill any process *listening* on the given TCP port (a stale bridge)."""
+def _kill_port_process(port: int, session_path: Path) -> None:
+    """Kill this session's bridge when it is listening on the given port."""
     try:
         if _IS_WINDOWS:
             from hermes_cli._subprocess_compat import windows_hide_flags
@@ -142,15 +142,18 @@ def _kill_port_process(port: int) -> None:
                             pid = int(parts[4])
                         except ValueError:
                             continue
-                        # Never taskkill a bare netstat-scanned PID: verify
-                        # the live process is a node bridge first (fail
-                        # closed). taskkill /F on a mistyped or recycled PID
-                        # is unrecoverable.
-                        if pid <= 0 or not _pid_looks_like_node_bridge(pid):
+                        if (
+                            pid <= 0
+                            or not _pid_looks_like_node_bridge(pid)
+                            or not _bridge_pid_is_ours(pid, session_path, None)
+                        ):
                             logger.warning(
-                                "[whatsapp] Not killing PID %s on port %d: "
-                                "process is not a node bridge (or identity "
-                                "unverifiable)", pid, port)
+                                "[whatsapp] Port %d is held by PID %d, which is not "
+                                "this session's bridge; leaving it running. Set "
+                                "platforms.whatsapp.extra.bridge_port to a free port.",
+                                port,
+                                pid,
+                            )
                             continue
                         try:
                             subprocess.run(
@@ -165,10 +168,17 @@ def _kill_port_process(port: int) -> None:
             # whose connection happens to involve this port number (a browser
             # tab on a local dev server, etc.) must never be killed.
             for pid in _listener_pids_on_port(port):
-                if not _pid_looks_like_node_bridge(pid):
+                if (
+                    not _pid_looks_like_node_bridge(pid)
+                    or not _bridge_pid_is_ours(pid, session_path, None)
+                ):
                     logger.warning(
-                        "[whatsapp] Not killing PID %s on port %d: process is "
-                        "not a node bridge (or identity unverifiable)", pid, port)
+                        "[whatsapp] Port %d is held by PID %d, which is not "
+                        "this session's bridge; leaving it running. Set "
+                        "platforms.whatsapp.extra.bridge_port to a free port.",
+                        port,
+                        pid,
+                    )
                     continue
                 try:
                     os.kill(pid, signal.SIGTERM)
@@ -716,7 +726,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             
             # Kill any orphaned bridge from a previous gateway run
             _kill_stale_bridge_by_pidfile(self._session_path)
-            _kill_port_process(self._bridge_port)
+            _kill_port_process(self._bridge_port, self._session_path)
             await asyncio.sleep(1)
             
             # Start the bridge process in its own process group.

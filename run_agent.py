@@ -5743,6 +5743,13 @@ class AIAgent:
                 self._client_log_context(),
                 exc,
             )
+        # Drop the reference to allow GC to reap the client and release FDs.
+        # This is safe because the client has already been shut down and is no
+        # longer in use. gc.collect() helps reclaim unreachable reference cycles
+        # (e.g. httpx pool to connection back-references).
+        del client
+        import gc
+        gc.collect()
 
     def _drain_transports_after_abandonment(self, *, reason: str) -> int:
         """FD-safe transport drain for an abandoned (timed-out) worker (#94248).

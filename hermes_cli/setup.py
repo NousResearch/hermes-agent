@@ -624,6 +624,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
         tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
+    elif tts_provider == "google_cloud":
+        tool_status.append(("Text-to-Speech (Google Cloud TTS)", True, None))
     elif tts_provider == "neutts":
         try:
             neutts_ok = importlib.util.find_spec("neutts") is not None
@@ -1165,7 +1167,9 @@ def _setup_tts_provider(config: dict):
         "xai": "xAI TTS",
         "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
-        "gemini": "Google Gemini TTS",
+        "gemini": "Google Gemini TTS (AI Studio)",
+        "vertex": "Vertex AI Gemini TTS (Google Cloud)",
+        "google_cloud": "Google Cloud TTS",
         "neutts": "NeuTTS",
         "kittentts": "KittenTTS",
     }
@@ -1189,12 +1193,14 @@ def _setup_tts_provider(config: dict):
             "xAI TTS (Grok voices — OAuth login or API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
             "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
-            "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)",
+            "Google Gemini TTS (AI Studio — 30 prebuilt voices, needs API key)",
+            "Vertex AI Gemini TTS (Google Cloud — gemini-2.5-flash-preview-tts with Kore/Puck)",
+            "Google Cloud TTS (Chirp 3 HD, Journey voices — Google Cloud credentials)",
             "NeuTTS (local on-device, free, ~300MB model download)",
             "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts"])
+    providers.extend(["edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "vertex", "google_cloud", "neutts", "kittentts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1357,6 +1363,103 @@ def _setup_tts_provider(config: dict):
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
+
+    elif selected == "vertex":
+        # Check for Application Default Credentials
+        adc_available = False
+        try:
+            import google.auth
+            google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            adc_available = True
+        except Exception:
+            pass
+
+        if adc_available:
+            print_success(
+                "Vertex AI Gemini TTS will use your Application Default Credentials "
+                "(from gcloud auth application-default login)"
+            )
+        else:
+            print_info(
+                "No Application Default Credentials found. You can authenticate by running:\n"
+                "  gcloud auth application-default login\n"
+                "Or provide a service account JSON file below."
+            )
+            sa_path = prompt("Service account JSON file path (optional, leave blank for ADC)")
+            if sa_path and sa_path.strip():
+                config.setdefault("tts", {}).setdefault("vertex", {})["credentials_file"] = sa_path.strip()
+                print_success(f"Service account path set to: {sa_path.strip()}")
+
+        print()
+        project_id = prompt("Google Cloud project ID (Enter to use default from credentials)")
+        if project_id and project_id.strip():
+            config.setdefault("tts", {}).setdefault("vertex", {})["project_id"] = project_id.strip()
+            print_success(f"Vertex AI project set to: {project_id.strip()}")
+        voice = prompt("Voice name (Enter for 'Kore' — or Puck, Fenrir, Zephyr, Aoede, Charon)")
+        if voice and voice.strip():
+            config.setdefault("tts", {}).setdefault("vertex", {})["voice"] = voice.strip()
+            print_success(f"Vertex AI voice set to: {voice.strip()}")
+
+    elif selected == "google_cloud":
+        # Check for Application Default Credentials first
+        adc_available = False
+        try:
+            import google.auth
+            google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            adc_available = True
+        except Exception:
+            pass
+
+        if adc_available:
+            print_success(
+                "Google Cloud TTS will use your Application Default Credentials "
+                "(from gcloud auth application-default login)"
+            )
+        else:
+            existing_cred = get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+            if existing_cred:
+                print_success(f"Google Cloud TTS will use credentials from: {existing_cred}")
+            else:
+                print()
+                print_info("Google Cloud TTS requires Google Cloud credentials.")
+                print_info("Options:")
+                print_info("  1. Run: gcloud auth application-default login")
+                print_info("  2. Provide a service account JSON key file")
+                print()
+                cred_path = prompt(
+                    "Service account JSON path (or Enter to skip and use gcloud later)"
+                )
+                if cred_path and cred_path.strip():
+                    if os.path.isfile(cred_path.strip()):
+                        save_env_value("GOOGLE_APPLICATION_CREDENTIALS", cred_path.strip())
+                        print_success("GOOGLE_APPLICATION_CREDENTIALS saved")
+                    else:
+                        print_warning(f"File not found: {cred_path.strip()}")
+                        print_warning("Falling back to Edge TTS. Configure credentials later.")
+                        selected = "edge"
+                else:
+                    print_info(
+                        "No credentials configured. Run 'gcloud auth application-default login' "
+                        "before using Google Cloud TTS."
+                    )
+
+        if selected == "google_cloud":
+            print()
+            print_info("Ensure the Cloud Text-to-Speech API is enabled:")
+            print_info("  https://console.cloud.google.com/apis/library/texttospeech.googleapis.com")
+            print()
+            project_id = prompt("Google Cloud project ID (Enter to use default from credentials)")
+            if project_id and project_id.strip():
+                config.setdefault("tts", {}).setdefault("google_cloud", {})["project_id"] = project_id.strip()
+                print_success(f"Google Cloud project set to: {project_id.strip()}")
+            voice = prompt("Voice name (Enter for 'en-US-Chirp3-HD-Charon')")
+            if voice and voice.strip():
+                config.setdefault("tts", {}).setdefault("google_cloud", {})["voice"] = voice.strip()
+                print_success(f"Google Cloud TTS voice set to: {voice.strip()}")
 
     elif selected == "kittentts":
         # Check if already installed

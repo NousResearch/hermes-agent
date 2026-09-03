@@ -1951,6 +1951,14 @@ DEFAULT_CONFIG = {
             "voice": "default",
             # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
         },
+        "google_cloud": {
+            "voice": "en-US-Chirp3-HD-Charon",
+            "language_code": "en-US",
+            "project_id": "",
+            "speaking_rate": 1.0,
+            "pitch": 0.0,
+            "credentials_file": "",
+        },
     },
 
     "stt": {

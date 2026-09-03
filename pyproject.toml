@@ -297,6 +297,7 @@ mistral = ["mistralai==2.4.8"]
 otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
+google-cloud-tts = ["google-cloud-texttospeech>=2.24.0", "google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.

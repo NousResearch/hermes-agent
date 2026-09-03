@@ -58,6 +58,8 @@ _BUILTIN_NAMES = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "google_cloud",
+    "vertex",
 })
 
 

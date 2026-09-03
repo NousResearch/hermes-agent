@@ -94,7 +94,7 @@ class TestBuiltinAlwaysWins:
     @pytest.mark.parametrize(
         "builtin",
         ["edge", "openai", "elevenlabs", "minimax", "gemini",
-         "mistral", "xai", "piper", "kittentts", "neutts"],
+         "mistral", "xai", "piper", "kittentts", "neutts", "deepinfra", "google_cloud", "vertex"],
     )
     def test_dispatcher_short_circuits_builtin(self, builtin):
         result = tts_tool._dispatch_to_plugin_provider(

@@ -360,13 +360,27 @@ TOOL_CATEGORIES = {
                 "tts_provider": "mistral",
             },
             {
-                "name": "Google Gemini TTS",
+                "name": "Google Gemini TTS (AI Studio)",
                 "badge": "preview",
-                "tag": "30 prebuilt voices, controllable via prompts",
+                "tag": "30 prebuilt voices, controllable via prompts (AI Studio API key)",
                 "env_vars": [
                     {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
                 ],
                 "tts_provider": "gemini",
+            },
+            {
+                "name": "Vertex AI Gemini TTS",
+                "badge": "vertex",
+                "tag": "gemini-2.5-flash-preview-tts with Kore/Puck — Google Cloud ADC",
+                "env_vars": [],
+                "tts_provider": "vertex",
+            },
+            {
+                "name": "Google Cloud TTS",
+                "badge": "paid",
+                "tag": "Chirp 3 HD, Journey voices — Google Cloud credentials",
+                "env_vars": [],  # Uses ADC, not a simple API key
+                "tts_provider": "google_cloud",
             },
             {
                 "name": "KittenTTS",

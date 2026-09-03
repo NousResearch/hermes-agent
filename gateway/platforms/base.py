@@ -1897,11 +1897,11 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         return None
 
     candidate = str(path).strip()
-    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
-        candidate = candidate[1:-1].strip()
     candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
     if not candidate:
         return None
+    if sys.platform == "win32" and len(candidate) >= 3 and candidate.startswith("/") and candidate[2] == "/" and candidate[1].isalpha():
+        candidate = f"{candidate[1].upper()}:{candidate[2:]}"
 
     try:
         expanded = Path(os.path.expanduser(candidate))

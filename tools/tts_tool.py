@@ -205,6 +205,25 @@ def _import_piper():
     return PiperVoice
 
 
+def _import_google_cloud_tts():
+    """Lazy import Google Cloud TTS client. Returns the module or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the ``google-cloud-texttospeech``
+    SDK gets installed on demand if the user picked Google Cloud as their TTS
+    provider but never ran the post-setup hook. Mirrors the ElevenLabs lazy-import
+    path.
+    """
+    try:
+        from tools.lazy_deps import ensure
+        ensure("tts.google_cloud", prompt=False)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    from google.cloud import texttospeech
+    return texttospeech
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -254,6 +273,9 @@ DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 # Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
+DEFAULT_GOOGLE_CLOUD_TTS_VOICE = "en-US-Chirp3-HD-Charon"
+DEFAULT_GOOGLE_CLOUD_TTS_LANGUAGE = "en-US"
+DEFAULT_GOOGLE_CLOUD_TTS_LOCATION = "global"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -305,6 +327,8 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "google_cloud": 5000, # https://cloud.google.com/text-to-speech/quotas; practical sync cap
+    "vertex": 32000,      # Vertex AI Gemini TTS context window
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -809,6 +833,8 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "kittentts",
     "piper",
     "deepinfra",
+    "google_cloud",
+    "vertex",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -2625,36 +2651,63 @@ def _compose_gemini_tts_prompt(
     return f"{preamble}\n\n{persona_prompt}\n\n#### TRANSCRIPT\n{transcript}".strip()
 
 
-def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate audio using Google Gemini TTS.
+def _generate_gemini_tts(
+    text: str,
+    output_path: str,
+    tts_config: Dict[str, Any],
+    provider: Optional[str] = None,
+) -> str:
+    """Generate audio using Google Gemini TTS (Google AI Studio or Vertex AI).
 
     Gemini's generateContent endpoint with responseModalities=["AUDIO"] returns
     raw 24kHz mono 16-bit PCM (L16) as base64. We wrap it with a WAV RIFF
     header to produce a playable file, then ffmpeg-convert to MP3 / Opus if
     the caller requested those formats (same pattern as NeuTTS).
 
+    Supports:
+      1. Google AI Studio (API key authentication via GEMINI_API_KEY)
+      2. Google Cloud Vertex AI (OAuth / ADC authentication via project_id & credentials)
+
     Args:
         text: Text to convert (prompt-style; supports inline direction like
               "Say cheerfully:" and audio tags like [whispers]).
         output_path: Where to save the audio file (.wav, .mp3, or .ogg).
         tts_config: TTS config dict.
+        provider: Active provider name ("gemini" or "vertex").
 
     Returns:
         Path to the saved audio file.
     """
     import requests
 
+    raw_gemini = tts_config.get("gemini")
+    raw_vertex = tts_config.get("vertex")
+    raw_gc = tts_config.get("google_cloud")
+
+    gemini_config = raw_gemini if isinstance(raw_gemini, dict) else (raw_vertex if isinstance(raw_vertex, dict) else {})
+    vertex_cfg = raw_vertex if isinstance(raw_vertex, dict) else {}
+    gc_cfg = raw_gc if isinstance(raw_gc, dict) else {}
+    provider_name = str(provider or tts_config.get("provider") or "").lower()
+
     api_key = (
         _resolve_provider_key("GEMINI_API_KEY", "gemini")
         or _resolve_provider_key("GOOGLE_API_KEY", "gemini")
     )
-    if not api_key:
+
+    use_vertex = (
+        provider_name == "vertex"
+        or bool(gemini_config.get("use_vertex"))
+        or bool(tts_config.get("vertex"))
+        or (bool(gemini_config.get("project_id")) and not api_key)
+        or (bool(vertex_cfg.get("project_id")) and not api_key)
+    )
+
+    if not use_vertex and not api_key:
         raise ValueError(
-            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey"
+            "GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey "
+            "or configure Vertex AI credentials."
         )
 
-    raw_gemini_config = tts_config.get("gemini") or {}
-    gemini_config = raw_gemini_config if isinstance(raw_gemini_config, dict) else {}
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
     base_url = str(
@@ -2671,17 +2724,17 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         gemini_config,
         persona_prompt=persona_prompt,
     )
-    max_len = _resolve_max_text_length("gemini", tts_config)
+    max_len = _resolve_max_text_length("vertex" if use_vertex else "gemini", tts_config)
     if len(prompt_text) > max_len:
         raise ValueError(
             "Gemini TTS composed prompt exceeds the provider request limit "
             f"({len(prompt_text)} > {max_len} chars). Reduce the persona/audio-tag "
-            "prompt or lower tts.gemini.max_text_length so long-form text is "
+            "prompt or lower max_text_length so long-form text is "
             "split with enough prompt headroom."
         )
 
     payload: Dict[str, Any] = {
-        "contents": [{"parts": [{"text": prompt_text}]}],
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
@@ -2692,23 +2745,101 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         },
     }
 
-    headers = {"Content-Type": "application/json"}
-    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
-        try:
-            import hermes_cli as _hermes_cli
+    if use_vertex:
+        # Vertex AI mode: Google Cloud ADC / Service Account OAuth authentication
+        import google.auth
+        import google.auth.transport.requests
 
-            _hermes_version = str(_hermes_cli.__version__)
-        except Exception:
-            _hermes_version = "0.0.0"
-        # Include Hermes client context following Gemini's partner
-        # integration guidance:
-        # https://ai.google.dev/gemini-api/docs/partner-integration
-        headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
+        cred_file = str(
+            gemini_config.get("credentials_file")
+            or vertex_cfg.get("credentials_file")
+            or gc_cfg.get("credentials_file")
+            or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+            or ""
+        ).strip()
+        if cred_file:
+            cred_file = os.path.expanduser(cred_file)
 
-    endpoint = f"{base_url}/models/{model}:generateContent"
+        default_proj = None
+        if cred_file:
+            if not os.path.isfile(cred_file):
+                raise ValueError(
+                    f"Vertex AI Gemini TTS credentials file not found: {cred_file}\n"
+                    "Verify the path in tts.vertex.credentials_file, "
+                    "tts.gemini.credentials_file, or GOOGLE_APPLICATION_CREDENTIALS."
+                )
+            from google.oauth2 import service_account
+            try:
+                creds = service_account.Credentials.from_service_account_file(
+                    cred_file,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+                default_proj = getattr(creds, "project_id", None)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to load Vertex AI service account credentials from {cred_file}.\n"
+                    "Ensure the file is a valid service account JSON key."
+                ) from e
+        else:
+            try:
+                creds, default_proj = google.auth.default(
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+            except Exception as e:
+                raise ValueError(
+                    "Vertex AI Gemini TTS authentication failed.\n\n"
+                    "No Google Application Default Credentials found.\n"
+                    "Run: gcloud auth application-default login\n"
+                    "Or set GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json"
+                ) from e
+
+        auth_req = google.auth.transport.requests.Request()
+        creds.refresh(auth_req)
+        token = creds.token
+
+        project_id = str(
+            gemini_config.get("project_id")
+            or vertex_cfg.get("project_id")
+            or gc_cfg.get("project_id")
+            or default_proj
+            or get_env_value("GOOGLE_CLOUD_PROJECT")
+            or ""
+        ).strip()
+        if not project_id:
+            raise ValueError(
+                "Vertex AI project ID is required for Gemini TTS. "
+                "Set tts.vertex.project_id or tts.gemini.project_id in ~/.hermes/config.yaml."
+            )
+
+        location = str(
+            gemini_config.get("location")
+            or vertex_cfg.get("location")
+            or gc_cfg.get("location")
+            or DEFAULT_GOOGLE_CLOUD_TTS_LOCATION
+        ).strip()
+        host = "aiplatform.googleapis.com" if location == "global" else f"{location}-aiplatform.googleapis.com"
+        endpoint = f"https://{host}/v1beta1/projects/{project_id}/locations/{location}/publishers/google/models/{model}:generateContent"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        params = None
+    else:
+        # AI Studio mode: API key parameter
+        endpoint = f"{base_url}/models/{model}:generateContent"
+        headers = {"Content-Type": "application/json"}
+        if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+            try:
+                import hermes_cli as _hermes_cli
+                _hermes_version = str(_hermes_cli.__version__)
+            except Exception:
+                _hermes_version = "0.0.0"
+            headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
+        params = {"key": api_key}
+
     response = requests.post(
         endpoint,
-        params={"key": api_key},
+        params=params,
         headers=headers,
         json=payload,
         timeout=60,
@@ -2796,6 +2927,253 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             pass
 
     return output_path
+
+
+# ===========================================================================
+# Google Cloud TTS (Chirp 3 HD, Journey, Neural2, Wavenet, etc.)
+# ===========================================================================
+
+def _resolve_google_cloud_credentials(gc_config: Dict[str, Any]):
+    """Resolve Google Cloud credentials for TTS.
+
+    Resolution order:
+      1. Explicit ``credentials_file`` in ``tts.google_cloud`` config
+      2. ``GOOGLE_APPLICATION_CREDENTIALS`` environment variable
+      3. Application Default Credentials (``gcloud auth application-default login``)
+
+    Returns a ``google.auth.credentials.Credentials`` instance or raises
+    ``ValueError`` with an actionable message.
+    """
+    import google.auth
+
+    # 1. Explicit credentials file from config
+    cred_file = str(gc_config.get("credentials_file") or "").strip()
+    if not cred_file:
+        cred_file = str(get_env_value("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if cred_file:
+        cred_file = os.path.expanduser(cred_file)
+
+    if cred_file:
+        if not os.path.isfile(cred_file):
+            raise ValueError(
+                f"Google Cloud TTS credentials file not found: {cred_file}\n"
+                "Verify the path in tts.google_cloud.credentials_file or "
+                "GOOGLE_APPLICATION_CREDENTIALS."
+            )
+        from google.oauth2 import service_account
+        try:
+            credentials = service_account.Credentials.from_service_account_file(
+                cred_file,
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            return credentials
+        except Exception as e:
+            raise ValueError(
+                f"Failed to load Google Cloud service account credentials "
+                f"from {cred_file}.\n"
+                "Ensure the file is a valid service account JSON key."
+            ) from e
+
+    # 2. Application Default Credentials
+    try:
+        credentials, project = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+        )
+        return credentials
+    except Exception as e:
+        raise ValueError(
+            "Google Cloud TTS authentication failed.\n\n"
+            "No valid Google Application Default Credentials were found.\n"
+            "Configure credentials using one of these methods:\n\n"
+            "  1. Run: gcloud auth application-default login\n"
+            "  2. Set GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json\n"
+            "  3. Set tts.google_cloud.credentials_file in ~/.hermes/config.yaml\n\n"
+            "Also ensure the Cloud Text-to-Speech API is enabled in your "
+            "Google Cloud project:\n"
+            "  https://console.cloud.google.com/apis/library/"
+            "texttospeech.googleapis.com"
+        ) from e
+
+
+def _generate_google_cloud_tts(
+    text: str, output_path: str, tts_config: Dict[str, Any],
+) -> str:
+    """Generate audio using Google Cloud Text-to-Speech.
+
+    Uses the official ``google-cloud-texttospeech`` SDK which handles
+    authentication via Application Default Credentials (ADC) or a service
+    account JSON file.
+
+    Args:
+        text: Text to convert to speech.
+        output_path: Where to save the audio file (.mp3 or .ogg).
+        tts_config: TTS config dict (``tts:`` section from config.yaml).
+
+    Returns:
+        Path to the saved audio file.
+    """
+    texttospeech = _import_google_cloud_tts()
+
+    raw_gc_config = tts_config.get("google_cloud") or {}
+    gc_config = raw_gc_config if isinstance(raw_gc_config, dict) else {}
+
+    voice_name = (
+        str(gc_config.get("voice", DEFAULT_GOOGLE_CLOUD_TTS_VOICE)).strip()
+        or DEFAULT_GOOGLE_CLOUD_TTS_VOICE
+    )
+    language_code = (
+        str(gc_config.get("language_code", DEFAULT_GOOGLE_CLOUD_TTS_LANGUAGE)).strip()
+        or DEFAULT_GOOGLE_CLOUD_TTS_LANGUAGE
+    )
+
+    # Resolve credentials
+    credentials = _resolve_google_cloud_credentials(gc_config)
+
+    # Build client with resolved credentials
+    client_kwargs: Dict[str, Any] = {"credentials": credentials}
+    # Optional project override
+    project_id = str(gc_config.get("project_id") or "").strip()
+    if project_id:
+        client_kwargs["client_options"] = {"quota_project_id": project_id}
+
+    try:
+        client = texttospeech.TextToSpeechClient(**client_kwargs)
+    except Exception as e:
+        raise ValueError(
+            f"Failed to create Google Cloud TTS client: {e}\n"
+            "Ensure your credentials are valid and the Cloud Text-to-Speech "
+            "API is enabled."
+        ) from e
+
+    # Build synthesis request
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    voice_params = texttospeech.VoiceSelectionParams(
+        language_code=language_code,
+        name=voice_name,
+    )
+
+    # Select audio encoding based on output extension
+    if output_path.lower().endswith(".ogg"):
+        audio_encoding = texttospeech.AudioEncoding.OGG_OPUS
+    elif output_path.lower().endswith(".wav"):
+        audio_encoding = texttospeech.AudioEncoding.LINEAR16
+    else:
+        audio_encoding = texttospeech.AudioEncoding.MP3
+
+    # Build AudioConfig with normalized kwargs
+    ac_kwargs: Dict[str, Any] = {"audio_encoding": audio_encoding}
+
+    # Optional speaking rate (0.25 - 4.0)
+    speaking_rate = gc_config.get("speaking_rate") or gc_config.get("speed")
+    if speaking_rate is not None:
+        try:
+            ac_kwargs["speaking_rate"] = max(0.25, min(4.0, float(speaking_rate)))
+        except (ValueError, TypeError):
+            pass
+
+    # Optional pitch (-20.0 - 20.0)
+    pitch = gc_config.get("pitch")
+    if pitch is not None:
+        try:
+            ac_kwargs["pitch"] = max(-20.0, min(20.0, float(pitch)))
+        except (ValueError, TypeError):
+            pass
+
+    audio_config = texttospeech.AudioConfig(**ac_kwargs)
+
+    # Synthesize
+    try:
+        response = client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice_params,
+            audio_config=audio_config,
+        )
+    except Exception as e:
+        error_str = str(e)
+        # Provide actionable error messages for common failures
+        if "403" in error_str or "PERMISSION_DENIED" in error_str:
+            raise RuntimeError(
+                "Google Cloud TTS permission denied.\n\n"
+                "Ensure the Cloud Text-to-Speech API is enabled in your "
+                "Google Cloud project:\n"
+                "  https://console.cloud.google.com/apis/library/"
+                "texttospeech.googleapis.com\n\n"
+                "And that your credentials have the "
+                "'Cloud Text-to-Speech API User' role or equivalent."
+            ) from e
+        if "404" in error_str or "NOT_FOUND" in error_str:
+            raise RuntimeError(
+                f"Google Cloud TTS resource not found: {e}\n\n"
+                "Check that your project_id and voice name are correct.\n"
+                f"  Voice: {voice_name}\n"
+                f"  Language: {language_code}"
+            ) from e
+        if "INVALID_ARGUMENT" in error_str:
+            raise RuntimeError(
+                f"Google Cloud TTS invalid argument: {e}\n\n"
+                f"Check your voice and language configuration:\n"
+                f"  Voice: {voice_name}\n"
+                f"  Language: {language_code}\n\n"
+                "Use 'hermes' to list available voices, or see:\n"
+                "  https://cloud.google.com/text-to-speech/docs/voices"
+            ) from e
+        raise RuntimeError(
+            f"Google Cloud TTS synthesis failed: {e}"
+        ) from e
+
+    if not response.audio_content:
+        raise RuntimeError("Google Cloud TTS returned empty audio data")
+
+    with open(output_path, "wb") as f:
+        f.write(response.audio_content)
+
+    return output_path
+
+
+def _list_google_cloud_voices(
+    tts_config: Optional[Dict[str, Any]] = None,
+    language_code: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """List available Google Cloud TTS voices.
+
+    This is a utility function for future dynamic voice discovery. It calls
+    the Google Cloud TTS ``list_voices`` API and returns structured metadata.
+
+    Args:
+        tts_config: TTS config dict. If None, loads from config.yaml.
+        language_code: Optional BCP-47 language filter (e.g. ``"en-US"``).
+
+    Returns:
+        List of dicts with keys: name, language_codes, gender, sample_rate_hertz.
+    """
+    texttospeech = _import_google_cloud_tts()
+
+    if tts_config is None:
+        tts_config = _load_tts_config()
+    gc_config = tts_config.get("google_cloud") or {}
+    if not isinstance(gc_config, dict):
+        gc_config = {}
+
+    credentials = _resolve_google_cloud_credentials(gc_config)
+    client = texttospeech.TextToSpeechClient(credentials=credentials)
+
+    request_kwargs: Dict[str, Any] = {}
+    if language_code:
+        request_kwargs["language_code"] = language_code
+
+    response = client.list_voices(**request_kwargs)
+
+    voices: List[Dict[str, Any]] = []
+    for voice in response.voices:
+        gender_name = texttospeech.SsmlVoiceGender(voice.ssml_gender).name
+        voices.append({
+            "name": voice.name,
+            "language_codes": list(voice.language_codes),
+            "gender": gender_name,
+            "sample_rate_hertz": voice.natural_sample_rate_hertz,
+        })
+
+    return voices
 
 
 # ===========================================================================
@@ -3525,7 +3903,7 @@ def _text_to_speech_single(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "google_cloud", "vertex"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -3612,9 +3990,21 @@ def _text_to_speech_single(
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
 
-        elif provider == "gemini":
-            logger.info("Generating speech with Google Gemini TTS...")
-            _generate_gemini_tts(text, file_str, tts_config)
+        elif provider in ("gemini", "vertex"):
+            logger.info("Generating speech with %s TTS...", "Vertex AI Gemini" if provider == "vertex" else "Google Gemini")
+            _generate_gemini_tts(text, file_str, tts_config, provider=provider)
+
+        elif provider == "google_cloud":
+            try:
+                _import_google_cloud_tts()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Google Cloud TTS provider selected but 'google-cloud-texttospeech' "
+                             "package not installed. Run: pip install google-cloud-texttospeech"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Google Cloud TTS...")
+            _generate_google_cloud_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -3732,7 +4122,7 @@ def _text_to_speech_single(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini", "google_cloud", "vertex"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -3881,7 +4271,7 @@ def text_to_speech_tool(
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             base_path = out_dir / f"tts_{timestamp}.{fmt}"
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "google_cloud", "vertex"}:
             base_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             base_path = out_dir / f"tts_{timestamp}.mp3"
@@ -4035,11 +4425,31 @@ def check_tts_requirements() -> bool:
             return bool(resolve_xai_http_credentials().get("api_key"))
         except Exception:
             return False
-    if provider == "gemini":
-        return bool(
-            _resolve_provider_key("GEMINI_API_KEY", "gemini")
-            or _resolve_provider_key("GOOGLE_API_KEY", "gemini")
-        )
+    if provider in ("gemini", "vertex"):
+        if _resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini"):
+            return True
+        raw_gemini = tts_config.get("gemini")
+        gemini_cfg = raw_gemini if isinstance(raw_gemini, dict) else {}
+        raw_vertex = tts_config.get("vertex")
+        vertex_cfg = raw_vertex if isinstance(raw_vertex, dict) else {}
+        raw_gc = tts_config.get("google_cloud")
+        gc_cfg = raw_gc if isinstance(raw_gc, dict) else {}
+        cred_file = str(
+            gemini_cfg.get("credentials_file")
+            or vertex_cfg.get("credentials_file")
+            or gc_cfg.get("credentials_file")
+            or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+            or ""
+        ).strip()
+        if cred_file:
+            cred_file = os.path.expanduser(cred_file)
+            return os.path.isfile(cred_file)
+        try:
+            import google.auth
+            google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            return True
+        except Exception:
+            return False
     if provider == "mistral":
         try:
             _import_mistral_client()
@@ -4052,6 +4462,29 @@ def check_tts_requirements() -> bool:
         return _check_kittentts_available()
     if provider == "piper":
         return _check_piper_available()
+    if provider == "google_cloud":
+        try:
+            _import_google_cloud_tts()
+        except ImportError:
+            return False
+        raw_gc = tts_config.get("google_cloud")
+        gc_cfg = raw_gc if isinstance(raw_gc, dict) else {}
+        cred_file = str(
+            gc_cfg.get("credentials_file")
+            or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+            or ""
+        ).strip()
+        if cred_file:
+            cred_file = os.path.expanduser(cred_file)
+            return os.path.isfile(cred_file)
+        try:
+            import google.auth
+            google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            return True
+        except Exception:
+            return False
 
     try:
         from agent.tts_registry import get_provider

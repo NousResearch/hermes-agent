@@ -14,16 +14,18 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with eleven providers:
+Convert text to speech with thirteen providers:
 
-| Provider | Quality | Cost | API Key |
-|----------|---------|------|---------|
+| Provider | Quality | Cost | API Key / Auth |
+|----------|---------|------|----------------|
 | **Edge TTS** (default) | Good | Free | None needed |
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` or `MINIMAX_CN_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
-| **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
+| **Google Gemini TTS (AI Studio)** | Excellent | Free tier | `GEMINI_API_KEY` |
+| **Vertex AI Gemini TTS** | Excellent | Paid / Cloud | Google Cloud ADC / Service Account |
+| **Google Cloud TTS (Chirp 3 HD)** | Excellent | Paid | Google Cloud credentials / ADC |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
 | **DeepInfra TTS** | Good | Paid | `DEEPINFRA_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
@@ -103,6 +105,13 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  google_cloud:
+    voice: "en-US-Chirp3-HD-Charon"             # e.g. en-US-Journey-F, en-US-Neural2-F
+    language_code: "en-US"                      # BCP-47 language code
+    project_id: ""                              # Optional: GCP project ID override
+    speaking_rate: 1.0                          # 0.25 - 4.0
+    pitch: 0.0                                  # -20.0 - 20.0
+    credentials_file: ""                        # Optional: path to service account JSON
 ```
 
 MiniMax TTS selects its region, endpoint, and credential together:
@@ -127,6 +136,30 @@ tts:
     voice: Algieba
     persona_prompt_file: ~/.hermes/tts/butler-voice.md
 ```
+
+### Google Cloud TTS (Chirp 3 HD, Journey, Neural2)
+
+Google Cloud Text-to-Speech provides studio-grade neural voices including Chirp 3 HD, Journey, Studio, and Neural2 families across 50+ languages.
+
+#### Setup & Authentication
+
+1. Enable the **Cloud Text-to-Speech API** in the [Google Cloud Console](https://console.cloud.google.com/apis/library/texttospeech.googleapis.com).
+2. Authenticate using either:
+   - **Application Default Credentials (ADC)** (recommended for local development):
+     ```bash
+     gcloud auth application-default login
+     ```
+   - **Service Account JSON**: Set `GOOGLE_APPLICATION_CREDENTIALS` in your `.env` or set `credentials_file` in `config.yaml`.
+
+```yaml
+tts:
+  provider: google_cloud
+  google_cloud:
+    voice: "en-US-Chirp3-HD-Charon"
+    language_code: "en-US"
+    speaking_rate: 1.0
+```
+
 
 ### Audio Tags (Gemini, xAI)
 

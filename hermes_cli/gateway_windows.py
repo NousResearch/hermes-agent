@@ -890,8 +890,9 @@ def windowless_gateway_restart_spec(
     env_overlay: dict[str, str] = {
         "PYTHONIOENCODING": "utf-8",
         "HERMES_GATEWAY_DETACHED": "1",
-        "VIRTUAL_ENV": str(venv_dir),
     }
+    if venv_dir and (Path(venv_dir) / "pyvenv.cfg").is_file():
+        env_overlay["VIRTUAL_ENV"] = str(venv_dir)
     if hermes_home:
         env_overlay["HERMES_HOME"] = hermes_home
     _prepend_pythonpath(

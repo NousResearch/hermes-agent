@@ -1509,6 +1509,20 @@ platform_toolsets:
 #     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
+#   vertex:
+#     model: "gemini-2.5-flash-preview-tts"  # or gemini-3.1-flash-tts-preview
+#     voice: "Kore"                          # Kore, Puck, Fenrir, Zephyr, Aoede, Charon, etc.
+#     project_id: ""                         # Optional: GCP project ID override (defaults to ADC project)
+#     location: "global"                     # global or regional (e.g. us-central1)
+#     audio_tags: false                      # Enable hidden Gemini 3.1 TTS audio-tag insertion
+#     persona_prompt_file: ""                # Optional Markdown/text file with voice direction
+#   google_cloud:
+#     voice: "en-US-Chirp3-HD-Charon"  # Voice name (e.g. en-US-Journey-F, en-US-Neural2-F)
+#     language_code: "en-US"           # BCP-47 language code
+#     project_id: ""                   # Optional: Google Cloud project ID (defaults to ADC project)
+#     speaking_rate: 1.0               # 0.25 - 4.0
+#     pitch: 0.0                       # -20.0 - 20.0
+#     credentials_file: ""             # Optional: path to service account JSON (or set GOOGLE_APPLICATION_CREDENTIALS)
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

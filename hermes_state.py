@@ -19,12 +19,14 @@ import atexit
 import contextlib
 import errno
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import queue
 import random
 import re
+import socket
 import sqlite3
 import struct
 import sys
@@ -35,6 +37,7 @@ import weakref
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from agent.memory_manager import sanitize_context
 from agent.session_activity import ActivityProvenance
@@ -8537,6 +8540,73 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception:
             return False
 
+    def archive_if_unreachable_local_endpoint(
+        self,
+        session_id: str,
+        *,
+        connect_timeout: float = 0.25,
+    ) -> bool:
+        """Archive an automatic-resume target whose loopback endpoint is down.
+
+        Only active rows with an explicit loopback HTTP endpoint are probed.
+        Remote, malformed, and reachable endpoints are left untouched. The
+        transcript remains stored so the session can still be exported.
+        """
+        if not session_id:
+            return False
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT model_config FROM sessions "
+                "WHERE id = ? AND ended_at IS NULL AND archived = 0",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return False
+
+        raw_config = row["model_config"] if isinstance(row, sqlite3.Row) else row[0]
+        try:
+            config = json.loads(raw_config or "{}")
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(config, dict):
+            return False
+
+        base_url = str(config.get("base_url") or "").strip()
+        try:
+            parsed = urlparse(base_url)
+            host = parsed.hostname
+            if parsed.scheme not in {"http", "https"} or not host:
+                return False
+            if host.lower() != "localhost":
+                try:
+                    if not ipaddress.ip_address(host).is_loopback:
+                        return False
+                except ValueError:
+                    return False
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            return False
+
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                return False
+        except OSError:
+            pass
+
+        archived_at = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ?, "
+                "end_reason = 'archived_local_endpoint_stale', archived = 1 "
+                "WHERE id = ? AND ended_at IS NULL AND archived = 0",
+                (archived_at, session_id),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
     def update_session_cwd(
         self,
         session_id: str,
@@ -14890,6 +14960,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         limit: int = 20,
         offset: int = 0,
         workspace_key: str = None,
+        include_archived: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions, optionally filtered by source.
 
@@ -14918,6 +14989,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)
             params.extend(ws_params)
+        if not include_archived:
+            where_clauses.append("s.archived = 0")
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         params.extend([limit, offset])
         with self._read_ctx() as conn:

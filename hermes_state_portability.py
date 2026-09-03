@@ -299,7 +299,9 @@ class SessionPortabilityMixin:
         Export all sessions (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
         """
-        sessions = self.search_sessions(source=source, limit=100000)
+        sessions = self.search_sessions(
+            source=source, limit=100000, include_archived=True
+        )
         results = []
         for session in sessions:
             messages = self.get_messages(session["id"])

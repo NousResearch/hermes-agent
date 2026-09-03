@@ -268,6 +268,17 @@ class TestListAndCleanup:
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 
+    def test_cleanup_removes_archived_db_only_session(self, manager):
+        state = manager.create_session()
+        db = manager._get_db()
+        db.set_session_archived(state.session_id, True)
+        with manager._lock:
+            del manager._sessions[state.session_id]
+
+        manager.cleanup()
+
+        assert db.get_session(state.session_id) is None
+
 
 
 

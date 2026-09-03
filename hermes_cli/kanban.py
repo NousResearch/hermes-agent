@@ -1107,8 +1107,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     # so a `--board other` call issued from inside a pinned worker session
     # (or any inherited env) resolves to `other`'s own DB, workspaces, and
     # attachments instead of being silently diverted back to the pinned
-    # board (#t4eff74eb class: cross-board writes landing on the wrong
-    # board). Calls with NO --board flag keep the historical resolution
+    # board. Calls with NO --board flag keep the historical resolution
     # (env pin wins) so worker behavior is unchanged.
     board_override = getattr(args, "board", None)
     board_scope = contextlib.nullcontext()

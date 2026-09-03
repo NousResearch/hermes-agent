@@ -527,6 +527,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
+        # Media album batching (ports Feishu adapter pattern).
+        # WhatsApp delivers album images as separate messages — without
+        # batching, each photo triggers a separate agent turn. Buffer
+        # rapid-fire media events from the same session into one turn.
+        self._media_batch_delay_seconds = self._coerce_float_extra(
+            "media_batch_delay_seconds", 3.0,
+        )
+        self._pending_media_batches: Dict[str, MessageEvent] = {}
+        self._pending_media_batch_tasks: Dict[str, asyncio.Task] = {}
+
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
 
@@ -922,6 +932,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # path (which runs from other tasks like send() and the poll loop)
         # doesn't race us and report the intentional termination as fatal.
         self._shutting_down = True
+        # Cancel pending media batches (attribute may not exist in
+        # lightweight test harnesses that skip full __init__)
+        for task in getattr(self, "_pending_media_batch_tasks", {}).values():
+            if not task.done():
+                task.cancel()
+        self._pending_media_batches = {}
+        self._pending_media_batch_tasks = {}
         if self._bridge_process:
             try:
                 try:
@@ -1394,6 +1411,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 asyncio.create_task(self._send_read_receipt(msg_data))
                                 if event.message_type == MessageType.TEXT:
                                     self._enqueue_text_event(event)
+                                elif event.message_type in (
+                                    MessageType.PHOTO,
+                                    MessageType.VIDEO,
+                                    MessageType.DOCUMENT,
+                                    MessageType.VOICE,
+                                    MessageType.AUDIO,
+                                    MessageType.STICKER,
+                                ):
+                                    await self._enqueue_media_event(event)
                                 else:
                                     await self.handle_message(event)
             except asyncio.CancelledError:
@@ -1492,6 +1518,81 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
+
+    # ── Media album batching (ports Feishu adapter pattern) ────────────────
+    def _media_batch_key(self, event: MessageEvent) -> str:
+        from gateway.session import build_session_key
+
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get(
+                "group_sessions_per_user", True
+            ),
+            thread_sessions_per_user=self.config.extra.get(
+                "thread_sessions_per_user", False
+            ),
+            profile=event.source.profile,
+        )
+        return f"{session_key}:media:{event.message_type.value}"
+
+    @staticmethod
+    def _media_batch_is_compatible(existing: MessageEvent, incoming: MessageEvent) -> bool:
+        return (
+            existing.message_type == incoming.message_type
+            and existing.reply_to_message_id == incoming.reply_to_message_id
+            and existing.reply_to_text == incoming.reply_to_text
+            and existing.source.thread_id == incoming.source.thread_id
+        )
+
+    async def _enqueue_media_event(self, event: MessageEvent) -> None:
+        """Buffer a media event and reset the flush timer (album batching)."""
+        key = self._media_batch_key(event)
+        existing = self._pending_media_batches.get(key)
+        if existing is None:
+            self._pending_media_batches[key] = event
+            self._schedule_media_batch_flush(key)
+            return
+        if not self._media_batch_is_compatible(existing, event):
+            await self._flush_media_batch_now(key)
+            self._pending_media_batches[key] = event
+            self._schedule_media_batch_flush(key)
+            return
+        existing.media_urls.extend(event.media_urls)
+        existing.media_types.extend(event.media_types)
+        if event.text:
+            existing.text = self._merge_caption(existing.text, event.text)
+        existing.timestamp = event.timestamp
+        if event.message_id:
+            existing.message_id = event.message_id
+        self._schedule_media_batch_flush(key)
+
+    def _schedule_media_batch_flush(self, key: str) -> None:
+        prior_task = self._pending_media_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_media_batch_tasks[key] = asyncio.create_task(
+            self._flush_media_batch(key)
+        )
+
+    async def _flush_media_batch(self, key: str) -> None:
+        """Wait for quiet period then dispatch aggregated media."""
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._media_batch_delay_seconds)
+            await self._flush_media_batch_now(key)
+        finally:
+            if self._pending_media_batch_tasks.get(key) is current_task:
+                self._pending_media_batch_tasks.pop(key, None)
+
+    async def _flush_media_batch_now(self, key: str) -> None:
+        event = self._pending_media_batches.pop(key, None)
+        if not event:
+            return
+        logger.info(
+            "[%s] Flushing media batch %s with %d attachment(s)",
+            self.name, key, len(event.media_urls),
+        )
+        await self.handle_message(event)
 
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""

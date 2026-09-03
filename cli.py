@@ -7011,7 +7011,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if focus_label:
                     text += f" · {focus_label}"
                 if yolo_active:
-                    text += " · ⚠ YOLO"
+                    # YOLO pinned to the very front of the bar
+                    text = "⚠ YOLO · " + text
                 return self._right_align_status_title(text, session_title, width)
             if width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
@@ -7035,7 +7036,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if focus_label:
                     parts.append(focus_label)
                 if yolo_active:
-                    parts.append("⚠ YOLO")
+                    # YOLO pinned to the very front of the bar
+                    parts.insert(0, "⚠ YOLO")
                 return self._right_align_status_title(" · ".join(parts), session_title, width)
 
             if snapshot["context_length"]:
@@ -7072,7 +7074,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if focus_label:
                 parts.append(focus_label)
             if yolo_active:
-                parts.append("⚠ YOLO")
+                # YOLO pinned to the very front of the bar
+                parts.insert(0, "⚠ YOLO")
             return self._right_align_status_title(" │ ".join(parts), session_title, width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -7214,6 +7217,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
+
+            # YOLO badge pinned to the very front of the bar (before battery),
+            # so the risky-mode state is always the first thing the user sees.
+            if yolo_active:
+                frags[0:0] = [
+                    ("class:status-bar-yolo", " ⚠ YOLO"),
+                    ("class:status-bar-dim", " │"),
+                ]
 
             # Stash indicator (📌 N) — appended after all width tiers so the
             # user always knows a parked draft exists, even on narrow

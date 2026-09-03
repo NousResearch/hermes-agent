@@ -56,3 +56,50 @@ def test_terminal_background_keeps_pty_for_regular_interactive_commands(monkeypa
 
     assert captured["use_pty"] is True
     assert "pty_note" not in result
+
+
+def test_terminal_handler_infers_background_when_pty_dependency_is_omitted(monkeypatch):
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return '{"ok":true}'
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+
+    result = json.loads(
+        terminal_tool_module._handle_terminal(
+            {
+                "command": "hermes auth add openai-codex --type oauth --no-browser",
+                "pty": True,
+                "timeout": 900,
+            },
+            task_id="test",
+        )
+    )
+
+    assert result == {"ok": True}
+    assert captured["background"] is True
+    assert captured["pty"] is True
+    assert captured["timeout"] == 900
+
+
+def test_terminal_handler_rejects_explicit_foreground_pty(monkeypatch):
+    called = False
+
+    def fake_terminal_tool(**_kwargs):
+        nonlocal called
+        called = True
+        return '{"ok":true}'
+
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", fake_terminal_tool)
+
+    result = json.loads(
+        terminal_tool_module._handle_terminal(
+            {"command": "python3", "background": False, "pty": True},
+            task_id="test",
+        )
+    )
+
+    assert "background=true" in result["error"]
+    assert called is False

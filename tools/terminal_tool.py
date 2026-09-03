@@ -4198,7 +4198,7 @@ TERMINAL_SCHEMA = {
             },
             "pty": {
                 "type": "boolean",
-                "description": "With background=true: run in a pseudo-terminal for interactive CLI tools (Codex, Claude Code, Python REPL). Local backend only. Default: false.",
+                "description": "Run in a tracked background pseudo-terminal for interactive CLIs. Implies background=true when omitted; explicit false is rejected. Local backend only. Default: false.",
                 "default": False
             },
             "notify": {
@@ -4235,9 +4235,14 @@ def _handle_terminal(args, **kw):
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
+    # A PTY is only useful as a tracked session. Recover the common dependent-
+    # argument omission without overriding an explicit foreground request.
+    background = args.get("background", False)
+    if args.get("pty", False) and "background" not in args:
+        background = True
     # Background-only modifiers on a foreground call were silently ignored;
     # fail with the corrected call instead (poka-yoke, no schema cost).
-    if not args.get("background", False):
+    if not background:
         if notify or watch_patterns or notify_on_complete:
             return tool_error(
                 "notify only applies to background commands (foreground "
@@ -4265,7 +4270,7 @@ def _handle_terminal(args, **kw):
             )
     return terminal_tool(
         command=args.get("command"),
-        background=args.get("background", False),
+        background=background,
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),

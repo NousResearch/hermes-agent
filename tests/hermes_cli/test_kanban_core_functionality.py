@@ -1513,9 +1513,12 @@ def test_multiple_attempts_preserved_as_runs(kanban_home):
             )
         kb.release_stale_claims(conn)
 
-        # Attempt 2: claim then crash (simulated: pid dead).
+        # Attempt 2: claim then crash (simulated: pid dead with exit code 1).
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
+        # Record exit status so the detector can classify it as "crashed"
+        # instead of "detector_gap" (requires dispatch_death_reason).
+        _kb._record_worker_exit(98765, 1 << 8, conn=conn)
         original_alive = _kb._pid_alive
         _kb._pid_alive = lambda pid: False
         try:
@@ -1547,6 +1550,8 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
+        # Record exit status so detector classifies as "crashed" not "detector_gap"
+        _kb._record_worker_exit(98765, 1 << 8, conn=conn)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -1588,6 +1593,8 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
         kb._set_worker_pid(conn, tid, 98765)
+        # Record exit status so detector classifies as "crashed" not "detector_gap"
+        _kb._record_worker_exit(98765, 1 << 8, conn=conn)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [tid]
 
@@ -4443,11 +4450,14 @@ def test_repeated_timeouts_trip_the_circuit_breaker(kanban_home, monkeypatch):
 
 def test_detect_crashed_workers_increments_counter(kanban_home):
     """A single crash increments the consecutive_failures counter."""
+    import hermes_cli.kanban_db as _kb
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="crashy", assignee="worker")
         kb.claim_task(conn, tid)
         kb._set_worker_pid(conn, tid, 99999)  # fake pid — not alive
+        # Record exit status so detector classifies as "crashed" not "detector_gap"
+        _kb._record_worker_exit(99999, 1 << 8, conn=conn)
 
         kb.detect_crashed_workers(conn)
 

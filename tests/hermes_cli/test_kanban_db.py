@@ -437,6 +437,147 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
 # Atomic claim (CAS)
 # ---------------------------------------------------------------------------
 
+def test_claim_task_stamps_active_profile_when_task_is_unassigned(kanban_home, monkeypatch):
+    monkeypatch.setattr(kb, "_claimer_id", lambda: "host:worker")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "producer")
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="unassigned")
+        assert kb.claim_task(conn, task_id) is not None
+        run = conn.execute(
+            "SELECT profile FROM task_runs WHERE task_id = ?", (task_id,)
+        ).fetchone()
+    assert run["profile"] == "producer"
+
+
+def test_claim_review_task_stamps_active_profile_when_task_is_unassigned(kanban_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "reviewer")
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="review")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (task_id,))
+        conn.commit()
+        assert kb.claim_review_task(conn, task_id) is not None
+        run = conn.execute(
+            "SELECT profile FROM task_runs WHERE task_id = ?", (task_id,)
+        ).fetchone()
+    assert run["profile"] == "reviewer"
+
+
+def test_synthetic_completion_run_stamps_active_profile_when_unassigned(kanban_home, monkeypatch):
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "operator")
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="manual completion")
+        assert kb.complete_task(conn, task_id, summary="closed") is True
+        run = conn.execute(
+            "SELECT profile FROM task_runs WHERE task_id = ?", (task_id,)
+        ).fetchone()
+    assert run["profile"] == "operator"
+
+
+def test_migration_run_stamps_normalized_profile_when_task_is_unassigned(
+    kanban_home, monkeypatch
+):
+    """The legacy running-task migration must use the same producer stamp."""
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "Migrator"
+    )
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy running task")
+        conn.execute(
+            "UPDATE tasks SET status = 'running', claim_lock = ?, "
+            "claim_expires = ?, worker_pid = ?, started_at = ?, "
+            "current_run_id = NULL WHERE id = ?",
+            ("host:worker", int(time.time()) + 60, 1234, int(time.time()), task_id),
+        )
+        conn.commit()
+
+        kb._migrate_add_optional_columns(conn)
+        run = conn.execute(
+            "SELECT profile FROM task_runs WHERE task_id = ?", (task_id,)
+        ).fetchone()
+
+    assert run["profile"] == "migrator"
+
+
+def test_run_profile_normalizes_legacy_assignee(kanban_home):
+    """Direct/legacy task rows cannot reintroduce mixed-case run profiles."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="legacy assignee")
+        conn.execute(
+            "UPDATE tasks SET assignee = ? WHERE id = ?", ("Reviewer", task_id)
+        )
+        conn.commit()
+        task_row = conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+
+    assert kb._run_profile(task_row) == "reviewer"
+
+
+def test_disposable_copy_before_after_profile_null_query(tmp_path, monkeypatch):
+    """Reproduce the old omitted-column write and verify all fixed paths."""
+
+    def open_copy(name):
+        path = tmp_path / name
+        kb._INITIALIZED_PATHS.discard(str(path.resolve()))
+        return kb.connect(path)
+
+    before = open_copy("before.sqlite")
+    before_task = kb.create_task(before, title="baseline omitted profile")
+    before.execute(
+        "INSERT INTO task_runs (task_id, status, started_at) "
+        "VALUES (?, 'done', ?)",
+        (before_task, int(time.time())),
+    )
+    before.commit()
+    before_nulls = before.execute(
+        "SELECT COUNT(*) AS n FROM task_runs WHERE profile IS NULL "
+        "AND started_at > strftime('%s', 'now', '-1 day')"
+    ).fetchone()["n"]
+    before.close()
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "copy-profile"
+    )
+    after = open_copy("after.sqlite")
+    claim_task = kb.create_task(after, title="ready claim")
+    kb.claim_task(after, claim_task, claimer="copy:claim")
+
+    review_task = kb.create_task(after, title="review claim")
+    after.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review_task,))
+    after.commit()
+    kb.claim_review_task(after, review_task, claimer="copy:review")
+
+    complete_task = kb.create_task(after, title="synthetic completion")
+    kb.complete_task(after, complete_task, summary="copy completion")
+
+    migration_task = kb.create_task(after, title="legacy running migration")
+    now = int(time.time())
+    after.execute(
+        "UPDATE tasks SET status = 'running', claim_lock = ?, "
+        "claim_expires = ?, worker_pid = ?, started_at = ?, "
+        "current_run_id = NULL WHERE id = ?",
+        ("copy:migration", now + 60, 1234, now, migration_task),
+    )
+    after.commit()
+    kb._migrate_add_optional_columns(after)
+
+    after_nulls = after.execute(
+        "SELECT COUNT(*) AS n FROM task_runs WHERE profile IS NULL "
+        "AND started_at > strftime('%s', 'now', '-1 day')"
+    ).fetchone()["n"]
+    profiles = [
+        row["profile"]
+        for row in after.execute(
+            "SELECT profile FROM task_runs ORDER BY id"
+        ).fetchall()
+    ]
+    after.close()
+
+    assert before_nulls == 1
+    assert after_nulls == 0
+    assert profiles == ["copy-profile"] * 4
+
+
 def test_claim_once_wins_second_loses(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -6490,4 +6631,3 @@ def test_absolute_max_trip_fires_delivered_failure_alert(kanban_home, monkeypatc
     assert ev["consecutive_failures"] == abs_max
     assert ev["kill_switch"] is True
     assert ev["fingerprint"] == f"kill-switch:absolute-max:{tid}"
-

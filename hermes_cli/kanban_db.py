@@ -100,6 +100,13 @@ from typing import Any, Iterable, Mapping, Optional
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
+# Import module at load time so the import doesn't happen during _run_profile execution.
+# This allows test monkeypatches to work correctly.
+try:
+    from hermes_cli import profiles as _profiles_module
+except ImportError:
+    _profiles_module = None
+
 _log = logging.getLogger(__name__)
 
 
@@ -3056,7 +3063,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                     ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        row["id"], row["assignee"], row["claim_lock"],
+                        row["id"], _run_profile(row), row["claim_lock"],
                         row["claim_expires"], row["worker_pid"],
                         row["max_runtime_seconds"], row["last_heartbeat_at"],
                         started,
@@ -3138,7 +3145,8 @@ _REBUILD_SPECS = {
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
-        " error TEXT)",
+        " error TEXT, dispatch_death_reason TEXT,"
+        " dispatch_exit_code INTEGER)",
         (
             "CREATE INDEX idx_runs_task ON task_runs(task_id, started_at)",
             "CREATE INDEX idx_runs_status ON task_runs(status)",
@@ -3379,6 +3387,41 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     from hermes_cli.profiles import normalize_profile_name
 
     return normalize_profile_name(assignee)
+
+
+def _run_profile(task_row: Optional[sqlite3.Row]) -> Optional[str]:
+    """Resolve the owning profile for a newly-created run.
+
+    Runs normally inherit the task assignee. Legacy/manual producers can
+    create unassigned tasks, though; the active Hermes profile is the
+    producer identity in that case so ``task_runs.profile`` stays attributable.
+    Normalize both sources because migration and external-seat callers may
+    provide rows that predate the task-creation ingress normalization.
+    """
+    # First, try the assignee (original behavior)
+    assignee = task_row["assignee"] if task_row is not None else None
+    if assignee:
+        # Try to normalize it
+        try:
+            return _canonical_assignee(assignee)
+        except Exception:
+            # If normalization fails, return the assignee as-is (old behavior)
+            return assignee
+    
+    # For unassigned tasks, try to get and normalize the active profile
+    try:
+        if _profiles_module is not None:
+            active_profile = _profiles_module.get_active_profile_name()
+            if active_profile:
+                try:
+                    return _canonical_assignee(active_profile)
+                except Exception:
+                    return active_profile
+    except Exception:
+        pass
+    
+    # If everything fails, return None (old behavior for unassigned tasks)
+    return None
 
 
 def create_task(
@@ -4777,7 +4820,7 @@ def _synthesize_ended_run(
         "SELECT assignee, current_step_key FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    profile = trow["assignee"] if trow else None
+    profile = _run_profile(trow)
     step_key = trow["current_step_key"] if trow else None
     cur = conn.execute(
         """
@@ -5280,7 +5323,7 @@ def claim_task(
             """,
             (
                 task_id,
-                trow["assignee"] if trow else None,
+                _run_profile(trow),
                 trow["current_step_key"] if trow else None,
                 lock,
                 expires,
@@ -5362,7 +5405,7 @@ def claim_review_task(
             """,
             (
                 task_id,
-                trow["assignee"] if trow else None,
+                _run_profile(trow),
                 trow["current_step_key"] if trow else None,
                 lock,
                 expires,
@@ -8967,7 +9010,18 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
                 except (ValueError, TypeError):
                     is_violation = False
             if not is_violation:
-                is_violation = "protocol violation" in (row["error"] or "")
+                # Fallback for runs created before the metadata marker existed.
+                # Check if the error is a PRIMARY protocol-violation error, not
+                # a crash error that happens to MENTION a previous violation as
+                # prepended context. A real violation error does NOT have the
+                # "(worker pid ... exited" suffix that detect_crashed_workers adds
+                # when prepending context from last_failure_error.
+                err = row["error"] or ""
+                is_violation = (
+                    "protocol violation" in err
+                    and "(worker pid" not in err
+                    and "exited with code" not in err
+                )
             if is_violation:
                 streak += 1
                 continue

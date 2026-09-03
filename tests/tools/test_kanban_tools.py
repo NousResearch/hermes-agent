@@ -1976,6 +1976,8 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     try:
         run1 = kb.latest_run(conn, worker_env)
         kb._set_worker_pid(conn, worker_env, 98765)
+        # Record exit status so detector classifies as "crashed" not "detector_gap"
+        _kb._record_worker_exit(98765, 1 << 8, conn=conn)
         monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [worker_env]

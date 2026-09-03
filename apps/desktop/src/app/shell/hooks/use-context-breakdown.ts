@@ -9,6 +9,27 @@ interface ContextBreakdownOptions {
   sessionId: null | string
 }
 
+// Early in a session's life the gateway may not have the session registered yet
+// (the RPC errors) or may have it registered without a hydrated agent (the RPC
+// answers `context_max: 0`). Both are racing the gateway's own startup, not
+// real answers — so retry a few times with a short gap before giving up.
+// Without this the gauge stays blank until a toggle or a sent message changes
+// an effect dependency and triggers the fetch again.
+const RETRY_LIMIT = 4
+const RETRY_DELAY_MS = 1_500
+
+function isUsable(breakdown: ContextBreakdown | undefined) {
+  // A zero ceiling means the backend has no hydration data yet, not an empty
+  // context — a session always has at least the system prompt below it.
+  return Boolean(breakdown && breakdown.context_max > 0)
+}
+
+function wait(ms: number) {
+  return new Promise<void>(resolve => {
+    setTimeout(resolve, ms)
+  })
+}
+
 /** The focused session's context breakdown, fetched as soon as the statusbar
  *  gauge is on screen rather than when its popover opens.
  *
@@ -38,18 +59,44 @@ export function useContextBreakdown({ busy, enabled, requestGateway, sessionId }
     let cancelled = false
     setLoading(true)
 
-    void requestGateway<ContextBreakdown>('session.context_breakdown', { session_id: sessionId })
-      .then(breakdown => {
-        if (!cancelled && breakdown) {
+    // Attempt is per effect run, so a dependency change (session switch,
+    // toggle, turn boundary) starts a fresh retry budget.
+    const fetchOnce = async (attempt: number): Promise<void> => {
+      try {
+        const breakdown = await requestGateway<ContextBreakdown>('session.context_breakdown', {
+          session_id: sessionId
+        })
+
+        if (!cancelled && isUsable(breakdown)) {
           setFetched({ breakdown, sessionId })
+
+          return
         }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
+      } catch {
+        // The gateway can answer "session not found" before registration —
+        // transient, same as an empty success. Fall through to the retry.
+      }
+
+      // Exhausted the budget (or got through): the caller's finally clears
+      // loading; retrying further would only spam the gateway.
+      if (cancelled || attempt >= RETRY_LIMIT) {
+        return
+      }
+
+      await wait(RETRY_DELAY_MS)
+
+      if (cancelled) {
+        return
+      }
+
+      await fetchOnce(attempt + 1)
+    }
+
+    void fetchOnce(0).finally(() => {
+      if (!cancelled) {
+        setLoading(false)
+      }
+    })
 
     return () => {
       cancelled = true

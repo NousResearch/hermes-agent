@@ -441,6 +441,66 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.server_error
 
+    # ── Local-inference-server model-load failure (#102044) ──
+
+    def test_500_model_load_failure_is_non_retryable_model_not_found(self):
+        """llama.cpp/LM Studio-style backends report a server-side model-load
+        failure (weights missing/corrupt/too large for available memory) as a
+        plain HTTP 500. The generic 5xx rule alone would retry the identical
+        request against the identical broken endpoint state until the retry
+        budget exhausts and the turn drops. Deterministic, so route it like a
+        missing model: don't retry, let a configured fallback model serve the
+        turn."""
+        e = MockAPIError(
+            "HTTP 500: model name=LFM2.5-2.6B-DSpark-Q8_0 failed to load",
+            status_code=500,
+        )
+        result = classify_api_error(e, provider="custom", model="LFM2.5-2.6B-DSpark-Q8_0")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_502_model_load_failure_is_non_retryable_model_not_found(self):
+        e = MockAPIError("model load failed: insufficient memory", status_code=502)
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "error loading model",
+            "unable to load model",
+            "could not load model",
+        ],
+    )
+    def test_500_model_load_failure_phrase_variants(self, phrase):
+        e = MockAPIError(phrase, status_code=500)
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_500_generic_server_error_unaffected(self):
+        """A plain 500 with no model-load signal must keep the existing
+        retryable server_error classification — the new pattern check must
+        not widen beyond the reported phrases."""
+        e = MockAPIError("Internal Server Error", status_code=500)
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_status_less_model_load_failure_from_local_shim(self):
+        """A local shim/custom provider that wraps the backend's error in a
+        generic exception loses the HTTP status code the same way transport
+        errors do — the message-pattern path must still catch it."""
+        e = RuntimeError("local shim: model load failed: out of memory")
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
+
     def test_503_overloaded(self):
         e = MockAPIError("Service Unavailable", status_code=503)
         result = classify_api_error(e)

@@ -421,6 +421,24 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no endpoints found that support tool use",
 ]
 
+# Local-inference-server model-load-failure patterns.  llama.cpp / llama-server,
+# LM Studio, and similar OpenAI-compatible backends report a server-side
+# model-load failure (weights missing/corrupt/too large for available memory)
+# as a plain HTTP 500 with no distinguishing status code of its own -- nothing
+# marks it as a 404-style "not found". Left unmatched, the generic 5xx rule
+# (see ``_classify_by_status``) treats it as a transient ``server_error`` and
+# blindly retries the identical request against the identical broken endpoint
+# state until the retry budget exhausts and the turn drops (#102044).
+# Deterministic, so route it like a missing model: don't retry, and let a
+# configured fallback model serve the turn instead.
+_MODEL_LOAD_FAILURE_PATTERNS = [
+    "failed to load",
+    "model load failed",
+    "error loading model",
+    "unable to load model",
+    "could not load model",
+]
+
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
     """True when a bare model id is only known to the provider as ``vendor/id``.
@@ -1488,6 +1506,18 @@ def _classify_by_status(
                 retryable=True,
                 should_compress=True,
             )
+        # Local-inference-server model-load failure (weights missing/corrupt/
+        # too large for available memory) reported as a plain HTTP 500 — see
+        # _MODEL_LOAD_FAILURE_PATTERNS. Deterministic: every retry against the
+        # same server hits the same broken endpoint state, so route it like a
+        # missing model instead of the generic retryable server_error below
+        # (#102044).
+        if any(p in error_msg for p in _MODEL_LOAD_FAILURE_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in {503, 529}:
@@ -2036,6 +2066,19 @@ def _classify_by_message(
 
     # Model not found patterns
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # Local-inference-server model-load failure with no HTTP status attached —
+    # generic exception types (e.g. RuntimeError) raised by local shims that
+    # wrap a llama.cpp / LM Studio "failed to load" body lose the status code
+    # the same way the timeout/connection cases below do. Same deterministic
+    # reasoning as the 500/502 branch in _classify_by_status (#102044): don't
+    # retry, let a configured fallback model serve the turn.
+    if any(p in error_msg for p in _MODEL_LOAD_FAILURE_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,

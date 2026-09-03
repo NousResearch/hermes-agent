@@ -462,10 +462,17 @@ def _rate_limit_state_for_hook(agent: Any) -> Any:
         if not is_dataclass(state):
             return None
         payload = asdict(state)
-        for bucket_name in ("requests_min", "requests_hour", "tokens_min", "tokens_hour"):
-            bucket = getattr(state, bucket_name, None)
-            if bucket is not None and isinstance(payload.get(bucket_name), dict):
-                payload[bucket_name]["usage_pct"] = bucket.usage_pct
+        # Attach each bucket's derived usage_pct by shape rather than by a
+        # hardcoded name list, so a future fifth bucket field serializes with
+        # its percentage instead of silently missing it (review nit, #101688).
+        for field_name, serialized in payload.items():
+            if not (isinstance(serialized, dict)
+                    and "limit" in serialized and "remaining" in serialized):
+                continue
+            bucket = getattr(state, field_name, None)
+            usage_pct = getattr(bucket, "usage_pct", None)
+            if usage_pct is not None:
+                serialized["usage_pct"] = usage_pct
         return payload
     except Exception:
         return None

@@ -136,6 +136,35 @@ def _action_result_from(
     # `path` records the rung that ran; this records what we asked for).
     delivery_mode = requested_delivery if isinstance(requested_delivery, str) else None
 
+    # `escalation.reason == "delivery_failed"` on a FOREGROUND action is not
+    # trustworthy on Linux/X11. Verified by observation: text typed with
+    # delivery_mode="foreground" lands correctly in the target widget while
+    # the driver reports delivery_failed for that same call. The driver has
+    # no read-back channel to confirm with — its own AT-SPI elements carry
+    # only role/label/frame/enabled and never a `value` — so "could not
+    # confirm" is being reported as "failed".
+    #
+    # Taken at face value this reads as "typing is broken", which is how an
+    # agent ends up retrying, escalating, and reporting a false blocker to
+    # the user. Annotate rather than suppress: a real failure looks identical
+    # from here, so the only sound move is a visual check.
+    if (
+        escalation
+        and escalation.get("reason") == "delivery_failed"
+        and delivery_mode == "foreground"
+        and sys.platform.startswith("linux")
+    ):
+        message = (
+            f"{message}\n\n" if message else ""
+        ) + (
+            "⚠️ The driver reports escalation.reason='delivery_failed', but on "
+            "Linux/X11 this signal is unreliable for foreground delivery — it "
+            "fires even when the input landed correctly, because the driver has "
+            "no way to read the target back. DO NOT treat this as proof of "
+            "failure and DO NOT retry blindly. Take a capture and look at the "
+            "target widget: if the text/effect is there, the action succeeded."
+        )
+
     return ActionResult(
         ok=ok,
         action=name,
@@ -4095,8 +4124,24 @@ class CuaDriverBackend(ComputerUseBackend):
         token = self._snapshot_tokens.get(idx)
         if not token:
             return
-        if not self._session.supports_capability(
-            "accessibility.element_tokens", tool=tool
+        # Two ways to establish support, in order of reliability:
+        #
+        #   1. The live input schema accepts `element_token` (tools/list).
+        #   2. The driver advertises the #1961 capability token.
+        #
+        # (1) is authoritative and must be checked first. cua-driver 0.21.0
+        # stopped publishing per-tool capability sets entirely — every tool
+        # reports `[]` — while still accepting `element_token` in its schema.
+        # Gating on (2) alone therefore fails closed on 0.21.x: we send a bare
+        # `element_index`, and the driver refuses the call outright with
+        # `snapshot_id_required`. That breaks EVERY element-targeted click,
+        # forcing agents onto blind pixel coordinates. (2) is retained so
+        # older drivers that shipped the vocabulary keep working.
+        if not (
+            self._session.supports_input_property(tool, "element_token")
+            or self._session.supports_capability(
+                "accessibility.element_tokens", tool=tool
+            )
         ):
             return
         args["element_token"] = token

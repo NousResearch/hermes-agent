@@ -217,6 +217,34 @@ def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] |
     slot_mt = _coerce_int_or_none(slot.get("max_tokens"))
     if slot_mt is not None:
         clean["max_tokens"] = slot_mt
+    # Optional per-slot advisory framing. Both absent by default, so existing
+    # presets normalize byte-identically.
+    #
+    #   ``prompt_hint`` — appended to the END of the stock advisory prompt. The
+    #     light-touch form: standard framing stays intact (no tools, never claim
+    #     to have executed anything) and a role nudge lands at the tail, which
+    #     also keeps the cacheable prefix stable across turns.
+    #   ``prompt`` — full replacement. Use sparingly: it silently drops the
+    #     stock guardrails.
+    #
+    # Purpose is response diversity. Stock MoA sends every reference the same
+    # framing, so N models return N correlated restatements (PRISM,
+    # arXiv:2602.08586: error correlation breaks on role diversity, not count).
+    # ``context_command``: host command run at fan-out whose stdout is appended
+    # last — real retrieved evidence for an advisor that cannot call tools.
+    _cc = slot.get("context_command")
+    if isinstance(_cc, str) and _cc.strip():
+        clean["context_command"] = _cc.strip()
+    elif isinstance(_cc, list) and _cc and all(isinstance(x, str) for x in _cc):
+        clean["context_command"] = [x for x in _cc]
+    # ``command_only``: the context_command output IS this advisor's answer;
+    # skip the model call. Only meaningful with context_command set.
+    if _coerce_bool(slot.get("command_only"), False):
+        clean["command_only"] = True
+    for _key in ("prompt", "prompt_hint"):
+        _val = slot.get(_key)
+        if isinstance(_val, str) and _val.strip():
+            clean[_key] = _val.strip()
     if include_enabled:
         clean["enabled"] = _coerce_bool(slot.get("enabled"), True)
     return clean

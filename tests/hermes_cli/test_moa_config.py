@@ -181,3 +181,101 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 
 
 
+
+
+def test_normalize_preserves_per_slot_reference_knobs():
+    """prompt_hint / prompt / context_command / command_only survive normalization.
+
+    Absent keys stay absent: existing presets must normalize byte-identically.
+    """
+    cfg = normalize_moa_config({
+        "default_preset": "p",
+        "presets": {
+            "p": {
+                "reference_models": [
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                        "prompt_hint": "act as the steelman",
+                        "context_command": ["/bin/echo", "evidence"],
+                        "command_only": True,
+                    },
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                        "prompt": "replacement framing",
+                    },
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                ],
+                "aggregator": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.8",
+                },
+            }
+        },
+    })
+    slots = cfg["presets"]["p"]["reference_models"]
+    assert slots[0]["prompt_hint"] == "act as the steelman"
+    assert slots[0]["context_command"] == ["/bin/echo", "evidence"]
+    assert slots[0]["command_only"] is True
+    assert slots[1]["prompt"] == "replacement framing"
+    assert "prompt_hint" not in slots[2]
+    assert "context_command" not in slots[2]
+    assert "command_only" not in slots[2]
+
+
+def test_normalize_coerces_command_only_from_string():
+    """command_only accepts the same boolean strings as other slot flags."""
+    cfg = normalize_moa_config({
+        "default_preset": "p",
+        "presets": {
+            "p": {
+                "reference_models": [
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                        "context_command": "/bin/echo",
+                        "command_only": "yes",
+                    },
+                ],
+                "aggregator": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.8",
+                },
+            }
+        },
+    })
+    slot = cfg["presets"]["p"]["reference_models"][0]
+    assert slot["context_command"] == "/bin/echo"
+    assert slot["command_only"] is True
+
+
+def test_normalize_preserves_command_only_without_context_command():
+    """command_only survives even without a command; runtime treats it as inert.
+
+    Without a context_command, _slot_context_block returns nothing usable and
+    the slot falls through to the model call — the flag alone changes nothing.
+    """
+    cfg = normalize_moa_config({
+        "default_preset": "p",
+        "presets": {
+            "p": {
+                "reference_models": [
+                    {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                        "command_only": True,
+                    },
+                ],
+                "aggregator": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.8",
+                },
+            }
+        },
+    })
+    slot = cfg["presets"]["p"]["reference_models"][0]
+    assert slot["command_only"] is True

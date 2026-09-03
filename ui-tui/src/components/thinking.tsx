@@ -24,7 +24,6 @@ import {
   pick,
   splitToolDuration,
   thinkingPreview,
-  toolCardCollapsedByDefault,
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -885,7 +884,7 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (parsed) {
       groups.push({
-        collapsedDefault: toolCardCollapsedByDefault(parsed.call.split('(')[0] ?? parsed.call),
+        collapsedDefault: true,
         color: parsed.mark === '✗' ? t.color.error : t.color.text,
         content: parsed.call,
         details: [],
@@ -946,7 +945,7 @@ export const ToolTrail = memo(function ToolTrail({
     const label = formatToolCall(tool.name, tool.context || '')
 
     groups.push({
-      collapsedDefault: toolCardCollapsedByDefault(tool.name),
+      collapsedDefault: true,
       color: t.color.text,
       key: tool.id,
       label,
@@ -1177,7 +1176,7 @@ export const ToolTrail = memo(function ToolTrail({
             const isDelegateGroup = group.label.startsWith('Delegate Task')
 
             const cardOpenByDefault =
-              visible.tools === 'expanded' && !group.collapsedDefault
+              visible.tools === 'expanded' && group.collapsedDefault === false
 
             return (
               <Box flexDirection="column" key={group.key}>

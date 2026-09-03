@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest'
 
 import { ToolTrail } from '../components/thinking.js'
 import { stripAnsi } from '../lib/text.js'
-import { toolCardCollapsedByDefault } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const flushEffects = async () => {
@@ -42,16 +41,6 @@ const mountTrail = (props: Record<string, unknown>) => {
 
   return { instance, text }
 }
-
-describe('toolCardCollapsedByDefault', () => {
-  it('collapses every tool card by default', () => {
-    expect(toolCardCollapsedByDefault('terminal')).toBe(true)
-    expect(toolCardCollapsedByDefault('web_search')).toBe(true)
-    expect(toolCardCollapsedByDefault('Web Search')).toBe(true)
-    expect(toolCardCollapsedByDefault('read_file')).toBe(true)
-    expect(toolCardCollapsedByDefault('patch')).toBe(true)
-  })
-})
 
 describe('ToolTrail compact cards', () => {
   it('renders a collapsed terminal card with name, duration, and 1-line preview', async () => {

@@ -1350,6 +1350,25 @@ def _classify_by_status(
         )
 
     if status_code == 413:
+        # OpenRouter free models return HTTP 413 "Payload Too Large" on
+        # capacity exhaustion — both when the model is genuinely at capacity
+        # and when the system prompt exceeds the free tier's capped context
+        # window.  The status code is wrong (should be 429 or 503) but the
+        # recovery is the same: retryable with fallback so the pool can
+        # rotate to a paid backup.  Classifying as payload_too_large with
+        # compress-retry is wrong: no amount of compression helps when the
+        # free tier itself is refusing, and the user cannot shrink their
+        # request past the already-cropped free-tier context ceiling (#96739).
+        if provider == "openrouter" and any(
+            p in error_msg
+            for p in ("free model", "capacity", "try again later",
+                      "exceeded", "rate limited", "overloaded")
+        ):
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.payload_too_large,
             retryable=True,

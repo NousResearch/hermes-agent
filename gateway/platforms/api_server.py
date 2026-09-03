@@ -1120,6 +1120,7 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
+    "Access-Control-Expose-Headers": "Location, X-Request-Id, Idempotency-Key",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
 }
@@ -1340,6 +1341,7 @@ if AIOHTTP_AVAILABLE:
         response = await handler(request)
         for k, v in _SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
+        response.headers.setdefault("Cache-Control", "no-store")
         return response
 else:
     security_headers_middleware = None  # type: ignore[assignment]

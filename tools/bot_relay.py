@@ -561,6 +561,44 @@ def _hermes_cli() -> str:
     return "hermes"
 
 
+def profile_model_cli_args(profile: str) -> list[str]:
+    """``--provider`` / ``-m`` flags from the *target* profile's config.yaml.
+
+    ``hermes -p <profile> chat`` sets HERMES_HOME, but a resumed Bot Chat
+    session restores the model stored on the session row. Under
+    ``gateway.multiplex_profiles`` that row can still carry the process-default
+    model from when the chat was first created, so the turn ignores the
+    target profile's ``model.default`` (#97035). Passing explicit CLI flags
+    sets ``_explicit_model_override`` and skips that restore.
+    """
+    from hermes_cli.config import read_user_config_raw, split_model_config_default
+    from hermes_cli.profiles import resolve_profile_env
+
+    try:
+        home = Path(resolve_profile_env(profile))
+    except (FileNotFoundError, ValueError, OSError):
+        return []
+    cfg = read_user_config_raw(home / "config.yaml")
+    if not isinstance(cfg, dict):
+        return []
+    model_cfg = cfg.get("model")
+    model = ""
+    provider = ""
+    if isinstance(model_cfg, str):
+        model = model_cfg.strip()
+    elif isinstance(model_cfg, dict):
+        raw_default = model_cfg.get("default") or model_cfg.get("model") or ""
+        model, nested_provider = split_model_config_default(raw_default)
+        provider = (nested_provider or str(model_cfg.get("provider") or "")).strip()
+        model = (model or "").strip()
+    args: list[str] = []
+    if provider and provider.lower() not in {"auto", ""}:
+        args.extend(["--provider", provider])
+    if model:
+        args.extend(["-m", model])
+    return args
+
+
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
     return [
@@ -574,6 +612,7 @@ def local_delivery_command(profile: str, query_file: str) -> list[str]:
         "Bot Chat",
         "--create-if-missing",
         "-Q",
+        *profile_model_cli_args(profile),
         "--query-file",
         query_file,
     ]

@@ -268,6 +268,42 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+def test_local_delivery_pins_target_profile_model(tmp_path, monkeypatch):
+    """Bot Chat resume must not keep the process-default model (#97035)."""
+    from tools.bot_relay import profile_model_cli_args
+
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    (home / "profiles" / "researcher" / "config.yaml").write_text(
+        "model:\n  default: stepfun/step-3.7-flash:free\n  provider: nous\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert profile_model_cli_args("researcher") == [
+        "--provider",
+        "nous",
+        "-m",
+        "stepfun/step-3.7-flash:free",
+    ]
+
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(
+            target="@researcher",
+            message="ping",
+            agent=agent,
+        )
+    )
+    assert result["status"] == "sent"
+    _mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+    assert transport_argv[-4:] == [
+        "--provider",
+        "nous",
+        "-m",
+        "stepfun/step-3.7-flash:free",
+    ]
+
+
 def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tmp_path, monkeypatch
 ):

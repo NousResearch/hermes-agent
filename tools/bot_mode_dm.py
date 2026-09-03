@@ -359,6 +359,8 @@ def message_agent_tool(
             return relayed
         return _err("You can't message yourself. Pick a teammate from the roster.")
 
+    from tools.bot_relay import profile_model_cli_args
+
     return _start_delivery(
         [
             "hermes",
@@ -371,6 +373,7 @@ def message_agent_tool(
             "Bot Chat",
             "--create-if-missing",
             "-Q",
+            *profile_model_cli_args(resolved),
         ],
         prefix + body,
         f"@{_handle(resolved)}",

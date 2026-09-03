@@ -48,9 +48,6 @@ const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfi
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
 const LOG_TAIL_LINES = 100
-const ACTION_POLL_INTERVAL_MS = 1200
-const ACTION_POLL_DEADLINE_MS = 5 * 60 * 1000
-const ACTION_POLL_REQUEST_TIMEOUT_MS = 5000
 
 const USAGE_PERIODS = [7, 30, 90] as const
 type UsagePeriod = (typeof USAGE_PERIODS)[number]
@@ -191,8 +188,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   }, [debouncedQuery, sessions])
 
   const refreshSystem = useCallback(async (): Promise<StatusResponse | null> => {
-    const requestId = systemRequestRef.current + 1
-    systemRequestRef.current = requestId
     setSystemLoading(true)
     setSystemError('')
 
@@ -202,7 +197,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         getLogs({
           file: logFile,
           level: logLevel,
-          lines: LOG_TAIL_LINES
+            lines: LOG_TAIL_LINES
         })
       ])
 
@@ -215,9 +210,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
 
       return nextStatus
     } catch (error) {
-      if (systemRequestRef.current === requestId) {
-        setSystemError(error instanceof Error ? error.message : String(error))
-      }
+      setSystemError(error instanceof Error ? error.message : String(error))
 
       return null
     } finally {
@@ -291,13 +284,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       setSystemError('')
       let actionSucceeded = false
 
-      // A profile served by the shared multiplexer restarts every bot on this device: ask first.
-      const shared = kind === 'restart' ? await confirmSharedGatewayRestart() : null
-
-      if (shared === false) {
-        return
-      }
-
       try {
         const started = kind === 'restart' ? await restartGateway() : await updateHermes()
         let nextStatus: ActionStatusResponse | null = null
@@ -308,12 +294,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         // status request so a hung endpoint cannot stretch this indefinitely.
         const actionDeadline = Date.now() + ACTION_POLL_DEADLINE_MS
 
-        while (Date.now() < actionDeadline) {
-          const delayMs = Math.min(ACTION_POLL_INTERVAL_MS, actionDeadline - Date.now())
-
-          await new Promise(resolve => window.setTimeout(resolve, delayMs))
-
-          if (Date.now() >= actionDeadline) {
+          if (!polled.running) {
+            actionSucceeded = polled.exit_code === 0
             break
           }
 
@@ -361,8 +343,6 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       } catch (error) {
         setSystemError(error instanceof Error ? error.message : String(error))
       } finally {
-        setSystemActionStarting(false)
-
         if (kind === 'restart' && actionSucceeded) {
           // Gateway startup can finish after the action process exits. Keep
           // the status card in sync instead of leaving a stale "stopped" pill.

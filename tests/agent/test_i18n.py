@@ -122,6 +122,24 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 
 
 
+def test_gateway_static_keys_render_korean():
+    """Same-class gateway bubbles format cleanly in Korean."""
+    i18n.reset_language_cache()
+    try:
+        steer = i18n.t("gateway.busy_ack.steer", lang="ko", status_detail="")
+        assert "지금 실행 중인 작업에 넣었습니다" in steer
+        assert "{status_detail}" not in steer
+        working = i18n.t("gateway.busy_ack.working", lang="ko", minutes=12, status_detail="")
+        assert "12" in working
+        assert "작업 중" in working
+        failed = i18n.t("gateway.session.request_failed", lang="ko", error="boom")
+        assert "boom" in failed
+        tip = i18n.t("gateway.onboarding.busy_steer", lang="ko")
+        assert "처음 안내" in tip
+    finally:
+        i18n.reset_language_cache()
+
+
 # ---------------------------------------------------------------------------
 # _locales_dir resolution ladder -- regression for #23943 / #27632 / #35374.
 # Sealed installs (Nix store venv, pip wheel) have no source tree next to

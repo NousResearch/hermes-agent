@@ -27,6 +27,43 @@ gateway:
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
   config_save_failed: "⚠️ 無法儲存設定：{error}"
 
+  busy_ack:
+    steer: "⏩ 已插入目前執行中的工作{status_detail}。下次工具呼叫後生效。"
+    redirect: "↪ 已依你的更正調整目前執行中的工作{status_detail}。"
+    queue_subagent: "⏳ 子代理作業中{status_detail} — 結束後處理你的訊息（用 /stop 取消全部）。"
+    queue_compression: "⏳ 正在壓縮上下文{status_detail} — 結束後處理你的訊息（用 /stop 取消全部）。"
+    queue: "⏳ 已排到下一輪{status_detail}。目前任務結束後回覆。"
+    interrupt: "⚡ 正在中斷目前任務{status_detail}。稍後回覆。"
+    status_elapsed: "已過 {minutes} 分鐘"
+    status_iteration: "迭代 {iteration}/{max_iter}"
+    status_running: "執行中: {tool}"
+    working: "⏳ 工作中 — {minutes} 分鐘{status_detail}"
+    queue_command: "已排到下一輪。"
+    queue_command_depth: "已排到下一輪。（已排隊 {depth} 則）"
+    queue_command_preview: "  已排到下一輪: {preview}"
+
+  onboarding:
+    busy_queue: "💡 首次提示 — 我把你的訊息排到下一輪，沒有中斷目前任務。傳送 `/busy interrupt` 可立即停下，或傳送 `/busy status` 查看。這則提示不會再出現。"
+    busy_steer: "💡 首次提示 — 我把你的訊息插入目前執行；它會在下次工具呼叫後生效，而不是中斷。傳送 `/busy interrupt` 或 `/busy queue` 可更改，或傳送 `/busy status` 查看。這則提示不會再出現。"
+    busy_redirect: "💡 首次提示 — 我用你的訊息調整了目前執行。已完成的工作仍在上下文中，`/stop` 仍可取消。傳送 `/busy queue` 等到下一輪，或傳送 `/busy status` 查看。這則提示不會再出現。"
+    busy_interrupt: "💡 首次提示 — 我剛中斷目前任務來回答你。傳送 `/busy queue` 把後續訊息排隊，傳送 `/busy steer` 在執行中插入，或傳送 `/busy status` 查看。這則提示不會再出現。"
+    busy_queue_cli: "(提示) 你的訊息已排到下一輪。用 /busy interrupt 讓 Enter 停下目前執行，或用 /busy steer 在執行中插入。這則提示只出現一次。"
+    busy_steer_cli: "(提示) 你的訊息已插入目前執行；下次工具呼叫後生效。用 /busy interrupt 或 /busy queue 更改。這則提示只出現一次。"
+    busy_redirect_cli: "(提示) 你的更正調整了目前執行，已完成的工作不會丟。用 /stop 取消，或用 /busy queue 等到下一輪。這則提示只出現一次。"
+    busy_interrupt_cli: "(提示) 你的訊息中斷了目前執行。用 /busy queue 排到下一輪，或用 /busy steer 在執行中插入。這則提示只出現一次。"
+    tool_progress: "💡 首次提示 — 那個工具花了較長時間，我正在推送每一步。如果進度訊息太吵，傳送 `/verbose` 循環模式（all → new → off）。這則提示不會再出現。"
+    tool_progress_cli: "(提示) 那個工具執行了一段時間。用 /verbose 循環工具進度顯示（all -> new -> off -> verbose）。這則提示只出現一次。"
+
+  session:
+    storage_disk: "⚠️ 工作階段儲存暫時無法使用，已停止此輪以保護對話紀錄。請檢查可用磁碟空間，然後再次傳送訊息。"
+    storage_retry: "⚠️ 工作階段儲存暫時無法使用，已停止此輪以保護對話紀錄。你的訊息應該已經儲存 — 請稍後再傳送一次。"
+    too_large: "⚠️ 工作階段超出模型上下文視窗。\n使用 /compact 壓縮對話，或使用 /reset 重新開始。"
+    request_failed: "請求失敗：{error}\n請重試，或使用 /reset 開始新工作階段。"
+    interrupted_before_start: "⚠️ 訊息在開始處理前被中斷（可能是最近的 /stop）。請再傳送一次。"
+    processing_stopped: "⚠️ 處理已停止：{error}。請重試。"
+    no_response: "⚠️ 處理已完成但沒有產生回覆。這可能是暫時錯誤 — 請再傳送一次訊息。"
+    not_processed: "⚠️ 訊息未被處理（上一輪仍在清理）。請再傳送一次。"
+
   model:
     error_prefix:           "錯誤：{error}"
     switched:               "已切換模型為 `{model}`"

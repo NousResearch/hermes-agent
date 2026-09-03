@@ -226,6 +226,38 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_steer_ack_follows_display_language(self, monkeypatch):
+        """Busy-ack copy comes from the i18n catalog, not a hardcoded English string."""
+        import gateway.run as _gr
+        from agent import i18n
+
+        monkeypatch.delenv("HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED", raising=False)
+        monkeypatch.setenv("HERMES_LANGUAGE", "ko")
+        i18n.reset_language_cache()
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        try:
+            runner, _sentinel = _make_runner()
+            runner._busy_input_mode = "steer"
+            adapter = _make_adapter()
+
+            event = _make_event(text="한글화 확인")
+            sk = build_session_key(event.source)
+            runner.adapters[event.source.platform] = adapter
+
+            agent = MagicMock()
+            agent.steer = MagicMock(return_value=True)
+            runner._running_agents[sk] = agent
+
+            await runner._handle_active_session_busy_message(event, sk)
+
+            content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+            assert "지금 실행 중인 작업에 넣었습니다" in content
+            assert "Steered into current run" not in content
+        finally:
+            monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+            i18n.reset_language_cache()
+
+    @pytest.mark.asyncio
     async def test_steer_mode_transcribes_voice_before_injection(self, monkeypatch):
         """A busy voice follow-up is transcribed and steered, never queued."""
         import gateway.run as _gr

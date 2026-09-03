@@ -27,6 +27,43 @@ gateway:
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
   config_save_failed: "⚠️ 設定を保存できませんでした: {error}"
 
+  busy_ack:
+    steer: "⏩ 実行中の処理に差し込みました{status_detail}。次のツール呼び出しの後に反映されます。"
+    redirect: "↪ 実行中の処理を修正します{status_detail}。いまの指示で方向を変えます。"
+    queue_subagent: "⏳ サブエージェント作業中{status_detail} — 終了後にメッセージを処理します（全部キャンセルは /stop）。"
+    queue_compression: "⏳ コンテキストを圧縮中{status_detail} — 終了後にメッセージを処理します（全部キャンセルは /stop）。"
+    queue: "⏳ 次のターンにキューしました{status_detail}。今の作業が終わってから返信します。"
+    interrupt: "⚡ 今の作業を中断します{status_detail}。すぐ返信します。"
+    status_elapsed: "{minutes}分経過"
+    status_iteration: "反復 {iteration}/{max_iter}"
+    status_running: "実行中: {tool}"
+    working: "⏳ 作業中 — {minutes}分{status_detail}"
+    queue_command: "次のターンにキューしました。"
+    queue_command_depth: "次のターンにキューしました。（{depth} 件待機）"
+    queue_command_preview: "  次のターンにキュー: {preview}"
+
+  onboarding:
+    busy_queue: "💡 初回ヒント — 中断せず、メッセージを次のターンにキューしました。すぐ止めるには `/busy interrupt`、確認は `/busy status`。この案内は再表示されません。"
+    busy_steer: "💡 初回ヒント — 実行中の処理に差し込みました。次のツール呼び出しの後に反映され、中断しません。変更は `/busy interrupt` または `/busy queue`、確認は `/busy status`。この案内は再表示されません。"
+    busy_redirect: "💡 初回ヒント — いまの指示で実行中の処理を修正します。完了した作業は残り、`/stop` でキャンセルできます。次のターンまで待つなら `/busy queue`、確認は `/busy status`。この案内は再表示されません。"
+    busy_interrupt: "💡 初回ヒント — 今の作業を止めて、このメッセージに答えます。キューするなら `/busy queue`、中断せず差し込むなら `/busy steer`、確認は `/busy status`。この案内は再表示されません。"
+    busy_queue_cli: "(tip) メッセージを次のターンにキューしました。Enter で今の実行を止めるなら /busy interrupt、差し込むなら /busy steer。この案内は一度だけ出ます。"
+    busy_steer_cli: "(tip) メッセージを実行中の処理に差し込みました。次のツール呼び出しの後に届きます。変更は /busy interrupt または /busy queue。この案内は一度だけ出ます。"
+    busy_redirect_cli: "(tip) 修正で実行中の処理を切り替えました。完了した作業は残ります。キャンセルは /stop、次のターンまで待つなら /busy queue。この案内は一度だけ出ます。"
+    busy_interrupt_cli: "(tip) メッセージが今の実行を中断しました。次のターンにキューするなら /busy queue、差し込むなら /busy steer。この案内は一度だけ出ます。"
+    tool_progress: "💡 初回ヒント — そのツールに時間がかかり、各ステップを送っています。うるさい場合は `/verbose` でモードを切り替えてください（all → new → off）。この案内は再表示されません。"
+    tool_progress_cli: "(tip) そのツールはしばらく動いていました。/verbose で進捗表示を切り替えてください（all -> new -> off -> verbose）。この案内は一度だけ出ます。"
+
+  session:
+    storage_disk: "⚠️ セッション保存が一時的に使えなかったため、履歴を守るためにこのターンを止めました。ディスク空き容量を確認してから、もう一度送ってください。"
+    storage_retry: "⚠️ セッション保存が一時的に使えなかったため、履歴を守るためにこのターンを止めました。メッセージは保存済みのはずです。少ししてからもう一度送ってください。"
+    too_large: "⚠️ セッションがモデルのコンテキスト窓を超えています。\n/compact で会話を圧縮するか、/reset でやり直してください。"
+    request_failed: "リクエストに失敗しました: {error}\n再試行するか、/reset で新しいセッションを始めてください。"
+    interrupted_before_start: "⚠️ 処理開始前にメッセージが中断されました（直前の /stop の可能性があります）。もう一度送ってください。"
+    processing_stopped: "⚠️ 処理が止まりました: {error}。再試行してください。"
+    no_response: "⚠️ 処理は終わりましたが返信が作られませんでした。一時的なエラーかもしれません。もう一度送ってみてください。"
+    not_processed: "⚠️ メッセージを処理できませんでした（前のターンをまだ片付けていました）。もう一度送ってください。"
+
   model:
     error_prefix:           "エラー: {error}"
     switched:               "モデルを `{model}` に切り替えました"

@@ -1,9 +1,12 @@
 # Hermes static-message catalog -- English (baseline / source of truth)
 #
-# Only user-facing static messages from the CLI approval prompt and a handful
-# of gateway slash-command replies live here.  Agent-generated output, log
-# lines, error tracebacks, tool outputs, and slash-command descriptions stay
-# in English and are NOT translated -- see agent/i18n.py for scope rationale.
+# Only user-facing static messages from the CLI approval prompt, a handful
+# of gateway slash-command replies, and the remaining gateway static bubbles
+# (busy-input acknowledgements, first-time tips, /queue, the Working
+# heartbeat, and session-failure notices) live here.  Agent-generated
+# output, log lines, error tracebacks, tool outputs, and slash-command
+# descriptions stay in English and are NOT translated -- see agent/i18n.py
+# for scope rationale.
 #
 # Keys are dotted paths; nesting below is purely for readability.  Values may
 # contain {placeholder} tokens for str.format substitution.  When adding a
@@ -37,6 +40,44 @@ gateway:
   no_active_goal:   "No active goal."
   config_read_failed: "⚠️ Could not read config.yaml: {error}"
   config_save_failed: "⚠️ Could not save config: {error}"
+
+  # Busy-input acknowledgements, /queue, and the long-running heartbeat.
+  busy_ack:
+    steer: "⏩ Steered into current run{status_detail}. Your message arrives after the next tool call."
+    redirect: "↪ Redirected current run{status_detail}. I'll adjust using your correction."
+    queue_subagent: "⏳ Subagent working{status_detail} — your message is queued for when it finishes (use /stop to cancel everything)."
+    queue_compression: "⏳ Compressing context{status_detail} — your message is queued for when it finishes (use /stop to cancel everything)."
+    queue: "⏳ Queued for the next turn{status_detail}. I'll respond once the current task finishes."
+    interrupt: "⚡ Interrupting current task{status_detail}. I'll respond to your message shortly."
+    status_elapsed: "{minutes} min elapsed"
+    status_iteration: "iteration {iteration}/{max_iter}"
+    status_running: "running: {tool}"
+    working: "⏳ Working — {minutes} min{status_detail}"
+    queue_command: "Queued for the next turn."
+    queue_command_depth: "Queued for the next turn. ({depth} queued)"
+    queue_command_preview: "  Queued for the next turn: {preview}"
+
+  onboarding:
+    busy_queue: "💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages stop the current task immediately, or `/busy status` to check. This notice won't appear again."
+    busy_steer: "💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't appear again."
+    busy_redirect: "💡 First-time tip — I redirected the current run using your message. Completed work stays in context, and `/stop` still cancels the task. Send `/busy queue` to wait for a separate turn, or `/busy status` to check. This notice won't appear again."
+    busy_interrupt: "💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check. This notice won't appear again."
+    busy_queue_cli: "(tip) Your message was queued for the next turn. Use /busy interrupt to make Enter stop the current run instead, or /busy steer to inject mid-run. This tip only shows once."
+    busy_steer_cli: "(tip) Your message was steered into the current run; it arrives after the next tool call. Use /busy interrupt or /busy queue to change this. This tip only shows once."
+    busy_redirect_cli: "(tip) Your correction redirected the current run without discarding completed work. Use /stop to cancel or /busy queue to wait for a separate turn. This tip only shows once."
+    busy_interrupt_cli: "(tip) Your message interrupted the current run. Use /busy queue to queue messages for the next turn instead, or /busy steer to inject mid-run. This tip only shows once."
+    tool_progress: "💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again."
+    tool_progress_cli: "(tip) That tool ran for a while. Use /verbose to cycle tool-progress display modes (all -> new -> off -> verbose). This tip only shows once."
+
+  session:
+    storage_disk: "⚠️ Session storage was temporarily unavailable, so this turn was stopped to protect your conversation history. Please check available disk space, then send your message again."
+    storage_retry: "⚠️ Session storage was temporarily unavailable, so this turn was stopped to protect your conversation history. Your message should already be saved — please send it again in a moment."
+    too_large: "⚠️ Session too large for the model's context window.\nUse /compact to compress the conversation, or /reset to start fresh."
+    request_failed: "The request failed: {error}\nTry again or use /reset to start a fresh session."
+    interrupted_before_start: "⚠️ Your message was interrupted before processing started (likely by a recent /stop). Please send it again."
+    processing_stopped: "⚠️ Processing stopped: {error}. Try again."
+    no_response: "⚠️ Processing completed but no response was generated. This may be a transient error — try sending your message again."
+    not_processed: "⚠️ Your message wasn't processed (the previous turn was still being cleaned up). Please send it again."
 
   # /model command output -- shown after a model switch or when listing models.
   # Provider names, model IDs, capability strings, and cost figures are NOT

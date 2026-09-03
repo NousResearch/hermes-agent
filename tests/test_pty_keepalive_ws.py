@@ -31,7 +31,9 @@ def pty_keepalive_harness(monkeypatch):
     spawned = Spawned()
     spawned.bridges = []
 
-    def fake_spawn(argv, cwd=None, env=None):
+    def fake_spawn(argv, cwd=None, env=None, preexec_fn=None):
+        # preexec_fn: the chat handler now passes a (possibly-None) uid-drop
+        # hook through to PtyBridge.spawn (#94847); the harness ignores it.
         b = FakeBridge()
         spawned.append(argv)
         spawned.bridges.append(b)

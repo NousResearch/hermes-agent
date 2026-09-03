@@ -37,7 +37,7 @@ import struct
 import sys
 import termios
 import time
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 try:
     import ptyprocess  # type: ignore
@@ -118,8 +118,13 @@ class PtyBridge:
         env: Optional[dict] = None,
         cols: int = 80,
         rows: int = 24,
+        preexec_fn: Optional[Callable[[], None]] = None,
     ) -> "PtyBridge":
         """Spawn ``argv`` behind a new PTY and return a bridge.
+
+        ``preexec_fn`` runs in the forked child before the target program
+        starts (same contract as :class:`subprocess.Popen`) — the dashboard
+        chat uses it to drop root to the selected profile's owner (#94847).
 
         Raises :class:`PtyUnavailableError` if the platform can't host a
         PTY.  Raises :class:`FileNotFoundError` or :class:`OSError` for
@@ -157,6 +162,7 @@ class PtyBridge:
             list(argv),
             cwd=cwd,
             env=spawn_env,
+            preexec_fn=preexec_fn,
             dimensions=(rows, cols),
         )
         return cls(proc)

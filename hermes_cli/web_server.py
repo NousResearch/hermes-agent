@@ -16946,6 +16946,90 @@ def _build_gateway_ws_url() -> Optional[str]:
     return f"ws://{netloc}/api/ws?{qs}"
 
 
+def _profile_chat_demotion(profile: Optional[str]):
+    """Fail-closed uid demotion for profile-scoped dashboard chats (#94847).
+
+    When the dashboard runs as root and the selected profile dir is owned by
+    another OS user, the chat child must run as that owner: spawning it as
+    root lets an ordinary UI action write root-owned state into the profile
+    (projects.db, notices) that the profile's own gateway then cannot read.
+    Returns ``(preexec_fn, env_overrides, error_message)``:
+
+    - root server + non-root-owned profile dir → a ``preexec_fn`` that does
+      setgid/setgroups/setuid to the dir owner, plus HOME/USER/LOGNAME
+      overrides so the child's dotfile writes land in the owner's home.
+    - root server + root-owned profile dir, non-root server, or the
+      server's own profile → ``(None, None, None)`` (no change).
+    - the drop cannot be computed (stat fails) → an error message; the
+      caller must refuse the chat rather than silently spawn root against
+      a non-root profile.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None, None, None
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return None, None, None
+    try:
+        profile_dir = _resolve_profile_dir(requested)
+        stat_result = os.stat(profile_dir)
+    except Exception as exc:
+        return None, None, (
+            f"Chat unavailable: cannot inspect profile dir for ownership ({exc})"
+        )
+    if stat_result.st_uid == 0:
+        return None, None, None
+    gid = stat_result.st_gid
+    home = username = None
+    try:
+        import pwd
+
+        pw = pwd.getpwuid(stat_result.st_uid)
+        gid = pw.pw_gid
+        home = pw.pw_dir
+        username = pw.pw_name
+    except (KeyError, ImportError, OSError):
+        pass  # owner not in passwd: still drop by raw uid/gid from the dir
+
+    target_uid = stat_result.st_uid
+    target_gid = gid
+
+    def _drop_to_profile_owner() -> None:
+        # Order matters: drop supplementary groups, then gid, then uid —
+        # each step retains the privilege needed for the next one. A failed
+        # supplementary-group drop must kill the child before exec: letting
+        # it continue would leave root's supplementary groups (docker, disk,
+        # …) attached to the demoted process, keeping group-reachable
+        # privileged files open — so the OSError propagates, ptyprocess
+        # _exit(1)s the child before exec, and the ws handler reports the
+        # refused spawn (#94847). With a passwd entry, initgroups keeps the
+        # owner's own legitimate group memberships instead of collapsing to
+        # the single primary gid.
+        if username is not None:
+            os.initgroups(username, target_gid)
+        else:
+            os.setgroups([target_gid])
+        os.setgid(target_gid)
+        os.setuid(target_uid)
+
+    env_overrides: dict = {}
+    if home:
+        env_overrides["HOME"] = home
+    if username:
+        env_overrides["USER"] = username
+        env_overrides["LOGNAME"] = username
+    # Root's own session handles must not survive the drop: the demoted
+    # child runs as another OS user and must not reach root's ssh-agent or
+    # runtime-bus sockets. None marks "strip this variable" for the caller.
+    for _session_var in (
+        "SSH_AUTH_SOCK",
+        "SSH_AGENT_PID",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+    ):
+        env_overrides[_session_var] = None
+    return _drop_to_profile_owner, env_overrides, None
+
+
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
@@ -17754,8 +17838,26 @@ async def pty_ws(ws: WebSocket) -> None:
         # Key explicit resumes on their canonical target, never the active-session fallback.
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
 
+    # Root-run dashboard + non-root-owned profile dir: the child must run as
+    # the profile's owner, and a drop that cannot be computed must REFUSE the
+    # chat — spawning root against a non-root profile corrupts its state
+    # (#94847).
+    demote_preexec, demote_env, demote_err = _profile_chat_demotion(profile)
+    if demote_err:
+        await ws.send_text(f"\r\n\x1b[31m{demote_err}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
+    if demote_env:
+        # None-valued entries strip the variable (root's session handles);
+        # everything else overrides it.
+        for _k, _v in demote_env.items():
+            if _v is None:
+                env.pop(_k, None)
+            else:
+                env[_k] = _v
+
     def _spawn():
-        return PtyBridge.spawn(argv, cwd=cwd, env=env)
+        return PtyBridge.spawn(argv, cwd=cwd, env=env, preexec_fn=demote_preexec)
 
     if attach_token is None:
         # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).

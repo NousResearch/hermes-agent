@@ -2145,3 +2145,18 @@ updates:
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
 #   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+
+# ----------------------------------------------------------------------
+# Cron paging allowlist (optional)
+# ----------------------------------------------------------------------
+# Cron jobs do not own the paging decision. When enabled, chat deliveries
+# (telegram, discord, slack, ...) are suppressed at send time unless the
+# job name or id is listed in the allowlist file (one entry per line, "#"
+# comments allowed). Suppressed deliveries are audited and the withheld
+# payload is saved under output_root for review.
+# cron:
+#   paging:
+#     enabled: false
+#     allowlist_path: ~/.hermes/cron/page-allowlist.txt
+#     audit_log_path: ~/.hermes/cron/alerts/delivery-gate.log
+#     output_root: ~/.hermes/cron/output

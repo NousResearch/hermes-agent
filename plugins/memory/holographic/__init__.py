@@ -369,6 +369,10 @@ class HolographicMemoryProvider(MemoryProvider):
     # -- Auto-extraction (on_session_end) ------------------------------------
 
     def _auto_extract_facts(self, messages: list) -> None:
+        store = self._store
+        if store is None:
+            return
+
         # Local import (pattern used in initialize()): the compressor module is
         # heavier than this plugin and is only needed when auto_extract is on.
         from agent.context_compressor import (
@@ -402,11 +406,20 @@ class HolographicMemoryProvider(MemoryProvider):
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
             re.compile(r'\bmy\s+(?:favorite|preferred|default)\s+\w+\s+is\s+(.+)', re.IGNORECASE),
             re.compile(r'\bI\s+(?:always|never|usually)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bя\s+(?:предпочитаю|люблю|использую|хочу|не\s+люблю)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bмне\s+(?:нравится|удобнее|важно)\s+(.+)', re.IGNORECASE),
         ]
         _DECISION_PATTERNS = [
             re.compile(r'\bwe\s+(?:decided|agreed|chose)\s+(?:to\s+)?(.+)', re.IGNORECASE),
             re.compile(r'\bthe\s+project\s+(?:uses|needs|requires)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bмы\s+(?:решили|договорились|выбрали)\s+(.+)', re.IGNORECASE),
+            re.compile(r'\bпроект\s+(?:использует|требует)\s+(.+)', re.IGNORECASE),
         ]
+        _EXPLICIT_MEMORY_PATTERN = re.compile(
+            r'^\s*(?:запомни|помни|сохрани\s+в\s+память)'
+            r'(?:\s*[:,-]\s*|\s+)(.+)',
+            re.IGNORECASE | re.DOTALL,
+        )
 
         extracted = 0
         for msg in messages:
@@ -429,10 +442,21 @@ class HolographicMemoryProvider(MemoryProvider):
             if not isinstance(content, str) or len(content) < 10:
                 continue
 
+            explicit = _EXPLICIT_MEMORY_PATTERN.match(content)
+            if explicit:
+                fact_content = explicit.group(1).strip()
+                if fact_content:
+                    try:
+                        store.add_fact(fact_content[:400], category="general")
+                        extracted += 1
+                    except Exception:
+                        pass
+                continue
+
             for pattern in _PREF_PATTERNS:
                 if pattern.search(content):
                     try:
-                        self._store.add_fact(content[:400], category="user_pref")
+                        store.add_fact(content[:400], category="user_pref")
                         extracted += 1
                     except Exception:
                         pass
@@ -441,7 +465,7 @@ class HolographicMemoryProvider(MemoryProvider):
             for pattern in _DECISION_PATTERNS:
                 if pattern.search(content):
                     try:
-                        self._store.add_fact(content[:400], category="project")
+                        store.add_fact(content[:400], category="project")
                         extracted += 1
                     except Exception:
                         pass

@@ -122,6 +122,40 @@ def test_real_user_messages_still_extracted_alongside_summary(tmp_path):
     provider.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("message", "expected", "category"),
+    [
+        ("Я предпочитаю краткие ответы по-русски", "краткие ответы", "user_pref"),
+        ("Мы решили использовать PostgreSQL для хранения", "PostgreSQL", "project"),
+        ("Запомни: рабочая папка проекта — ~/src/app", "рабочая папка", "general"),
+    ],
+)
+def test_russian_durable_facts_are_extracted(tmp_path, message, expected, category):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(message)])
+
+    assert provider._store is not None
+    facts = provider._store.list_facts(limit=100)
+    assert len(facts) == 1
+    assert expected in facts[0]["content"]
+    assert facts[0]["category"] == category
+    provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Помнишь, как мы познакомились?",
+        "Запомнилась поездка в Казань прошлым летом",
+    ],
+)
+def test_russian_words_starting_with_memory_verbs_are_not_extracted(tmp_path, message):
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user(message)])
+    assert _fact_contents(provider) == []
+    provider.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # is_compaction_summary_message — public helper contract
 # ---------------------------------------------------------------------------

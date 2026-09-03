@@ -8,8 +8,12 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -118,19 +122,35 @@ describe('applyRuntimeInfo foreground scoping', () => {
   beforeEach(() => {
     setCurrentCwd('/main-repo')
     setCurrentBranch('main')
+    setCurrentModel('manual-model')
+    setCurrentProvider('manual-provider')
   })
 
   afterEach(() => {
     setCurrentCwd('')
     setCurrentBranch('')
+    setCurrentModel('')
+    setCurrentProvider('')
   })
 
-  it('publishes a foreground runtime into the composer atoms', () => {
-    const patch = applyRuntimeInfo({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+  it('publishes session-scoped runtime fields without replacing the sticky composer model', () => {
+    const patch = applyRuntimeInfo({
+      branch: 'bb/feature',
+      cwd: '/main-repo/worktree',
+      model: 'fallback-model',
+      provider: 'fallback-provider'
+    })
 
     expect($currentCwd.get()).toBe('/main-repo/worktree')
     expect($currentBranch.get()).toBe('bb/feature')
-    expect(patch).toMatchObject({ branch: 'bb/feature', cwd: '/main-repo/worktree' })
+    expect($currentModel.get()).toBe('manual-model')
+    expect($currentProvider.get()).toBe('manual-provider')
+    expect(patch).toMatchObject({
+      branch: 'bb/feature',
+      cwd: '/main-repo/worktree',
+      model: 'fallback-model',
+      provider: 'fallback-provider'
+    })
   })
 
   it('keeps a background runtime out of the composer atoms but still returns its patch', () => {

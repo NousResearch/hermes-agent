@@ -91,6 +91,19 @@ def _load_security_config() -> dict:
 # Auto-install
 # ---------------------------------------------------------------------------
 
+
+def _tirith_auto_install_allowed() -> bool:
+    """Return whether Hermes may download Tirith at runtime.
+
+    Tirith is a binary rather than a Python dependency, but it is still a
+    runtime install and therefore obeys the same user-facing kill switch as
+    every lazy backend dependency.
+    """
+    from tools.lazy_deps import _allow_lazy_installs
+
+    return _allow_lazy_installs()
+
+
 # Cached path after first resolution (avoids repeated shutil.which per command).
 # _INSTALL_FAILED means "we tried and failed" — prevents retry on every command.
 _resolved_path: str | None | bool = None
@@ -391,6 +404,9 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     failure_reason is a short tag used by the disk marker to decide if the
     failure is retryable (e.g. "cosign_missing" clears when cosign appears).
     """
+    if not _tirith_auto_install_allowed():
+        return None, "lazy_installs_disabled"
+
     log = logger.warning if log_failures else logger.debug
 
     target = _detect_target()
@@ -556,6 +572,11 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _clear_install_failed()
         return hermes_bin
 
+    # A policy opt-out is not an installation failure. Do not cache or persist
+    # it, so changing the setting can take effect immediately in this process.
+    if not _tirith_auto_install_allowed():
+        return expanded
+
     # Local checks failed.  If a previous install attempt already failed,
     # skip the network retry — UNLESS the failure was "cosign_missing" and
     # cosign is now available (retryable cause resolved in-process).
@@ -590,6 +611,8 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _install_failure_reason = ""
         _clear_install_failed()
         return installed
+    if reason == "lazy_installs_disabled":
+        return expanded
 
     # Install failed — cache the miss and persist reason to disk
     _resolved_path = _INSTALL_FAILED
@@ -619,11 +642,16 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
+        if not _tirith_auto_install_allowed():
+            return
+
         installed, reason = _install_tirith(log_failures=log_failures)
         if installed:
             _resolved_path = installed
             _install_failure_reason = ""
             _clear_install_failed()
+        elif reason == "lazy_installs_disabled":
+            return
         else:
             _resolved_path = _INSTALL_FAILED
             _install_failure_reason = reason
@@ -689,6 +717,12 @@ def ensure_installed(*, log_failures: bool = True):
         _install_failure_reason = ""
         _clear_install_failed()
         return hermes_bin
+
+    # Preserve local discovery while honoring the global runtime-install
+    # policy. Keep state unresolved so an in-process config change is enough
+    # to enable a later attempt.
+    if not _tirith_auto_install_allowed():
+        return None
 
     # If previously failed in-memory, check if the cause is now resolved
     if _resolved_path is _INSTALL_FAILED:

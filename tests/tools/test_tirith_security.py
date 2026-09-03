@@ -10,8 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tools import lazy_deps as _lazy_deps
 import tools.tirith_security as _tirith_mod
 from tools.tirith_security import check_command_security, ensure_installed
+
+
+_REAL_ALLOW_LAZY_INSTALLS = _lazy_deps._allow_lazy_installs
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +29,11 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
-    yield
+    # The global test fixture disables runtime installs. Most tests in this
+    # module exercise Tirith's installer mechanics, so opt them in explicitly;
+    # policy tests below override this nested patch with False.
+    with patch("tools.lazy_deps._allow_lazy_installs", return_value=True):
+        yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
@@ -48,6 +56,14 @@ def _mock_run(returncode=0, stdout="", stderr=""):
 
 def _json_stdout(findings=None, summary=""):
     return json.dumps({"findings": findings or [], "summary": summary})
+
+
+def _mock_missing_tirith(monkeypatch):
+    monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+    monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(_tirith_mod.os.path, "isfile", lambda _path: False)
+    monkeypatch.setattr(_tirith_mod, "_read_failure_reason", lambda: None)
+    monkeypatch.setattr(_tirith_mod, "_clear_install_failed", lambda: None)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +249,134 @@ class TestEnsureInstalled:
             result = ensure_installed()
         assert result == "/usr/local/bin/tirith"
         _tirith_mod._resolved_path = None
+
+    def test_config_opt_out_prevents_tirith_download_thread(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercise the real config loader, not only a mocked policy helper."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "security:\n  allow_lazy_installs: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv("HERMES_LAZY_INSTALL_TARGET", raising=False)
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_thread = None
+
+        cfg = {
+            "tirith_enabled": True,
+            "tirith_path": "tirith",
+            "tirith_timeout": 5,
+            "tirith_fail_open": True,
+        }
+        monkeypatch.setattr(
+            _lazy_deps, "_allow_lazy_installs", _REAL_ALLOW_LAZY_INSTALLS
+        )
+        monkeypatch.setattr(_tirith_mod, "_load_security_config", lambda: cfg)
+        _mock_missing_tirith(monkeypatch)
+        thread_factory = MagicMock()
+        monkeypatch.setattr(_tirith_mod.threading, "Thread", thread_factory)
+
+        assert ensure_installed(log_failures=False) is None
+
+        thread_factory.assert_not_called()
+        assert _tirith_mod._resolved_path is None
+
+
+class TestLazyInstallPolicy:
+    def test_low_level_installer_honors_global_opt_out(self):
+        """No direct Tirith installer call may bypass the global policy."""
+        with (
+            patch("tools.lazy_deps._allow_lazy_installs", return_value=False),
+            patch("tools.tirith_security._detect_target") as mock_target,
+            patch("tools.tirith_security._download_file") as mock_download,
+        ):
+            result = _tirith_mod._install_tirith(log_failures=False)
+
+        assert result == (None, "lazy_installs_disabled")
+        mock_target.assert_not_called()
+        mock_download.assert_not_called()
+
+    def test_resolver_policy_transition_does_not_cache_install_failure(
+        self, monkeypatch
+    ):
+        """A policy change during install must remain immediately reversible."""
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+
+        _mock_missing_tirith(monkeypatch)
+        policy_states = iter((True, False))
+        monkeypatch.setattr(
+            _lazy_deps, "_allow_lazy_installs", lambda: next(policy_states)
+        )
+        mark_failure = MagicMock()
+        monkeypatch.setattr(_tirith_mod, "_mark_install_failed", mark_failure)
+
+        assert _tirith_mod._resolve_tirith_path("tirith") == "tirith"
+
+        mark_failure.assert_not_called()
+        assert _tirith_mod._resolved_path is None
+        assert _tirith_mod._install_failure_reason == ""
+
+        monkeypatch.setattr(_lazy_deps, "_allow_lazy_installs", lambda: True)
+        install = MagicMock(return_value=("/tmp/tirith", ""))
+        monkeypatch.setattr(_tirith_mod, "_install_tirith", install)
+
+        assert _tirith_mod._resolve_tirith_path("tirith") == "/tmp/tirith"
+
+        install.assert_called_once_with()
+
+    def test_background_policy_transition_does_not_cache_install_failure(
+        self, monkeypatch
+    ):
+        """The background path must not persist a mid-install policy decision."""
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+
+        _mock_missing_tirith(monkeypatch)
+        policy_states = iter((True, False))
+        monkeypatch.setattr(
+            _lazy_deps, "_allow_lazy_installs", lambda: next(policy_states)
+        )
+        mark_failure = MagicMock()
+        monkeypatch.setattr(_tirith_mod, "_mark_install_failed", mark_failure)
+
+        _tirith_mod._background_install(log_failures=False)
+
+        mark_failure.assert_not_called()
+        assert _tirith_mod._resolved_path is None
+        assert _tirith_mod._install_failure_reason == ""
+
+        monkeypatch.setattr(_lazy_deps, "_allow_lazy_installs", lambda: True)
+        install = MagicMock(return_value=("/tmp/tirith", ""))
+        monkeypatch.setattr(_tirith_mod, "_install_tirith", install)
+
+        _tirith_mod._background_install(log_failures=False)
+
+        install.assert_called_once_with(log_failures=False)
+        assert _tirith_mod._resolved_path == "/tmp/tirith"
+
+    def test_local_binary_is_discovered_when_lazy_installs_are_disabled(
+        self, monkeypatch
+    ):
+        """The opt-out disables downloads, not discovery of an installed binary."""
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+
+        policy = MagicMock(return_value=False)
+        monkeypatch.setattr(_lazy_deps, "_allow_lazy_installs", policy)
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
+        monkeypatch.setattr(
+            _tirith_mod.shutil, "which", lambda _name: "/usr/bin/tirith"
+        )
+        monkeypatch.setattr(_tirith_mod, "_clear_install_failed", lambda: None)
+
+        assert _tirith_mod._resolve_tirith_path("tirith") == "/usr/bin/tirith"
+
+        policy.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -2105,6 +2105,7 @@ def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]],
     history_offset: int = 0,
     history_media_paths: Optional[set] = None,
+    additional_producer_tools: Optional[set] = None,
 ) -> tuple[List[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
@@ -2125,6 +2126,9 @@ def _collect_auto_append_media_tags(
     of #160. The producer-tool allowlist still applies on the fallback path.
     """
     history_media_paths = history_media_paths or set()
+    producer_tools = _AUTO_APPEND_MEDIA_TOOL_NAMES | (
+        additional_producer_tools or set()
+    )
     # Only trust the slice boundary when the message list still contains the
     # full history prefix. Otherwise scan everything (compression-safe fallback).
     if history_offset and len(messages) >= history_offset:
@@ -2140,7 +2144,7 @@ def _collect_auto_append_media_tags(
         if msg.get("role") not in ("tool", "function"):
             continue
         call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+        if tool_name_by_call_id.get(call_id) not in producer_tools:
             continue
         content = str(msg.get("content") or "")
         tool_name = tool_name_by_call_id.get(call_id)
@@ -7373,6 +7377,9 @@ class TurnRunner:
                 result.get("messages", []),
                 history_offset=len(agent_history),
                 history_media_paths=_history_media_paths,
+                additional_producer_tools=set(
+                    getattr(self._runner.config, "auto_append_media_tools", [])
+                ),
             )
 
             if media_tags:

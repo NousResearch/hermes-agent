@@ -326,6 +326,35 @@ caption
         assert tags == []
         assert voice is False
 
+    def test_gateway_auto_append_accepts_configured_custom_media_tool(self):
+        """An explicitly trusted custom producer is eligible for auto-append."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_chart",
+                        "function": {"name": "mcp__charts__render_chart"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_chart",
+                "content": '{"media_tag":"MEDIA:/tmp/chart.png"}',
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(
+            messages,
+            additional_producer_tools={"mcp__charts__render_chart"},
+        )
+
+        assert tags == ["MEDIA:/tmp/chart.png"]
+        assert voice is False
+
 
     def test_collect_history_media_paths_includes_image_generate_json(self):
         """Regression for #46627: the history media-path collector must pick up

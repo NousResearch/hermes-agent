@@ -320,19 +320,40 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
         return pending if isinstance(pending, str) and pending.strip() else None
 
 
-def interrupt_subagent(subagent_id: str) -> bool:
+def interrupt_subagent(
+    subagent_id: str,
+    *,
+    owner_session_id: Optional[str] = None,
+    owner_transport: Any = None,
+    owner_session_record: Any = None,
+) -> bool:
     """Request that a single running subagent stop at its next iteration boundary.
 
     Does not hard-kill the worker thread (Python can't); sets the child's
     interrupt flag which propagates to in-flight tools and recurses into
     grandchildren via AIAgent.interrupt().  Returns True if a matching
-    subagent was found.
+    subagent was found (and, when an owner is supplied, owned by the caller).
+
+    Same ownership contract as steer_subagent(): ``owner_session_id=None``
+    deliberately preserves the internal in-process helper contract (test
+    harnesses, same-process callers that already hold the record); gateway
+    callers must pass exact authority — a session can otherwise enumerate
+    every subagent id system-wide via delegation.status and hard-stop a
+    child it does not own.
     """
     with _active_subagents_lock:
         record = _active_subagents.get(subagent_id)
-    if not record:
-        return False
-    agent = record.get("agent")
+        if not record:
+            return False
+        if owner_session_id is not None and (
+            record.get("owner_session_id") != owner_session_id
+            or owner_transport is None
+            or record.get("owner_transport") is not owner_transport
+            or owner_session_record is None
+            or record.get("owner_session_record") is not owner_session_record
+        ):
+            return False
+        agent = record.get("agent")
     if agent is None:
         return False
     try:

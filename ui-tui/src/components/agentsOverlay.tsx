@@ -594,7 +594,7 @@ function DiffView({
 
 // ── Main overlay ─────────────────────────────────────────────────────
 
-export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
+export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, sessionId, t }: AgentsOverlayProps) {
   const liveSubagents = useTurnSelector(state => state.subagents)
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
@@ -702,7 +702,15 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
   }
 
-  const interrupt = (id: string) => gw.request<SubagentInterruptResponse>('subagent.interrupt', { subagent_id: id })
+  const interrupt = (id: string) =>
+    gw.request<SubagentInterruptResponse>('subagent.interrupt', {
+      subagent_id: id,
+      // The gateway resolves caller authority from this session_id (an
+      // unforgeable ContextVar-bound transport + live session record look-up,
+      // not the id string itself) — without it every interrupt is rejected
+      // as owner-less, same contract as subagent.steer.
+      ...(sessionId ? { session_id: sessionId } : {})
+    })
 
   const killOne = (id: string) =>
     guardLive(() => {
@@ -969,6 +977,7 @@ interface AgentsOverlayProps {
   gw: GatewayClient
   initialHistoryIndex?: number
   onClose: () => void
+  sessionId: string | null
   t: Theme
 }
 

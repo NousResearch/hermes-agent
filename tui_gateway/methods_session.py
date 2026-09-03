@@ -6,6 +6,10 @@ are rebound onto server.py's globals at install time — see method_ctx.py.
 
 from .method_ctx import HandlerRegistry
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
@@ -1595,19 +1599,50 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         try:
+            # Rehydrated sessions — desktop rows predating the session_key
+            # column, or a registry entry bound to a rotated compression
+            # parent — can surface with a missing or stale key while the
+            # durable rows live under the routed session id / lineage tip.
+            # Fall back exactly like the turn payload does (`or sid`).
+            write_key = str(
+                session.get("session_key") or params.get("session_id") or ""
+            )
             if row_id is None:
-                row_id = db.latest_message_row_id(
-                    session["session_key"], role=newest_role
-                )
+                row_id = db.latest_message_row_id(write_key, role=newest_role)
                 if row_id is None:
                     return _err(rid, 4040, "no message to react to yet")
             reactions = db.set_message_reaction(
-                session["session_key"], int(row_id), emoji, author=author
+                write_key, int(row_id), emoji, author=author
             )
+            if reactions is None:
+                # Key-rotation retry. Row ids are globally unique, so a retry
+                # can only land on the exact row the client addressed — never
+                # on a different message. Best-effort: no cost on the happy
+                # path beyond the miss we already paid for.
+                alt_key = ""
+                try:
+                    tip = db.resolve_resume_session_id(write_key)
+                    if tip and str(tip) != write_key:
+                        alt_key = str(tip)
+                except Exception:
+                    pass
+                if not alt_key:
+                    alt_key = str(params.get("session_id") or "")
+                if alt_key and alt_key != write_key:
+                    reactions = db.set_message_reaction(
+                        alt_key, int(row_id), emoji, author=author
+                    )
         except Exception as e:
             return _err(rid, 5007, str(e))
 
     if reactions is None:
+        logger.warning(
+            "message.react: no row for session=%r row_id=%r key=%r — stale "
+            "client row id or session not rehydrated",
+            params.get("session_id"),
+            row_id,
+            params.get("session_id"),
+        )
         return _err(rid, 4040, "message not found in this session")
 
     return _ok(rid, {"row_id": int(row_id), "reactions": reactions})

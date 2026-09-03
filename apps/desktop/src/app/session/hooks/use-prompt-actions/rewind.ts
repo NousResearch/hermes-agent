@@ -116,18 +116,30 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
   let ordinal = 0
 
   return messages.map((message, index) => {
-    if (!indices.has(index)) {
-      return message
+    if (indices.has(index)) {
+      const next = ordinal < survivorRowIds.length ? survivorRowIds[ordinal] : null
+      ordinal += 1
+
+      if (typeof next === 'number') {
+        return message.rowId === next ? message : { ...message, rowId: next }
+      }
+
+      return message.rowId === undefined ? message : { ...message, rowId: undefined }
     }
 
-    const next = ordinal < survivorRowIds.length ? survivorRowIds[ordinal] : null
-    ordinal += 1
-
-    if (typeof next === 'number') {
-      return message.rowId === next ? message : { ...message, rowId: next }
+    // Legacy array path (pre-map gateways) carries only visible-user ids, so
+    // kept assistant rows on the active tip were re-inserted as new SQLite
+    // rows while this bubble keeps the pre-rewind id (#80670: reacting to it
+    // 4040s). Hidden assistants are exactly the branches the rewind/regenerate
+    // replaced — positive staleness evidence — so drop their cached id and let
+    // the react path's role-based resolution re-resolve them. Visible
+    // assistant rows between surviving user turns are position-stable (the
+    // kept prefix re-inserts in order), so their ids stay.
+    if (message.role === 'assistant' && message.hidden && message.rowId !== undefined) {
+      return { ...message, rowId: undefined }
     }
 
-    return message.rowId === undefined ? message : { ...message, rowId: undefined }
+    return message
   })
 }
 

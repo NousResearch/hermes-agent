@@ -47,7 +47,8 @@ class TestPasswordHashing:
     def test_hash_then_verify_round_trips(self, basic):
         h = basic.hash_password("hunter2")
         assert h.startswith("scrypt$")
-        assert basic._verify_password("hunter2", h)
+        assert basic.verify_password("hunter2", h)
+        assert basic._verify_password is basic.verify_password
 
     def test_wrong_password_fails(self, basic):
         h = basic.hash_password("hunter2")
@@ -95,6 +96,24 @@ class TestProvider:
         for u, pw in [("admin", "wrong"), ("ghost", "hunter2"), ("", "")]:
             with pytest.raises(InvalidCredentialsError):
                 p.complete_password_login(username=u, password=pw)
+
+    def test_unknown_username_still_runs_password_verification(
+        self, basic, monkeypatch
+    ):
+        p = self._make(basic)
+        calls = []
+        real_verify = basic.verify_password
+
+        def recording_verify(password, encoded):
+            calls.append((password, encoded))
+            return real_verify(password, encoded)
+
+        monkeypatch.setattr(basic, "verify_password", recording_verify)
+
+        with pytest.raises(InvalidCredentialsError):
+            p.complete_password_login(username="ghost", password="hunter2")
+
+        assert calls == [("hunter2", basic._DUMMY_HASH)]
 
     def test_verify_round_trips_and_rejects_tamper(self, basic):
         p = self._make(basic)

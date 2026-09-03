@@ -139,7 +139,11 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
+    subparsers,
+    *,
+    cmd_dashboard: Callable,
+    cmd_dashboard_register: Callable,
+    cmd_dashboard_credentials: Callable | None = None,
 ) -> None:
     """Attach the ``dashboard`` and ``serve`` subcommands.
 
@@ -241,3 +245,15 @@ def build_dashboard_parser(
         ),
     )
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    if cmd_dashboard_credentials is not None:
+        dashboard_credentials_parser = dashboard_subparsers.add_parser(
+            "credentials",
+            help="Change the dashboard username and password",
+            description=(
+                "If credentials are already configured, verify the current password "
+                "before changing the username and password. The password is stored "
+                "only as a scrypt hash."
+            ),
+        )
+        dashboard_credentials_parser.set_defaults(func=cmd_dashboard_credentials)

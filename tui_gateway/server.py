@@ -458,11 +458,17 @@ _detached_ws_transport = _DropTransport()
 
 def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
     """Prepend Hermes' managed bin, the venv bin dir, and the user-local
-    bin dir to PATH so slash_worker child processes can resolve
-    Hermes-managed CLIs (browser-use, uvx, uv) even when the parent
-    gateway was launched with a minimal PATH (e.g. by the
-    Desktop/Dashboard app). Managed bin leads, matching the managed-first
-    resolution policy for the Browser Use CLI."""
+    bin dir to PATH so slash_worker child processes can resolve the
+    Hermes-managed Browser Use CLI (linked into ``bin`` via UV_TOOL_BIN_DIR)
+    even when the parent gateway was launched with a minimal PATH (e.g. by
+    the Desktop/Dashboard app). Managed bin leads, matching the managed-first
+    resolution policy for the Browser Use CLI.
+
+    The managed ``uv``/``uvx`` live in the private ``$HERMES_HOME/uv`` dir,
+    which is deliberately NOT added here (nor anywhere on PATH): Hermes code
+    resolves them through ``resolve_uv()`` / ``ensure_uv()`` instead, so a
+    subprocess never needs the managed uv via PATH, and the uv-isolation
+    contract (never shadow a user's uv) stays intact."""
     managed_bin = ""
     try:
         from hermes_constants import get_hermes_home
@@ -517,9 +523,12 @@ class _SlashWorker:
             extra={"HERMES_HOME": str(profile_home)} if profile_home else None,
         )
         # Prepend the Hermes venv bin dir and the user-local bin dir to PATH so
-        # slash_worker child processes can resolve Hermes-managed CLIs
-        # (browser-use, uvx) even when the parent gateway was launched with a
-        # minimal PATH (e.g. by the Desktop/Dashboard app). See #83845.
+        # slash_worker child processes can resolve the Hermes-managed Browser
+        # Use CLI (linked into bin via UV_TOOL_BIN_DIR) even when the parent
+        # gateway was launched with a minimal PATH (e.g. by the Desktop/
+        # Dashboard app). See #83845. Managed uv/uvx are NOT put here on
+        # purpose: they live in the private $HERMES_HOME/uv dir and Hermes
+        # resolves them via resolve_uv()/ensure_uv(), never via PATH.
         env = _prepend_tool_paths(env)
 
         # start_new_session=True detaches the slash worker into its own

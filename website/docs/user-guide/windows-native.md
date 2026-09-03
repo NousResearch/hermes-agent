@@ -205,7 +205,8 @@ Services require admin rights to install and tie the gateway's lifecycle to mach
 | `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. Safe to `Remove-Item -Recurse` and reinstall. |
 | `%LOCALAPPDATA%\hermes\git\` | PortableGit (only if the installer provisioned it). |
 | `%LOCALAPPDATA%\hermes\node\` | Portable Node.js (only if the installer provisioned it). |
-| `%LOCALAPPDATA%\hermes\bin\` | The `hermes` / `hermes-acp` launchers and Hermes's managed `uv.exe` (the Python manager it uses for updates). |
+| `%LOCALAPPDATA%\hermes\bin\` | The `hermes` / `hermes-acp` launchers (plus Hermes-installed CLIs like `browser-use`). **No managed `uv`** — it lives in the private `uv\` subdirectory, which is never on PATH, so Hermes never shadows your own `uv` command. |
+| `%LOCALAPPDATA%\hermes\uv\` | Hermes's managed `uv.exe` / `uvx.exe` (the Python manager it uses for updates). Private — reachable only by absolute path; your own `uv`/`uvx` keeps priority in your shells. |
 | `%LOCALAPPDATA%\hermes\` (root) | Your config, auth, skills, sessions, logs (`config.yaml`, `.env`, `skills\`, `sessions\`, `logs\`, …). **Survives reinstalls.** |
 
 On native Windows the installer sets `HERMES_HOME=%LOCALAPPDATA%\hermes`, so your data and the disposable install live under the **same** `%LOCALAPPDATA%\hermes` root: the install/runtime is the `hermes-agent\`, `git\`, `node\`, and `bin\` subdirectories, while your data files sit directly in `%LOCALAPPDATA%\hermes`. Reinstalling only replaces the `hermes-agent\` checkout, so your data survives — but because the two share a root, **don't** `Remove-Item -Recurse %LOCALAPPDATA%\hermes` if you want to keep your data; delete the `hermes-agent\` subdirectory instead. Your data directory is identical in shape to a Linux `~/.hermes`, so you can mirror it between machines.

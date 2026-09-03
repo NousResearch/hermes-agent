@@ -1,11 +1,14 @@
 """Hermes-managed uv and Python runtime repair.
 
-Hermes owns its own uv binary at ``$HERMES_HOME/bin/uv`` (or ``uv.exe`` on
-Windows).  Every code path that needs uv resolves it from that single location.
-If the binary is missing, ``ensure_uv()`` bootstraps it via the official
-standalone installer with ``UV_UNMANAGED_INSTALL`` / ``UV_INSTALL_DIR`` pointed
-at ``$HERMES_HOME/bin`` so the installer writes directly there — no PATH
-probing, no conda guards, no multi-location resolution chains.
+Hermes owns its own uv binary at ``$HERMES_HOME/uv/uv`` (or ``uv.exe`` on
+Windows). Every code path that needs uv resolves it from that single private
+location. If the binary is missing, ``ensure_uv()`` bootstraps it via the
+official standalone installer. The private directory is never added to PATH,
+so Hermes cannot shadow a user's uv in interactive shells.
+
+Legacy installs that placed the managed uv at ``$HERMES_HOME/bin/uv`` (the
+pre-isolation layout — bin is a persisted User PATH entry on Windows) are
+migrated to the private location on first use.
 
 The Python backing the install is different: it is shared by every Hermes
 profile because the checkout's ``venv`` is shared.  Runtime repair therefore
@@ -51,23 +54,108 @@ _MACOS_MANAGED_PYTHON_IDENTIFIER = "com.nousresearch.hermes.managed-python"
 # ---------------------------------------------------------------------------
 
 
-def managed_uv_path() -> Path:
-    """Return the path where Hermes keeps *its* uv binary.
+def _managed_uv_dir() -> Path:
+    """Return the private managed-uv dir (``$HERMES_HOME/uv``).
 
-    ``$HERMES_HOME/bin/uv`` on POSIX, ``$HERMES_HOME\\bin\\uv.exe`` on
-    Windows.  The directory may not exist yet — callers should use
+    The uv-isolation invariant lives here: this directory is never registered
+    on PATH, so interactive shells always resolve the user's own uv/uvx (or
+    none) rather than Hermes' copies.
+    """
+    return get_hermes_home() / "uv"
+
+
+def _legacy_managed_bin_dir() -> Path:
+    """Return the pre-isolation managed-binary dir (``$HERMES_HOME/bin``) —
+    the layout migrated by :func:`_migrate_legacy_managed_uv`."""
+    return get_hermes_home() / "bin"
+
+
+def managed_uv_path() -> Path:
+    """Return the path where Hermes keeps *its own* uv binary.
+
+    ``$HERMES_HOME/uv/uv`` on POSIX, ``$HERMES_HOME\\uv\\uv.exe`` on
+    Windows.  This is a **private** location: it is never registered on PATH,
+    so interactive shells always resolve the user's own uv (or none) rather
+    than Hermes' copy.  The directory may not exist yet — callers should use
     ``ensure_uv()`` to bootstrap it.
     """
-    home = get_hermes_home()
     if platform.system() == "Windows":
-        return home / "bin" / "uv.exe"
-    return home / "bin" / "uv"
+        return _managed_uv_dir() / "uv.exe"
+    return _managed_uv_dir() / "uv"
+
+
+def managed_uvx_path() -> Path:
+    """Return the path where Hermes keeps its private ``uvx`` binary."""
+    suffix = ".exe" if platform.system() == "Windows" else ""
+    return managed_uv_path().with_name(f"uvx{suffix}")
+
+
+def managed_uv_env(
+    *,
+    base_env: dict[str, str] | None = None,
+    tool_bin_dir: Path | str | None = None,
+) -> dict[str, str]:
+    """Return a sanitized environment for a Hermes-private uv invocation.
+
+    Pins every directory uv writes to inside Hermes' own tree, so no uv
+    operation Hermes runs can touch the user's uv-managed state — their tool
+    store (``UV_TOOL_DIR``, where ``uv tool install``/``uvx`` keep tools),
+    download cache (``UV_CACHE_DIR``), or python store (``UV_PYTHON_INSTALL_DIR``
+    plus the ``~/.local/bin`` shims and Windows registry it would otherwise
+    write).  The values OVERRIDE anything inherited: a user who exported
+    their own ``UV_*`` dirs still has Hermes write only where Hermes owns.
+
+    ``tool_bin_dir``, when given, additionally pins where ``uv tool install``
+    links its shims (Hermes uses ``$HERMES_HOME/bin`` so ``_find_cli``-style
+    resolvers find them without the user's PATH).
+
+    ``UV_TOOL_BIN_DIR`` is the ONE uv write dir this helper does NOT pin:
+    when ``tool_bin_dir`` is omitted, an inherited user ``UV_TOOL_BIN_DIR``
+    is deliberately left untouched. ``uv tool install`` / ``uvx`` will then
+    link tools into the user's own shim dir, so any call site that installs
+    built tools MUST pass ``tool_bin_dir`` explicitly (as
+    ``browser_use_cli.install_cli`` does) — never rely on inheritance here.
+    Only shim *linkage* is at stake: the tools themselves, their cache, and
+    any Python they provision stay inside Hermes' tree via the pins above.
+
+    Callers keep their own decisions about ``UV_NO_CONFIG`` (respecting a
+    user's ``uv.toml`` mirrors is a feature at some call sites) and about
+    credential stripping — pass the already-sanitized env as ``base_env``.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    env.update({
+        "UV_CACHE_DIR": str(get_hermes_home() / "cache" / "uv"),
+        "UV_TOOL_DIR": str(_managed_uv_dir() / "tools"),
+        "UV_PYTHON_INSTALL_DIR": str(get_hermes_home() / "python"),
+        "UV_PYTHON_INSTALL_BIN": "0",
+        "UV_PYTHON_INSTALL_REGISTRY": "0",
+    })
+    if tool_bin_dir is not None:
+        env["UV_TOOL_BIN_DIR"] = str(tool_bin_dir)
+    return env
+
+
+def legacy_managed_uv_path() -> Path:
+    """Return the pre-isolation managed-uv location, if it is still around.
+
+    Installers before the uv isolation change placed the managed binary at
+    ``$HERMES_HOME/bin/uv(.exe)`` — ``bin`` is a persisted User PATH entry on
+    Windows, so that layout silently shadowed the user's own uv in every new
+    shell.  Callers migrate a legacy binary to :func:`managed_uv_path` once;
+    this accessor exists so the migration can recognize the old shape.
+    """
+    if platform.system() == "Windows":
+        return _legacy_managed_bin_dir() / "uv.exe"
+    return _legacy_managed_bin_dir() / "uv"
 
 
 def resolve_uv() -> Optional[str]:
     """Return the managed uv path if it exists, else ``None``.
 
-    No side effects — pure lookup.
+    No side effects — pure lookup.  **Managed-only**: this never resolves the
+    user's own uv on PATH, which is exactly what keeps
+    :func:`update_managed_uv` from ever modifying a toolchain Hermes does not
+    own.
     """
     p = managed_uv_path()
     if p.is_file() and os.access(p, os.X_OK):
@@ -75,8 +163,67 @@ def resolve_uv() -> Optional[str]:
     return None
 
 
+def _migrate_legacy_binary(name: str) -> bool:
+    """Move a pre-isolation ``$HERMES_HOME/bin/<name>(.exe)`` to the private
+    dir, once.
+
+    The astral installer always drops both ``uv`` and ``uvx`` into the target
+    dir, so a legacy install leaves BOTH in ``bin`` — and on Windows ``bin``
+    is a persisted User PATH entry, so a stale ``bin/uvx`` keeps shadowing
+    the user's own ``uvx`` in every new shell exactly like ``bin/uv`` did.
+    Both must be migrated.  Best-effort: a locked or busy legacy binary
+    simply stays put (a concurrent process may hold it); the next bootstrap
+    retries.  If the private copy is already present, the old managed name
+    is removed so it cannot shadow a user's binary through the persisted
+    bin/ PATH entry.
+    """
+    exe = ".exe" if platform.system() == "Windows" else ""
+    legacy = _legacy_managed_bin_dir() / f"{name}{exe}"
+    target = _managed_uv_dir() / f"{name}{exe}"
+    if not legacy.is_file():
+        return False
+    if target.is_file():
+        # A previous migration/install may already have produced the private
+        # copy.  Remove the old managed name so it cannot continue shadowing
+        # through the persisted $HERMES_HOME/bin PATH entry.
+        try:
+            legacy.unlink()
+            return True
+        except OSError:
+            return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(str(legacy), str(target))
+        return True
+    except OSError:
+        return False
+
+
+def _migrate_legacy_managed_uv() -> bool:
+    """Migrate pre-isolation ``bin/uv(.exe)`` and ``bin/uvx(.exe)``.
+
+    True when anything was moved or cleaned.  Legacy installs must be
+    migrated on first use regardless of which binary the calling path needs
+    — leaving ``uvx`` behind would keep leaking a stale Hermes-managed
+    ``uvx`` through the persisted ``bin/`` PATH entry on Windows.
+    """
+    moved_uv = _migrate_legacy_binary("uv")
+    moved_uvx = _migrate_legacy_binary("uvx")
+    return moved_uv or moved_uvx
+
+
 def managed_python_install_dir(project_root: Path | None = None) -> Path:
-    """Return the checkout-scoped Python store shared by all profiles."""
+    """Return the checkout-scoped Python store shared by all profiles.
+
+    This is the **runtime-repair** store: ``repair_vulnerable_runtime``
+    provisions a new immutable generation here so the previous one stays
+    available for synchronous rollback.  It is deliberately separate from the
+    **installer** store (``$HERMES_HOME/python``, set via
+    ``UV_PYTHON_INSTALL_DIR`` in ``install.sh`` / ``install.ps1`` and
+    :func:`managed_python_env`) because repair must be able to cut over to a
+    fresh generation without touching the interpreter the live venv was built
+    on — and never reinstall in place.
+    """
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
     return root / _RUNTIME_DIR_NAME / "python"
 
@@ -93,7 +240,7 @@ def managed_python_env(
         if install_dir is not None
         else managed_python_install_dir(project_root)
     )
-    env = dict(os.environ if base_env is None else base_env)
+    env = managed_uv_env(base_env=base_env)
     for key in (
         "CONDA_DEFAULT_ENV",
         "CONDA_PREFIX",
@@ -110,9 +257,7 @@ def managed_python_env(
     env.update({
         "UV_MANAGED_PYTHON": "1",
         "UV_NO_CONFIG": "1",
-        "UV_PYTHON_INSTALL_BIN": "0",
         "UV_PYTHON_INSTALL_DIR": str(target),
-        "UV_PYTHON_INSTALL_REGISTRY": "0",
     })
     return env
 
@@ -271,11 +416,11 @@ def _ensure_uv_path(
     *,
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
 ) -> Optional[str]:
-    """Resolve the managed uv path, installing it if necessary (plain ``str``/``None``)."""
+    """Resolve the managed uv path, installing it if necessary."""
+    _migrate_legacy_managed_uv()
     existing = resolve_uv()
     if existing:
         return existing
-
     target = managed_uv_path()
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -319,7 +464,7 @@ def ensure_uv(
     *,
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
 ):
-    """Return the managed uv path, installing it first if necessary.
+    """Return Hermes' managed uv path, installing it first if necessary.
 
     On **POSIX** the result is a :class:`_UvResult` (a ``str`` subclass) that is
     both usable directly as the path *and* unpackable as
@@ -350,29 +495,29 @@ def ensure_uv(
     return _UvResult(result)
 
 
-def _uv_self_update_is_fresh(now: float | None = None) -> bool:
-    """Return True when ``uv self update`` ran recently enough to skip.
+def _managed_uv_refresh_is_fresh(now: float | None = None) -> bool:
+    """Return True when the managed uv was refreshed recently enough to skip.
 
     uv releases roughly weekly while many users run ``hermes update`` daily;
-    re-running a blocking network self-update on every invocation is waste
-    and, offline, an unbounded hang risk. A stamp file under HERMES_HOME
-    caches the last successful self-update time.
+    re-running the standalone installer (a ~30 MB download) on every
+    invocation is waste and, offline, a hang risk. A stamp file under
+    HERMES_HOME caches the last successful refresh time.
     """
     try:
         from hermes_constants import get_hermes_home
 
-        stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = get_hermes_home() / "cache" / ".uv_refresh_stamp"
         age = (now if now is not None else time.time()) - stamp.stat().st_mtime
         return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
     except Exception:
         return False
 
 
-def _touch_uv_self_update_stamp() -> None:
+def _touch_managed_uv_refresh_stamp() -> None:
     try:
         from hermes_constants import get_hermes_home
 
-        stamp = get_hermes_home() / "cache" / ".uv_self_update_stamp"
+        stamp = get_hermes_home() / "cache" / ".uv_refresh_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
     except OSError:
@@ -380,10 +525,9 @@ def _touch_uv_self_update_stamp() -> None:
 
 
 # uv ships releases ~weekly; refresh the managed binary at most this often.
+# (Name kept from the pre-isolation self-update era for API stability; the
+# mechanism is now installer re-run, not ``uv self update``.)
 UV_SELF_UPDATE_INTERVAL_SECONDS = 7 * 24 * 3600
-# `uv self update` is a network call; unbounded it can hang forever on a
-# blackholed connection (no default timeout in uv's downloader path).
-UV_SELF_UPDATE_TIMEOUT_SECONDS = 60
 
 
 def update_managed_uv(
@@ -391,49 +535,47 @@ def update_managed_uv(
     repair_observer: Callable[[RuntimeRepairResult], None] | None = None,
     force: bool = False,
 ) -> Optional[str]:
-    """Run ``uv self update`` on the managed uv binary.
+    """Refresh Hermes' *private* uv by re-running the official installer.
 
     Call this during ``hermes update`` so the managed copy stays current.
-    Returns the managed path when uv is available and ``None`` otherwise.
-    A self-update failure is non-fatal because the old version still works.
-    ``repair_observer``, when provided, receives the runtime repair result.
+    Resolution goes through ``resolve_uv()``, which is managed-only, so a
+    toolchain Hermes does not own is never used or refreshed.  Returns the
+    managed path when uv is available and ``None`` otherwise.
 
-    The network self-update is skipped when it succeeded within the last
+    The managed binary is installed with ``UV_UNMANAGED_INSTALL``: no install
+    receipt is written, so uv itself refuses ``uv self update`` for it — and
+    that refusal is exactly what keeps Hermes from ever touching a user's uv
+    or user PATH/profile state.  Advancing Hermes' own copy therefore means
+    re-running the official standalone installer into the private dir
+    (:func:`_refresh_managed_binary`) under the same unmanaged contract — a
+    bounded, Hermes-owned refresh that never writes user state.
+
+    The refresh is skipped when one succeeded within the last
     ``UV_SELF_UPDATE_INTERVAL_SECONDS`` (7 days) unless ``force=True``; the
     vulnerable-runtime repair probe below ALWAYS runs — CVE-driven runtime
     repair must never be gated behind the freshness stamp.
     """
+    # A pre-isolation install kept the managed binary in $HERMES_HOME/bin;
+    # migrate it before resolving so a legacy install gets its runtime
+    # repair on THIS update, not the next one (resolve_uv is a pure lookup).
+    _migrate_legacy_managed_uv()
     existing = resolve_uv()
-    if not existing:
-        # Not installed yet — ensure_uv() will handle that elsewhere.
-        return None
 
-    if force or not _uv_self_update_is_fresh():
-        try:
-            result = subprocess.run(
-                [existing, "self", "update"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-                timeout=UV_SELF_UPDATE_TIMEOUT_SECONDS,
+    if existing and (force or not _managed_uv_refresh_is_fresh()):
+        before = _uv_version_string(existing)
+        changed = _refresh_managed_binary(existing)
+        if changed:
+            print(
+                "  ✓ Managed uv refreshed "
+                f"({before} → {_uv_version_string(existing)})"
             )
-        except subprocess.TimeoutExpired:
-            logger.debug("uv self update timed out after %ss", UV_SELF_UPDATE_TIMEOUT_SECONDS)
-            result = None
-        if result is not None and result.returncode == 0:
-            _touch_uv_self_update_stamp()
-            version = subprocess.run(
-                [existing, "--version"],
-                capture_output=True,
-                text=True, encoding='utf-8', errors='replace',
-                check=False,
-            ).stdout.strip()
-            print(f"  ✓ Managed uv updated ({version})")
-        elif result is not None:
-            # Non-fatal — old uv still works fine.
-            logger.debug(
-                "uv self update failed (rc=%d): %s", result.returncode, result.stderr
-            )
+        # changed=False: the installer ran but upstream has no newer version
+        # (or refresh failed — old uv still works, stamp left stale so the
+        # next update retries).  Both are non-fatal by design.
+
+    if not existing:
+        # No uv at all yet — ensure_uv() will handle provisioning elsewhere.
+        return None
 
     # Keep this hook inside the long-standing API. During an update, main.py is
     # already imported from the old checkout, then ``git pull`` replaces this
@@ -1197,26 +1339,39 @@ def _uv_version_string(uv_bin: str) -> str:
     return (result.stdout or "").strip()
 
 
-def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
-    """Re-bootstrap the managed uv binary to refresh its Python catalog.
+def _refresh_managed_binary(uv_bin: str) -> bool:
+    """Re-run the official installer over the managed uv binary.
 
-    The managed uv is installed with ``UV_UNMANAGED_INSTALL``, which disables
-    ``uv self update`` by design — so its embedded python-build-standalone
-    download catalog stays frozen at bootstrap age.  python-build-standalone
-    re-releases existing CPython patch versions with newer SQLite (e.g. the
-    3.11.15 build was re-cut with SQLite 3.53.x), so a stale catalog can make
-    every provisioning attempt resolve to a vulnerable build even though a
-    fixed build of the SAME patch version exists (issue #72093).  The
-    patch-retry loop cannot recover from that: the fixed build carries no
-    newer version number to retry with.
+    The managed uv is installed with ``UV_UNMANAGED_INSTALL``: no install
+    receipt is written, so uv itself refuses ``uv self update`` for it — which
+    is exactly what keeps Hermes from ever bumping a user's uv or writing
+    user PATH/profile state.  Re-running the official standalone installer
+    into the private dir is therefore the ONLY way to advance Hermes' own
+    copy, and the only supported refresh path for unmanaged installs — this
+    is it (called from ``update_managed_uv`` on a throttle, and from runtime
+    repair when provisioning needs a newer catalog).
 
-    Re-running the official installer is the only supported refresh path for
-    unmanaged installs.  Only the Hermes-managed binary is ever refreshed;
-    a caller-supplied foreign uv path is left alone.
+    Re-running also refreshes the embedded python-build-standalone download
+    catalog, which otherwise stays frozen at bootstrap age:
+    python-build-standalone re-releases existing CPython patch versions with
+    newer SQLite (e.g. the 3.11.15 build was re-cut with SQLite 3.53.x), so a
+    stale catalog can make every provisioning attempt resolve to a vulnerable
+    build even though a fixed build of the SAME patch version exists (issue
+    #72093).
 
-    Returns ``True`` when the binary's version actually changed — i.e. a
+    Only the Hermes-managed binary is refreshed: a caller that somehow passed
+    a foreign uv path is left alone (no download), so this never touches a
+    toolchain Hermes does not own.
+
+    The throttle stamp is touched only when the installer actually ran and
+    produced a runnable binary: a flaky network leaves it stale so the next
+    update retries, while an unchanged upstream version (installer ran, same
+    version) does not re-download on every update.
+
+    Returns ``True`` when the binary's version actually changed — e.g. a
     provisioning retry can now see a different catalog.  ``False`` means a
-    retry would resolve identically and is not worth the download cycle.
+    retry would resolve identically and is not worth the download cycle (or
+    the refresh failed; the old binary still works).
     """
     managed = managed_uv_path()
     try:
@@ -1227,12 +1382,16 @@ def _refresh_managed_uv_catalog(uv_bin: str) -> bool:
     before = _uv_version_string(uv_bin)
     try:
         _install_uv(managed)
+        after = _uv_version_string(managed)
     except Exception as exc:
         logger.warning("managed uv refresh failed: %s", exc)
         return False
-    after = _uv_version_string(uv_bin)
     if not after:
+        logger.warning(
+            "managed uv refresh did not produce a runnable binary at %s", managed
+        )
         return False
+    _touch_managed_uv_refresh_stamp()
     return after != before
 
 
@@ -1314,6 +1473,7 @@ def repair_vulnerable_runtime(
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
     live = Path(venv_dir) if venv_dir is not None else _default_live_venv(root)
     live_python = _venv_python(live)
+
     if not (root / "pyproject.toml").is_file() or not live_python.is_file():
         return RuntimeRepairResult("not-applicable")
 
@@ -1415,7 +1575,7 @@ def repair_vulnerable_runtime(
             # frozen catalog keeps resolving the old vulnerable build and the
             # patch-retry loop has no newer number to try (issue #72093).
             # Refresh the managed binary and retry once.
-            if _refresh_managed_uv_catalog(uv_bin):
+            if _refresh_managed_binary(uv_bin):
                 print("  → Managed uv refreshed; retrying provisioning...")
                 provisioned = _install_safe_python_generation(
                     uv_bin,
@@ -1493,16 +1653,23 @@ def repair_vulnerable_runtime(
 def _install_uv(target: Path) -> None:
     """Bootstrap uv into *target* using the official standalone installer.
 
-    Uses ``UV_UNMANAGED_INSTALL`` (POSIX) or ``UV_INSTALL_DIR`` (Windows)
-    so the astral installer writes the binary directly into
-    ``$HERMES_HOME/bin/`` instead of ``~/.local/bin/``.
+    Sets BOTH ``UV_UNMANAGED_INSTALL`` and ``UV_INSTALL_DIR`` on every
+    platform.  ``UV_INSTALL_DIR`` picks the install location (the private
+    managed dir, ``$HERMES_HOME/uv``, instead of ``~/.local/bin/``);
+    ``UV_UNMANAGED_INSTALL`` is the load-bearing isolation switch — without
+    it the astral installer ALSO prepends the install dir to the user
+    PATH / shell profiles on a fresh install (see install.sh and install.ps1
+    for the same invariant).  Never drop ``UV_UNMANAGED_INSTALL`` on either
+    platform.
     """
     system = platform.system()
     env = {
         **os.environ,
         # Tell the astral installer to drop the binary in our dir, not
-        # ~/.local/bin.  UV_UNMANAGED_INSTALL is the POSIX env var; Windows
-        # uses UV_INSTALL_DIR.
+        # ~/.local/bin.  BOTH vars are set on every platform: UV_INSTALL_DIR
+        # controls the location, while UV_UNMANAGED_INSTALL is what stops the
+        # installer from writing the dir into the user PATH / shell profiles
+        # (and marks the install unmanaged, disabling `uv self update`).
         "UV_UNMANAGED_INSTALL": str(target.parent),
         "UV_INSTALL_DIR": str(target.parent),
     }

@@ -383,7 +383,10 @@ def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
     monkeypatch.delenv(lazy_deps._LAZY_TARGET_ENV, raising=False)
     monkeypatch.setattr(lazy_deps, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(lazy_deps.subprocess, "run", fake_run)
-    monkeypatch.setattr(lazy_deps.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    # Managed uv only: since the uv-isolation change lazy deps never falls
+    # back to a user's uv on PATH — resolve the managed lookup to a fake
+    # binary so the uv tier (not the pip tier) is exercised.
+    monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: "/usr/bin/uv")
 
     res = lazy_deps._venv_pip_install(("left-pad",))
 

@@ -209,6 +209,27 @@ def _resolve_terminal_backend() -> str:
         return "local"
 
 
+def _terminal_probe_path() -> str:
+    """Return the PATH the terminal tool hands the model's subshell.
+
+    The agent process's own PATH never carries the Hermes-managed runtime dirs
+    ($HERMES_HOME/uv, $HERMES_HOME/bin, the node dirs) — those are appended
+    only when the terminal subshell PATH is built
+    (tools/environments/local._append_missing_sane_path_entries), and only for
+    the Hermes sandbox shell. Asking about the agent-process PATH would report
+    "no uv" on a managed-only install even though the model can type ``uv`` in
+    the terminal it actually drives. Rebuild the terminal PATH the same way
+    local.py does, so the probe and the actual subshell stay consistent on
+    both POSIX and Windows.
+    """
+    try:
+        from tools.environments.local import _append_missing_sane_path_entries
+
+        return _append_missing_sane_path_entries(os.environ.get("PATH", ""))
+    except Exception:  # pragma: no cover — defensive
+        return os.environ.get("PATH", "")
+
+
 def _build_probe_line() -> str:
     """Build the one-liner.  Returns "" when nothing notable is detected.
 
@@ -223,10 +244,14 @@ def _build_probe_line() -> str:
     # Bare which() is correct here, unlike Hermes's own uv call sites: this
     # reports the environment *the model will see* in the terminal tool, and
     # what the model can type is exactly what is on that subshell's PATH.
-    # local.py puts the Hermes-managed $HERMES_HOME/bin there, so a managed-only
-    # install answers yes — without that, claiming uv the model cannot invoke
-    # would be worse than claiming none.
-    has_uv = shutil.which("uv") is not None
+    # local.py appends the Hermes-managed dirs to the terminal subshell PATH
+    # ($HERMES_HOME/uv for the managed uv, $HERMES_HOME/bin for other managed
+    # CLIs), so the probe must ask THAT PATH — the agent process's own PATH
+    # never carries the managed dirs, and a managed-only install would look
+    # uv-less here even though the model can run uv. On Windows the helper
+    # appends $HERMES_HOME\uv at the tail too, keeping the probe and the
+    # actual subshell in sync there as well.
+    has_uv = shutil.which("uv", path=_terminal_probe_path()) is not None
 
     # If python3 exists, has pip, has uv (or no PEP 668), and there's no
     # version mismatch between `pip` and `python3` → environment is

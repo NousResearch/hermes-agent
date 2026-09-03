@@ -816,22 +816,21 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
     try:
         venv_root = Path(sys.executable).parent.parent
         from tools.environments.local import hermes_subprocess_env
-        uv_env = hermes_subprocess_env(inherit_credentials=False)
-        uv_env["VIRTUAL_ENV"] = str(venv_root)
-
-        # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-        # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare
-        # which() misses the uv Hermes installed and falls through to the
-        # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
+        # uv is fast and does not need pip in the venv. Deliberately use a
+        # lookup and not ensure_uv(): this runs
         # mid-turn to install an optional dependency, and downloading uv +
-        # migrating the Python runtime as a side effect of that is a far bigger
-        # action than the caller asked for. Tier 2 pip covers the no-uv case.
+        # migrating the Python runtime as a side effect is a far bigger action
+        # than the caller asked for. Pip covers the no-managed-uv case.
         try:
-            from hermes_cli.managed_uv import resolve_uv
+            from hermes_cli.managed_uv import resolve_uv, managed_uv_env
 
-            uv_bin = resolve_uv() or shutil.which("uv")
+            uv_bin = resolve_uv()
         except Exception:
-            uv_bin = shutil.which("uv")
+            uv_bin = None
+        uv_env = hermes_subprocess_env(inherit_credentials=False)
+        if uv_bin:
+            uv_env.update(managed_uv_env(base_env=uv_env))
+        uv_env["VIRTUAL_ENV"] = str(venv_root)
         if uv_bin:
             try:
                 # --compile-bytecode: uv does NOT write __pycache__ by default

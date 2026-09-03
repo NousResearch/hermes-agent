@@ -1,6 +1,6 @@
 """Guard: Hermes-owned subprocesses must not resolve managed runtimes by bare PATH.
 
-Hermes installs runtimes for itself — ``uv`` at ``$HERMES_HOME/bin/uv``, Node at
+Hermes installs runtimes for itself — ``uv`` at ``$HERMES_HOME/uv/uv``, Node at
 ``$HERMES_HOME/node``. Neither directory is on the ambient PATH of an arbitrary
 process, so ``shutil.which("uv")`` / ``shutil.which("node")`` in Hermes's own
 code has two failure modes:
@@ -66,20 +66,11 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("hermes_cli/update_cmd.py", "uv"): (
         "Termux fallback: a pkg-installed uv lands on PATH but not in the "
-        "managed bin dir, and it is checked only after resolve_uv() misses."
+        "managed dir, and it is checked only after resolve_uv() misses."
     ),
     ("hermes_cli/update_cmd.py", "npm"): (
         "WSL diagnostic: deliberately inspects what PATH resolves so it can "
         "warn that the only reachable npm is the Windows one."
-    ),
-    ("tools/lazy_deps.py", "uv"): (
-        "Fallback after resolve_uv(), plus the except-branch for the "
-        "hermes_cli import guard."
-    ),
-    ("tools/browser_use_cli.py", "uv"): (
-        "install_cli()'s fallback after ensure_uv() misses — a user-installed "
-        "uv on PATH is a legitimate last rung before giving up with install "
-        "guidance."
     ),
     ("hermes_cli/gateway.py", "node"): (
         "Fallback rung of _append_node_dir_for_service(), after the managed "
@@ -185,7 +176,7 @@ def test_no_unreviewed_bare_managed_runtime_lookups():
     assert not unexpected, (
         "Bare PATH lookup for a Hermes-managed runtime.\n\n"
         + "\n".join(f"  {rel}:{lineno}  which({cmd!r})" for rel, cmd, lineno in unexpected)
-        + "\n\n$HERMES_HOME/bin (uv) and $HERMES_HOME/node are not on an "
+        + "\n\n$HERMES_HOME/uv (uv) and $HERMES_HOME/node are not on an "
         "arbitrary process's PATH, so this resolves a system copy — or nothing "
         "— on an install that has a managed one.\n"
         "Use instead:\n"
@@ -226,8 +217,9 @@ def test_managed_node_helpers_exist(helper):
 
 
 def test_managed_uv_helpers_exist():
-    from hermes_cli.managed_uv import ensure_uv, managed_uv_path, resolve_uv
+    from hermes_cli.managed_uv import ensure_uv, managed_uv_path, managed_uvx_path, resolve_uv
 
     assert callable(resolve_uv)
     assert callable(ensure_uv)
-    assert managed_uv_path().parent.name == "bin"
+    assert managed_uv_path().parent.name == "uv"
+    assert managed_uvx_path().parent == managed_uv_path().parent

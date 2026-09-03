@@ -1566,25 +1566,34 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/bin" in _SANE_PATH
 
 
-    def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):
+    def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch, tmp_path):
         """When PATH is minimal, _make_run_env appends missing sane entries.
 
         POSIX: the sane-path merge appends the Homebrew dirs.  Windows:
-        _append_missing_sane_path_entries is a documented passthrough (the
-        native PATH must not be touched), so the assertion is the unchanged
-        input.  Git Bash dir prepending is neutralised so the merged PATH
-        layout is deterministic on every host.
+        _append_missing_sane_path_entries appends the private managed-uv dir
+        at the tail (without reordering the native PATH), so the assertion is
+        the input plus the managed uv dir.  Git Bash dir prepending is
+        neutralised so the merged PATH layout is deterministic on every host.
         """
         from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         minimal_env = {"PATH": "/some/custom/bin"}
-        with patch.dict(os.environ, minimal_env, clear=True):
+        # Pin get_hermes_home inside the env swap: clear=True blanks HOME /
+        # USERPROFILE, so the in-function fallback (Path.home()) would raise
+        # and the Windows branch of _append_missing_sane_path_entries would
+        # silently skip the uv append. Pin it so the append and assertion agree.
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path), \
+             patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
         path_entries = result["PATH"].split(os.pathsep)
         assert path_entries[0] == "/some/custom/bin"
         if sys.platform == "win32":
-            assert result["PATH"] == "/some/custom/bin"
+            # The agent PATH keeps the caller's entries and gains the private
+            # managed-uv dir. Assert the relationship (uv present, original
+            # entry retained) rather than the exact joined string so a future
+            # extra appended entry does not break this test.
+            assert str(tmp_path / "uv") in path_entries
         else:
             for entry in _SANE_PATH.split(os.pathsep):
                 assert entry in path_entries
@@ -1609,21 +1618,30 @@ class TestSanePathIncludesHomebrew:
 
 
     @pytest.mark.windows_only
-    def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch):
+    def test_make_run_env_preserves_windows_mixed_case_path_key(self, monkeypatch, tmp_path):
         """Windows-only: ``_path_env_key`` looks for a case-insensitive PATH
         key only on Windows, so the mixed-case ``Path`` preservation this
         asserts is a genuinely Windows-native behaviour.
 
         The Git Bash dir prepend is neutralised so the assertion is about the
-        key casing alone (a real Windows box has those dirs).
+        key casing alone; the private managed-uv dir (``$HERMES_HOME/uv``) is
+        the one thing appended at the tail. ``get_hermes_home`` is pinned,
+        since the ``os.environ`` swap above blanks USERPROFILE and would make
+        the in-function fallback raise (and silently skip the uv append).
         """
         from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
         windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin"}
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
-        with patch.object(local_mod.os, "environ", windows_env):
+        with patch("hermes_constants.get_hermes_home", return_value=tmp_path), \
+             patch.object(local_mod.os, "environ", windows_env):
             result = _make_run_env({})
-        assert result["Path"] == windows_env["Path"]
+        parts = result["Path"].split(os.pathsep)
+        # Every original Windows PATH entry is retained (not reordered/dropped)
+        # and the private managed-uv dir is appended. Assert the relationship.
+        for entry in windows_env["Path"].split(os.pathsep):
+            assert entry in parts
+        assert str(tmp_path / "uv") in parts
         assert "PATH" not in result
 
 

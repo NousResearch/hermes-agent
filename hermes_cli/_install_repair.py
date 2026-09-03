@@ -93,9 +93,14 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     """
     uv_bin = _er._find_uv_binary()
     if uv_bin:
-        from hermes_constants import project_venv_dir
+        from hermes_constants import get_hermes_home, project_venv_dir
 
-        env = {**os.environ, "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv")}
+        env = {
+            **os.environ,
+            "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv"),
+            # stdlib-only repair: sandbox uv's cache by hand (no managed_uv).
+            "UV_CACHE_DIR": str(get_hermes_home() / "cache" / "uv"),
+        }
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -190,9 +195,10 @@ def ensure_windows_bin_launchers(
     On Windows, ``hermes`` resolves through launchers derived from the venv
     console scripts — never ``venv\\Scripts`` itself on PATH, which would
     shadow the user's ``python`` (#83797). The canonical launcher home is
-    the managed binary dir — the default Hermes root's ``bin``
-    (``%LOCALAPPDATA%\\hermes\\bin``, next to the managed uv) — which lives
-    OUTSIDE the git checkout so no git operation can ever touch it. It is
+    the default Hermes root's ``bin`` (``%LOCALAPPDATA%\\hermes\\bin`` — the
+    managed uv lives in the sibling ``uv\\`` dir since the uv-isolation
+    change) which lives OUTSIDE the git checkout so no git operation can
+    ever touch it. It is
     a per-machine dir shared by every profile: ``get_hermes_home()`` would
     point inside ``profiles\\<name>`` under ``hermes -p``, so the anchor
     here is :func:`hermes_constants.get_default_hermes_root`.

@@ -1411,9 +1411,16 @@ def _managed_runtime_path_entries() -> list[str]:
     - ``$HERMES_HOME/node`` (+ ``/bin``) — installed to satisfy the desktop and
       browser toolchain. ``tools/browser_tool.py`` already does this for its own
       subprocesses; the agent's shell deserves the same.
-    - ``$HERMES_HOME/bin`` — the managed ``uv``. ``install.sh`` writes it there
-      and nothing has ever put that directory on PATH, so an install whose only
-      uv is the managed one looks uv-less to both the agent and the model.
+    - ``$HERMES_HOME/uv`` — the managed ``uv``/``uvx`` (the private location
+      the installers and the runtime updater keep them in; nothing has ever
+      put them on the user's PATH). Appended here so the agent's own shell is
+      uv-capable even on a managed-only install, while a user's own uv on
+      their PATH still wins (first-occurrence-wins). This is the Hermes
+      sandbox terminal shell, NOT the user's login shell / system PATH, so
+      isolation holds: a user never sees Hermes' uv in their own environment.
+    - ``$HERMES_HOME/bin`` — Hermes-installed CLIs (browser-use via
+      ``UV_TOOL_BIN_DIR``, tirith). Lightpanda is *looked up* there as a
+      fallback but not installed into it — its home is ``~/.lightpanda``.
 
     Resolved per call rather than cached in a module constant because
     ``get_hermes_home()`` is profile-scoped and a managed tree can appear
@@ -1422,14 +1429,18 @@ def _managed_runtime_path_entries() -> list[str]:
     try:
         from hermes_constants import get_hermes_home, iter_hermes_node_dirs
 
-        candidates = [*iter_hermes_node_dirs(), get_hermes_home() / "bin"]
+        candidates = [
+            *iter_hermes_node_dirs(),
+            get_hermes_home() / "uv",
+            get_hermes_home() / "bin",
+        ]
         return [str(d) for d in candidates if d.is_dir()]
     except Exception:
         return []
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
-    """Return a normalised POSIX PATH with missing sane entries appended.
+    """Return a normalised PATH with missing sane entries appended.
 
     On POSIX the caller-supplied PATH is rewritten (not merely appended to):
     empty entries and duplicate entries are dropped, preserving
@@ -1452,11 +1463,31 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
 
     For a well-formed PATH (no empties, no duplicates) the leading segment is
     byte-identical to the input and ordering is preserved; only the missing
-    sane entries are appended. On Windows this is a no-op passthrough (the
-    separator is ``;`` and the native PATH must not be touched).
+    sane entries are appended.
+
+    On Windows the native PATH must not be reordered — so this is NOT a
+    pass-through: it only appends the private managed-uv dir
+    (``$HERMES_HOME\\uv``) at the tail, where the user's own uv (if any) on
+    their PATH still wins (first-occurrence-wins). ``bin`` and the node dirs
+    are handled by ``_prepend_hermes_bin_dir`` / ``iter_hermes_node_dirs``
+    elsewhere; this closes the gap where ``$HERMES_HOME\\uv`` (post-uv-
+    isolation) would otherwise be unreachable in the agent's terminal shell.
     """
     if _IS_WINDOWS:
-        return existing_path
+        try:
+            from hermes_constants import get_hermes_home
+
+            uv_dir = str(get_hermes_home() / "uv")
+        except Exception:
+            return existing_path
+        sep = os.pathsep
+        parts = existing_path.split(sep) if existing_path else []
+        # Windows PATH matching is case-insensitive, so guard the dedup with
+        # casefold() — otherwise a differently-cased entry (e.g. the user
+        # having ...\\Hermes\\uv) would append a duplicate alongside it.
+        if uv_dir and uv_dir.casefold() not in [p.casefold() for p in parts]:
+            parts.append(uv_dir)
+        return sep.join(parts)
 
     sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
     sane_entries.extend(

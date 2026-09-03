@@ -755,7 +755,7 @@ _apply_profile_override()
 
 # Windows launcher self-heal — the ``hermes`` command users run is a COPY of
 # the venv console script, staged into the managed binary dir (the default
-# Hermes root's ``bin``, next to the managed uv) by install.ps1. That dir
+# Hermes root's ``bin``) by install.ps1. That dir
 # lives OUTSIDE the git checkout precisely because an earlier layout staged
 # the copies at ``<checkout>\bin``, where ``hermes update``'s autostash
 # (``git stash push --include-untracked``) swept them off disk; with the
@@ -9650,7 +9650,7 @@ def _reexec_dependency_sync_off_windows_shim() -> bool:
 def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
     """Return ``(install_cmd_prefix, env)`` for the project venv when possible."""
     try:
-        from hermes_cli.managed_uv import ensure_uv
+        from hermes_cli.managed_uv import ensure_uv, managed_uv_env
 
         uv_bin = ensure_uv()
     except Exception:
@@ -9659,7 +9659,7 @@ def _default_venv_install_target() -> tuple[list[str], dict[str, str] | None]:
         from hermes_constants import project_venv_dir
 
         venv_dir = project_venv_dir(PROJECT_ROOT) or PROJECT_ROOT / "venv"
-        env = {**os.environ, "VIRTUAL_ENV": str(venv_dir)}
+        env = managed_uv_env(base_env={**os.environ, "VIRTUAL_ENV": str(venv_dir)})
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)

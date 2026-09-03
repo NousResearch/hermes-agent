@@ -742,13 +742,55 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
-function Install-Uv {
-    # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
-    # no PATH probing, no conda guards, no multi-location resolution chains.
-    # The runtime update path (hermes_cli/managed_uv.py) looks in the same
-    # place, so install.ps1 and `hermes update` stay in sync.
-    $managedUv = Join-Path $HermesHome "bin\uv.exe"
+function Get-ManagedUvPath {
+    # Private location, never on PATH.  Mirrors managed_uv_path() in
+    # hermes_cli/managed_uv.py -- keep the two in sync.
+    return Join-Path $HermesHome "uv\uv.exe"
+}
 
+function Move-LegacyManagedUv {
+    # One-time migration from the pre-isolation layout.  Installers before the
+    # uv isolation change placed the managed binaries at $HermesHome\bin\uv.exe
+    # AND $HermesHome\bin\uvx.exe (the astral installer always drops both);
+    # bin is a persisted User PATH entry, so that layout silently shadowed the
+    # user's own uv/uvx in every new shell.  Move BOTH into the private
+    # directory (never on PATH).  Best-effort: a locked legacy binary stays
+    # put and the next run retries.  If the private copy already exists, the
+    # old managed name is removed so it cannot shadow a user's binary through
+    # PATH.
+    $anyAction = $false
+    foreach ($name in @("uv", "uvx")) {
+        $legacy = Join-Path $HermesHome "bin\$name.exe"
+        $target = Join-Path $HermesHome "uv\$name.exe"
+        if (-not (Test-Path $legacy)) { continue }
+        if (Test-Path $target) {
+            try {
+                Remove-Item -LiteralPath $legacy -Force
+                $anyAction = $true
+            } catch {
+                Write-Warn "Could not remove migrated $name from $legacy : $($_.Exception.Message)"
+            }
+        } else {
+            try {
+                New-Item -ItemType Directory -Path (Split-Path $target -Parent) -Force | Out-Null
+                Move-Item -LiteralPath $legacy -Destination $target -Force
+                $anyAction = $true
+            } catch {
+                Write-Warn "Could not migrate legacy managed $name from $legacy : $($_.Exception.Message)"
+            }
+        }
+    }
+    return $anyAction
+}
+
+function Install-Uv {
+    $managedUv = Get-ManagedUvPath
+    # Migrate before resolving the managed binary.
+    Move-LegacyManagedUv | Out-Null
+
+    # Managed binary lives in a private directory that is never registered on
+    # PATH.  The runtime update path (hermes_cli/managed_uv.py) looks in the
+    # same place, so install.ps1 and `hermes update` stay in sync.
     if (Test-Path $managedUv) {
         $script:UvCmd = $managedUv
         $version = & $managedUv --version
@@ -756,15 +798,31 @@ function Install-Uv {
         return $true
     }
 
-    Write-Info "Installing managed uv into $HermesHome\bin ..."
-    New-Item -ItemType Directory -Path (Join-Path $HermesHome "bin") -Force | Out-Null
+    Write-Info "Installing managed uv into $(Split-Path $managedUv -Parent) ..."
+    New-Item -ItemType Directory -Path (Split-Path $managedUv -Parent) -Force | Out-Null
 
     # UV_INSTALL_DIR tells the astral installer to place the binary
-    # directly into $HermesHome\bin instead of ~/.local/bin.
+    # directly into the private managed dir instead of ~/.local/bin.
+    #
+    # UV_UNMANAGED_INSTALL is the load-bearing isolation switch and must stay:
+    # uv's installer skips the user-PATH write (NoModifyPath) ONLY when this
+    # (or UV_NO_MODIFY_PATH=1) is set; UV_INSTALL_DIR alone still results in
+    # the install dir being prepended to HKCU\Environment\Path on a fresh
+    # install -- exactly the shadowing the private layout exists to prevent.
+    # It also marks the install "unmanaged" (no self-update), matching
+    # install.sh and managed_uv.py; the runtime repair path refreshes the
+    # binary by re-running this installer
+    # (managed_uv._refresh_managed_uv_catalog).
     $prevEAP = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
+        $env:UV_INSTALL_DIR = Split-Path $managedUv -Parent
+        # Load-bearing: without UV_UNMANAGED_INSTALL the astral installer
+        # prepends the managed dir to HKCU\Environment\Path (Add-Path), which
+        # is exactly the shadowing this private layout prevents. UV_INSTALL_DIR
+        # keeps precedence for the install location; the unmanaged flag also
+        # disables `uv self update` inline (see the comment block above).
+        $env:UV_UNMANAGED_INSTALL = Split-Path $managedUv -Parent
         # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
@@ -802,7 +860,7 @@ function Install-Uv {
         # on PATH, or at ~/.local/bin (the astral default location when
         # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
         # the managed location so the managed-first invariant holds
-        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        # (hermes_cli/managed_uv.py looks only at the private managed dir).
         if (-not (Test-Path $managedUv)) {
             $existingUv = $null
             $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
@@ -1126,39 +1184,52 @@ function Test-ManagedNodeInUse {
 # at the top to populate $script:UvCmd from the managed location.
 # Throws if uv is not findable -- the caller's stage then surfaces a
 # clean error via the stage-driver's try/catch.
+function Set-UvPythonIsolationEnv {
+    # Contain every uv write inside Hermes' own tree.  The installer's
+    # ENGINE is always the Hermes-managed uv (see Resolve-UvCmd), but the
+    # containment must hold regardless: uv respects UV_PYTHON_INSTALL_DIR /
+    # _BIN / _REGISTRY for all python acquisition, so `uv python install`
+    # and `uv venv --python` write into $HermesHome\python and never touch
+    # the user's uv python store, ~/.local/bin shims, or the Windows Python
+    # registry.  UV_CACHE_DIR / UV_TOOL_DIR get the same treatment -- `uv
+    # tool install` / `uvx` and every download cache must stay inside
+    # Hermes' tree, so the user's own `uv tool list` and cache never gain
+    # Hermes entries.  Overrides any inherited values -- Hermes must never
+    # write into a directory the user configured for their own toolchain.
+    # Mirrors managed_uv_env() in hermes_cli/managed_uv.py -- keep in sync.
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $HermesHome "python"
+    $env:UV_PYTHON_INSTALL_BIN = "0"
+    $env:UV_PYTHON_INSTALL_REGISTRY = "0"
+    $env:UV_CACHE_DIR = Join-Path $HermesHome "cache\uv"
+    $env:UV_TOOL_DIR = Join-Path $HermesHome "uv\tools"
+}
+
 function Resolve-UvCmd {
+    # Isolate all uv python writes (install / venv acquisition) inside
+    # Hermes' tree up front.
+    Set-UvPythonIsolationEnv
+
+    # Migration is independent of engine selection, including when a previous
+    # stage already populated $script:UvCmd in this process.
+    Move-LegacyManagedUv | Out-Null
+
     # Already resolved (default invocation path: Install-Uv ran earlier
     # in the same process and set $script:UvCmd).
     if ($script:UvCmd) {
-        if ($script:UvCmd -eq "uv") {
-            # "uv" on PATH -- verify it's still resolvable (PATH could have
-            # changed mid-session; cheap to recheck).
-            if (Get-Command uv -ErrorAction SilentlyContinue) { return }
-        } elseif (Test-Path $script:UvCmd) {
+        if (Test-Path $script:UvCmd) {
             return
         }
         # Stale; fall through to re-discover.
     }
 
-    # Check the managed location first -- this is where Install-Uv puts it.
-    $managedUv = Join-Path $HermesHome "bin\uv.exe"
+    # Managed binary is the ONLY engine this installer uses.  The private dir
+    # is never on PATH, so there is deliberately no fallback to a user's uv:
+    # Hermes must not drive its install with a toolchain it does not own (and
+    # never self-update or shadow one).  If Install-Uv did not run (stage
+    # drivers), the caller surfaces the clean error below.
+    $managedUv = Get-ManagedUvPath
     if (Test-Path $managedUv) {
         $script:UvCmd = $managedUv
-        return
-    }
-
-    # Fall back to PATH (covers edge cases where the installer ran in a
-    # sibling process and HERMES_HOME wasn't propagated).
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $script:UvCmd = "uv"
-        return
-    }
-
-    # Refresh PATH from registry in case the current process started before
-    # Install-Uv updated User PATH.
-    $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        $script:UvCmd = "uv"
         return
     }
 
@@ -1260,7 +1331,7 @@ function Test-Python {
             return $true
         }
     } catch { }
-    
+
     # Python not found -- use uv to install it (no admin needed!)
     Write-Info "Python $PythonVersion not found, installing via uv..."
     # Capture EAP outside the try block so the catch's restore call always
@@ -2863,9 +2934,9 @@ function Restore-VenvBackup {
 
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
-    
+
     Push-Location $InstallDir
-    
+
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
@@ -3135,9 +3206,9 @@ print(','.join(scripts))
             throw "dashboard backend source failed syntax check: hermes_cli/web_server.py"
         }
     }
-    
+
     Pop-Location
-    
+
     Write-Success "All dependencies installed"
 }
 
@@ -3196,7 +3267,7 @@ function Install-HermesCommandLaunchers {
 
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
-    
+
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
@@ -3211,7 +3282,7 @@ function Set-PathVariable {
         $hermesBin = "$HermesHome\bin"
         Install-HermesCommandLaunchers -Root $InstallDir -Destination $hermesBin | Out-Null
     }
-    
+
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
 
     # Migrate older layouts off the user PATH:
@@ -3231,7 +3302,7 @@ function Set-PathVariable {
             Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
         }
     }
-    
+
     if ($currentPath -notlike "*$hermesBin*") {
         [Environment]::SetEnvironmentVariable(
             "Path",
@@ -3242,7 +3313,7 @@ function Set-PathVariable {
     } else {
         Write-Info "PATH already configured"
     }
-    
+
     # Set HERMES_HOME so the Python code finds config/data in the right place.
     # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
     # of the Unix default ~/.hermes
@@ -3252,10 +3323,10 @@ function Set-PathVariable {
         Write-Success "Set HERMES_HOME=$HermesHome"
     }
     $env:HERMES_HOME = $HermesHome
-    
+
     # Update current session
     $env:Path = "$hermesBin;$env:Path"
-    
+
     Write-Success "hermes command ready"
 }
 
@@ -3338,7 +3409,7 @@ function Write-BootstrapMarker {
 
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
-    
+
     # Create the HERMES_HOME directory structure ($HermesHome, default %LOCALAPPDATA%\hermes)
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
@@ -3350,7 +3421,7 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
 
-    
+
     # Create .env
     $envPath = "$HermesHome\.env"
     if (-not (Test-Path $envPath)) {
@@ -3365,7 +3436,7 @@ function Copy-ConfigTemplates {
     } else {
         Write-Info "$envPath already exists, keeping it"
     }
-    
+
     # Create config.yaml
     $configPath = "$HermesHome\config.yaml"
     if (-not (Test-Path $configPath)) {
@@ -3377,7 +3448,7 @@ function Copy-ConfigTemplates {
     } else {
         Write-Info "$configPath already exists, keeping it"
     }
-    
+
     # Create SOUL.md if it doesn't exist (global persona file).
     # IMPORTANT: write without a BOM.  Windows PowerShell 5.1's
     # ``Set-Content -Encoding UTF8`` writes UTF-8 WITH a byte-order-mark
@@ -3399,9 +3470,9 @@ You are Hermes Agent, built by Nous Research. Be direct: match the length of you
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
         Write-Success "Created $soulPath (edit to customize personality)"
     }
-    
+
     Write-Success "Configuration directory ready: $HermesHome"
-    
+
     # Seed bundled skills into $HermesHome\skills (manifest-based, one-time per skill)
     Write-Info "Syncing bundled skills to $HermesHome\skills ..."
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
@@ -3732,8 +3803,9 @@ function Install-NodeDeps {
 # can install it later).
 function Install-BrowserUseCli {
     if (-not $script:UvCmd) { Resolve-UvCmd }
-    if (-not $script:UvCmd) {
-        Write-Info "Skipping Browser Use CLI install (uv unavailable)"
+    $managedUv = Get-ManagedUvPath
+    if (-not (Test-Path $managedUv)) {
+        Write-Info "Skipping Browser Use CLI install (Hermes-managed uv unavailable)"
         return
     }
     $managedBin = Join-Path $HermesHome "bin"
@@ -3752,9 +3824,16 @@ function Install-BrowserUseCli {
     try {
         # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir,
         # where the browser tool resolves it -- no reliance on the user PATH.
+        # UV_CACHE_DIR / UV_TOOL_DIR keep the tool store and download cache
+        # out of the user's uv dirs (the tool must not show up in the user's
+        # own `uv tool list`).  Explicit even though Set-UvPythonIsolationEnv
+        # sets them when Resolve-UvCmd runs: a stage flow that already
+        # resolved UvCmd may never have called it in this process.
         $env:UV_TOOL_BIN_DIR = $managedBin
         $env:UV_NO_CONFIG = "1"
-        & $script:UvCmd tool install browser-use 2>&1 | Out-Null
+        $env:UV_CACHE_DIR = Join-Path $HermesHome "cache\uv"
+        $env:UV_TOOL_DIR = Join-Path $HermesHome "uv\tools"
+        & $managedUv tool install browser-use 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Browser Use CLI installed"
         } else {
@@ -3767,6 +3846,8 @@ function Install-BrowserUseCli {
         $ErrorActionPreference = $prevEAP
         Remove-Item Env:\UV_TOOL_BIN_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:\UV_NO_CONFIG -ErrorAction SilentlyContinue
+        Remove-Item Env:\UV_CACHE_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:\UV_TOOL_DIR -ErrorAction SilentlyContinue
     }
 }
 
@@ -4607,7 +4688,7 @@ function Write-Completion {
     Write-Host "|              [OK] Installation Complete!                |" -ForegroundColor Green
     Write-Host "+---------------------------------------------------------+" -ForegroundColor Green
     Write-Host ""
-    
+
     # Show file locations
     Write-Host "* Your files:" -ForegroundColor Cyan
     Write-Host ""
@@ -4620,7 +4701,7 @@ function Write-Completion {
     Write-Host "   Code:      " -NoNewline -ForegroundColor Yellow
     Write-Host "$HermesHome\hermes-agent\"
     Write-Host ""
-    
+
     Write-Host "---------------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "* Commands:" -ForegroundColor Cyan
@@ -4638,19 +4719,19 @@ function Write-Completion {
     Write-Host "   hermes update       " -NoNewline -ForegroundColor Green
     Write-Host "Update to latest version"
     Write-Host ""
-    
+
     Write-Host "---------------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "[*] Restart your terminal for PATH changes to take effect" -ForegroundColor Yellow
     Write-Host ""
-    
+
     if (-not $HasNode) {
         Write-Host "Note: Node.js could not be installed automatically." -ForegroundColor Yellow
         Write-Host "Browser tools need Node.js. Install manually:" -ForegroundColor Yellow
         Write-Host "  https://nodejs.org/en/download/" -ForegroundColor Yellow
         Write-Host ""
     }
-    
+
     if (-not $HasRipgrep) {
         Write-Host "Note: ripgrep (rg) was not installed. For faster file search:" -ForegroundColor Yellow
         Write-Host "  winget install BurntSushi.ripgrep.MSVC" -ForegroundColor Yellow

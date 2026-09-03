@@ -722,18 +722,27 @@ class TestLocalEnvironmentWindowsTempDir:
 
 
 class TestLocalEnvironmentPathInjectionGated:
-    """Sane PATH completion must stay POSIX-only."""
+    """The agent sandbox PATH gains the managed uv dir, never the user PATH.
+
+    ``_append_missing_sane_path_entries`` appends ``$HERMES_HOME/uv`` at the
+    tail on both platforms (POSIX via the sane-merge, Windows via the appended
+    native branch). On Windows this must NOT reorder or rewrite the native
+    ``;``-separated PATH — it only adds the private managed-uv dir, keeping the
+    user's own uv (if any) first-occurrence-wins.
+    """
 
     @pytest.mark.windows_only
-    def test_windows_path_is_left_unchanged(self):
-        """``windows_only``: the assertion is that a real Windows ``PATH``
-        (``;``-separated, drive-lettered) comes back untouched. On Linux the
-        old ``_IS_WINDOWS`` patch made the function return early without ever
-        meeting a genuine Windows PATH."""
+    def test_windows_path_appends_managed_uv_dir(self):
+        """``windows_only``: a real Windows ``PATH`` (``;``-separated,
+        drive-lettered) keeps its entries untouched and gains only the
+        private managed-uv dir at the tail. On Linux the ``_IS_WINDOWS``
+        branch is not reached, so this needs a genuine Windows PATH."""
         from tools.environments.local import _append_missing_sane_path_entries
+        from hermes_constants import get_hermes_home
 
         path = r"C:\Windows\System32;C:\Program Files\Git\bin"
-        assert _append_missing_sane_path_entries(path) == path
+        uv = str(get_hermes_home() / "uv")
+        assert _append_missing_sane_path_entries(path) == path + os.pathsep + uv
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +940,11 @@ class TestWindowlessGatewayRestartSpec:
     hidden-console respawn spec (normalized interpreter + stable cwd + env
     overlay)."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="no-op is the non-Windows branch; the Windows spec branch is "
+        "covered by test_windows_keeps_console_python_and_preserves_tail",
+    )
     def test_noop_on_non_windows(self):
         import hermes_cli.gateway_windows as gw
 

@@ -871,19 +871,14 @@ def _pip_install(
     (or the last failure for the caller to inspect).
     """
     venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
-
-    # Managed uv first: $HERMES_HOME/bin is never on PATH, so a bare which()
-    # misses the uv Hermes installed and prefers a system one when both exist.
-    # ensure_uv() rather than a pure lookup because this runs during setup,
-    # where installing uv is in scope — and tier 2 is a pip that the Windows
-    # installer's `uv venv` does not seed, so failing to find uv here is the
-    # difference between a working post-setup hook and "No module named pip".
-    from hermes_cli.managed_uv import ensure_uv
+    from hermes_cli.managed_uv import ensure_uv, managed_uv_env
 
     uv_bin = ensure_uv()
     if uv_bin:
         try:
+            uv_env = managed_uv_env(
+                base_env={**os.environ, "VIRTUAL_ENV": str(venv_root)}
+            )
             result = subprocess.run(
                 [uv_bin, "pip", "install", *args],
                 capture_output=capture_output, text=True, encoding="utf-8", errors="replace", timeout=timeout,
@@ -2012,7 +2007,10 @@ def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
     else:
         for line in str(message).splitlines():
             _print_warning(f"    {line[:200]}")
-        if shutil.which("uvx"):
+        from hermes_cli.managed_uv import managed_uvx_path
+
+        managed_uvx = managed_uvx_path()
+        if managed_uvx.is_file() and os.access(managed_uvx, os.X_OK):
             _print_info("    Falling back to zero-install runs via `uvx browser-use`")
         else:
             _print_info("    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")

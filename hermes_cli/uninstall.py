@@ -336,20 +336,26 @@ def uninstall_gateway_service():
 # or open a new terminal anyway).
 
 
-def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
+def _hermes_path_markers(hermes_home: Path, *, include_managed_runtime: bool = False) -> list[str]:
     """Path-entry substrings that identify Hermes-owned User-PATH entries.
 
-    ``include_managed_bin`` adds the managed binary dir (``<root>\\bin``,
-    holding the hermes launchers and the managed uv) — only wanted when
-    that dir is about to be deleted (full uninstall from the default root),
-    so a keep-data uninstall leaves the still-working managed uv resolvable.
+    ``include_managed_runtime`` adds the managed runtime dirs — ``<root>\\bin``
+    (the hermes launchers) and ``<root>\\uv`` (the private managed uv/uvx) —
+    only wanted when those dirs are about to be deleted (full uninstall from
+    the default root), so a keep-data uninstall leaves the still-working
+    managed tools resolvable.
     """
     root = str(hermes_home).rstrip("\\/")
     # Match on prefix so sub-entries (git\cmd, git\bin, git\usr\bin, node, etc.)
     # all get swept.  Also match the bare hermes-agent install dir.
     markers = [root + "\\hermes-agent", root + "\\git", root + "\\node", root + "\\venv"]
-    if include_managed_bin:
+    if include_managed_runtime:
         markers.append(root + "\\bin")
+        # Defence in depth: nothing writes $HERMES_HOME\uv to PATH today, but
+        # if a future installer regression (UV_UNMANAGED_INSTALL dropped) or a
+        # manual edit ever does, a full uninstall must still sweep it, or a
+        # stale hermes uv stays resolvable after the tree is gone.
+        markers.append(root + "\\uv")
     # Also match if HERMES_HOME was customised to somewhere else — find-and-nuke
     # any entry whose path component contains "hermes".  We don't want to catch
     # unrelated entries like "chermes-foo" or "ephermeral", so we look for
@@ -357,17 +363,17 @@ def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False
     return markers
 
 
-def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
+def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_runtime: bool = False) -> list[str]:
     """Strip Hermes-owned entries from User-scope PATH in the registry.
 
     Returns the list of removed path entries.  Operates on HKCU\\Environment,
     same key the installer wrote to via ``[Environment]::SetEnvironmentVariable``.
 
-    ``include_managed_bin`` adds ``<hermes_home>\\bin`` (the managed binary
-    dir holding the hermes launchers and the managed uv) to the sweep. Only
-    pass it when that dir is actually being deleted — full uninstall from
-    the default root — so a keep-data uninstall leaves the still-working
-    managed uv resolvable.
+    ``include_managed_runtime`` adds ``<hermes_home>\\bin`` and
+    ``<hermes_home>\\uv`` (the managed runtime dirs — the launchers and the
+    private managed uv/uvx) to the sweep. Only pass it when those dirs are
+    actually being deleted — full uninstall from the default root — so a
+    keep-data uninstall leaves the still-working managed tools resolvable.
     """
     try:
         import winreg
@@ -385,7 +391,7 @@ def remove_path_from_windows_registry(hermes_home: Path, *, include_managed_bin:
                 return []
             # Preserve REG_EXPAND_SZ vs REG_SZ so unexpanded %VARS% survive.
             entries = [e for e in path_value.split(";") if e]
-            markers = _hermes_path_markers(hermes_home, include_managed_bin=include_managed_bin)
+            markers = _hermes_path_markers(hermes_home, include_managed_runtime=include_managed_runtime)
             kept: list[str] = []
             for entry in entries:
                 entry_norm = entry.rstrip("\\/")
@@ -860,13 +866,14 @@ def _perform_uninstall(
         # Expand %LOCALAPPDATA% etc. in hermes_home so the marker matching is
         # against fully resolved paths — installer writes literal strings
         # like C:\Users\<u>\AppData\Local\hermes\git\cmd, not %LOCALAPPDATA%.
-        # The managed binary dir (hermes\bin: launchers + managed uv) leaves
-        # the PATH only when the full wipe below is about to delete it;
-        # keep-data mode keeps the dir and the still-working uv resolvable.
-        sweep_managed_bin = full_uninstall and _is_default_hermes_home(hermes_home)
+        # The managed runtime dirs (hermes\bin: launchers; hermes\uv: the
+        # private uv/uvx) leave the PATH only when the full wipe below is
+        # about to delete them; keep-data mode keeps the dirs and the
+        # still-working uv resolvable.
+        sweep_managed_runtime = full_uninstall and _is_default_hermes_home(hermes_home)
         removed_path_entries = remove_path_from_windows_registry(
             Path(os.path.expandvars(str(hermes_home))),
-            include_managed_bin=sweep_managed_bin,
+            include_managed_runtime=sweep_managed_runtime,
         )
         if removed_path_entries:
             for entry in removed_path_entries:

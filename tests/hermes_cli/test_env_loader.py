@@ -1,5 +1,6 @@
 import codecs
 import importlib
+import logging
 import os
 import sys
 
@@ -245,31 +246,47 @@ def test_utf16_le_bom_preserves_non_ascii_values(tmp_path, monkeypatch):
     assert b"\xef\xbf\xbd" not in after
 
 
-def test_utf32_le_bom_leaves_file_untouched(tmp_path, caplog):
-    """UTF-32-LE BOM: refuse-to-mangle (leave bytes untouched + warning).
+def test_utf32_le_bom_is_skipped_without_crashing(tmp_path, caplog, monkeypatch):
+    """UTF-32-LE BOM: skip loading and leave the bytes untouched.
 
     UTF-32-LE's BOM starts with UTF-16-LE's FF FE; sniff order must check
     UTF-32 first so we never misdetect and corrupt.
-
-    Exercises ``_sanitize_env_file_if_needed`` only: the dotenv load path
-    is out of scope here (#65124's surface) and still cannot ingest UTF-32.
     """
-    import logging
-
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
-
-    env_file = tmp_path / ".env"
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
     content = "HERMES_TEST_KEY=hello_utf32\nSECOND_KEY=world\n"
     raw = codecs.BOM_UTF32_LE + content.encode("utf-32-le")
     env_file.write_bytes(raw)
+    monkeypatch.delenv("HERMES_TEST_KEY", raising=False)
+    monkeypatch.delenv("SECOND_KEY", raising=False)
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
-        _sanitize_env_file_if_needed(env_file)
+        loaded = load_hermes_dotenv(hermes_home=home)
 
+    assert loaded == []
+    assert os.getenv("HERMES_TEST_KEY") is None
+    assert os.getenv("SECOND_KEY") is None
     assert env_file.read_bytes() == raw  # untouched
     assert any("UTF-32" in r.message for r in caplog.records)
 
 
+def test_utf32_user_env_leaves_project_env_as_active_source(tmp_path, monkeypatch):
+    """A skipped user env must not weaken project-env precedence."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    raw = codecs.BOM_UTF32_LE + "PRECEDENCE_PROBE=user\n".encode("utf-32-le")
+    user_env.write_bytes(raw)
+    project_env = tmp_path / "project.env"
+    project_env.write_text("PRECEDENCE_PROBE=project\n", encoding="utf-8")
+    monkeypatch.setenv("PRECEDENCE_PROBE", "stale-shell")
+
+    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
+
+    assert loaded == [project_env]
+    assert os.environ["PRECEDENCE_PROBE"] == "project"
+    assert user_env.read_bytes() == raw
 
 
 def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
@@ -278,8 +295,6 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     Matches house style for warn-once (module-level seen-set, same class as
     ``_WARNED_KEYS``): hot-reload / multi-entry load must not spam logs.
     """
-    import logging
-
     import hermes_cli.env_loader as env_loader
     from hermes_cli.env_loader import _sanitize_env_file_if_needed
 
@@ -292,10 +307,13 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     env_file.write_bytes(raw)
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
-        _sanitize_env_file_if_needed(env_file)
-        _sanitize_env_file_if_needed(env_file)
-        _sanitize_env_file_if_needed(env_file)
+        results = [
+            _sanitize_env_file_if_needed(env_file),
+            _sanitize_env_file_if_needed(env_file),
+            _sanitize_env_file_if_needed(env_file),
+        ]
 
+    assert results == [False, False, False]
     utf32_warnings = [r for r in caplog.records if "UTF-32" in r.message]
     assert len(utf32_warnings) == 1
     assert env_file.read_bytes() == raw

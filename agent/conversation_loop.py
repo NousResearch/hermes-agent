@@ -1602,6 +1602,42 @@ def _content_policy_blocked_result(
     }
 
 
+def _repetition_stopped_result(
+    agent,
+    messages: List[Dict],
+    conversation_history,
+    effective_task_id: Optional[str],
+    api_call_count: int,
+) -> Dict[str, Any]:
+    """Discard a repetition-dominated answer before it becomes durable."""
+    error = (
+        "Model output entered a repetition loop; refusing to return a "
+        "degenerate response."
+    )
+    agent._vprint(
+        f"{agent.log_prefix}🔁 Response dominated by repeated text — stopping "
+        "before delivery.",
+        force=True,
+    )
+    response = (
+        "⚠️ **Response Stopped — Repetition Detected**\n\n"
+        "The model fell into a repetition loop while writing this response, "
+        "so the repeated output was discarded.\n\n"
+        "→ Switch to a different model with `/model`\n"
+        "→ Or resend your message (your conversation history is preserved)"
+    )
+    agent._cleanup_task_resources(effective_task_id)
+    agent._persist_session(messages, conversation_history)
+    return {
+        "final_response": response,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "partial": True,
+        "error": error,
+    }
+
+
 def _compression_deferred_result(
     agent,
     messages: List[Dict],
@@ -4263,37 +4299,13 @@ def run_conversation(
                         and is_repetition_dominated(_visible_trunc)
                     )
                     if _repetition_dominated:
-                        _rep_error = (
-                            "Model output entered a repetition loop and was "
-                            "truncated mid-loop; refusing to continue a "
-                            "degenerate response."
+                        return _repetition_stopped_result(
+                            agent,
+                            messages,
+                            conversation_history,
+                            effective_task_id,
+                            api_call_count,
                         )
-                        agent._vprint(
-                            f"{agent.log_prefix}🔁 Response dominated by "
-                            f"repeated text — stopping instead of "
-                            f"continuing a degenerate response.",
-                            force=True,
-                        )
-                        _rep_response = (
-                            "⚠️ **Response Stopped — Repetition Detected**\n\n"
-                            "The model fell into a repetition loop while "
-                            "writing this response, so continuing would only "
-                            "produce more repeated text. The partial response "
-                            "was discarded.\n\n"
-                            "→ Switch to a different model with `/model`\n"
-                            "→ Or resend your message (your conversation "
-                            "history is preserved)"
-                        )
-                        agent._cleanup_task_resources(effective_task_id)
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "final_response": _rep_response,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "partial": True,
-                            "error": _rep_error,
-                        }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
                         assistant_message = _trunc_msg
@@ -8875,6 +8887,23 @@ def run_conversation(
                             _frag.pop("_length_continuation_nudge", None)
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                # A provider may end a degenerate loop normally with
+                # finish_reason="stop" instead of exhausting its output cap.
+                # Check every completed visible text response before any
+                # verify/kanban interim emission or durable transcript write.
+                if (
+                    final_response
+                    and not assistant_message.tool_calls
+                    and is_repetition_dominated(final_response)
+                ):
+                    return _repetition_stopped_result(
+                        agent,
+                        messages,
+                        conversation_history,
+                        effective_task_id,
+                        api_call_count,
+                    )
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

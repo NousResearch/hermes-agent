@@ -1,6 +1,8 @@
-"""Unit tests for the truncated-response repetition guard (issue #86581)."""
+"""Unit tests for repetition-dominated model output detection."""
 
 from __future__ import annotations
+
+import random
 
 from agent.repetition_guard import MIN_FRAGMENT_LENGTH, is_repetition_dominated
 
@@ -19,6 +21,30 @@ class TestRepetitionGuard:
         # Repetition loop with no line breaks — exercises the window path.
         text = _INCIDENT_ECHO * 2000
         assert len(text) >= MIN_FRAGMENT_LENGTH
+        assert is_repetition_dominated(text) is True
+
+    def test_multiline_paragraph_run_uses_true_period_coverage(self):
+        rng = random.Random(11)
+        paragraph = "\n".join(
+            "".join(rng.choice("abcdefghijklmnopqrstuvwxyz ") for _ in range(151))
+            for _ in range(5)
+        ) + "\n"
+
+        # The incident unit was approximately 764 characters. Detection must
+        # remain scale-free as the number of exact repeats grows.
+        for repeat_count in (100, 1_000, 10_000):
+            assert is_repetition_dominated(paragraph * repeat_count) is True
+
+    def test_dominant_run_with_unique_prefix_and_suffix_flags(self):
+        paragraph = (
+            "A deliberately long repeated paragraph has enough distinct text "
+            "to make its period exceed the guard's minimum anchor length.\n"
+            "It also spans multiple lines, matching the real incident shape.\n"
+        )
+        repeated = paragraph * 20
+        text = ("unique introduction " * 20) + repeated + (" unique ending" * 20)
+
+        assert len(repeated) > len(text) * 0.5
         assert is_repetition_dominated(text) is True
 
     def test_long_legitimate_text_not_flagged(self):

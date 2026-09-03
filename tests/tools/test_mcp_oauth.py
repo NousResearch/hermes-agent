@@ -1112,3 +1112,54 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for refresh-on-401 behavior
+# ---------------------------------------------------------------------------
+
+
+
+class TestExtractExtraAuthParams:
+    """Tests for _extract_extra_auth_params (provider-specific auth URL params)."""
+
+    def test_zoho_eu_url(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params("https://datawyse-comms-mcp.zohomcp.eu/mcp/abc")
+        assert params == {"access_type": "offline"}
+
+    def test_zoho_com_url(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params("https://mcp.zohomcp.com/some/path")
+        assert params == {"access_type": "offline"}
+
+    def test_non_zoho_no_match(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params("https://api.example.com/mcp")
+        assert params == {}
+
+    def test_user_config_override(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params(
+            "https://mcp.zohomcp.eu/mcp/abc",
+            user_config={"access_type": "online", "prompt": "login"},
+        )
+        assert params == {"access_type": "online", "prompt": "login"}
+
+    def test_user_config_merge(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params(
+            "https://mcp.example.com/mcp",
+            user_config={"prompt": "consent"},
+        )
+        assert params == {"prompt": "consent"}
+
+    def test_none_config_ignored(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params("https://mcp.example.com/mcp", user_config=None)
+        assert params == {}
+
+    def test_case_insensitive(self):
+        from tools.mcp_oauth import _extract_extra_auth_params
+        params = _extract_extra_auth_params("https://MCP.ZOHOMCP.EU/mcp")
+        assert params == {"access_type": "offline"}

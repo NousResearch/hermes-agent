@@ -712,6 +712,7 @@ class MCPOAuthManager:
             _maybe_preregister_client,
             _make_callback_waiter,
             _make_redirect_handler,
+            _extract_extra_auth_params,
             cimd_provider_kwargs,
             token_request_user_agent,
         )
@@ -755,6 +756,11 @@ class MCPOAuthManager:
             resolved_port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))
         )
 
+        # Provider-specific extra authorization parameters (e.g. access_type=offline)
+        extra_auth = _extract_extra_auth_params(
+            entry.server_url, user_config=cfg.get("extra_auth_params")
+        )
+
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
             preregistered=bool(cfg.get("client_id")),
@@ -764,6 +770,7 @@ class MCPOAuthManager:
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
             token_user_agent=token_request_user_agent(cfg),
+            extra_auth_params=extra_auth or None,
             **cimd_provider_kwargs(cfg),
         )
 

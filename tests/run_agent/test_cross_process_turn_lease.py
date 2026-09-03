@@ -644,6 +644,10 @@ def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
 
 def test_cli_explicit_history_is_replaced_before_the_real_turn_prologue(monkeypatch, tmp_path):
     """The CLI passes an explicit parent snapshot; it must never reach the child."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
     db = SessionDB(tmp_path / "state.db")
     db.create_session("parent", source="cli")
     db.append_message("parent", "user", "parent request")
@@ -684,6 +688,10 @@ def test_cli_explicit_history_is_replaced_before_the_real_turn_prologue(monkeypa
 
 
 def test_adoption_transfers_the_held_lease_and_defers_for_active_work(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
     db = SessionDB(tmp_path / "state.db")
     db.create_session("parent", source="gateway")
     assert TurnBoundaryRollover(db).mark_pending("parent", threshold_tokens=10)

@@ -68,8 +68,12 @@ INCIDENT_LIFECYCLE = {
 }
 
 
-def test_doctor_request_is_consumed_by_core_and_reads_back_as_recovered(tmp_path: Path):
+def test_doctor_request_is_consumed_by_core_and_reads_back_as_recovered(monkeypatch, tmp_path: Path):
     doctor = load_doctor()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
     db.create_session(

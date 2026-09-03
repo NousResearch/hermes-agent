@@ -26,6 +26,7 @@ RECOVERY_GUIDANCE = "Use session_search to recover earlier details if needed."
 _PENDING_KEY = "_turn_boundary_rollover_pending"
 _HANDOFF_KEY = "turn_boundary_handoff"
 _LIFECYCLE_KEY = "turn_boundary_lifecycle"
+_POLICY_KEY = "_turn_boundary_rollover_policy"
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,12 @@ class TurnBoundaryRollover:
         """Persist a request after a response has fully committed."""
         if not session_id or threshold_tokens <= 0:
             return False
+        try:
+            if not _current_policy().enabled:
+                _cancel_disabled_rollover_state(self._db, session_id)
+                return False
+        except Exception:
+            return False
         arm_key = f"turn-boundary:{uuid.uuid4().hex}"
         return self._claim_pending(
             session_id,
@@ -135,6 +142,12 @@ class TurnBoundaryRollover:
         this method only guarantees at-most-one continuation per session.
         """
         if not session_id or not idempotency_key:
+            return None
+        try:
+            if not _current_policy().enabled:
+                _cancel_disabled_rollover_state(self._db, session_id)
+                return None
+        except Exception:
             return None
         pending = {
             "threshold_tokens": 0,
@@ -166,6 +179,8 @@ class TurnBoundaryRollover:
             if isinstance(existing, Mapping):
                 return dict(existing), False
             config[_PENDING_KEY] = dict(pending)
+            # This persisted fact keeps normal admission checks off config I/O.
+            config[_POLICY_KEY] = {"enabled": True}
             if lifecycle is not None:
                 lifecycle_data = dict(lifecycle)
                 checkpoint = lifecycle_data.get("checkpoint")
@@ -196,6 +211,13 @@ class TurnBoundaryRollover:
         the same SQLite write transaction that inserts the child.
         """
         if active_work or not session_id:
+            return None
+        try:
+            if not _current_policy().enabled:
+                _cancel_disabled_rollover_state(self._db, session_id)
+                return None
+        except Exception:
+            # Config failure cannot authorize an opt-in parent-ending action.
             return None
         child_id = uuid.uuid4().hex
 
@@ -289,6 +311,43 @@ def _model_config(row: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _current_policy() -> RolloverPolicy:
+    """Read configuration only at rollover state-transition boundaries."""
+    from hermes_cli.config import load_config
+
+    config = load_config() or {}
+    return RolloverPolicy.from_config(config.get("session_rollover"))
+
+
+def _patch_rollover_state(db: Any, session_id: str, patch: Mapping[str, Any]) -> None:
+    """Atomically merge rollover keys without overwriting unrelated runtime config."""
+    def _write(conn: Any) -> None:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if row is None or row["ended_at"] is not None:
+            return
+        config = _model_config(dict(row))
+        for key, value in patch.items():
+            if value is None:
+                config.pop(key, None)
+            else:
+                config[key] = value
+        conn.execute(
+            "UPDATE sessions SET model_config = ? WHERE id = ? AND ended_at IS NULL",
+            (json.dumps(config, separators=(",", ":")), session_id),
+        )
+
+    db._execute_write(_write)
+
+
+def _cancel_disabled_rollover_state(db: Any, session_id: str) -> None:
+    """Atomically cancel stale arms and their admission fence."""
+    _patch_rollover_state(db, session_id, {
+        _PENDING_KEY: None,
+        _LIFECYCLE_KEY: None,
+        _POLICY_KEY: {"enabled": False},
+    })
+
+
 def _checkpoint_with_repo_evidence(checkpoint: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
     """Capture bounded work evidence without inspecting secrets or arbitrary cwd."""
     payload = dict(checkpoint)
@@ -317,16 +376,31 @@ def _checkpoint_with_repo_evidence(checkpoint: Mapping[str, Any], row: Mapping[s
 
 
 def allows_new_work(agent: Any) -> bool:
-    """Fail closed for new tools/delegations once a parent is draining."""
+    """Fence enabled drains without loading config before every tool execution."""
     db = getattr(agent, "_session_db", None)
     session_id = str(getattr(agent, "session_id", "") or "")
     if db is None or not session_id:
         return True
     try:
-        state = _model_config(db.get_session(session_id) or {}).get(_LIFECYCLE_KEY)
+        config = _model_config(db.get_session(session_id) or {})
     except Exception:
         return False
-    return not isinstance(state, Mapping) or state.get("state") != "draining"
+    state = config.get(_LIFECYCLE_KEY)
+    if not isinstance(state, Mapping) or state.get("state") != "draining":
+        return True
+    marker = config.get(_POLICY_KEY)
+    if isinstance(marker, Mapping):
+        return marker.get("enabled") is not True
+    try:
+        if _current_policy().enabled:
+            _patch_rollover_state(db, session_id, {_POLICY_KEY: {"enabled": True}})
+            return False
+        _cancel_disabled_rollover_state(db, session_id)
+        return True
+    except Exception:
+        # An unmarked legacy drain is never a reason to fence work when the
+        # disabled-by-default policy cannot be read.
+        return True
 
 
 def allows_new_delegation(agent: Any) -> bool:
@@ -342,9 +416,10 @@ def _publish_lifecycle_status(
     Doctor recovery decisions read these fields, so they must exist on every
     completed turn — not only on the turn that happens to arm a rollover.
     """
-    patch = getattr(db, "patch_session_model_config", None)
-    if callable(patch):
-        patch(session_id, {_LIFECYCLE_KEY: dict(status)})
+    _patch_rollover_state(db, session_id, {
+        _LIFECYCLE_KEY: dict(status),
+        _POLICY_KEY: {"enabled": True},
+    })
 
 
 def _lifecycle_status(
@@ -410,15 +485,11 @@ def mark_completed_turn(agent: Any, result: Mapping[str, Any]) -> bool:
     if db is None or not session_id or compressor is None:
         return False
     try:
-        from hermes_cli.config import load_config
-        config = load_config() or {}
-        policy = RolloverPolicy.from_config(config.get("session_rollover"))
+        policy = _current_policy()
         if not policy.enabled:
             # This is opt-in behavior. Do not publish a derived draining state
             # from zero reserves or iteration bookkeeping while it is off.
-            patch = getattr(db, "patch_session_model_config", None)
-            if callable(patch):
-                patch(session_id, {_LIFECYCLE_KEY: None})
+            _cancel_disabled_rollover_state(db, session_id)
             return False
         trigger = policy.resolve(
             getattr(compressor, "context_length", 0),

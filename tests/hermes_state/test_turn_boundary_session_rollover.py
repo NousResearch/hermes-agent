@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 import threading
 
+import pytest
+
 from hermes_state import SessionDB
 from session_rollover import (
     END_REASON,
@@ -17,6 +19,15 @@ from session_rollover import (
     mark_completed_turn,
 )
 from agent.session_lifecycle import LifecycleBudget, LifecycleState, evaluate_lifecycle
+
+
+@pytest.fixture(autouse=True)
+def enabled_rollover_policy(monkeypatch):
+    """Direct persistence tests model an arm created while the opt-in is enabled."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
 
 
 # The exact production incident, session ``20260903_112822_b3a7b6``. These
@@ -451,6 +462,128 @@ def test_disabled_policy_does_not_publish_a_draining_lifecycle(monkeypatch, tmp_
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"session_rollover": {"enabled": False}})
     assert mark_completed_turn(Agent(), {"completed": True, "api_calls": 1}) is False
 
+    config = json.loads(db.get_session("live")["model_config"] or "{}")
+    assert "_turn_boundary_rollover_pending" not in config
+    assert "turn_boundary_lifecycle" not in config
+
+
+def test_disabling_after_an_arm_cancels_it_before_adoption_and_reopens_admission(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Regression for the independent review's exact disabled-after-arm trace."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("live", source="cli")
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.mark_pending(
+        "live", threshold_tokens=10, lifecycle={"state": "draining"},
+    )
+    agent = type("Agent", (), {
+        "session_id": "live", "_session_db": db,
+        "context_compressor": type("Compressor", (), {
+            "context_length": 1_000, "threshold_tokens": 900, "last_prompt_tokens": 800,
+        })(),
+    })()
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": False}},
+    )
+    assert mark_completed_turn(agent, {"completed": True, "api_calls": 1}) is False
+    config = json.loads(db.get_session("live")["model_config"] or "{}")
+    assert "_turn_boundary_rollover_pending" not in config
+    assert "turn_boundary_lifecycle" not in config
+    assert rollover.adopt_at_turn_boundary("live", active_work=False) is None
+    assert db.get_session("live")["end_reason"] is None
+
+    db.create_session(
+        "stale", source="cli",
+        model_config={"turn_boundary_lifecycle": {"state": "draining"}},
+    )
+    stale = type("Agent", (), {"session_id": "stale", "_session_db": db})()
+    assert allows_new_work(stale) is True
+    assert allows_new_delegation(stale) is True
+    assert "turn_boundary_lifecycle" not in json.loads(
+        db.get_session("stale")["model_config"] or "{}"
+    )
+
+
+def test_disabled_cleanup_preserves_concurrent_unrelated_model_config(tmp_path: Path) -> None:
+    """Cancellation is one merge transaction and cannot clobber runtime settings."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "live", source="cli", model_config={
+            "provider": "openrouter",
+            "_turn_boundary_rollover_pending": {"threshold_tokens": 10},
+            "turn_boundary_lifecycle": {"state": "draining"},
+        },
+    )
+    start = threading.Barrier(2)
+
+    def mutate_runtime_config() -> None:
+        start.wait()
+        db.patch_session_model_config("live", {"reasoning_effort": "xhigh", "yolo": True})
+
+    writer = threading.Thread(target=mutate_runtime_config)
+    writer.start()
+    start.wait()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": False}},
+    )
+    try:
+        assert TurnBoundaryRollover(db).adopt_at_turn_boundary("live", active_work=False) is None
+    finally:
+        monkeypatch.undo()
+    writer.join()
+
+    config = json.loads(db.get_session("live")["model_config"] or "{}")
+    assert config["provider"] == "openrouter"
+    assert config["reasoning_effort"] == "xhigh"
+    assert config["yolo"] is True
+    assert "_turn_boundary_rollover_pending" not in config
+    assert "turn_boundary_lifecycle" not in config
+
+
+def test_enabled_policy_marker_fences_without_reloading_config(monkeypatch, tmp_path: Path) -> None:
+    """Tool admission uses the persisted decision, not config I/O on every call."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "draining", source="cli", model_config={
+            "turn_boundary_lifecycle": {"state": "draining"},
+            "_turn_boundary_rollover_policy": {"enabled": True},
+        },
+    )
+    agent = type("Agent", (), {"session_id": "draining", "_session_db": db})()
+    calls = 0
+
+    def unexpected_config_read():
+        nonlocal calls
+        calls += 1
+        raise AssertionError("admission reloaded config")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", unexpected_config_read)
+    assert allows_new_work(agent) is False
+    assert allows_new_delegation(agent) is False
+    assert calls == 0
+
+
+def test_disabled_policy_refuses_and_cleans_new_rollover_arms(monkeypatch, tmp_path: Path) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "live", source="cli", model_config={
+            "_turn_boundary_rollover_pending": {"threshold_tokens": 10},
+            "turn_boundary_lifecycle": {"state": "draining"},
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": False}},
+    )
+
+    rollover = TurnBoundaryRollover(db)
+    assert rollover.mark_pending("live", threshold_tokens=10) is False
+    assert rollover.request_recovery("live", idempotency_key="doctor") is None
     config = json.loads(db.get_session("live")["model_config"] or "{}")
     assert "_turn_boundary_rollover_pending" not in config
     assert "turn_boundary_lifecycle" not in config

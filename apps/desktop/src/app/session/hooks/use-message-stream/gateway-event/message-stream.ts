@@ -19,6 +19,13 @@ import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
 
+// Per-turn token accounting: the gateway emits session-CUMULATIVE usage on
+// every message.complete (output = lifetime session total). The footer chip
+// needs THIS reply's exact token count, so we snapshot the cumulative total
+// at message.start and forward the delta at message.complete. This is the
+// provider's real count (no estimation) and survives every provider/path.
+const turnStartUsageOutput = new Map<string, number>()
+
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
 }
@@ -94,6 +101,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // if credits are still exhausted the next failure re-raises it.
     clearBillingBlock(sessionId)
 
+    // Snapshot the session-cumulative token totals BEFORE this turn so the
+    // completion handler can forward the exact per-turn delta (not the lifetime
+    // total) to the footer chip.
+    const _preUsage = sessionStateByRuntimeIdRef.current.get(sessionId)?.usage
+    turnStartUsageOutput.set(sessionId, _preUsage?.output ?? 0)
+    turnStartUsageOutput.set(sessionId + ':in', _preUsage?.input ?? 0)
     if (isActiveEvent) {
       triggerHaptic('streamStart')
     }
@@ -348,7 +361,21 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
           }
         : undefined
 
-    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    // Forward the EXACT per-turn token count to the footer chip. The gateway
+    // sends session-CUMULATIVE usage; subtract the snapshot taken at
+    // message.start to get this reply's real provider count (no estimate).
+    const gwUsage = payload?.usage
+    let turnUsage: { input?: number; output?: number; total?: number } | undefined
+    if (gwUsage && typeof gwUsage.output === 'number') {
+      const startOut = turnStartUsageOutput.get(sessionId) ?? 0
+      const out = Math.max(0, gwUsage.output - startOut)
+      const startIn = turnStartUsageOutput.get(sessionId + ':in') ?? 0
+      const inp = typeof gwUsage.input === 'number' ? Math.max(0, gwUsage.input - startIn) : undefined
+      turnUsage = { output: out, ...(inp !== undefined ? { input: inp } : {}), total: out + (inp ?? 0) }
+    }
+    turnStartUsageOutput.delete(sessionId)
+
+    completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt, turnUsage)
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.

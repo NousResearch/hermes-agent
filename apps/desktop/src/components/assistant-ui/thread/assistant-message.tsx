@@ -39,6 +39,7 @@ import {
   RefreshCwIcon,
   SmilePlusIcon,
   Upload,
+  Zap,
   VolumeXIcon,
   XIcon
 } from '@/lib/icons'
@@ -51,6 +52,7 @@ import { notifyError } from '@/store/notifications'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
+import { $showTurnPerf } from '@/store/turn-perf'
 
 // Stable empty identity for the settled-parts selector — a fresh [] per render
 // would re-derive the changed-files card on every message re-render.
@@ -194,6 +196,21 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // Whole-turn wall-clock seconds (set once at completion — referentially
   // stable across the 30 Hz delta stream, so this adds no per-token renders).
   const turnDurationS = useAuiState(s => s.message.metadata?.custom?.durationS as number | undefined)
+  const turnUsage = useAuiState(s => s.message.metadata?.custom?.usage as { input?: number; output?: number; total?: number } | undefined)
+  const turnReasoningS = useAuiState(s => s.message.metadata?.custom?.reasoningDurationS as number | undefined)
+  // The footer (copy/branch/react) may show once text exists, but the perf
+  // chip must only render at TURN END — for agentic turns the assistant bubble
+  // carries visible text long before tools finish, so gating on first visible
+  // text would anchor the chip mid-response. Gate it on message completion.
+  const turnComplete = useAuiState(s => s.message.status?.type === 'complete')
+  // Durable duration fallback: custom.durationS isn't always persisted; derive
+  // from timelineTimestamp/createdAt (both survive hydration) so the chip never
+  // collapses to 0 on local-model turns that lack message.timestamp.
+  const msgTs = useAuiState(s => s.message.metadata?.custom?.timelineTimestamp as number | undefined)
+  const msgDone = useAuiState(s => s.message.metadata?.custom?.timelineCompletedAt as number | undefined)
+  const msgCreated = useAuiState(s => s.message.createdAt as Date | undefined)
+  const durStart = msgTs ?? (msgCreated instanceof Date ? msgCreated.getTime() / 1000 : undefined)
+  const effectiveDurationS = turnDurationS ?? (durStart !== undefined && msgDone !== undefined && msgDone > durStart ? Math.max(1, Math.round(msgDone - durStart)) : undefined)
 
   const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
@@ -264,7 +281,10 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           <MessageTimelineTimestamp className="px-(--message-text-indent) pt-0.5" suppressIfDuplicatePart />
           {hasVisibleText && !isInterim && (
             <AssistantFooter
-              durationS={turnDurationS}
+              durationS={effectiveDurationS}
+              usage={turnUsage}
+              reasoningDurationS={turnReasoningS}
+              turnComplete={turnComplete}
               getMessageText={getMessageText}
               messageId={messageId}
               onBranchInNewChat={onBranchInNewChat}
@@ -578,14 +598,17 @@ const ErrorRecoveryActions: FC = () => {
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
-  durationS,
-  messageId,
-  getMessageText,
-  onBranchInNewChat
-}) => {
+const AssistantActionBar: FC<
+  MessageActionProps & {
+    durationS?: number
+    usage?: { input?: number; output?: number; total?: number }
+    reasoningDurationS?: number
+    turnComplete?: boolean
+  }
+> = ({ durationS, usage, reasoningDurationS, turnComplete, messageId, getMessageText, onBranchInNewChat }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const showTurnPerf = useStore($showTurnPerf)
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
@@ -600,15 +623,34 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
-      {durationS !== undefined && (
-        <span
-          className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
-          data-slot="aui_turn-duration"
-          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
-        >
-          ⏱ {formatElapsed(durationS)}
-        </span>
-      )}
+      {turnComplete && showTurnPerf && durationS !== undefined && (() => {
+        const reported = typeof usage?.output === 'number' ? usage.output : undefined
+        const estimated = reported === undefined ? Math.max(1, Math.round(getMessageText().length / 4)) : undefined
+        const tokens = reported ?? estimated ?? 0
+        const tps = durationS > 0 ? Math.round(tokens / durationS) : 0
+        const titleParts = [
+          copy.turnPerfTooltipDuration(formatElapsed(durationS)),
+          reported !== undefined
+            ? copy.turnPerfTooltipTokens(tokens.toLocaleString())
+            : copy.turnPerfTooltipTokensEst((estimated ?? 0).toLocaleString())
+        ]
+        if (reasoningDurationS !== undefined) {
+          titleParts.push(copy.turnPerfTooltipThinking(formatElapsed(reasoningDurationS)))
+        }
+        return (
+          <span
+            className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+            data-slot="aui_turn-duration"
+            title={titleParts.join(' · ')}
+          >
+            <Zap className="inline-block size-3 translate-y-[1px]" />{' '}
+            {reported !== undefined
+              ? copy.turnPerfCount(tokens.toLocaleString())
+              : `≈${copy.turnPerfCount((estimated ?? 0).toLocaleString())}`}{' '}
+            {copy.turnPerfRate(tps.toLocaleString())}
+          </span>
+        )
+      })()}
       <ActionBarPrimitive.Root
         className={
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -726,7 +768,14 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
   )
 }
 
-const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
+const AssistantFooter: FC<
+  MessageActionProps & {
+    durationS?: number
+    usage?: { input?: number; output?: number; total?: number }
+    reasoningDurationS?: number
+    turnComplete?: boolean
+  }
+> = ({ durationS, usage, reasoningDurationS, turnComplete, ...props }) => {
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
       <BranchPickerPrimitive.Root
@@ -743,7 +792,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar durationS={durationS} {...props} />
+      <AssistantActionBar durationS={durationS} usage={usage} reasoningDurationS={reasoningDurationS} turnComplete={turnComplete} {...props} />
     </div>
   )
 }

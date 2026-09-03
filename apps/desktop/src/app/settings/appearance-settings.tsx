@@ -49,6 +49,7 @@ import {
   TRANSLUCENCY_SUPPORTED
 } from '@/store/translucency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
+import { $showTurnPerf, setShowTurnPerf } from '@/store/turn-perf'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -407,6 +408,7 @@ export function AppearanceSettings() {
   const toursEnabled = useStore($toursEnabled)
   const retiredTips = useStore($retiredTips)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
+  const showTurnPerf = useStore($showTurnPerf)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
@@ -876,6 +878,13 @@ export function AppearanceSettings() {
             }
             description={a.vibeHeartsDesc}
             title={a.vibeHeartsTitle}
+          />
+
+          <ToggleRow
+            checked={showTurnPerf}
+            description={a.turnPerfDesc}
+            label={a.turnPerfTitle}
+            onChange={setShowTurnPerf}
           />
 
           <ListRow

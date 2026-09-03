@@ -425,6 +425,8 @@ export const ja = defineLocale({
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
+      turnPerfTitle: 'トークン速度を表示',
+      turnPerfDesc: '完了したアシスタントの返信（複数ステップのエージェント実行を含む）に、使用トークン数と毎秒トークン数を表示します。',
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',
@@ -2970,6 +2972,12 @@ export const ja = defineLocale({
       thoughtBriefly: '少し思考',
       thoughtFor: duration => `${duration} 思考`,
       turnDuration: duration => `このターンの所要時間: ${duration}`,
+      turnPerfCount: tokens => `${tokens} トークン`,
+      turnPerfRate: rate => `${rate} tok/s`,
+      turnPerfTooltipDuration: duration => `このターンの所要時間: ${duration}`,
+      turnPerfTooltipTokens: tokens => `${tokens} 出力トークン（プロバイダー計測）`,
+      turnPerfTooltipTokensEst: tokens => `≈${tokens} 出力トークン（概算）`,
+      turnPerfTooltipThinking: duration => `思考時間: ${duration}`,
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,
       copy: 'コピー',

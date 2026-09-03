@@ -601,6 +601,9 @@ export const en: Translations = {
       vibeHeartsTitle: 'Vibe Hearts',
       vibeHeartsDesc:
         'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',
+      turnPerfTitle: 'Show token rate',
+      turnPerfDesc:
+        'Display tokens used and tokens/sec on completed assistant replies, including multi-step agentic turns.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -3372,6 +3375,12 @@ export const en: Translations = {
       thoughtBriefly: 'Thought briefly',
       thoughtFor: duration => `Thought for ${duration}`,
       turnDuration: duration => `This turn took ${duration}`,
+      turnPerfCount: tokens => `${tokens} tokens`,
+      turnPerfRate: rate => `${rate} tok/s`,
+      turnPerfTooltipDuration: duration => `This turn took ${duration}`,
+      turnPerfTooltipTokens: tokens => `${tokens} output tokens (provider)`,
+      turnPerfTooltipTokensEst: tokens => `≈${tokens} output tokens (estimated)`,
+      turnPerfTooltipThinking: duration => `Thought for ${duration}`,
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,
       copy: 'Copy',

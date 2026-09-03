@@ -3997,6 +3997,11 @@ def add_comment(
         raise ValueError("comment body is required")
     if not author or not author.strip():
         raise ValueError("comment author is required")
+    # Redact secrets at the domain boundary, same as request_review()/
+    # request_changes()/block_task() — comments are durable, surfaced to the
+    # dashboard/gateway notification feed regardless of which caller (CLI,
+    # dashboard, agent tool) reaches this function.
+    body = str(redact_review_value(body))
     now = int(time.time())
     # ``allow_nested=True``: graph builders (kanban_swarm blackboard seeding)
     # compose comment writes under one outer commit.
@@ -5403,6 +5408,14 @@ def complete_task(
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
     """
+    # Redact secrets at the domain boundary, same as request_review()/
+    # request_changes() — this is the durable completion record surfaced to
+    # downstream children (build_worker_context) and dashboard/gateway
+    # notifications, regardless of which caller (CLI, dashboard, agent tool)
+    # reaches this function.
+    result = redact_review_value(result)
+    summary = redact_review_value(summary)
+    metadata = _redact_completion_metadata(metadata)
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
@@ -6293,6 +6306,11 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # Redact secrets at the domain boundary, same as request_review()/
+    # request_changes() — ``reason`` lands in the closed run's summary and
+    # in every block-routing event's payload regardless of which caller
+    # (CLI, dashboard, agent tool) reaches this function.
+    reason = redact_review_value(reason)
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
@@ -6490,12 +6508,43 @@ def redact_review_value(value: Any) -> Any:
 
         return redact_sensitive_text(value, force=True)
     if isinstance(value, dict):
-        return {key: redact_review_value(item) for key, item in value.items()}
+        # Keys are attacker-controlled free text too (an agent-tool caller
+        # supplies arbitrary metadata keys) and land in the same durable
+        # rows/event payloads as values — redact them the same way, not
+        # just the values under them.
+        return {
+            (redact_review_value(key) if isinstance(key, str) else key): redact_review_value(item)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [redact_review_value(item) for item in value]
     if isinstance(value, tuple):
         return tuple(redact_review_value(item) for item in value)
     return value
+
+
+# Completion-metadata keys that carry operational filesystem paths, not
+# free-text prose. Redacting a path can mangle it (a scratch artifact whose
+# filename merely resembles a secret pattern, e.g. an API key a worker
+# discovered and named a report after) into something that no longer
+# resolves to a real file — _merge_completion_prose_artifacts /
+# _persist_scratch_completion_artifacts, which run AFTER redaction, then
+# treat a legitimate declared artifact as missing and fail completion.
+_COMPLETION_METADATA_PATH_KEYS = ("artifacts", "_staged_artifacts")
+
+
+def _redact_completion_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    """Redact completion ``metadata``, leaving artifact path keys intact."""
+    if not isinstance(metadata, dict):
+        return redact_review_value(metadata)
+    passthrough = {
+        key: metadata[key] for key in _COMPLETION_METADATA_PATH_KEYS if key in metadata
+    }
+    redacted = redact_review_value(
+        {key: value for key, value in metadata.items() if key not in passthrough}
+    )
+    redacted.update(passthrough)
+    return redacted
 
 
 def request_review(
@@ -7936,6 +7985,11 @@ def schedule_task(
     human action, or automation can later call ``unblock_task`` to re-gate them
     to ``ready`` (or ``todo`` if parents are still incomplete).
     """
+    # Redact secrets at the domain boundary, same as block_task()/
+    # request_review() — ``reason`` lands in the closed run's summary and
+    # in the "scheduled" event payload regardless of which caller (CLI,
+    # dashboard, agent tool) reaches this function.
+    reason = redact_review_value(reason)
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """

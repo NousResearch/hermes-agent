@@ -490,6 +490,69 @@ def test_default_spawn_mapped_reports_target_user(monkeypatch, tmp_path):
     )
 
 
+def test_default_spawn_restart_safe_wraps_outside_sudo(monkeypatch, tmp_path):
+    """systemd-run must wrap sudo so the scope stays on the gateway UID.
+
+    Rebase conflict in `_default_spawn` put both wraps at the same site.
+    Inverting the order would put systemd-run inside sudoers (which only
+    allows hermes) and drop the scope onto the mapped UID.
+    """
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "dev"
+    profile.mkdir(parents=True)
+    root.joinpath("config.yaml").write_text(
+        "kanban:\n  profile_os_users:\n    dev: hermes-dev\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    from hermes_cli import kanban_db as kb
+    import hermes_cli.kanban_os_users as osu
+
+    pw = _pw(home=str(tmp_path / "hermes-dev"))
+    mapped_home = tmp_path / "hermes-dev" / ".hermes" / "profiles" / "dev"
+    mapped_home.mkdir(parents=True)
+    os.chmod(mapped_home, 0o700)
+    os.chmod(mapped_home.parent, 0o700)
+    os.chmod(mapped_home.parent.parent, 0o700)
+
+    monkeypatch.setattr(osu, "_default_getpwnam", lambda name: pw)
+    monkeypatch.setattr(osu, "_preflight_paths", lambda *a, **k: None)
+    monkeypatch.setattr(
+        osu,
+        "_default_run",
+        lambda argv, **k: _Proc(0, stdout=f"{pw.pw_uid}\n"),
+    )
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+
+    seen = {}
+
+    def fake_restart_safe(task, command):
+        seen["inner"] = list(command)
+        return ["systemd-run", "--scope", "--", *command]
+
+    monkeypatch.setattr(kb, "_restart_safe_worker_argv", fake_restart_safe)
+    captured = {}
+
+    class FakeProc:
+        pid = 9002
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    pid = kb._default_spawn(_make_task(kb, assignee="dev"), str(workspace))
+    assert pid == 9002
+    assert is_sudo_wrapped(seen["inner"])
+    assert seen["inner"][5] == "hermes-dev"
+    assert captured["cmd"][:3] == ["systemd-run", "--scope", "--"]
+    assert is_sudo_wrapped(captured["cmd"][3:])
+    assert captured["cmd"][0] != "sudo"
+    assert captured["cmd"][8] == "hermes-dev"
+
+
 def test_cross_profile_homes_are_distinct_and_private(tmp_path):
     dev_home = tmp_path / "hermes-dev" / ".hermes" / "profiles" / "dev"
     sys_home = tmp_path / "hermes-sysadmin" / ".hermes" / "profiles" / "sysadmin"

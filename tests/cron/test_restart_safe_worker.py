@@ -207,10 +207,19 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
         def poll(self):
             return self.returncode
 
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+            return self.returncode
+
     spawned = []
+
+    payloads = []
 
     def popen(command, **kwargs):
         spawned.append((command, kwargs))
+        payload_index = command.index("--external-worker-file") + 1
+        payloads.append(json.loads(Path(command[payload_index]).read_text()))
         ack_index = command.index("--ack-file") + 1
         Path(command[ack_index]).write_text(
             json.dumps({"pid": 4321, "execution_id": "exec-1"}),
@@ -243,8 +252,9 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
     handoff.assert_called_once_with("exec-1")
     assert get.call_count == 2
-    payload = json.loads((tmp_path / "cron/external-workers/exec-1.json").read_text())
-    assert payload["multiplex_active"] is True
+    assert payloads[0]["multiplex_active"] is True
+    # Once the attempt is terminal the parent reaps its own handoff artifacts.
+    assert not (tmp_path / "cron/external-workers/exec-1.json").exists()
 
 
 def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatch):
@@ -260,6 +270,7 @@ def test_external_worker_exit_rechecks_exact_execution_before_failure(monkeypatc
     monkeypatch.setattr(scheduler, "get_execution", get, raising=False)
     process = Mock()
     process.poll.return_value = 0
+    process.wait.return_value = 0
 
     assert scheduler._wait_for_external_cron_worker(
         process, execution_id="exec-1"
@@ -273,7 +284,6 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     statuses = iter(
         [
             {"id": "exec-1", "status": "running"},
-            {"id": "exec-1", "status": "running"},
             {"id": "exec-1", "status": "unknown"},
         ]
     )
@@ -285,12 +295,13 @@ def test_external_worker_crash_recovers_uncertain_attempt(monkeypatch):
     )
     process = Mock()
     process.poll.return_value = 9
+    process.wait.return_value = 9
 
     assert scheduler._wait_for_external_cron_worker(
         process, execution_id="exec-1"
     ) is True
     recover.assert_called_once_with()
-    assert get.call_count == 3
+    assert get.call_count == 2
 
 
 def test_launch_external_worker_stays_in_process_outside_managed_gateway(

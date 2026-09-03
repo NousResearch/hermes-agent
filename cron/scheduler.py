@@ -4150,8 +4150,13 @@ def _deliver_result(
 
 def drain_delivery_queue(adapters, loop) -> int:
     """Send queued worker results through this gateway's live adapters."""
-    from cron.delivery_queue import drain
+    from cron.delivery_queue import _path, drain
 
+    # Only restart-safe workers create the queue file.  Every gateway (macOS,
+    # Windows, launchd, Docker) runs this housekeeping tick, so skip the sqlite
+    # open/create entirely until a worker has actually queued something.
+    if not _path().exists():
+        return 0
     return drain(
         lambda queued_job, queued_content, queued_for_failure: _deliver_result(
             queued_job,
@@ -8069,28 +8074,33 @@ def _wait_for_external_cron_worker_body(
         current = get_execution(execution_id)
         return bool(current and current.get("status") in terminal_states)
 
+    # The worker commits its terminal row before its process exits, so exit is
+    # the correct wakeup.  Each ledger read opens a connection and re-runs
+    # schema init; polling it at 50ms for an hours-long agent run is ~72k
+    # opens/hour of pure contention with the worker's own writes.
     while True:
+        try:
+            returncode = process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            if _is_terminal():
+                return True
+            continue
+        # The worker can commit its terminal row and exit between the first
+        # read and wait(). Re-read the exact attempt before declaring that
+        # it died without terminalizing.
         if _is_terminal():
             return True
-        returncode = process.poll()
-        if returncode is not None:
-            # The worker can commit its terminal row and exit between the first
-            # read and poll(). Re-read the exact attempt before declaring that
-            # it died without terminalizing.
-            if _is_terminal():
-                return True
-            # If the adopted worker died without terminalizing, its owner is
-            # now provably gone. Recover to ``unknown`` rather than routing the
-            # exception through the pre-handoff dispatch-failure path, which
-            # would falsely assert that no side effect could have happened.
-            recover_interrupted_executions()
-            if _is_terminal():
-                return True
-            raise RuntimeError(
-                "cron external worker exited before durable recovery could "
-                f"terminalize its execution state (exit {returncode})"
-            )
-        time.sleep(0.05)
+        # If the adopted worker died without terminalizing, its owner is
+        # now provably gone. Recover to ``unknown`` rather than routing the
+        # exception through the pre-handoff dispatch-failure path, which
+        # would falsely assert that no side effect could have happened.
+        recover_interrupted_executions()
+        if _is_terminal():
+            return True
+        raise RuntimeError(
+            "cron external worker exited before durable recovery could "
+            f"terminalize its execution state (exit {returncode})"
+        )
 
 
 def _wait_for_external_cron_worker(
@@ -8098,6 +8108,7 @@ def _wait_for_external_cron_worker(
     *,
     execution_id: str,
     job_id: Optional[str] = None,
+    handoff_files: tuple[Path, ...] = (),
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
@@ -8107,6 +8118,13 @@ def _wait_for_external_cron_worker(
         if job_id is not None:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(job_id)
+        # The execution is terminal or its worker is dead: nobody will read a
+        # payload or acknowledgement left behind by a late/unread handoff.
+        for stale in handoff_files:
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _launch_external_cron_worker(job: dict) -> bool:
@@ -8206,7 +8224,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id,
                 )
                 return _wait_for_external_cron_worker(
-                    process, execution_id=execution_id, job_id=job_id
+                    process,
+                    execution_id=execution_id,
+                    job_id=job_id,
+                    handoff_files=(payload_path,),
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -8220,7 +8241,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     execution_id,
                 )
                 return _wait_for_external_cron_worker(
-                    process, execution_id=execution_id, job_id=job_id
+                    process,
+                    execution_id=execution_id,
+                    job_id=job_id,
+                    handoff_files=(payload_path,),
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -8229,7 +8253,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 execution_id,
             )
             return _wait_for_external_cron_worker(
-                process, execution_id=execution_id, job_id=job_id
+                process,
+                execution_id=execution_id,
+                job_id=job_id,
+                handoff_files=(payload_path,),
             )
         returncode = process.poll()
         if returncode is not None:
@@ -8252,7 +8279,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
         job_id,
     )
     return _wait_for_external_cron_worker(
-        process, execution_id=execution_id, job_id=job_id
+        process,
+        execution_id=execution_id,
+        job_id=job_id,
+        handoff_files=(payload_path, ack_path),
     )
 
 
@@ -8956,6 +8986,14 @@ if __name__ == "__main__":
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
+        # The gateway spawns this worker with stdout/stderr on DEVNULL; without
+        # a handler every adoption/ack failure below would be invisible.
+        try:
+            from hermes_logging import setup_logging
+
+            setup_logging(hermes_home=_get_hermes_home(), mode="cron")
+        except Exception:
+            pass
         raise SystemExit(
             0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
         )

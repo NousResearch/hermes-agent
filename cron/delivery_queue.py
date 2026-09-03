@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from agent.redact import redact_sensitive_text
+from cron.executions import _owner_is_live, _process_start_time
+from hermes_cli.sqlite_util import add_column_if_missing
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -84,8 +86,10 @@ def _transaction() -> Iterator[sqlite3.Connection]:
             pass
         conn.row_factory = sqlite3.Row
         try:
+            from hermes_state import apply_wal_with_fallback
+
             conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA journal_mode=WAL")
+            apply_wal_with_fallback(conn, db_label="cron/deliveries.db")
             conn.execute("PRAGMA synchronous=FULL")
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS deliveries (
@@ -111,41 +115,17 @@ def _transaction() -> Iterator[sqlite3.Connection]:
                      finished_at TEXT
                    )"""
             )
-            columns = {
-                str(row[1]) for row in conn.execute("PRAGMA table_info(deliveries)")
-            }
-            if "for_failure" not in columns:
-                conn.execute(
-                    "ALTER TABLE deliveries "
-                    "ADD COLUMN for_failure INTEGER NOT NULL DEFAULT 0"
-                )
+            add_column_if_missing(
+                conn, "deliveries", "for_failure",
+                "for_failure INTEGER NOT NULL DEFAULT 0",
+            )
+            # Pruning is done explicitly by the paths that create terminal
+            # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
+            # read-only polls must not pay for a full-table UPDATE + COUNT.
             with conn:
-                _prune_terminal_unlocked(conn)
                 yield conn
         finally:
             conn.close()
-
-
-def _process_start_time(pid: int) -> Optional[int]:
-    try:
-        from gateway.status import get_process_start_time
-
-        return get_process_start_time(pid)
-    except Exception:
-        return None
-
-
-def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
-    try:
-        from gateway.status import _pid_exists
-
-        if not _pid_exists(pid):
-            return False
-    except Exception:
-        return True
-    if started_at is None:
-        return pid == os.getpid()
-    return _process_start_time(pid) == started_at
 
 
 def enqueue(
@@ -325,21 +305,28 @@ def drain(
 
 
 def _terminalize_wait_timeout(execution_id: str) -> str:
-    """Fence a delivery whose worker can no longer wait for confirmation."""
+    """Fence a delivery whose worker can no longer wait for confirmation.
+
+    A row still ``pending`` was provably never attempted, so it is left queued
+    for whichever gateway comes up next (a restart that includes an update can
+    easily exceed the worker's wait budget).  Only a row caught mid-send is
+    uncertain and gets fenced ``unknown``.
+    """
     now = _hermes_now().isoformat()
-    pending_error = "timed out waiting for a live gateway; delivery was not attempted"
+    pending_error = (
+        "timed out waiting for a live gateway; delivery is still queued and "
+        "will be sent by the next gateway"
+    )
     uncertain_error = (
         "timed out while gateway delivery was in progress; outcome is unknown and "
         "was not retried"
     )
     with _transaction() as conn:
-        cur = conn.execute(
-            """UPDATE deliveries SET status='failed', finished_at=?, error=?
-               WHERE execution_id=? AND status='pending'""",
-            (now, pending_error, str(execution_id)),
-        )
-        if cur.rowcount:
-            _prune_terminal_unlocked(conn)
+        row = conn.execute(
+            "SELECT status FROM deliveries WHERE execution_id=?",
+            (str(execution_id),),
+        ).fetchone()
+        if row is not None and row["status"] == "pending":
             return pending_error
         conn.execute(
             """UPDATE deliveries SET status='unknown', finished_at=?, error=?
@@ -382,5 +369,5 @@ def enqueue_and_wait(
             return None if row["status"] == "delivered" else str(
                 row.get("error") or f"delivery {row['status']}"
             )
-        time.sleep(0.25)
+        time.sleep(1.0)
     return _terminalize_wait_timeout(execution_id) or None

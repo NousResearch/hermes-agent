@@ -163,7 +163,11 @@ def test_delivery_failure_is_terminal_not_retried_and_redacted(
     assert "token=***" in status["error"]
 
 
-def test_wait_timeout_cancels_unclaimed_delivery(tmp_path, monkeypatch):
+def test_wait_timeout_leaves_unclaimed_delivery_queued_for_next_gateway(
+    tmp_path, monkeypatch
+):
+    """A row nobody claimed was never attempted: it is not uncertain, so a
+    gateway outage longer than the worker's wait budget must not lose it."""
     import cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
@@ -171,13 +175,14 @@ def test_wait_timeout_cancels_unclaimed_delivery(tmp_path, monkeypatch):
 
     error = queue.enqueue_and_wait("exec-3", job, "result", timeout=0)
 
-    assert "timed out" in error
+    assert "timed out" in error and "still queued" in error
     status = queue.get_status("exec-3")
     assert status is not None
-    assert status["status"] == "failed"
+    assert status["status"] == "pending"
     send = Mock(return_value=None)
-    assert queue.drain(send) == 0
-    send.assert_not_called()
+    assert queue.drain(send) == 1
+    send.assert_called_once_with(job, "result", False)
+    assert queue.get_status("exec-3")["status"] == "delivered"
 
 
 def test_same_gateway_recovers_terminalization_failure_without_resending(

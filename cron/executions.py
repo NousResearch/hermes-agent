@@ -62,18 +62,15 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              error TEXT
            )"""
     )
-    columns = {
-        str(row[1]) for row in conn.execute("PRAGMA table_info(executions)")
-    }
-    if "handoff_pending" not in columns:
-        conn.execute(
-            "ALTER TABLE executions "
-            "ADD COLUMN handoff_pending INTEGER NOT NULL DEFAULT 0"
-        )
-    if "handoff_started_at" not in columns:
-        conn.execute(
-            "ALTER TABLE executions ADD COLUMN handoff_started_at REAL"
-        )
+    from hermes_cli.sqlite_util import add_column_if_missing
+
+    add_column_if_missing(
+        conn, "executions", "handoff_pending",
+        "handoff_pending INTEGER NOT NULL DEFAULT 0",
+    )
+    add_column_if_missing(
+        conn, "executions", "handoff_started_at", "handoff_started_at REAL"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
         "ON executions(job_id, claimed_at DESC, id DESC)"

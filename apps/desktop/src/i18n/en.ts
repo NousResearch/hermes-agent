@@ -2024,7 +2024,6 @@ export const en: Translations = {
       manual: 'Manual',
       preview: 'Preview',
       pr: 'PR',
-      date: 'Date',
       needsInput: 'Needs input',
       working: 'Working',
       unread: 'Unread',

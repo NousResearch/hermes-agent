@@ -1711,7 +1711,6 @@ export interface Translations {
       manual: string
       preview: string
       pr: string
-      date: string
       needsInput: string
       working: string
       unread: string

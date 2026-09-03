@@ -1837,7 +1837,6 @@ export const ja = defineLocale({
       manual: '手動',
       preview: 'プレビュー',
       pr: 'PR',
-      date: '日付',
       needsInput: '入力待ち',
       working: '実行中',
       unread: '未読',

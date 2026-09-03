@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
 import {
@@ -63,8 +64,6 @@ import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
-import type { Translations } from '@/i18n/types'
-
 interface Option<T extends string = string> {
   /** A status dot's full className, from the row's own vocabulary. */
   dot?: string
@@ -77,7 +76,7 @@ type SidebarFilterTranslations = Translations['sidebar']['filter']
 
 function buildGroupings(t: SidebarFilterTranslations): Option<SidebarGrouping>[] {
   return [
-    { icon: 'clock', id: 'date', label: t.date },
+    { icon: 'clock', id: 'date', label: t.updated },
     { icon: 'root-folder', id: 'project', label: t.project },
     { icon: 'pulse', id: 'status', label: t.status },
     { icon: 'account', id: 'profile', label: t.profile }

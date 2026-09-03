@@ -1693,7 +1693,6 @@ export const ar = defineLocale({
       manual: 'يدوي',
       preview: 'معاينة',
       pr: 'PR',
-      date: 'التاريخ',
       needsInput: 'يحتاج إدخالاً',
       working: 'يعمل',
       unread: 'غير مقروء',

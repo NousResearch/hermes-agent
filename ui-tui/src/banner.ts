@@ -1,43 +1,72 @@
 import type { ThemeColors } from './theme.js'
 
-const RICH_RE = /\[(?:bold\s+)?(?:dim\s+)?(#(?:[0-9a-fA-F]{3,8}))\]([\s\S]*?)(\[\/\])/g
+/**
+ * Open color tag: optional bold/dim modifier + required #hex.
+ * Close tag: [/]
+ *
+ * Skin banner_logo / banner_hero are authored as Rich markup. Classic CLI
+ * (Rich Console) accepts a single open tag wrapping many lines; the TUI must
+ * do the same. Matching open+close only within one line left multi-line skins
+ * painting raw `[bold #1a5fb4]` / `[/]` into the dashboard xterm.
+ */
+const TAG_RE = /\[(?:(?:bold|dim)\s+)?(#[0-9a-fA-F]{3,8})\]|\[\/\]/gi
 
 export function parseRichMarkup(markup: string): Line[] {
   const lines: Line[] = []
+  // Color carries across lines until a closing [/] — same as Rich.
+  let activeColor = ''
 
   for (const raw of markup.split('\n')) {
     const trimmed = raw.trimEnd()
 
     if (!trimmed) {
       lines.push(['', ' '])
-
       continue
     }
 
-    const matches = [...trimmed.matchAll(RICH_RE)]
-
-    if (!matches.length) {
-      lines.push(['', trimmed])
-
-      continue
-    }
-
+    let text = ''
+    // Color of the first visible glyph on this line (banner art is one color
+    // per row; ArtLines renders one Text per Line).
+    let rowColor = activeColor
+    let sawContent = false
     let cursor = 0
+    TAG_RE.lastIndex = 0
 
-    for (const m of matches) {
-      const before = trimmed.slice(cursor, m.index)
-
-      if (before) {
-        lines.push(['', before])
+    let match: RegExpExecArray | null
+    while ((match = TAG_RE.exec(trimmed)) !== null) {
+      if (match.index > cursor) {
+        const chunk = trimmed.slice(cursor, match.index)
+        if (!sawContent) {
+          rowColor = activeColor
+          sawContent = true
+        }
+        text += chunk
       }
 
-      lines.push([m[1]!, m[2]!])
-      cursor = m.index! + m[0].length
+      if (match[0] === '[/]') {
+        activeColor = ''
+      } else {
+        // Group 1 is the #hex from an open tag.
+        activeColor = match[1] ?? ''
+      }
+      cursor = match.index + match[0].length
     }
 
     if (cursor < trimmed.length) {
-      lines.push(['', trimmed.slice(cursor)])
+      const chunk = trimmed.slice(cursor)
+      if (!sawContent) {
+        rowColor = activeColor
+        sawContent = true
+      }
+      text += chunk
     }
+
+    // Line was only tags (e.g. a lone `[/]` after art) — don't emit a blank row.
+    if (!sawContent) {
+      continue
+    }
+
+    lines.push([rowColor, text])
   }
 
   return lines

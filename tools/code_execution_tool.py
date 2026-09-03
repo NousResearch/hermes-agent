@@ -70,6 +70,18 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "terminal",
 ])
 
+
+def _resolve_sandbox_tools(enabled_tools: Optional[List[str]]) -> frozenset:
+    """Tri-state sandbox capability grant (#84271).
+
+    ``None`` keeps the legacy default (every sandbox tool). An explicit list,
+    including empty, is the exact intersection with ``SANDBOX_ALLOWED_TOOLS``
+    — empty or non-overlapping means deny-all.
+    """
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
+
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
@@ -446,7 +458,8 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
         )
         if m:
             missing = m.group(1)
-            available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+            available = sorted(_resolve_sandbox_tools(enabled_tools))
+            available_text = ", ".join(available) or "none"
             builtin = {"json_parse", "shell_quote", "retry"}
             if missing in builtin:
                 return (
@@ -455,7 +468,7 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
                 )
             return (
                 f"'{missing}' is not available inside the execute_code sandbox. "
-                f"Importable tools here: {', '.join(available)}. For anything "
+                f"Importable tools here: {available_text}. For anything "
                 "else, use the normal tool call instead of execute_code."
             )
         m = re.search(r"NameError: name '(json_parse|shell_quote|retry)' is not defined", window)
@@ -1227,10 +1240,10 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    # Explicit grant (possibly empty): exact intersection with the allowed
+    # set. An empty list means deny-all — it must not broaden to the
+    # legacy default (SECURITY-CLASS-faf9d60580300e16 / #84271).
+    sandbox_tools = _resolve_sandbox_tools(enabled_tools)
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -1639,12 +1652,10 @@ def execute_code(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    # Determine which tools the sandbox can call. Tri-state semantics: an
+    # explicit empty list is deny-all, not "fall back to every sandbox tool"
+    # (SECURITY-CLASS-faf9d60580300e16 / #84271).
+    sandbox_tools = _resolve_sandbox_tools(enabled_tools)
 
     if _get_kernel_mode() == "session":
         # Session kernels keep one interpreter alive across calls; the guards

@@ -8,6 +8,7 @@ contract helpers here so agent-loop call sites and plugins share one vocabulary.
 from __future__ import annotations
 
 import logging
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
@@ -34,6 +35,22 @@ VALID_MIDDLEWARE: set[str] = {
 }
 
 
+@dataclass(frozen=True)
+class RuntimeContext:
+    """Immutable runtime context for tool execution.
+
+    This object carries execution context information through the middleware chain
+    without modifying any existing behavior or tool execution paths.
+    """
+    task_id: str
+    session_id: str
+    tool_call_id: str
+    turn_id: str
+    api_request_id: str
+    function_name: str
+    middleware_start_time: float
+
+
 @dataclass
 class RequestMiddlewareResult:
     """Result of applying request middleware to a mutable payload."""
@@ -47,6 +64,7 @@ class RequestMiddlewareResult:
 def observer_payload(**kwargs: Any) -> Dict[str, Any]:
     kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
     return kwargs
+
 
 
 def middleware_payload(**kwargs: Any) -> Dict[str, Any]:
@@ -213,6 +231,18 @@ def run_tool_execution_middleware(
     callbacks = _get_middleware_callbacks(TOOL_EXECUTION_MIDDLEWARE)
     if not callbacks:
         return next_call(args)
+
+    # Create immutable RuntimeContext with all required fields
+    runtime_context = RuntimeContext(
+        task_id=context.get("task_id", ""),
+        session_id=context.get("session_id", ""),
+        tool_call_id=context.get("tool_call_id", ""),
+        turn_id=context.get("turn_id", ""),
+        api_request_id=context.get("api_request_id", ""),
+        function_name=tool_name,
+        middleware_start_time=time.monotonic(),
+    )
+
     return _run_execution_chain(
         TOOL_EXECUTION_MIDDLEWARE,
         callbacks,
@@ -220,6 +250,7 @@ def run_tool_execution_middleware(
         tool_name=tool_name,
         args=args,
         original_args=context.pop("original_args", args),
+        runtime_context=runtime_context,
         **context,
     )
 

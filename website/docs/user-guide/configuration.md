@@ -120,6 +120,28 @@ database's on-disk journal mode is silently flipped to WAL on open — for
 example a database an operator had manually converted to `delete` — and
 names `database.journal_mode` as the setting that makes the choice stick.
 
+### Session Search Indexes
+
+The trigram substring index (`messages_fts_trigram`) powers CJK and other
+substring search and is enabled by default. If the optional index causes
+repeated corruption or you want to reclaim its disk footprint, disable only
+that index:
+
+```yaml
+sessions:
+  trigram_fts: false
+```
+
+Hermes then quarantines the index by removing its write triggers — canonical
+messages and the standard `messages_fts` word index are preserved — and
+affected queries fall back to the standard index or a safe `LIKE` scan.
+Re-enabling the setting rebuilds the index from canonical messages under the
+same default exclusions (cron and delegate-child transcripts stay out). Each
+`state.db` reads the `config.yaml` beside it, so the setting is profile-safe:
+CLI, gateway, maintenance, and explicit profile database opens all resolve
+the same per-profile value. `hermes sessions optimize-storage` permanently
+retires a disabled trigram index's storage.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

@@ -888,6 +888,14 @@ _FTS_CJK_TRIGGERS = (
 # `hermes sessions optimize-storage` rebuilds it on a capable host.
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
+# state_meta breadcrumb set when the trigram index is deliberately disabled
+# via ``sessions.trigram_fts: false`` (config.yaml beside this state.db).
+# Existing trigram storage is quarantined by dropping its write triggers —
+# never destructively dropped on an ordinary open — and the marker stays
+# until a controlled rebuild from canonical messages completes, so read-only
+# opens cannot serve a stale or half-rebuilt index. Mirrors FTS_CJK_STALE_KEY.
+FTS_TRIGRAM_STALE_KEY = "fts_trigram_stale"
+
 
 # Durable breadcrumb for a base/trigram FTS index that was detached from the
 # canonical messages table after runtime corruption. While present, startup

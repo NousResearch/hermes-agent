@@ -125,6 +125,106 @@ def load_managed_config() -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def load_managed_config_strict() -> tuple:
+    """Strict sibling of :func:`load_managed_config` for fail-closed readers.
+
+    Returns ``(provenance_signature, parsed_config)``:
+
+    * no managed scope configured → ``(("absent",), {})`` — the common
+      case; nothing is broken, defaults/user config decide;
+    * managed config.yaml absent → same ``("absent",)`` signature (an
+      existing managed *directory* without a config.yaml pins nothing);
+    * managed config.yaml present and valid mapping → a signature over
+      the file's full stat identity (mtime_ns/size/ctime_ns/mode/ino/
+      dev/uid/gid) plus the parsed dict;
+    * present but malformed, unreadable, dangling, or non-mapping →
+      raises ``ConfigResolutionError`` (imported lazily to avoid a
+      circular import): admin policy is BROKEN, not absent, and a
+      fail-closed consumer must not silently fall back to user values.
+
+    The general fail-open ``load_managed_config()`` callers are untouched;
+    this reader shares nothing with the fail-open caches, so a fail-open
+    prewarm can never satisfy a strict lookup (and vice versa).
+    """
+    managed_dir = get_managed_dir()
+    if managed_dir is None:
+        return (("absent",), {})
+    path = managed_dir / "config.yaml"
+    import stat as _stat
+
+    try:
+        lst = path.lstat()
+    except FileNotFoundError:
+        return (("absent",), {})
+    except OSError as exc:
+        from hermes_cli.config import ConfigResolutionError
+
+        raise ConfigResolutionError(
+            f"Managed config source at {path} is inaccessible: {exc}"
+        ) from exc
+    if _stat.S_ISLNK(lst.st_mode):
+        try:
+            stt = path.stat()
+        except OSError as exc:
+            from hermes_cli.config import ConfigResolutionError
+
+            raise ConfigResolutionError(
+                f"Managed config source at {path} is a dangling or "
+                f"inaccessible symlink: {exc}"
+            ) from exc
+        sig = (
+            stt.st_mtime_ns, stt.st_size, stt.st_ctime_ns, stt.st_mode,
+            stt.st_ino, stt.st_dev, stt.st_uid, stt.st_gid,
+        )
+    elif _stat.S_ISREG(lst.st_mode):
+        sig = (
+            lst.st_mtime_ns, lst.st_size, lst.st_ctime_ns, lst.st_mode,
+            lst.st_ino, lst.st_dev, lst.st_uid, lst.st_gid,
+        )
+    else:
+        from hermes_cli.config import ConfigResolutionError
+
+        raise ConfigResolutionError(
+            f"Managed config source at {path} is not a regular file"
+        )
+    try:
+        with open(path, encoding="utf-8") as f:
+            parsed = yaml.safe_load(f)
+    except Exception as exc:
+        from hermes_cli.config import ConfigResolutionError
+
+        raise ConfigResolutionError(
+            f"Managed config at {path} could not be read/parsed: {exc}"
+        ) from exc
+    if parsed is None:
+        return (sig, {})
+    if not isinstance(parsed, dict):
+        from hermes_cli.config import ConfigResolutionError
+
+        raise ConfigResolutionError(
+            f"Managed config at {path} has a non-mapping root "
+            f"({type(parsed).__name__})"
+        )
+    return (sig, parsed)
+
+
+def cached_managed_config_for(managed_sig: tuple) -> dict:
+    """Return the parsed managed config matching ``managed_sig``, or {}.
+
+    Companion to :func:`load_managed_config_strict` for callers that
+    already hold the strict provenance signature (so the file is not read
+    twice per resolution). The signature is re-verified cheaply: when it
+    no longer matches the live source, the strict read runs again.
+    """
+    sig, parsed = load_managed_config_strict()
+    if sig == managed_sig:
+        return parsed
+    # Provenance drifted between the two reads (racy repair); re-resolve
+    # against the live state rather than serving stale policy.
+    raise_from_live = load_managed_config_strict()
+    return raise_from_live[1]
+
+
 def load_managed_env() -> Dict[str, str]:
     """Parsed managed .env (KEY=VALUE), or {} when absent (fail-open)."""
     managed_dir = get_managed_dir()

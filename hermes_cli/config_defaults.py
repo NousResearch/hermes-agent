@@ -3553,6 +3553,17 @@ DEFAULT_CONFIG = {
         #     enforcement is a copy/gating change, not new migration code.
         #   "off": suppress the notice entirely.
         "fts_optimize_notice": "advise",
+        # Trigram substring index (messages_fts_trigram) used for CJK and
+        # other substring search. True (default) preserves upstream behavior:
+        # the v30 filtered predicate (cron/subagent transcripts excluded)
+        # indexes everything else. False quarantines the optional index —
+        # write triggers are removed while canonical messages and the
+        # standard messages_fts index stay intact; substring queries fall
+        # back to the standard index or a safe LIKE scan. Resolved from the
+        # config.yaml adjacent to each state.db, so per-profile settings
+        # cannot leak across profiles. Re-enabling rebuilds from canonical
+        # messages under the schema-v30 predicate.
+        "trigram_fts": True,
         # CJK-bigram search index (messages_fts_cjk, cjk_unicode61 loadable
         # tokenizer). When the extension is built (native/fts5_cjk/build.sh →
         # ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms (일본, 项目, ...)

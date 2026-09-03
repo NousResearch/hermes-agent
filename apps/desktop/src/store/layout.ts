@@ -250,8 +250,10 @@ export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
 export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
 /** Optional per-row metadata the user can switch on. `preview` is card-only:
- *  the one-line row has nowhere to put a second line. */
-export type SidebarRowMeta = 'cost' | 'pr' | 'preview' | 'profile' | 'tokens' | 'updated'
+ *  the one-line row has nowhere to put a second line. `project` is its mirror
+ *  image — the card already names the project in its header, so the option is
+ *  what brings that context to the one-line row. */
+export type SidebarRowMeta = 'cost' | 'pr' | 'preview' | 'profile' | 'project' | 'tokens' | 'updated'
 
 function oneOf<T extends string>(values: readonly T[], fallback: T): Codec<T> {
   return {
@@ -267,7 +269,7 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
   }
 }
 
-const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
+const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'project', 'tokens', 'updated']
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
@@ -700,6 +702,16 @@ export function resetSidebarView() {
 export const $sidebarPrDataWanted: ReadableAtom<boolean> = computed(
   [$sidebarRowMeta, $sidebarPrFilter],
   (rowMeta, prFilter) => rowMeta.includes('pr') || prFilter.length > 0
+)
+
+/** Whether anything on screen needs the project LIST — `projects.list`, the
+ *  only fetch that fills `$projects`. The grouped tree pulls it on its own
+ *  structural edges; the flat list only needs it when a row was asked to NAME
+ *  its project, so the row detail is what makes that view ask. The menu's
+ *  Project filter is deliberately not here: it lists off `$projectTree`, which
+ *  the flat view already warms. */
+export const $sidebarProjectDataWanted: ReadableAtom<boolean> = computed([$sidebarRowMeta], rowMeta =>
+  rowMeta.includes('project')
 )
 
 // Write an order list only when it actually changed, so an identical drag

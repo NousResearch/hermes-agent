@@ -1,8 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { readKey } from '@/lib/storage'
 
 import {
   $sidebarGrouping,
   $sidebarOrdering,
+  $sidebarProjectDataWanted,
   $sidebarRowMeta,
   $sidebarViewCustomized,
   resetSidebarView,
@@ -23,6 +26,47 @@ describe('the sidebar as it ships', () => {
     expect($sidebarGrouping.get()).toBe('date')
     expect($sidebarOrdering.get()).toBe('updated')
     expect($sidebarRowMeta.get()).toEqual(['preview', 'updated'])
+  })
+
+  // The persisted codec is an ALLOW-LIST: `listOf(ROW_META)` drops any id it
+  // does not recognize while DECODING the stored record. Toggling the atom and
+  // reading it back in this module never reaches that decode — the seed is read
+  // exactly once, when the store module is first imported. So write the record
+  // through the real toggle, then boot a fresh instance of the store the way a
+  // reload would and require the option to come back intact. Drop `project`
+  // from ROW_META and this is the assertion that goes red.
+  it('reads the Project detail back from storage after a reload', async () => {
+    toggleSidebarRowMeta('project')
+
+    const saved = $sidebarRowMeta.get()
+
+    expect(saved).toContain('project')
+    expect(readKey('hermes.desktop.sidebarRowMeta')).toContain('project')
+
+    vi.resetModules()
+
+    const reloaded = await import('./layout')
+
+    expect(reloaded.$sidebarRowMeta.get()).toEqual(saved)
+  })
+
+  // The Project detail NAMES a row off `$projects`, which only `projects.list`
+  // fills — and the sidebar only issues that fetch for a view that asked for
+  // project data. The flat, date-grouped list never does, so switching the
+  // detail on has to raise the same kind of "someone needs this" signal the PR
+  // badge raises, or the chip paints from whatever a past visit to the grouped
+  // view happened to leave in the atom. Off by default: nobody who hasn't
+  // asked pays for the round trip.
+  it('asks for project data only once the Project detail is switched on', () => {
+    expect($sidebarProjectDataWanted.get()).toBe(false)
+
+    toggleSidebarRowMeta('project')
+
+    expect($sidebarProjectDataWanted.get()).toBe(true)
+
+    toggleSidebarRowMeta('project')
+
+    expect($sidebarProjectDataWanted.get()).toBe(false)
   })
 
   it('offers no reset until something actually moves off the defaults', () => {

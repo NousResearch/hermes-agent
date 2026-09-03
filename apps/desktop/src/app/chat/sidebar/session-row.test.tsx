@@ -3,11 +3,13 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/hermes'
+import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $sidebarRowMeta } from '@/store/layout'
+import { $projects } from '@/store/projects'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -408,6 +410,88 @@ describe('SidebarSessionRow', () => {
     const avatar = handoffAvatar(container)
     expect(avatar).toBeTruthy()
     expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
+  })
+})
+
+// The Show menu's optional Project detail. The label comes from the same
+// resolver the card header reads (`sessionProjectLabel`), so a row and a card
+// can never name the same session's workspace differently.
+describe('Show → Project row detail', () => {
+  const project = (overrides: Partial<ProjectInfo>): ProjectInfo =>
+    ({
+      archived: false,
+      folders: [],
+      id: 'p1',
+      name: 'Hermes Agent',
+      ...overrides
+    }) as unknown as ProjectInfo
+
+  const hermesAgent = project({
+    folders: [{ added_at: 0, is_primary: true, label: null, path: '/repos/hermes-agent' }]
+  })
+
+  afterEach(() => {
+    $projects.set([])
+    $sidebarRowMeta.set(['preview', 'updated'])
+  })
+
+  it('names the project on the row when the detail is switched on', () => {
+    $projects.set([hermesAgent])
+    $sidebarRowMeta.set(['project'])
+
+    renderRow(makeSession({ cwd: '/repos/hermes-agent/agent', title: 'Fix the sidebar' }))
+
+    expect(screen.getByText('Hermes Agent')).toBeTruthy()
+  })
+
+  // The shipped view: the option is off, so the row must look exactly as it did
+  // before it existed.
+  it('says nothing about the project while the detail is off', () => {
+    $projects.set([hermesAgent])
+
+    renderRow(makeSession({ cwd: '/repos/hermes-agent/agent', title: 'Fix the sidebar' }))
+
+    expect(screen.queryByText('Hermes Agent')).toBeNull()
+  })
+
+  // A chat with no workspace at all resolves to no label — an optional detail
+  // with nothing to say takes no room rather than painting an empty chip.
+  it('takes no room for a session no project claims', () => {
+    $projects.set([hermesAgent])
+    $sidebarRowMeta.set(['project'])
+
+    const { container } = renderRow(makeSession({ title: 'Scratch chat' }))
+
+    expect(screen.queryByText('Hermes Agent')).toBeNull()
+    expect(container.querySelector('[data-row-actions]')?.textContent).toBe('')
+  })
+
+  // Falls back to the repo the backend recorded when project PLACEMENT can't
+  // claim the row (a worktree beside its checkout) — naming the repo is the
+  // whole point of showing a project instead of a scratch directory.
+  it('names the recorded repo when no project claims the row', () => {
+    $projects.set([])
+    $sidebarRowMeta.set(['project'])
+
+    renderRow(
+      makeSession({
+        cwd: '/repos/hermes-agent-worktree',
+        git_repo_root: '/repos/hermes-agent',
+        title: 'Worktree chat'
+      })
+    )
+
+    expect(screen.getByText('hermes-agent')).toBeTruthy()
+  })
+
+  // The card names the project in its own header line; the chip would repeat it.
+  it('leaves the card alone — its header already names the project', () => {
+    $projects.set([hermesAgent])
+    $sidebarRowMeta.set(['project'])
+
+    renderRow(makeSession({ cwd: '/repos/hermes-agent/agent', title: 'Fix the sidebar' }), { card: true })
+
+    expect(screen.getAllByText('Hermes Agent')).toHaveLength(1)
   })
 })
 

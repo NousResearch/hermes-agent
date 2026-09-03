@@ -47,6 +47,7 @@ import {
   $sidebarPrDataWanted,
   $sidebarPrFilter,
   $sidebarProfileFilter,
+  $sidebarProjectDataWanted,
   $sidebarProjectFilter,
   $sidebarProjectOrderIds,
   $sidebarRecentsOpen,
@@ -360,6 +361,7 @@ export function ChatSidebar({
   const profileFilter = useStore($sidebarProfileFilter)
   const prFilter = useStore($sidebarPrFilter)
   const prDataWanted = useStore($sidebarPrDataWanted)
+  const projectDataWanted = useStore($sidebarProjectDataWanted)
   const prBranchOverrides = useStore($prBranchBySession)
   const pullRequests = useStore($pullRequestsByBranch)
   const filtersActive = useStore($sidebarFiltersActive)
@@ -755,6 +757,19 @@ export function ChatSidebar({
       return
     }
 
+    // The project LIST, for a flat view that was asked to NAME its rows'
+    // projects. `projects.tree` below fills $projectTree; the Project row
+    // detail resolves off $projects, which only `projects.list` fills — so
+    // without this the chip would fall back to the recorded repo leaf until the
+    // user had visited the grouped view. Gated like PR data (a view that shows
+    // no project name pays for no round trip) and issued now rather than behind
+    // the warm timer: switching the detail on is a request, not a background
+    // prefetch. Stale/reordered answers are the store's own problem — it
+    // guards on generation + active profile.
+    if (projectDataWanted) {
+      void refreshProjects()
+    }
+
     // Flat view: warm the tree in the background anyway. Fetching it only on
     // the switch meant the first switch of every run paid for the whole round
     // trip behind a skeleton, and the menu's Project filter had nothing to
@@ -762,7 +777,7 @@ export function ChatSidebar({
     const warm = window.setTimeout(() => void refreshProjectTree(), PROJECT_TREE_WARM_MS)
 
     return () => window.clearTimeout(warm)
-  }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
+  }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady, projectDataWanted])
 
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills

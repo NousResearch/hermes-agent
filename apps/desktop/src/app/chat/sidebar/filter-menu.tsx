@@ -91,6 +91,7 @@ const ORDERINGS: Option<SidebarOrdering>[] = [
 const ROW_META: Option<SidebarRowMeta>[] = [
   { icon: 'clock', id: 'updated', label: 'Updated' },
   { icon: 'comment', id: 'preview', label: 'Preview' },
+  { icon: 'root-folder', id: 'project', label: 'Project' },
   { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
   { icon: 'credit-card', id: 'cost', label: 'Cost' },
   { icon: 'git-pull-request', id: 'pr', label: 'PR' },

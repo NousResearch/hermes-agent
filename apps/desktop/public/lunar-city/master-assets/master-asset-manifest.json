@@ -33,7 +33,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -44,6 +45,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Concave lunar colony basin",
@@ -68,7 +70,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -78,6 +81,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Ground-conforming city road network",
@@ -102,7 +106,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -112,6 +117,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Lunar orbit skybox/background",
@@ -136,7 +142,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -147,6 +154,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Library",
@@ -171,7 +179,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -182,6 +191,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Research Lab",
@@ -206,7 +216,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -217,6 +228,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Arts Studio",
@@ -241,7 +253,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -252,6 +265,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Engineering Workshop",
@@ -276,7 +290,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -287,6 +302,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Operations Depot",
@@ -311,7 +327,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -322,6 +339,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Release Gatehouse",
@@ -346,7 +364,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -357,6 +376,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Triage Clinic",
@@ -381,7 +401,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -392,6 +413,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Council Hall",
@@ -416,7 +438,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -427,6 +450,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Review Office",
@@ -451,7 +475,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -462,6 +487,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Archive",
@@ -486,7 +512,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -497,6 +524,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Break Garden",
@@ -521,7 +549,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -532,6 +561,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Owl archivist leader",
@@ -556,7 +586,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -567,6 +598,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Fox scientist leader",
@@ -591,7 +623,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -602,6 +635,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Raccoon artist leader",
@@ -626,7 +660,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -637,6 +672,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Eagle councillor leader",
@@ -661,7 +697,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -672,6 +709,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Badger engineer leader",
@@ -696,7 +734,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -707,6 +746,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Gold medic leader",
@@ -731,7 +771,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -742,6 +783,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Hawk reviewer leader",
@@ -766,7 +808,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -777,6 +820,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Owl historian leader",
@@ -801,7 +845,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -811,6 +856,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Audit worker robot",
@@ -835,7 +881,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -845,6 +892,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Operations worker robot",
@@ -869,7 +917,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -879,6 +928,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Release worker robot",
@@ -903,7 +953,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -913,6 +964,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Research worker robot",
@@ -937,7 +989,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -947,6 +1000,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Review worker robot",
@@ -971,7 +1025,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -981,6 +1036,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Support worker robot",
@@ -1005,7 +1061,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1015,6 +1072,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Curious child robot",
@@ -1039,7 +1097,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1049,6 +1108,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Social child robot",
@@ -1073,7 +1133,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1083,6 +1144,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Bold child robot",
@@ -1107,7 +1169,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1117,6 +1180,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Cautious child robot",
@@ -1141,7 +1205,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "hero",
@@ -1152,6 +1217,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Dispatcher companion cube",
@@ -1176,7 +1242,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1186,6 +1253,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Colony bus / tram",
@@ -1210,7 +1278,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1220,6 +1289,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "In-world status signage set",
@@ -1244,7 +1314,8 @@
           "floating_blob",
           "simple_mascot_placeholder",
           "flat_billboard_or_reference_plane",
-          "unriggable_single_lump"
+          "unriggable_single_lump",
+          "high_poly_cube_or_wrong_silhouette"
         ],
         "requiresLods": [
           "high",
@@ -1254,6 +1325,7 @@
         "requiresPbrBake": true,
         "requiresRecognizableSilhouette": true,
         "requiresRetopology": true,
+        "requiresVisualApproval": true,
         "sourceQuality": "full_resolution_high_poly_master"
       },
       "displayName": "Repair and recovery tool set",

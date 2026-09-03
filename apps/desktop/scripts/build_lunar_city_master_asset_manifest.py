@@ -39,6 +39,7 @@ def asset(asset_id: str, kind: str, role: str, display_name: str, hero: bool = F
         "acceptance": {
             "sourceQuality": "full_resolution_high_poly_master",
             "minimumTriangleCount": 120000 if hero else 45000,
+            "requiresVisualApproval": True,
             "requiresRecognizableSilhouette": True,
             "requiresPbrBake": True,
             "requiresRetopology": True,
@@ -49,6 +50,7 @@ def asset(asset_id: str, kind: str, role: str, display_name: str, hero: bool = F
                 "simple_mascot_placeholder",
                 "flat_billboard_or_reference_plane",
                 "unriggable_single_lump",
+                "high_poly_cube_or_wrong_silhouette",
             ],
         },
     }

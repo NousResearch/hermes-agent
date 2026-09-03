@@ -17,6 +17,7 @@ Do not use these as production sources:
 - simple mascot placeholders
 - flat billboard/reference planes
 - unriggable single-lump meshes
+- high-poly meshes with the wrong silhouette, such as cube/default primitive failures
 
 Drop candidate source files into `sources/` using one of the exact ids from
 `master-asset-manifest.json`, for example:
@@ -35,3 +36,7 @@ python3 apps/desktop/scripts/build_lunar_city_master_asset_manifest.py
 
 The current manifest fails closed until every required high-poly master exists
 and passes validation.
+
+Note: a previous local Hunyuan3D research-lab candidate produced a high-poly
+cube/default primitive. That clears a triangle-count check but fails visual
+silhouette validation, so it is not a production master.

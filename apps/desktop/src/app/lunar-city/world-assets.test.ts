@@ -257,6 +257,7 @@ describe('Lunar City asset manifest', () => {
           minimumTriangleCount: number
           rejectIf: string[]
           requiresLods: string[]
+          requiresVisualApproval: boolean
           sourceQuality: string
         }
         heroAsset: boolean
@@ -300,6 +301,8 @@ describe('Lunar City asset manifest', () => {
       expect(asset.acceptance.rejectIf).toContain('floating_blob')
       expect(asset.acceptance.rejectIf).toContain('simple_mascot_placeholder')
       expect(asset.acceptance.rejectIf).toContain('flat_billboard_or_reference_plane')
+      expect(asset.acceptance.rejectIf).toContain('high_poly_cube_or_wrong_silhouette')
+      expect(asset.acceptance.requiresVisualApproval).toBe(true)
       expect(asset.acceptance.minimumTriangleCount).toBeGreaterThanOrEqual(asset.heroAsset ? 120000 : 45000)
     }
   })

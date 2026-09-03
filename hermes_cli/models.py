@@ -7016,6 +7016,36 @@ def fetch_ollama_cloud_models(
     return []
 
 
+def _version_digit_skeleton(model_id: str) -> tuple[str, tuple[int, ...]]:
+    """Split a model id into its digit-stripped skeleton and digit-run lengths.
+
+    ``"gpt-5.4-codex"`` → ``("gpt-.-codex", (1, 1))``; ``"gpt-5.44-codex"``
+    → ``("gpt-.-codex", (1, 2))``.
+    """
+    skeleton = re.sub(r"\d+", "", model_id)
+    digit_runs = tuple(len(run) for run in re.findall(r"\d+", model_id))
+    return skeleton, digit_runs
+
+
+def _is_version_variant(requested: str, candidate: str) -> bool:
+    """True when two model ids differ only in the *values* of version digits.
+
+    A catalog sibling whose non-digit skeleton and digit-run lengths match
+    the request is a different *version* of the same model (e.g.
+    ``gemini-3.8-flash`` vs ``gemini-3.6-flash``), not a typo — auto-
+    correcting to it would silently swap the user's explicitly chosen
+    version for an older one with different pricing/context/capabilities
+    (#101975). True typos change non-digit characters (``gpt5.3-codex`` →
+    ``gpt-5.3-codex``) or digit-run lengths (``gpt-5.44`` → ``gpt-5.4``)
+    and are still eligible for auto-correction.
+    """
+    if requested == candidate:
+        return False
+    req_skeleton, req_runs = _version_digit_skeleton(requested)
+    cand_skeleton, cand_runs = _version_digit_skeleton(candidate)
+    return req_skeleton == cand_skeleton and req_runs == cand_runs
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
@@ -7266,9 +7296,12 @@ def validate_requested_model(
                     "message": None,
                 }
 
-            # Auto-correct if the top match is very similar (e.g. typo)
+            # Auto-correct if the top match is very similar (e.g. typo).
+            # Version variants (same skeleton, different digit values) are
+            # plausibly newer uncataloged models, not typos — never silently
+            # substitute a different version (#101975).
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
-            if auto:
+            if auto and not _is_version_variant(requested_for_lookup, auto[0]):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -7372,9 +7405,11 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
-            # Auto-correct if the top match is very similar (e.g. typo)
+            # Auto-correct if the top match is very similar (e.g. typo).
+            # Version variants are plausibly newer uncataloged models —
+            # never silently substitute a different version (#101975).
             auto = get_close_matches(requested_for_lookup, catalog_models, n=1, cutoff=0.9)
-            if auto:
+            if auto and not _is_version_variant(requested_for_lookup, auto[0]):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -7446,10 +7481,15 @@ def validate_requested_model(
                     "recognized": True,
                     "message": None,
                 }
-            # Auto-correct close matches (case-insensitive)
+            # Auto-correct close matches (case-insensitive). Version
+            # variants (e.g. MiniMax-M2.9 vs MiniMax-M2.7) are plausibly
+            # newer uncataloged models — never silently substitute a
+            # different version (#101975).
             catalog_lower_list = list(catalog_lower.keys())
             auto = get_close_matches(requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9)
-            if auto:
+            if auto and not _is_version_variant(
+                requested_for_lookup.lower(), auto[0]
+            ):
                 corrected = catalog_lower[auto[0]]
                 return {
                     "accepted": True,
@@ -7494,7 +7534,7 @@ def validate_requested_model(
                     "message": None,
                 }
             auto = get_close_matches(requested_for_lookup, anthropic_models, n=1, cutoff=0.9)
-            if auto:
+            if auto and not _is_version_variant(requested_for_lookup, auto[0]):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -7535,7 +7575,7 @@ def validate_requested_model(
                     "message": None,
                 }
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
-            if auto:
+            if auto and not _is_version_variant(requested_for_lookup, auto[0]):
                 return {
                     "accepted": True,
                     "persist": True,
@@ -7603,9 +7643,12 @@ def validate_requested_model(
             # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
             # endpoints even though it's not in /models).  Warn but allow.
 
-            # Auto-correct if the top match is very similar (e.g. typo)
+            # Auto-correct if the top match is very similar (e.g. typo).
+            # Version variants (e.g. gemini-3.8-flash vs gemini-3.6-flash)
+            # are plausibly newer uncataloged models — never silently
+            # substitute a different version (#101975).
             auto = get_close_matches(requested_for_lookup, api_models, n=1, cutoff=0.9)
-            if auto:
+            if auto and not _is_version_variant(requested_for_lookup, auto[0]):
                 corrected = _with_preset_suffix(auto[0])
                 return {
                     "accepted": True,
@@ -7779,7 +7822,9 @@ def validate_requested_model(
         auto = get_close_matches(
             requested_for_lookup.lower(), catalog_lower_list, n=1, cutoff=0.9
         )
-        if auto:
+        if auto and not _is_version_variant(
+            requested_for_lookup.lower(), auto[0]
+        ):
             corrected = catalog_lower[auto[0]]
             corrected_with_suffix = _with_preset_suffix(corrected)
             return {

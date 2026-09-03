@@ -409,9 +409,16 @@ class TestValidateApiNotFound:
 
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
+        # Version variants (4.5 vs 4.6) are never silently substituted
+        # (#101975) — the live path rejects them with similar-model guidance.
+        assert result["accepted"] is False
+        assert "Similar models" in result["message"]
+
+    def test_letter_typo_still_auto_corrects(self):
+        result = _validate("anthropic/claude-opuss-4.6")
+        # True typos (non-digit characters differ) still auto-correct.
         assert result["accepted"] is True
-        # Close match auto-corrects; less similar inputs show suggestions
-        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+        assert "Auto-corrected" in result["message"]
 
 
 # -- validate — API unreachable — soft-accept via catalog or warning --------

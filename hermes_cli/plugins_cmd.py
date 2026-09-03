@@ -27,6 +27,7 @@ from typing import Any, Optional
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
+from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text
 
@@ -137,12 +138,6 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
         )
     logger.info("plugin scan passed for %s: %s", plugin_dir.name, reason)
     return result
-
-
-# Minimum manifest version this installer understands.
-# Plugins may declare ``manifest_version: 1`` in plugin.yaml;
-# future breaking changes to the manifest schema bump this.
-_SUPPORTED_MANIFEST_VERSION = 1
 
 
 def _plugins_dir() -> Path:
@@ -814,12 +809,12 @@ def _install_plugin_core(
                     f"Plugin '{plugin_name}' has invalid manifest_version "
                     f"'{mv}' (expected an integer).",
                 ) from None
-            if mv_int > _SUPPORTED_MANIFEST_VERSION:
+            if mv_int > SUPPORTED_MANIFEST_VERSION:
                 from hermes_cli.config import recommended_update_command
 
                 raise PluginOperationError(
                     f"Plugin '{plugin_name}' requires manifest_version {mv}, "
-                    f"but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}. "
+                    f"but this installer only supports up to {SUPPORTED_MANIFEST_VERSION}. "
                     f"Run {recommended_update_command()} to update Hermes.",
                 ) from None
 

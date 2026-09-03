@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
 from hermes_cli.subcommands.plugins import build_plugins_parser
 
 
@@ -40,6 +41,39 @@ def _plugin_repo(root: Path, name: str = "demo") -> tuple[Path, str, str]:
     old_sha = _commit(repo, "old", "old")
     new_sha = _commit(repo, "new", "new")
     return repo, old_sha, new_sha
+
+
+def _versioned_plugin_repo(root: Path, manifest_version: int) -> tuple[Path, str]:
+    repo = root / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "fixture@example.com")
+    _git(repo, "config", "user.name", "Fixture")
+    (repo / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "versioned-demo",
+                "version": "1.0.0",
+                "manifest_version": manifest_version,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repo / "__init__.py").write_text(
+        "def register(ctx):\n    pass\n", encoding="utf-8"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "versioned plugin")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _commit_manifest_version(repo: Path, manifest_version: int) -> str:
+    manifest = yaml.safe_load((repo / "plugin.yaml").read_text(encoding="utf-8"))
+    manifest["manifest_version"] = manifest_version
+    (repo / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    _git(repo, "add", "plugin.yaml")
+    _git(repo, "commit", "-qm", f"manifest v{manifest_version}")
+    return _git(repo, "rev-parse", "HEAD")
 
 
 def _metadata(home: Path) -> dict:
@@ -364,3 +398,99 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
 
     assert _git(target, "rev-parse", "HEAD") == old_sha
     assert _metadata(home)["demo"]["pinned"] is True
+
+
+@pytest.mark.parametrize("manifest_version", [1, SUPPORTED_MANIFEST_VERSION])
+def test_exact_ref_installs_runtime_supported_manifest_versions(
+    monkeypatch, tmp_path, manifest_version
+):
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo, revision = _versioned_plugin_repo(tmp_path, manifest_version)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    target, manifest, name = _install_plugin_core(
+        repo.as_uri(), force=False, ref=revision
+    )
+
+    assert target == (home / "plugins" / "versioned-demo").resolve()
+    assert name == "versioned-demo"
+    assert manifest["manifest_version"] == manifest_version
+    assert _git(target, "rev-parse", "HEAD") == revision
+
+
+def test_force_reinstall_accepts_v2_manifest(monkeypatch, tmp_path):
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo, v1_revision = _versioned_plugin_repo(tmp_path, 1)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _install_plugin_core(repo.as_uri(), force=False, ref=v1_revision)
+    v2_revision = _commit_manifest_version(repo, 2)
+
+    target, manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=True, ref=v2_revision
+    )
+
+    assert manifest["manifest_version"] == 2
+    assert _git(target, "rev-parse", "HEAD") == v2_revision
+    assert _metadata(home)["versioned-demo"]["revision"] == v2_revision
+
+
+def test_future_force_reinstall_preserves_installed_plugin(monkeypatch, tmp_path):
+    from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    repo, supported_revision = _versioned_plugin_repo(
+        tmp_path, SUPPORTED_MANIFEST_VERSION
+    )
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=False, ref=supported_revision
+    )
+    future_revision = _commit_manifest_version(
+        repo, SUPPORTED_MANIFEST_VERSION + 1
+    )
+    before = _metadata(home)
+
+    with pytest.raises(PluginOperationError, match="requires manifest_version"):
+        _install_plugin_core(repo.as_uri(), force=True, ref=future_revision)
+
+    assert _git(target, "rev-parse", "HEAD") == supported_revision
+    assert _metadata(home) == before
+
+
+def test_installed_v2_plugin_passes_runtime_doctor(monkeypatch, tmp_path):
+    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_cli.plugins_cmd import _install_plugin_core
+
+    repo, revision = _versioned_plugin_repo(tmp_path, 2)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=False, ref=revision
+    )
+
+    report = doctor_plugin(target)
+
+    assert report.ok
+    assert report.manifest.manifest_version == 2
+
+
+def test_exact_ref_rejects_future_native_manifest(monkeypatch, tmp_path):
+    from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    repo, revision = _versioned_plugin_repo(
+        tmp_path, SUPPORTED_MANIFEST_VERSION + 1
+    )
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(PluginOperationError, match="requires manifest_version"):
+        _install_plugin_core(repo.as_uri(), force=False, ref=revision)
+
+    assert not (home / "plugins" / "versioned-demo").exists()
+    assert not (home / "plugins" / ".install-metadata.json").exists()

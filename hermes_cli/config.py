@@ -2285,7 +2285,7 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
     Returns (current_version, latest_version). Tolerant runtime status callers
     retain the historical latest/latest fallback for malformed YAML. Mutation
     and explicit validation paths can set ``raise_on_parse_error`` so a parse
-    failure cannot be mistaken for an up-to-date config.
+    failure or a non-mapping root cannot be mistaken for an up-to-date config.
     """
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
@@ -2294,7 +2294,7 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
 
     try:
         with open(config_path, encoding="utf-8") as f:
-            config = fast_safe_load(f) or {}
+            config = fast_safe_load(f)
     except Exception as e:
         # Invalid YAML needs a parse warning, not an automatic schema rewrite
         # that could replace the user's broken file with defaults.
@@ -2305,6 +2305,8 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
             ) from e
         return latest, latest
 
+    if config is None:
+        config = {}  # empty file / bare document: valid first-run state
     if not isinstance(config, dict):
         # A list/scalar root parses fine but is just as unusable as broken
         # YAML: save_config() would refuse it later, after .env was already

@@ -4093,7 +4093,64 @@ def _append_node_dir_for_service(
         path_entries.append(resolved_node_dir)
 
 
-def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
+def _load_env_vars_for_systemd_unit() -> dict[str, str]:
+    """Load environment variables to inject into systemd units.
+
+    Reads from:
+    - ~/.hermes/.env file (for secrets like MNEMOSYNE_EMBEDDING_MODEL)
+    - config.yaml's env_passthrough list (for explicitly configured passthrough vars)
+
+    Returns a dict of var_name -> value for all vars that should be passed to
+    systemd units (gateway, dashboard, serve).
+    """
+    env_vars: dict[str, str] = {}
+
+    # Load from ~/.hermes/.env file
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:
+        pass
+
+    # Get vars from .env file that are in os.environ now
+    hermes_home = get_hermes_home()
+    env_file = hermes_home / ".env"
+    if env_file.exists():
+        try:
+            from dotenv import dotenv_values
+            dotenv_vars = dotenv_values(env_file)
+            for k, v in dotenv_vars.items():
+                if v is not None and k not in env_vars:
+                    env_vars[k] = v
+        except Exception:
+            pass
+
+    # Also include any vars already in os.environ that look like Hermes config vars
+    # (e.g. MNEMOSYNE_*, HERMES_*, etc.) - these may have been set by the shell
+    for k, v in os.environ.items():
+        if v and (
+            k.startswith("MNEMOSYNE_")
+            or k.startswith("HERMES_")
+            or k.startswith("HINDSIGHT_")
+        ):
+            if k not in env_vars:
+                env_vars[k] = v
+
+    # Add vars from config's env_passthrough
+    try:
+        cfg = load_config() or {}
+        passthrough = cfg.get("env_passthrough", [])
+        if isinstance(passthrough, list):
+            for var in passthrough:
+                if isinstance(var, str) and var in os.environ:
+                    env_vars[var] = os.environ[var]
+    except Exception:
+        pass
+
+    return env_vars
+
+
+def generate_systemd_unit(system: bool = False, run_as_user: str | None = None, extra_env: dict[str, str] | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     detected_venv = _detect_venv_dir()
@@ -4123,6 +4180,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         _get_restart_drain_timeout(),
         _get_cron_drain_timeout(),
     )
+
+    # Load extra environment variables for the systemd unit
+    if extra_env is None:
+        extra_env = _load_env_vars_for_systemd_unit()
+    extra_env_lines = "\n".join(f'Environment="{k}={v}"' for k, v in sorted(extra_env.items()))
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -4156,6 +4218,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        extra_env_block = f"\n{extra_env_lines}" if extra_env_lines else ""
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -4174,7 +4237,7 @@ Environment="LOGNAME={username}"
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Environment="HERMES_SUPERVISED_CHILD=1"
+Environment="HERMES_SUPERVISED_CHILD=1"{extra_env_block}
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -4200,6 +4263,7 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    extra_env_block = f"\n{extra_env_lines}" if extra_env_lines else ""
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -4213,7 +4277,7 @@ WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Environment="HERMES_SUPERVISED_CHILD=1"
+Environment="HERMES_SUPERVISED_CHILD=1"{extra_env_block}
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}

@@ -127,6 +127,16 @@ class PricingEntry:
     source_url: Optional[str] = None
     pricing_version: Optional[str] = None
     fetched_at: Optional[datetime] = None
+    # Context-tiered pricing (e.g. Gemini Pro models charge higher rates once
+    # the prompt exceeds 200k tokens). When ``tier_threshold_tokens`` is set
+    # and ``usage.prompt_tokens`` (input + cache read + cache write) exceeds
+    # it, the ``*_above`` rates replace the base rates for the WHOLE request —
+    # that matches Google's billing semantics (not marginal/bracketed rates).
+    # Any ``*_above`` field left as None falls back to its base rate.
+    tier_threshold_tokens: Optional[int] = None
+    input_cost_per_million_above: Optional[Decimal] = None
+    output_cost_per_million_above: Optional[Decimal] = None
+    cache_read_cost_per_million_above: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -594,6 +604,10 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("2.00"),
         output_cost_per_million=Decimal("12.00"),
         cache_read_cost_per_million=Decimal("0.20"),
+        tier_threshold_tokens=200_000,
+        input_cost_per_million_above=Decimal("4.00"),
+        output_cost_per_million_above=Decimal("18.00"),
+        cache_read_cost_per_million_above=Decimal("0.40"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -638,6 +652,9 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         input_cost_per_million=Decimal("1.25"),
         output_cost_per_million=Decimal("10.00"),
         cache_read_cost_per_million=Decimal("0.125"),
+        tier_threshold_tokens=200_000,
+        input_cost_per_million_above=Decimal("2.50"),
+        output_cost_per_million_above=Decimal("15.00"),
         source="official_docs_snapshot",
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-07-07",
@@ -994,9 +1011,14 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
 
 # GPT-5.6 "-pro" high-effort variants bill at the same per-token rates as
 # their base tiers (more tokens per task, not a higher rate). Alias them
-# onto the base entries so the snapshot stays single-source.
+# onto the base entries so the snapshot stays single-source. The Hermes-side
+# "-900k" large-context Codex picker variants are the same underlying model
+# (the suffix is stripped on the wire), so they alias identically.
 for _base_56 in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
     _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-pro")] = _OFFICIAL_DOCS_PRICING[
+        ("openai", _base_56)
+    ]
+    _OFFICIAL_DOCS_PRICING[("openai", f"{_base_56}-900k")] = _OFFICIAL_DOCS_PRICING[
         ("openai", _base_56)
     ]
 del _base_56
@@ -1256,6 +1278,10 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
+
+    bundled_entry = _lookup_official_docs_pricing(route)
+    if bundled_entry:
+        return bundled_entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
@@ -1265,7 +1291,7 @@ def get_pricing_entry(
         )
         if entry:
             return entry
-    return _lookup_official_docs_pricing(route)
+    return None
 
 
 def normalize_usage(
@@ -1449,12 +1475,30 @@ def estimate_usage_cost(
     notes: list[str] = []
     amount = _ZERO
 
-    if usage.input_tokens and entry.input_cost_per_million is None:
+    # Whole-request context-tier selection (e.g. Gemini Pro >200k prompts):
+    # once the prompt (input + cache read + cache write) exceeds the entry's
+    # threshold, the above-threshold rates apply to the entire request. Any
+    # tier rate left as None falls back to the base rate.
+    input_rate = entry.input_cost_per_million
+    output_rate = entry.output_cost_per_million
+    cache_read_rate = entry.cache_read_cost_per_million
+    if (
+        entry.tier_threshold_tokens is not None
+        and usage.prompt_tokens > entry.tier_threshold_tokens
+    ):
+        if entry.input_cost_per_million_above is not None:
+            input_rate = entry.input_cost_per_million_above
+        if entry.output_cost_per_million_above is not None:
+            output_rate = entry.output_cost_per_million_above
+        if entry.cache_read_cost_per_million_above is not None:
+            cache_read_rate = entry.cache_read_cost_per_million_above
+
+    if usage.input_tokens and input_rate is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
-    if usage.output_tokens and entry.output_cost_per_million is None:
+    if usage.output_tokens and output_rate is None:
         return CostResult(amount_usd=None, status="unknown", source=entry.source, label="n/a")
     if usage.cache_read_tokens:
-        if entry.cache_read_cost_per_million is None:
+        if cache_read_rate is None:
             return CostResult(
                 amount_usd=None,
                 status="unknown",
@@ -1472,12 +1516,12 @@ def estimate_usage_cost(
                 notes=("cache-write pricing unavailable for route",),
             )
 
-    if entry.input_cost_per_million is not None:
-        amount += Decimal(usage.input_tokens) * entry.input_cost_per_million / _ONE_MILLION
-    if entry.output_cost_per_million is not None:
-        amount += Decimal(usage.output_tokens) * entry.output_cost_per_million / _ONE_MILLION
-    if entry.cache_read_cost_per_million is not None:
-        amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
+    if input_rate is not None:
+        amount += Decimal(usage.input_tokens) * input_rate / _ONE_MILLION
+    if output_rate is not None:
+        amount += Decimal(usage.output_tokens) * output_rate / _ONE_MILLION
+    if cache_read_rate is not None:
+        amount += Decimal(usage.cache_read_tokens) * cache_read_rate / _ONE_MILLION
     if entry.cache_write_cost_per_million is not None:
         amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:

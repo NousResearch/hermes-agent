@@ -11,13 +11,23 @@ const REFRESH_MS = 60_000
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 
-export function useStatusSnapshot(gatewayState: string | undefined, requestGateway: GatewayRequester) {
+export function useStatusSnapshot(
+  gatewayState: string | undefined,
+  requestGateway: GatewayRequester,
+  gatewayScope = ''
+) {
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+
+    // Status and inference readiness belong to one backend. A source switch
+    // can keep gatewayState="open" throughout, so clear the previous source's
+    // snapshot and start a fresh scoped request explicitly.
+    setStatusSnapshot(null)
+    setInferenceStatus(null)
 
     // A closed/connecting gateway cannot have an authoritative live-runtime
     // result. Clear readiness before starting the REST status leg so a hung
@@ -102,7 +112,7 @@ export function useStatusSnapshot(gatewayState: string | undefined, requestGatew
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayState, requestGateway])
+  }, [gatewayScope, gatewayState, requestGateway])
 
   return { inferenceStatus, statusSnapshot }
 }

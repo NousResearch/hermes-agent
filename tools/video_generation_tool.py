@@ -61,12 +61,13 @@ logger = logging.getLogger(__name__)
 
 VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
     "name": "video_generate",
-    # Placeholder — the real description is built dynamically at
-    # get_tool_definitions() time so it reflects the active backend's
-    # actual capabilities (which modalities / resolutions / duration
-    # ranges the user's currently-selected model supports).
-    # See _build_dynamic_video_schema() below and the dynamic-tool-schemas
-    # skill at github/hermes-agent-dev/references/dynamic-tool-schemas.md.
+    # Placeholder — description AND params are rebuilt dynamically at
+    # get_tool_definitions() time from the active provider's declared
+    # capabilities() and the active model's catalog entry. Optional args
+    # (image_url, reference_image_urls, negative_prompt, audio, seed,
+    # upscale) are advertised ONLY when the active backend/model honors
+    # them; the handler accepts them regardless (replay compat — providers
+    # clamp/ignore). See _build_dynamic_video_schema().
     "description": "(rebuilt at get_definitions() time — see _build_dynamic_video_schema)",
     "parameters": {
         "type": "object",
@@ -78,93 +79,36 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                     "subject, style, camera movement, etc."
                 ),
             },
-            "image_url": {
-                "type": "string",
-                "description": (
-                    "Optional public HTTPS URL of a still image. When provided, "
-                    "the active backend routes to its image-to-video "
-                    "endpoint (animate the image); when omitted, it routes "
-                    "to text-to-video. For xAI chaining, use the `image` or "
-                    "`public_url` HTTPS URL from a prior Imagine result."
-                ),
-            },
-            "reference_image_urls": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Optional list of public HTTPS reference image URLs "
-                    "(style or character refs). For xAI chaining, use "
-                    "`image` or `public_url` from prior Imagine results."
-                ),
-            },
             "duration": {
                 "type": "integer",
                 "description": (
                     "Desired video duration in seconds. Providers clamp to "
-                    "their supported range (commonly 4-15s). Omit to use the "
-                    "provider's default."
+                    "their supported range. Omit for the provider default."
                 ),
             },
             "aspect_ratio": {
                 "type": "string",
                 "enum": list(COMMON_ASPECT_RATIOS),
-                "description": (
-                    "Output aspect ratio. Providers clamp to their supported "
-                    "set."
-                ),
+                "description": "Output aspect ratio.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
             "resolution": {
                 "type": "string",
                 "enum": list(COMMON_RESOLUTIONS),
-                "description": (
-                    "Output resolution. Providers clamp to their supported "
-                    "set."
-                ),
+                "description": "Output resolution.",
                 "default": DEFAULT_RESOLUTION,
-            },
-            "negative_prompt": {
-                "type": "string",
-                "description": (
-                    "Optional negative prompt — content to avoid in the "
-                    "output. Supported by Pixverse, Kling, and similar; "
-                    "ignored by providers that do not support it."
-                ),
-            },
-            "audio": {
-                "type": "boolean",
-                "description": (
-                    "Optional audio generation toggle. Supported by Veo3 and "
-                    "Pixverse (affects pricing tier); ignored elsewhere."
-                ),
-            },
-            "seed": {
-                "type": "integer",
-                "description": (
-                    "Optional seed for reproducible outputs (provider-"
-                    "dependent)."
-                ),
-            },
-            "upscale": {
-                "type": "boolean",
-                "description": (
-                    "Optional high-resolution pass: when true, the generated "
-                    "video is run through the active backend's video upscaler "
-                    "(extra cost and latency, roughly 2x resolution). Use when "
-                    "the user asks for high-res / 4K output. Omit for the "
-                    "model's native resolution. Ignored by backends without "
-                    "an upscaler."
-                ),
             },
             "model": {
                 "type": "string",
                 "description": (
-                    "Optional model override. If omitted, the user's "
-                    "configured ``video_gen.model`` (set via `hermes tools` "
-                    "→ Video Generation) is used. Models that the active "
-                    "provider does not know are rejected."
+                    "Optional model override; defaults to the configured "
+                    "``video_gen.model``. Unknown models are rejected."
                 ),
             },
+            # NOTE (schema diet, #95681): image_url / reference_image_urls /
+            # negative_prompt / audio / seed / upscale are added
+            # per-capability by _build_dynamic_video_schema. Do not re-add
+            # them statically.
         },
         "required": ["prompt"],
     },
@@ -487,22 +431,18 @@ def _format_model_caveats(
 
 
 def _build_dynamic_video_schema() -> Dict[str, Any]:
-    """Build a description that reflects the active backend's actual surface.
+    """Render description AND params from the active backend's declared surface.
 
-    Cheap: reads config (already memoized by the caller), asks the active
-    provider for `capabilities()` and the active model's catalog entry,
-    and formats a few lines of prose. Falls back to the generic
-    description when no provider is configured or registered.
+    Optional args are advertised only when the resolved provider/model
+    honors them (capabilities() + the model's catalog entry — coverage is
+    contract-tested per provider); enums and duration bounds tighten to
+    the active model's actual sets. The handler still accepts unadvertised
+    args (replay compat): providers clamp or ignore, as before.
     """
+    static_props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
     parts: List[str] = [_GENERIC_DESCRIPTION]
 
     configured_model = _read_configured_video_model()
-
-    # Reflect the *resolved* active provider (same resolution the handler uses
-    # in _resolve_active_provider): an explicit ``video_gen.provider``, or —
-    # when unset — the single available registered backend. Keeping the
-    # description in sync with execution stops the agent from being told
-    # "no backend configured" while a call would actually succeed.
     provider = _resolve_active_provider()
 
     if provider is None:
@@ -510,7 +450,14 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
             "\nNo video backend is available. Calls will return an error "
             "until the user picks one via `hermes tools` → Video Generation."
         )
-        return {"description": "\n".join(parts)}
+        return {
+            "description": "\n".join(parts),
+            "parameters": {
+                "type": "object",
+                "properties": {"prompt": static_props["prompt"]},
+                "required": ["prompt"],
+            },
+        }
 
     try:
         caps = provider.capabilities() or {}
@@ -527,47 +474,22 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         {},
     )
 
-    backend_label = provider.display_name
-    line = f"\nActive backend: {backend_label}"
-    if active_model:
-        line += f" · model: {active_model}"
-    parts.append(line)
-
-    # Model-specific caveats (the high-signal stuff)
+    # ---- description -------------------------------------------------
     for c in _format_model_caveats(model_meta, caps):
         parts.append(f"- {c}")
 
-    # Prefer the active model's modalities over the backend union. An
-    # i2v-only family on a dual-modality backend (e.g. gemini-omni-flash
-    # on FAL) must not also claim text-to-video support.
     model_modalities = set(model_meta.get("modalities") or [])
     modality = model_meta.get("modality")
     if modality:
         model_modalities.add(modality)
     effective_modalities = model_modalities or set(caps.get("modalities") or [])
-    if "text" in effective_modalities and "image" in effective_modalities:
-        parts.append(
-            "- supports both text-to-video (omit image_url) and "
-            "image-to-video (pass image_url) — routes automatically"
-        )
+    can_i2v = "image" in effective_modalities
+    t2v = "text" in effective_modalities
+    if can_i2v and not t2v:
+        parts.append("- image-to-video only: image_url is REQUIRED")
+    elif not can_i2v:
+        parts.append("- text-to-video only (no image input)")
 
-    if caps.get("aspect_ratios"):
-        parts.append(f"- aspect_ratio choices: {', '.join(caps['aspect_ratios'])}")
-    if caps.get("resolutions"):
-        parts.append(f"- resolution choices: {', '.join(caps['resolutions'])}")
-    min_duration = model_meta.get("min_duration", caps.get("min_duration"))
-    max_duration = model_meta.get("max_duration", caps.get("max_duration"))
-    if min_duration and max_duration:
-        parts.append(
-            f"- duration range: {min_duration}-{max_duration}s"
-        )
-    if caps.get("supports_audio"):
-        parts.append("- audio: pass `audio=true` to enable native audio (pricing tier)")
-    if caps.get("supports_negative_prompt"):
-        parts.append("- negative_prompt: supported")
-    max_refs = caps.get("max_reference_images") or 0
-    if max_refs:
-        parts.append(f"- reference_image_urls: up to {max_refs} images")
     if provider.name == "xai":
         parts.append(
             "- chaining: for edit/extend pass the public HTTPS MP4 in `video` "
@@ -584,7 +506,94 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         if notice:
             parts.append(f"- storage: {notice}")
 
-    return {"description": "\n".join(parts)}
+    # ---- params ------------------------------------------------------
+    properties: Dict[str, Any] = {"prompt": static_props["prompt"]}
+
+    if can_i2v:
+        properties["image_url"] = {
+            "type": "string",
+            "description": (
+                "Public HTTPS URL of a still image to animate "
+                "(image-to-video). Omit for text-to-video."
+            ),
+        }
+        max_refs = int(caps.get("max_reference_images") or 0)
+        if max_refs > 0:
+            properties["reference_image_urls"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": max_refs,
+                "description": (
+                    f"Up to {max_refs} public HTTPS reference image URLs "
+                    "(style or character refs)."
+                ),
+            }
+
+    min_duration = model_meta.get("min_duration", caps.get("min_duration"))
+    max_duration = model_meta.get("max_duration", caps.get("max_duration"))
+    duration_param = dict(static_props["duration"])
+    if min_duration and max_duration:
+        duration_param["minimum"] = int(min_duration)
+        duration_param["maximum"] = int(max_duration)
+        duration_param["description"] = (
+            f"Video duration in seconds ({min_duration}-{max_duration}). "
+            "Omit for the provider default."
+        )
+    properties["duration"] = duration_param
+
+    # Tighten enums to the active backend's actual sets when declared.
+    aspect_param = dict(static_props["aspect_ratio"])
+    if caps.get("aspect_ratios"):
+        aspect_param["enum"] = list(caps["aspect_ratios"])
+    properties["aspect_ratio"] = aspect_param
+
+    resolution_param = dict(static_props["resolution"])
+    if caps.get("resolutions"):
+        resolution_param["enum"] = list(caps["resolutions"])
+    properties["resolution"] = resolution_param
+
+    if caps.get("supports_negative_prompt"):
+        properties["negative_prompt"] = {
+            "type": "string",
+            "description": "Content to avoid in the output.",
+        }
+    if caps.get("supports_audio"):
+        properties["audio"] = {
+            "type": "boolean",
+            "description": (
+                "Enable native audio generation (affects pricing tier)."
+            ),
+        }
+    elif caps.get("audio_always_on"):
+        parts.append(
+            "- audio: native stereo audio is generated with every video "
+            "(always on; no toggle) — describe the desired sound in the "
+            "prompt"
+        )
+    if caps.get("supports_seed"):
+        properties["seed"] = {
+            "type": "integer",
+            "description": "Seed for reproducible outputs.",
+        }
+    if caps.get("supports_upscale"):
+        properties["upscale"] = {
+            "type": "boolean",
+            "description": (
+                "High-resolution pass via the backend's video upscaler "
+                "(~2x, extra cost/latency). Omit for native resolution."
+            ),
+        }
+
+    properties["model"] = static_props["model"]
+
+    return {
+        "description": "\n".join(parts),
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": ["prompt"],
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

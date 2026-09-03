@@ -23,6 +23,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
+from tools.browser_extension_router import routed_browser_handler
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +43,53 @@ _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
 }
 
 
-def _redact_cdp_output(value: Any) -> Any:
-    """Redact browser-originated CDP result data before returning it."""
+_CDP_ALWAYS_BINARY_PATHS: Dict[str, tuple] = {
+    # method → result paths that are ALWAYS opaque base64 payloads (the
+    # protocol declares them binary with no flag of their own).
+    # redact_sensitive_text's Fernet pattern ("gAAAA" + base64 alphabet) can
+    # match arbitrary spans inside such payloads — collapsing them to
+    # "first6...last4" and corrupting the decoded bytes (#94138). The payload
+    # is binary, not free text the model reads, so redaction has no secret to
+    # protect there.
+    "Page.captureScreenshot": (("data",),),
+    "Page.printToPDF": (("data",),),
+    "Network.streamResourceContent": (("bufferedData",),),
+    "HeadlessExperimental.beginFrame": (("screenshotData",),),
+    "CacheStorage.requestCachedResponse": (("response", "body"),),
+}
+
+_CDP_FLAGGED_BINARY_PATHS: Dict[str, tuple] = {
+    # method → result paths that are opaque base64 ONLY when the dict that
+    # carries the final field has a ``base64Encoded`` sibling that is exactly
+    # ``True``. The discriminator is type information only at these
+    # protocol-defined paths; ``base64Encoded: false`` or absent means text,
+    # which is redacted.
+    "Network.getResponseBody": (("body",),),
+    "Fetch.getResponseBody": (("body",),),
+    "IO.read": (("data",),),
+    "Network.getRequestPostData": (("postData",),),
+}
+
+
+def _redact_cdp_output(
+    value: Any,
+    *,
+    always_paths: tuple = (),
+    flagged_paths: tuple = (),
+) -> Any:
+    """Redact browser-originated CDP result data before returning it.
+
+    Policy: semantic text is redacted; opaque bytes stay byte-identical
+    (#94138). Exemptions come ONLY from the calling method's spec
+    (``_CDP_ALWAYS_BINARY_PATHS`` / ``_CDP_FLAGGED_BINARY_PATHS``) as exact
+    result paths — every other string in every result keeps full
+    ``redact_sensitive_text(force=True)``. Path suffixes are propagated only
+    into the matching subtree, so ``base64Encoded`` is honored solely as a
+    sibling on the trusted carrier object, never as ambient trust in
+    arbitrary nested JSON (a ``Runtime.evaluate`` by-value object could
+    otherwise spoof ``{"base64Encoded": true, "data": "<secret>"}`` past the
+    redactor — second review on #94142).
+    """
     from agent.redact import redact_sensitive_text
 
     if isinstance(value, str):
@@ -53,7 +99,30 @@ def _redact_cdp_output(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_redact_cdp_output(item) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_cdp_output(item) for key, item in value.items()}
+        base64_flagged = value.get("base64Encoded") is True
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            terminal_always = any(
+                len(p) == 1 and p[0] == key for p in always_paths
+            )
+            terminal_flagged = any(
+                len(p) == 1 and p[0] == key for p in flagged_paths
+            )
+            if isinstance(item, str) and (
+                terminal_always or (terminal_flagged and base64_flagged)
+            ):
+                redacted[key] = item
+            else:
+                redacted[key] = _redact_cdp_output(
+                    item,
+                    always_paths=tuple(
+                        p[1:] for p in always_paths if len(p) > 1 and p[0] == key
+                    ),
+                    flagged_paths=tuple(
+                        p[1:] for p in flagged_paths if len(p) > 1 and p[0] == key
+                    ),
+                )
+        return redacted
     return value
 
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
@@ -524,7 +593,11 @@ def browser_cdp(
     payload: Dict[str, Any] = {
         "success": True,
         "method": method,
-        "result": _redact_cdp_output(result),
+        "result": _redact_cdp_output(
+            result,
+            always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
+            flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()),
+        ),
     }
     if target_id:
         payload["target_id"] = target_id
@@ -671,13 +744,19 @@ registry.register(
     name="browser_cdp",
     toolset="browser-cdp",
     schema=BROWSER_CDP_SCHEMA,
-    handler=lambda args, **kw: browser_cdp(
-        method=args.get("method", ""),
-        params=args.get("params"),
-        target_id=args.get("target_id"),
-        frame_id=args.get("frame_id"),
-        timeout=args.get("timeout", 30.0),
+    handler=lambda args, **kw: routed_browser_handler(
+        "browser_cdp",
+        args,
+        fallback=lambda: browser_cdp(
+            method=args.get("method", ""),
+            params=args.get("params"),
+            target_id=args.get("target_id"),
+            frame_id=args.get("frame_id"),
+            timeout=args.get("timeout", 30.0),
+            task_id=kw.get("task_id"),
+        ),
         task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
     ),
     check_fn=_browser_cdp_check,
     emoji="🧪",

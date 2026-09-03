@@ -1,6 +1,6 @@
 name: web-tavily
 version: 1.0.0
-description: "Tavily web search + content extraction + crawl. Search + extract are mainstream; crawl is unique to Tavily among built-in providers. Requires TAVILY_API_KEY — sign up at https://app.tavily.com/home."
+description: "Tavily web search + extract. Opt-in keyless via hermes tools; set TAVILY_API_KEY for higher limits — https://app.tavily.com/home."
 author: NousResearch
 kind: backend
 provides_web_providers:

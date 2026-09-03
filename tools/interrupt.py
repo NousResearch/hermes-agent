@@ -17,6 +17,7 @@ Usage in tools:
 import logging
 import os
 import threading
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -31,25 +32,39 @@ if _DEBUG_INTERRUPT:
     # Force our own logger back to INFO so the trace is visible in agent.log.
     logger.setLevel(logging.INFO)
 
-# Set of thread idents that have been interrupted.
+# Set of thread idents that have been interrupted, plus an optional
+# user-safe cause for each signal. The cause deliberately does not contain an
+# incoming user's message text.
 _interrupted_threads: set[int] = set()
+_interrupt_reasons: dict[int, str] = {}
 _lock = threading.Lock()
 
 
-def set_interrupt(active: bool, thread_id: int | None = None) -> None:
+def set_interrupt(
+    active: bool,
+    thread_id: int | None = None,
+    *,
+    reason: str | None = None,
+) -> None:
     """Set or clear interrupt for a specific thread.
 
     Args:
         active: True to signal interrupt, False to clear it.
         thread_id: Target thread ident.  When None, targets the
                    current thread (backward compat for CLI/tests).
+        reason: Optional user-safe cause for the interrupt.
     """
     tid = thread_id if thread_id is not None else threading.current_thread().ident
     with _lock:
         if active:
             _interrupted_threads.add(tid)
+            if reason:
+                _interrupt_reasons[tid] = reason
+            else:
+                _interrupt_reasons.pop(tid, None)
         else:
             _interrupted_threads.discard(tid)
+            _interrupt_reasons.pop(tid, None)
         _snapshot = set(_interrupted_threads) if _DEBUG_INTERRUPT else None
     if _DEBUG_INTERRUPT:
         logger.info(
@@ -65,9 +80,42 @@ def is_interrupted() -> bool:
     Safe to call from any thread — each thread only sees its own
     interrupt state.
     """
+    return is_thread_interrupted(threading.current_thread().ident)
+
+
+def is_thread_interrupted(thread_id: int | None) -> bool:
+    """Check whether *thread_id* has an interrupt bit set.
+
+    Used when a wait is moved onto a deadline worker (``run_bounded_sync``)
+    so ``/stop`` targeting the original tool-worker tid still kills the
+    subprocess (#94285). ``None`` is never interrupted.
+    """
+    if thread_id is None:
+        return False
+    with _lock:
+        return thread_id in _interrupted_threads
+
+
+def run_if_not_interrupted(callback: Callable[[], None]) -> bool:
+    """Run a state transition atomically with current-thread interruption.
+
+    Returns ``False`` without calling ``callback`` when the current thread is
+    already interrupted. The callback runs under the interrupt lock and must
+    not block or re-enter any interrupt API.
+    """
     tid = threading.current_thread().ident
     with _lock:
-        return tid in _interrupted_threads
+        if tid in _interrupted_threads:
+            return False
+        callback()
+        return True
+
+
+def get_interrupt_reason() -> str | None:
+    """Return the user-safe interrupt cause for the current thread, if known."""
+    tid = threading.current_thread().ident
+    with _lock:
+        return _interrupt_reasons.get(tid)
 
 
 def clear_current_thread_interrupt() -> None:

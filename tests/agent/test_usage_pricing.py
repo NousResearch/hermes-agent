@@ -105,6 +105,48 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert float(entry.cache_read_cost_per_million) == 0.003625
 
 
+def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
+    """An exact bundled price must not block on the provider's /models API."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("endpoint metadata should not be fetched")
+        ),
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-chat",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
+    """Models absent from the bundled table still use endpoint pricing."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "deepseek-future": {
+                "pricing": {"prompt": "0.000001", "completion": "0.000002"}
+            }
+        },
+    )
+
+    entry = get_pricing_entry(
+        "deepseek-future",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+
+    assert entry is not None
+    assert entry.source == "provider_models_api"
+    assert entry.input_cost_per_million == Decimal("1")
+    assert entry.output_cost_per_million == Decimal("2")
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_v4_flash():
@@ -766,3 +808,104 @@ def test_normalize_usage_nested_details_win_over_qwen_flat_top_level():
 
     assert normalized.cache_read_tokens == 900
     assert normalized.input_tokens == 1100
+
+
+# ── Context-tiered pricing (Gemini Pro >200k prompts, #93469) ─────────────
+
+
+def test_gemini_31_pro_below_tier_threshold_uses_base_rates():
+    """Prompts at or below 200k tokens bill at the base rates — the tier
+    fields must not change any below-threshold estimate."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=100_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 100k * $2/M + 10k * $12/M
+    assert result.amount_usd == Decimal("0.32")
+
+    at_threshold = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=200_000, output_tokens=10_000),
+        provider="google",
+    )
+    # Exactly 200k is still the lower tier (Google bills "> 200k" higher).
+    # 200k * $2/M + 10k * $12/M
+    assert at_threshold.amount_usd == Decimal("0.52")
+
+
+def test_gemini_31_pro_above_tier_threshold_uses_tiered_rates_whole_request():
+    """Once the prompt exceeds 200k tokens the >200k rates ($4 input /
+    $18 output per million) apply to the ENTIRE request, not just the
+    marginal tokens — matching Google's billing semantics (#93469).
+
+    Before the fix this request priced at 250k*$2/M + 10k*$12/M = $0.62,
+    under-counting input 2x and output 1.5x."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 250k * $4/M + 10k * $18/M
+    assert result.amount_usd == Decimal("1.18")
+    assert result.status == "estimated"
+
+
+def test_gemini_31_pro_cache_read_tokens_count_toward_tier_and_tier_rate():
+    """prompt_tokens (input + cache read + cache write) drives tier selection,
+    and cache reads above the threshold bill at the $0.40/M tier rate."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro",
+        CanonicalUsage(input_tokens=150_000, cache_read_tokens=100_000),
+        provider="google",
+    )
+    # prompt = 250k > 200k → 150k * $4/M + 100k * $0.40/M
+    assert result.amount_usd == Decimal("0.64")
+
+
+def test_gemini_31_pro_preview_alias_shares_tiered_pricing():
+    """The provider-emitted preview id aliases the canonical row, so it must
+    pick up the tier fields too."""
+    result = estimate_usage_cost(
+        "gemini-3.1-pro-preview",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    assert result.amount_usd == Decimal("1.18")
+
+
+def test_gemini_25_pro_tiered_rates_with_cache_read_fallback():
+    """gemini-2.5-pro tiers at the same 200k threshold ($2.50 input / $15
+    output above). Its snapshot has no tiered cache-read rate, so cache reads
+    fall back to the base $0.125/M even above the threshold."""
+    result = estimate_usage_cost(
+        "gemini-2.5-pro",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 250k * $2.50/M + 10k * $15/M
+    assert result.amount_usd == Decimal("0.775")
+
+    with_cache = estimate_usage_cost(
+        "gemini-2.5-pro",
+        CanonicalUsage(input_tokens=150_000, cache_read_tokens=100_000),
+        provider="google",
+    )
+    # prompt = 250k > 200k → 150k * $2.50/M + 100k * $0.125/M (base fallback)
+    assert with_cache.amount_usd == Decimal("0.3875")
+
+
+def test_flat_entries_unaffected_by_tier_machinery():
+    """Entries without tier fields keep pricing every token at the flat rate
+    no matter how large the prompt is."""
+    entry = get_pricing_entry("gemini-3.1-flash-lite", provider="google")
+    assert entry is not None
+    assert entry.tier_threshold_tokens is None
+
+    result = estimate_usage_cost(
+        "gemini-3.1-flash-lite",
+        CanonicalUsage(input_tokens=250_000, output_tokens=10_000),
+        provider="google",
+    )
+    # 250k * $0.25/M + 10k * $1.50/M
+    assert result.amount_usd == Decimal("0.0775")

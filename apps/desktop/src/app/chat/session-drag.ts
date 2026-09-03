@@ -30,7 +30,6 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
-  type DoubleTapContext,
   rectContains,
   slotBefore,
   snapshotStrips,
@@ -95,15 +94,15 @@ function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
 /**
  * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
  * language either way: stack, split, or composer link). Sub-threshold releases
- * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
- * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
- * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
- * row and MOVES the existing one when its tab is the drag source.
+ * stay ordinary clicks, so `opts.onTap` (activate the tile) rides the tab's
+ * gesture; Esc aborts instantly. A stack/split commits through
+ * `openSessionTile`, which OPENS a new tile from a sidebar row and MOVES the
+ * existing one when its tab is the drag source.
  */
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { double?: DoubleTapContext; onTap?: () => void }
+  opts?: { onTap?: () => void }
 ) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
@@ -124,7 +123,6 @@ export function startSessionDrag(
   const restoreOpacity = source?.style.opacity ?? ''
 
   startDragSession(e, {
-    double: opts?.double,
     ghost: { label: sessionLabel(payload) },
     onTap: opts?.onTap,
 

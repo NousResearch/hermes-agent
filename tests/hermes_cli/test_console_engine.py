@@ -586,3 +586,22 @@ def test_console_checkpoints_prune_succeeds_without_a_tty(
     assert "Aborted." not in result.output
     assert len(prune_calls) == 1
     assert prune_calls[0]["orphan_allowlist"] is None
+
+
+def test_config_set_on_unparseable_yaml_reports_error_not_crash(tmp_path, monkeypatch):
+    """The fail-closed config write guard raises RuntimeError; the console must
+    surface it as a command error, not let it escape execute() and kill the
+    REPL / dashboard websocket session (regression for PR #71385 follow-up)."""
+    config_path = tmp_path / "config.yaml"
+    original = "model:\n  default: keep\nbroken: [unterminated\n"
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = HermesConsoleEngine().execute(
+        "config set model.default gpt-4o", confirmed=True
+    )
+
+    assert result.status == "error"
+    assert "not valid YAML" in (result.output or "") or "Failed to parse" in (result.output or "")
+    # The broken-but-recoverable file must survive untouched.
+    assert config_path.read_text(encoding="utf-8") == original

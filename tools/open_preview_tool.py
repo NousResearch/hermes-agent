@@ -61,7 +61,8 @@ OPEN_PREVIEW_SCHEMA = {
         "preview pane — e.g. \"open cnn.com in the preview pane\" or \"preview "
         "localhost:3000\". Accepts a web URL (a bare domain like www.cnn.com is fine), "
         "a localhost dev-server URL, or a file path (HTML renders live; other files "
-        "show their contents). The pane opens for the current window only."
+        "show their contents). The pane opens for the current window only. To close "
+        "the pane or a tab, use close_preview."
     ),
     "parameters": {
         "type": "object",
@@ -83,10 +84,5 @@ OPEN_PREVIEW_SCHEMA = {
 }
 
 
-registry.register(
-    name="open_preview",
-    toolset="desktop_ui",
-    schema=OPEN_PREVIEW_SCHEMA,
-    handler=lambda args, **kw: open_preview_tool(url=args.get("url", ""), label=args.get("label", "")),
-    emoji="🖼️",
-)
+# Registration removed: consolidated into the `preview` tool (#95681);
+# this module keeps its functions for the preview_tool.

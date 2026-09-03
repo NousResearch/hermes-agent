@@ -26,31 +26,13 @@ client-level limits when a custom transport is supplied.
 """
 
 import asyncio
-import sys
-from unittest.mock import MagicMock, patch
+import socket
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 from gateway.config import PlatformConfig
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -153,12 +135,21 @@ def _assert_keepalive_tight(instances):
         assert limits.max_connections is not None and limits.max_connections > 0
 
 
+def _assert_updates_pool_never_reuses(instance):
+    """The long-poll pool must not reuse server-closed connections (#87057)."""
+    limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
+    assert isinstance(limits, httpx.Limits)
+    assert limits.max_keepalive_connections == 0
+    assert limits.max_connections == 512
+
+
 def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     """The proxy path the #31599 reporter hit must wire tuned limits."""
     instances = _drive_connect(monkeypatch, proxy_url="http://127.0.0.1:9/")
     # Both the general request pool and the get_updates pool are built here.
     assert len(instances) >= 2
-    _assert_keepalive_tight(instances)
+    _assert_keepalive_tight(instances[:1])
+    _assert_updates_pool_never_reuses(instances[1])
     # Sanity: the proxy was actually threaded through (we're on the proxy branch).
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
 
@@ -174,7 +165,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
     )
 
     assert len(instances) >= 2
-    for instance in instances:
+    for index, instance in enumerate(instances):
         transport = instance.kwargs["httpx_kwargs"]["transport"]
         assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
         limits = transport._transport_kwargs["limits"]
@@ -182,6 +173,18 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
         assert limits.keepalive_expiry is not None
         assert limits.keepalive_expiry < 5.0
         assert limits.max_connections == 512
+        sock_opts = transport._transport_kwargs.get("socket_options")
+        assert sock_opts, "fallback transport must enable TCP keepalive (#87057)"
+        assert any(
+            opt[0] == socket.SOL_SOCKET
+            and opt[1] == socket.SO_KEEPALIVE
+            and opt[2] == 1
+            for opt in sock_opts
+        )
+        if index == 0:
+            assert limits.max_keepalive_connections >= 1
+        else:
+            assert limits.max_keepalive_connections == 0
 
     for instance in instances:
         asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())

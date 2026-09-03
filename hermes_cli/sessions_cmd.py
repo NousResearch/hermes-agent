@@ -305,7 +305,13 @@ def cmd_sessions(args, sessions_parser=None):
     if action == "import":
         from hermes_cli.foreign_sessions import run_sessions_import
 
-        run_sessions_import(args)
+        result = run_sessions_import(args)
+        # A path was explicitly given but nothing imported → real error (bad
+        # path, unknown source, no turns). Propagate a non-zero exit so
+        # scripts can detect the failure (SES-04/SES-10). An interactive
+        # picker cancel (no path) returning None is a normal no-op → exit 0.
+        if result is None and getattr(args, "path", None):
+            return 1
         return
 
     try:
@@ -314,7 +320,7 @@ def cmd_sessions(args, sessions_parser=None):
         db = SessionDB()
     except Exception as e:
         print(f"Error: Could not open session database: {e}")
-        return
+        return 1
 
     # Hide third-party tool sessions by default, but honour explicit --source
     _source = getattr(args, "source", None)
@@ -865,18 +871,28 @@ def cmd_sessions(args, sessions_parser=None):
         resolved_session_id = db.resolve_session_id(args.session_id)
         if not resolved_session_id:
             print(f"Session '{args.session_id}' not found.")
-            return
+            return 1
+        # Note when the explicit target is pinned — the user named this id
+        # directly so we honor the delete, but a pin is a "keep" flag and
+        # silently destroying it (round-3 QA SES-01) is surprising.
+        _get_session = getattr(db, "get_session", None)
+        _meta = (_get_session(resolved_session_id) or {}) if callable(_get_session) else {}
+        _pinned_note = " (this session is PINNED)" if _meta.get("pinned") else ""
         if not args.yes:
             if not _confirm_prompt(
-                f"Delete session '{resolved_session_id}' and all its messages? [y/N] "
+                f"Delete session '{resolved_session_id}'{_pinned_note} "
+                "and all its messages? [y/N] "
             ):
                 print("Cancelled.")
                 return
+        elif _pinned_note:
+            print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
         sessions_dir = get_hermes_home() / "sessions"
         if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
             print(f"Deleted session '{resolved_session_id}'.")
         else:
             print(f"Session '{args.session_id}' not found.")
+            return 1
 
     elif action == "prune" and getattr(args, "never_active", False):
         # Separate branch on purpose: the shared prune/archive selector is
@@ -921,7 +937,7 @@ def cmd_sessions(args, sessions_parser=None):
             filters = build_prune_filters(args)
         except ValueError as e:
             print(f"Error: {e}")
-            return
+            return 1
 
         if action == "archive" and not any(
             v for k, v in filters.items() if k != "older_than_days"
@@ -940,6 +956,37 @@ def cmd_sessions(args, sessions_parser=None):
             )
         else:
             filters["archived"] = False
+
+        # Pinned sessions are excluded by default from bulk prune/archive
+        # (pin = durable keep). `prune --include-pinned` opts in; archive has
+        # no such flag, so archive always spares pinned rows. Surface a count
+        # of pinned matches being skipped so the user knows they were spared.
+        _include_pinned = getattr(args, "include_pinned", False)
+        filters["include_pinned"] = _include_pinned
+        _count_matches = getattr(db, "count_prune_matches", None)
+        if not _include_pinned and callable(_count_matches):
+            _base = {k: v for k, v in filters.items() if k != "include_pinned"}
+            try:
+                _with_pinned = int(_count_matches(**_base, include_pinned=True))
+                _without_pinned = int(_count_matches(**_base, include_pinned=False))
+                _pinned_skipped = max(_with_pinned - _without_pinned, 0)
+            except TypeError:
+                # A db double without include_pinned support — skip the note.
+                _pinned_skipped = 0
+            if _pinned_skipped:
+                _suffix = "" if _pinned_skipped == 1 else "s"
+                _verb_word = "deleted" if action == "prune" else "archived"
+                _optin = (
+                    "Pass --include-pinned to delete them anyway, or unpin "
+                    "first with `hermes sessions unpin <id>`."
+                    if action == "prune"
+                    else "Unpin first with `hermes sessions unpin <id>` to include them."
+                )
+                print(
+                    f"Note: {_pinned_skipped} pinned session{_suffix} also match "
+                    f"these filters but will NOT be {_verb_word} (pin is a keep "
+                    f"flag). {_optin}"
+                )
 
         candidates = db.list_prune_candidates(**filters)
         # Archive expands each selected row to its compression lineage, which
@@ -1013,15 +1060,27 @@ def cmd_sessions(args, sessions_parser=None):
         resolved_session_id = db.resolve_session_id(args.session_id)
         if not resolved_session_id:
             print(f"Session '{args.session_id}' not found.")
-            return
+            return 1
         title = " ".join(args.title)
+        # Reject blank / whitespace-only / newline-bearing titles (SES-05):
+        # an empty title renders as "—" and embedded newlines corrupt the
+        # `list` table. length is validated in set_session_title; guard
+        # emptiness + control chars here.
+        if not title.strip():
+            print("Error: title cannot be empty or whitespace-only.")
+            return 1
+        if "\n" in title or "\r" in title:
+            print("Error: title cannot contain newlines.")
+            return 1
         try:
             if db.set_session_title(resolved_session_id, title):
                 print(f"Session '{resolved_session_id}' renamed to: {title}")
             else:
                 print(f"Session '{args.session_id}' not found.")
+                return 1
         except ValueError as e:
             print(f"Error: {e}")
+            return 1
 
     elif action in ("pin", "unpin"):
         # CLI surface for the durable "keep" flag (issue #52955). Pinned

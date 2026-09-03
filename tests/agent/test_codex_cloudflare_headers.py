@@ -1,11 +1,8 @@
-"""Regression guard: Codex Cloudflare 403 mitigation headers.
+"""Regression coverage for required Codex identity and account headers.
 
-The ``chatgpt.com/backend-api/codex`` endpoint sits behind a Cloudflare layer
-that whitelists a small set of first-party originators (``codex_cli_rs``,
-``codex_vscode``, ``codex_sdk_ts``, ``Codex*``). Requests from non-residential
-IPs (VPS, always-on servers, some corporate egress) that don't advertise an
-allowed originator are served 403 with ``cf-mitigated: challenge`` regardless
-of auth correctness.
+The official Codex endpoint must receive Hermes' own harness identity, rather
+than the historical first-party compatibility identity. Live endpoint
+acceptance is a separate smoke test; these tests verify request construction.
 
 ``_codex_cloudflare_headers`` in ``agent.auxiliary_client`` centralizes the
 header set so the primary chat client (``run_agent.AIAgent.__init__`` +
@@ -14,8 +11,8 @@ header set so the primary chat client (``run_agent.AIAgent.__init__`` +
 all emit the same headers.
 
 These tests pin:
-- the originator value (must be ``codex_cli_rs`` — the whitelisted one)
-- the User-Agent shape (codex_cli_rs-prefixed)
+- the required Hermes originator
+- the versioned Hermes User-Agent
 - ``ChatGPT-Account-ID`` extraction from the OAuth JWT (canonical casing,
   from codex-rs ``auth.rs``)
 - graceful handling of malformed tokens (drop the account-ID header, don't
@@ -29,6 +26,7 @@ import base64
 import json
 from unittest.mock import MagicMock, patch
 
+from hermes_cli import __version__
 
 
 # ---------------------------------------------------------------------------
@@ -59,10 +57,11 @@ def _make_codex_jwt(account_id: str = "acct-test-123") -> str:
 
 class TestCodexCloudflareHeaders:
 
-    def test_user_agent_advertises_codex_cli_rs(self):
+    def test_user_agent_advertises_hermes_version(self):
         from agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert headers["User-Agent"].startswith("codex_cli_rs/")
+        assert headers["User-Agent"] == f"HermesAgent/{__version__}"
+        assert headers["originator"] == "hermes-agent"
 
 
     def test_canonical_header_casing(self):
@@ -86,7 +85,7 @@ class TestCodexCloudflareHeaders:
         payload = b64url(_json.dumps({"sub": "user-xyz", "exp": 9999999999}).encode())
         token = f"{b64url(b'{}')}.{payload}.{b64url(b'sig')}"
         headers = _codex_cloudflare_headers(token)
-        assert headers["originator"] == "codex_cli_rs"
+        assert headers["originator"] == "hermes-agent"
         assert "ChatGPT-Account-ID" not in headers
 
 
@@ -117,9 +116,9 @@ class TestPrimaryClientWiring:
                 "https://chatgpt.com/backend-api/codex"
             )
             headers = agent._client_kwargs.get("default_headers") or {}
-            assert headers.get("originator") == "codex_cli_rs"
+            assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-rotation"
-            assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
+            assert headers.get("User-Agent") == f"HermesAgent/{__version__}"
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
         """Switching AWAY from chatgpt.com must drop the codex headers."""
@@ -173,9 +172,9 @@ class TestAuxiliaryClientWiring:
             client, model = auxiliary_client._build_codex_client("gpt-5.4")
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
-            assert headers.get("originator") == "codex_cli_rs"
+            assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-aux-try-codex"
-            assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
+            assert headers.get("User-Agent") == f"HermesAgent/{__version__}"
 
     def test_resolve_provider_client_raw_codex_passes_codex_headers(self, monkeypatch):
         """The ``raw_codex=True`` branch (used by the main agent loop for direct
@@ -193,6 +192,6 @@ class TestAuxiliaryClientWiring:
             )
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
-            assert headers.get("originator") == "codex_cli_rs"
+            assert headers.get("originator") == "hermes-agent"
             assert headers.get("ChatGPT-Account-ID") == "acct-aux-raw-codex"
-            assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
+            assert headers.get("User-Agent") == f"HermesAgent/{__version__}"

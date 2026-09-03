@@ -21,6 +21,7 @@ test runner at ``scripts/run_tests.sh``.
 
 import asyncio
 import atexit
+import importlib
 import os
 import shutil
 import sqlite3
@@ -264,6 +265,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_VOICE",
     "HERMES_VOICE_TTS",
     "HERMES_YOLO_MODE",
+    # Injected into subprocess envs by the terminal tool (_make_run_env), so
+    # any test run launched FROM a Hermes agent session inherits them and
+    # hermes_constants home-resolution helpers prefer them over monkeypatched
+    # HOME (test_subprocess_home_isolation red locally, green on CI).
+    "HERMES_REAL_HOME",
+    "TERMINAL_HOME_MODE",
     "HERMES_INTERACTIVE",
     "HERMES_QUIET",
     "HERMES_TOOL_PROGRESS",
@@ -341,6 +348,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
     "TELEGRAM_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS",
+    "QQ_ALLOWED_USERS",
+    "QQ_GROUP_ALLOWED_USERS",
     "DISCORD_ALLOWED_USERS",
     "WHATSAPP_ALLOWED_USERS",
     "SLACK_ALLOWED_USERS",
@@ -563,6 +574,28 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_kanban_memory_guard(request, monkeypatch):
+    """Pin the kanban dispatcher's memory guard to "no data" for every test.
+
+    The dispatcher consults live system memory before spawning (OOF-30/
+    OOF-77: memory-derived default cap + pressure-based spawn restriction).
+    Left un-patched, dispatch tests would pass or fail based on how loaded
+    the CI runner happens to be. Defaulting the sample to ``{}`` makes the
+    derived cap ``None`` and the pressure level ``"unknown"`` — i.e. the
+    pre-guard behaviour every existing test was written against. Tests that
+    exercise the guard itself opt out with
+    ``@pytest.mark.real_memory_guard`` or patch the seam directly.
+    """
+    if request.node.get_closest_marker("real_memory_guard"):
+        return
+    try:
+        from hermes_cli import kanban_db as _kb_mod
+    except Exception:
+        return
+    monkeypatch.setattr(_kb_mod, "_system_memory_sample", lambda: {}, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser
@@ -598,17 +631,21 @@ def _neutralize_macos_keychain_creds(request, monkeypatch):
     if request.node.get_closest_marker(_ALLOW_MACOS_KEYCHAIN_MARK):
         return None
 
-    try:
-        import agent.anthropic_adapter as _anthropic_adapter
-    except Exception:
-        return None
-
-    monkeypatch.setattr(
-        _anthropic_adapter,
-        "_read_claude_code_credentials_from_keychain",
-        lambda *_args, **_kwargs: None,
-        raising=False,
-    )
+    # Patch the implementation owner (agent.anthropic_credentials) AND the
+    # adapter re-export: after the adapter godfile split, the real call
+    # executes inside agent.anthropic_credentials, so patching only the
+    # adapter alias silently stopped intercepting Keychain reads.
+    for _module_name in ("agent.anthropic_credentials", "agent.anthropic_adapter"):
+        try:
+            _mod = importlib.import_module(_module_name)
+        except Exception:
+            continue
+        monkeypatch.setattr(
+            _mod,
+            "_read_claude_code_credentials_from_keychain",
+            lambda *_args, **_kwargs: None,
+            raising=False,
+        )
     return None
 
 
@@ -1141,6 +1178,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "require_symlinks: skip the test if symbolic links cannot be "
         "created in the current environment (needs admin/developer mode "
         "on Windows).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_memory_guard: bypass the autouse fixture that pins the kanban "
+        "dispatcher's memory guard to 'no data' — only for tests that "
+        "exercise the guard itself with their own patched samples.",
     )
     # NOTE: linux_only / macos_only / windows_only are declared in
     # pyproject.toml's ``markers`` list, not here — they are part of the

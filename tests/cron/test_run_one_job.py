@@ -29,7 +29,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         calls.append(("deliver", job["id"]))
         return None
 
@@ -161,6 +161,82 @@ def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch)
     ]
 
 
+def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
+    """Make run_job raise, and capture what the escape handler delivers."""
+    monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": exec_id})
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError(err)),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None,
+    )
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+    # Deterministic threshold: default 3, independent of the host config.
+    monkeypatch.setattr(s, "load_config", lambda: {})
+
+
+def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
+    """A repeatedly-failing job must be nudged even when it fails at the
+    scheduler layer (#88655).
+
+    ``mark_job_run`` increments ``failure_streak`` for an escaped failure just
+    as it does for an agent failure, so the counter climbs either way. But the
+    nudge that spends it was only composed on the normal delivery path, so a
+    job that raises before the run body on every tick - a bad import from a
+    half-applied update, a provider client that cannot construct - alerts
+    forever and is never told it should be reviewed or paused. Nothing else
+    surfaces the streak in chat.
+    """
+    delivered = []
+    _patch_escaped_failure(
+        monkeypatch, delivered, exec_id="exec-j5", err="cannot import name X"
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "j5",
+            "name": "scout",
+            "deliver": "telegram",
+            "schedule": {"kind": "interval"},
+            "failure_streak": 2,  # + this run = 3 = default threshold
+        }
+    )
+
+    assert ok is False
+    assert len(delivered) == 1
+    assert "cannot import name X" in delivered[0]
+    assert "failed 3 runs in a row" in delivered[0]
+    assert "hermes cron pause scout" in delivered[0]
+
+
+def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
+    """The nudge is appended, not always-on: a first failure reads as before."""
+    delivered = []
+    _patch_escaped_failure(
+        monkeypatch, delivered, exec_id="exec-j6", err="provider failed"
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "j6",
+            "name": "scout",
+            "deliver": "telegram",
+            "schedule": {"kind": "interval"},
+            "failure_streak": 0,
+        }
+    )
+
+    assert ok is False
+    assert delivered == ["⚠️ Cron 'scout' failed: provider failed"]
+
+
 def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
     """Once delivery has been attempted, the outer handler must not send again."""
     delivered = []
@@ -253,12 +329,12 @@ def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch)
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
-    execute run_job inside a profile secret scope so credential reads
-    (resolve_runtime_provider -> get_secret) don't fail-close with
-    UnscopedSecretError, and must tear the scope down afterward.
+    keep one profile secret scope active through execution and delivery so
+    credential reads do not fail closed or fall through to another profile,
+    then tear the scope down after the complete job lifecycle.
 
-    Behavior contract: a scope is present during run_job and absent after,
-    regardless of the concrete secret values.
+    Behavior contract: the same scope is present during run_job and
+    _deliver_result, and no scope remains after run_one_job returns.
     """
     from agent import secret_scope as ss
 
@@ -267,6 +343,7 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
 
     scope_during_run = {}
+    scope_during_delivery = {}
 
     def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         # This is where resolve_runtime_provider() would read a secret. Prove a
@@ -275,9 +352,14 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         scope_during_run["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
         return (True, "out", "final", None)
 
+    def fake_deliver(*args, **kwargs):
+        scope_during_delivery["scope"] = ss.current_secret_scope()
+        scope_during_delivery["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
+        return None
+
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
     ss.set_multiplex_active(True)
@@ -287,10 +369,12 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         ss.set_multiplex_active(False)
 
     assert ok is True
-    # Scope was installed during run_job and the profile secret resolved.
+    # The same profile scope covered both execution and delivery.
     assert scope_during_run["scope"] is not None
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
-    # And it was torn down after run_one_job returned (no leak).
+    assert scope_during_delivery["scope"] == scope_during_run["scope"]
+    assert scope_during_delivery["base_url"] == "https://openrouter.ai/api/v1"
+    # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
 

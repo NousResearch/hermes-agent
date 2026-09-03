@@ -9,6 +9,7 @@ Handles loading and validating configuration for:
 """
 
 import logging
+import math
 import os
 import json
 from pathlib import Path
@@ -18,6 +19,11 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
+from gateway.shutdown_watchdog import (
+    DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+    DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -152,7 +158,9 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float("inf")) — a non-finite YAML value must
+        # degrade to the default, not abort gateway config loading.
         return default
 
 
@@ -436,6 +444,7 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
     "sms",
     "whatsapp_cloud",
     "line",
+    "teams",
 })
 
 # Platforms whose port-binding status depends on connection mode. Feishu in
@@ -974,6 +983,11 @@ class GatewayConfig:
     # historical serve-all behavior; [] serves only the default profile.
     multiplex_profile_allowlist: Optional[List[str]] = None
 
+    # Public HTTPS endpoint another gateway may use for scoped RoomLink calls.
+    # Disabled by default: setting an API key alone must never expose or
+    # advertise a route. HERMES_ROOM_LINK_URL remains the operator override.
+    room_link_url: Optional[str] = None
+
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
@@ -983,7 +997,25 @@ class GatewayConfig:
     # missed probes it dumps all-thread stacks and hard-exits with the
     # service-restart code so the supervisor can revive the process. On by
     # default; set gateway.loop_watchdog: false in config.yaml to disable.
+    #
+    # Tuning knobs (all seconds unless noted) make the watchdog tolerate
+    # *transient, self-recovering* event-loop stalls — e.g. Telegram/Discord
+    # reconnect doing synchronous socket I/O during a network blip — so a
+    # short block does not force exit code 75 and trigger a restart churn
+    # that stalls cron dispatch (recurring fleet incidents on 2026-08-17,
+    # kanban t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for
+    # the full tolerance window) still escalates to a supervised restart.
     loop_watchdog: bool = True
+    # Seconds the watchdog waits between liveness probes.
+    loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
+    # Seconds a single probe may go unprocessed before it counts as a miss.
+    loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+    # Consecutive missed probes allowed before the watchdog hard-exits.
+    # Default stays at 3 (~90-120s of sustained loop block): the transient
+    # false-positive class (the watchdog's own on-loop heartbeat fsync)
+    # is fixed at the root by the off-loop write + two-witness probe, so
+    # raising this fleet-wide would only delay genuine-wedge recovery.
+    loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -1122,8 +1154,12 @@ class GatewayConfig:
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
             "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
+            "room_link_url": self.room_link_url,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
+            "loop_watchdog_probe_interval_s": self.loop_watchdog_probe_interval_s,
+            "loop_watchdog_probe_timeout_s": self.loop_watchdog_probe_timeout_s,
+            "loop_watchdog_max_strikes": self.loop_watchdog_max_strikes,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -1193,6 +1229,9 @@ class GatewayConfig:
             multiplex_profile_allowlist = nested_gateway.get(
                 "multiplex_profile_allowlist"
             )
+        room_link_url = data.get("room_link_url")
+        if room_link_url is not None and not isinstance(room_link_url, str):
+            room_link_url = None
         if "systemd_watchdog_seconds" in data:
             systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "systemd_watchdog_seconds"
@@ -1207,6 +1246,38 @@ class GatewayConfig:
         else:
             loop_watchdog_raw = nested_gateway.get("loop_watchdog")
         loop_watchdog = _coerce_bool(loop_watchdog_raw, True)
+        loop_watchdog_probe_interval_s = _coerce_float(
+            data.get("loop_watchdog_probe_interval_s")
+            if "loop_watchdog_probe_interval_s" in data
+            else nested_gateway.get("loop_watchdog_probe_interval_s"),
+            DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+        )
+        loop_watchdog_probe_timeout_s = _coerce_float(
+            data.get("loop_watchdog_probe_timeout_s")
+            if "loop_watchdog_probe_timeout_s" in data
+            else nested_gateway.get("loop_watchdog_probe_timeout_s"),
+            DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
+        )
+        loop_watchdog_max_strikes = _coerce_int(
+            data.get("loop_watchdog_max_strikes")
+            if "loop_watchdog_max_strikes" in data
+            else nested_gateway.get("loop_watchdog_max_strikes"),
+            DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
+        )
+        if (
+            not math.isfinite(loop_watchdog_probe_interval_s)
+            or loop_watchdog_probe_interval_s < 1.0
+            or loop_watchdog_probe_interval_s > 3600.0
+        ):
+            loop_watchdog_probe_interval_s = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
+        if (
+            not math.isfinite(loop_watchdog_probe_timeout_s)
+            or loop_watchdog_probe_timeout_s < 1.0
+            or loop_watchdog_probe_timeout_s > 600.0
+        ):
+            loop_watchdog_probe_timeout_s = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+        if loop_watchdog_max_strikes < 1 or loop_watchdog_max_strikes > 1000:
+            loop_watchdog_max_strikes = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
         if multiplex_profiles is None and isinstance(nested_gateway, dict):
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
@@ -1267,8 +1338,12 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
             multiplex_profile_allowlist=multiplex_profile_allowlist,
+            room_link_url=room_link_url,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
+            loop_watchdog_probe_interval_s=loop_watchdog_probe_interval_s,
+            loop_watchdog_probe_timeout_s=loop_watchdog_probe_timeout_s,
+            loop_watchdog_max_strikes=loop_watchdog_max_strikes,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -1422,6 +1497,11 @@ def load_gateway_config() -> GatewayConfig:
                     "multiplex_profile_allowlist"
                 ]
 
+            if "room_link_url" in yaml_cfg:
+                gw_data["room_link_url"] = yaml_cfg["room_link_url"]
+            elif isinstance(gateway_section, dict) and "room_link_url" in gateway_section:
+                gw_data["room_link_url"] = gateway_section["room_link_url"]
+
             # Profile-based routing rules: accept either top-level
             # ``profile_routes`` or the nested ``gateway.profile_routes`` form
             # (matching the multiplex_profiles parity above).
@@ -1469,6 +1549,23 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
             elif isinstance(gateway_section, dict) and "write_sessions_json" in gateway_section:
                 gw_data["write_sessions_json"] = gateway_section["write_sessions_json"]
+
+            # Loop-liveness watchdog toggle + tuning knobs: top-level wins;
+            # nested gateway.* fallback. GatewayConfig.from_dict has its own
+            # nested fallback, but this loader builds gw_data FLAT and never
+            # forwards the yaml `gateway:` section — without this bridge the
+            # documented keys (including the pre-existing loop_watchdog bool)
+            # were silently ignored on the real gateway startup path.
+            for _wd_key in (
+                "loop_watchdog",
+                "loop_watchdog_probe_interval_s",
+                "loop_watchdog_probe_timeout_s",
+                "loop_watchdog_max_strikes",
+            ):
+                if _wd_key in yaml_cfg:
+                    gw_data[_wd_key] = yaml_cfg[_wd_key]
+                elif isinstance(gateway_section, dict) and _wd_key in gateway_section:
+                    gw_data[_wd_key] = gateway_section[_wd_key]
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
@@ -1884,6 +1981,64 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
                 pconfig.enabled = False
 
 
+# Platforms for which the "explicitly disabled in config.yaml, but credentials
+# are present in the environment" WARNING has already been emitted in this
+# process. The gateway reloads its config on every turn (and other surfaces
+# call load_gateway_config() repeatedly), so the notice is one-time per
+# platform per process — loud once at startup, never a per-turn drumbeat.
+_EXPLICIT_DISABLE_WARNED: set = set()
+
+
+# Env var(s) whose presence drives each platform's env-enable branch, for the
+# explicit-disable WARNING below. Kept next to the branches that read them.
+_ENV_ENABLE_CREDENTIALS: dict = {
+    Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
+    Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
+    Platform.SLACK: ("SLACK_BOT_TOKEN",),
+    Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
+    Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
+    Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
+    Platform.MATRIX: ("MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"),
+    Platform.HOMEASSISTANT: ("HASS_TOKEN",),
+    Platform.EMAIL: ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
+    Platform.SMS: ("TWILIO_ACCOUNT_SID",),
+    Platform.DINGTALK: ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
+    Platform.FEISHU: ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
+    Platform.WECOM: ("WECOM_BOT_ID", "WECOM_SECRET"),
+    Platform.WECOM_CALLBACK: ("WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"),
+    Platform.WEIXIN: ("WEIXIN_TOKEN", "WEIXIN_ACCOUNT_ID"),
+    Platform.BLUEBUBBLES: ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
+    Platform.QQBOT: ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
+    Platform.YUANBAO: ("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"),
+    Platform.RELAY: ("GATEWAY_RELAY_URL",),
+}
+
+
+def _warn_explicit_disable_beats_env(platform: Platform) -> None:
+    """One-time WARNING: ``platforms.<x>.enabled: false`` wins over env creds.
+
+    Until #48820 the credential-presence branches force-enabled twelve
+    platforms regardless of an explicit ``enabled: false`` in config.yaml, so
+    users who relied on "creds in .env = platform on" would see it go dark
+    after the fix with no explanation. Name the platform, the config key that
+    is winning, and the env var(s) that used to override it.
+    """
+    if platform in _EXPLICIT_DISABLE_WARNED:
+        return
+    _EXPLICIT_DISABLE_WARNED.add(platform)
+    names = _ENV_ENABLE_CREDENTIALS.get(platform) or ()
+    present = [n for n in names if (os.environ.get(n) or "").strip()]
+    creds = ", ".join(present or names) or "its credentials"
+    logger.warning(
+        "Platform '%s' is explicitly disabled by platforms.%s.enabled: false in "
+        "config.yaml, so the credentials found in the environment (%s) will NOT "
+        "start its adapter. Environment credentials no longer override an "
+        "explicit disable. Remove the key or set platforms.%s.enabled: true to "
+        "turn it back on.",
+        platform.value, platform.value, creds, platform.value,
+    )
+
+
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
     getenv = _getenv_str
@@ -1902,8 +2057,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         # flag is cleared once for all platforms in the final cleanup at the
         # end of _apply_env_overrides.
         enabled_was_explicit = bool(platform_config.extra.get("_enabled_explicit", False))
-        if not platform_config.enabled and not enabled_was_explicit:
-            platform_config.enabled = True
+        if not platform_config.enabled:
+            if enabled_was_explicit:
+                # Credentials are present (that is why we are here) but the
+                # user said no in config.yaml. Say so once (#48820).
+                _warn_explicit_disable_beats_env(platform)
+            else:
+                platform_config.enabled = True
         return platform_config
     
     # Telegram
@@ -1987,9 +2147,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     whatsapp_cloud_phone_id = getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
     whatsapp_cloud_token = getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
     if whatsapp_cloud_phone_id and whatsapp_cloud_token:
-        if Platform.WHATSAPP_CLOUD not in config.platforms:
-            config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
-        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
+        # Honors an explicit ``platforms.whatsapp_cloud.enabled: false`` (#48820).
+        _enable_from_env(Platform.WHATSAPP_CLOUD)
         config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
             "phone_number_id": whatsapp_cloud_phone_id,
             "access_token": whatsapp_cloud_token,
@@ -2055,6 +2214,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 # turn an env-token setup into a disabled platform. Only an
                 # explicit slack.enabled/platforms.slack.enabled false should.
                 slack_config.enabled = True
+            elif not slack_config.enabled:
+                _warn_explicit_disable_beats_env(Platform.SLACK)
         # If yaml config exists, respect its enabled flag (don't override
         # explicit enabled: false). Token is still stored so skills that
         # send Slack messages can use it without activating the gateway adapter.
@@ -2152,9 +2313,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Home Assistant
     hass_token = getenv("HASS_TOKEN")
     if hass_token:
-        if Platform.HOMEASSISTANT not in config.platforms:
-            config.platforms[Platform.HOMEASSISTANT] = PlatformConfig()
-        config.platforms[Platform.HOMEASSISTANT].enabled = True
+        # Honors an explicit ``platforms.homeassistant.enabled: false`` (#48820).
+        _enable_from_env(Platform.HOMEASSISTANT)
         config.platforms[Platform.HOMEASSISTANT].token = hass_token
         hass_url = getenv("HASS_URL")
         if hass_url:
@@ -2166,9 +2326,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     email_imap = getenv("EMAIL_IMAP_HOST")
     email_smtp = getenv("EMAIL_SMTP_HOST")
     if all([email_addr, email_pwd, email_imap, email_smtp]):
-        if Platform.EMAIL not in config.platforms:
-            config.platforms[Platform.EMAIL] = PlatformConfig()
-        config.platforms[Platform.EMAIL].enabled = True
+        # Honors an explicit ``platforms.email.enabled: false`` (#48820).
+        _enable_from_env(Platform.EMAIL)
         config.platforms[Platform.EMAIL].extra.update({
             "address": email_addr,
             "imap_host": email_imap,
@@ -2186,9 +2345,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # SMS (Twilio)
     twilio_sid = getenv("TWILIO_ACCOUNT_SID")
     if twilio_sid:
-        if Platform.SMS not in config.platforms:
-            config.platforms[Platform.SMS] = PlatformConfig()
-        config.platforms[Platform.SMS].enabled = True
+        # Honors an explicit ``platforms.sms.enabled: false`` (#48820).
+        _enable_from_env(Platform.SMS)
         config.platforms[Platform.SMS].api_key = getenv("TWILIO_AUTH_TOKEN", "")
     sms_home = getenv("SMS_HOME_CHANNEL")
     if sms_home and Platform.SMS in config.platforms:
@@ -2249,7 +2407,21 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if webhook_enabled:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
+        # Honor an explicit ``enabled: false`` in config.yaml (flagged by
+        # ``_enabled_explicit``). In multiplex mode a secondary profile's
+        # config.yaml pins ``platforms.webhook.enabled: false`` so it shares
+        # the default profile's listener instead of binding its own port. That
+        # profile may still carry ``WEBHOOK_ENABLED`` in its own .env (or the
+        # process env, single-profile); without this guard the env var would
+        # force-enable the listener and trip the MultiplexConfigError check.
+        # Pop (don't read) the marker — the webhook branch is terminal (no
+        # later registry pass re-enables it), matching the api_server branch
+        # above.
+        webhook_explicit = config.platforms[Platform.WEBHOOK].extra.pop(
+            "_enabled_explicit", False
+        )
+        if not webhook_explicit or config.platforms[Platform.WEBHOOK].enabled:
+            config.platforms[Platform.WEBHOOK].enabled = True
         if webhook_port:
             try:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
@@ -2277,7 +2449,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.MSGRAPH_WEBHOOK not in config.platforms:
             config.platforms[Platform.MSGRAPH_WEBHOOK] = PlatformConfig()
         if msgraph_webhook_enabled:
-            config.platforms[Platform.MSGRAPH_WEBHOOK].enabled = True
+            # Same explicit-disable guard as the webhook branch above (#85637).
+            # READ (don't pop) the marker here: the relay-exclusive pass below
+            # still consults it, and the end-of-function scrub removes it for
+            # every platform.
+            msgraph_cfg = config.platforms[Platform.MSGRAPH_WEBHOOK]
+            if not msgraph_cfg.extra.get("_enabled_explicit", False) or msgraph_cfg.enabled:
+                msgraph_cfg.enabled = True
         if msgraph_webhook_port:
             try:
                 config.platforms[Platform.MSGRAPH_WEBHOOK].extra["port"] = int(
@@ -2314,9 +2492,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     dingtalk_client_id = getenv("DINGTALK_CLIENT_ID")
     dingtalk_client_secret = getenv("DINGTALK_CLIENT_SECRET")
     if dingtalk_client_id and dingtalk_client_secret:
-        if Platform.DINGTALK not in config.platforms:
-            config.platforms[Platform.DINGTALK] = PlatformConfig()
-        config.platforms[Platform.DINGTALK].enabled = True
+        # Honors an explicit ``platforms.dingtalk.enabled: false`` (#48820).
+        _enable_from_env(Platform.DINGTALK)
         config.platforms[Platform.DINGTALK].extra.update({
             "client_id": dingtalk_client_id,
             "client_secret": dingtalk_client_secret,
@@ -2334,9 +2511,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = getenv("FEISHU_APP_ID")
     feishu_app_secret = getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
-            config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
+        # Honors an explicit ``platforms.feishu.enabled: false`` (#48820).
+        _enable_from_env(Platform.FEISHU)
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
@@ -2362,9 +2538,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     wecom_bot_id = getenv("WECOM_BOT_ID")
     wecom_secret = getenv("WECOM_SECRET")
     if wecom_bot_id and wecom_secret:
-        if Platform.WECOM not in config.platforms:
-            config.platforms[Platform.WECOM] = PlatformConfig()
-        config.platforms[Platform.WECOM].enabled = True
+        # Honors an explicit ``platforms.wecom.enabled: false`` (#48820).
+        _enable_from_env(Platform.WECOM)
         config.platforms[Platform.WECOM].extra.update({
             "bot_id": wecom_bot_id,
             "secret": wecom_secret,
@@ -2385,9 +2560,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     wecom_callback_corp_id = getenv("WECOM_CALLBACK_CORP_ID")
     wecom_callback_corp_secret = getenv("WECOM_CALLBACK_CORP_SECRET")
     if wecom_callback_corp_id and wecom_callback_corp_secret:
-        if Platform.WECOM_CALLBACK not in config.platforms:
-            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
-        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        # Honors an explicit ``platforms.wecom_callback.enabled: false`` (#48820).
+        _enable_from_env(Platform.WECOM_CALLBACK)
         config.platforms[Platform.WECOM_CALLBACK].extra.update({
             "corp_id": wecom_callback_corp_id,
             "corp_secret": wecom_callback_corp_secret,
@@ -2405,9 +2579,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     weixin_token = getenv("WEIXIN_TOKEN")
     weixin_account_id = getenv("WEIXIN_ACCOUNT_ID")
     if weixin_token or weixin_account_id:
-        if Platform.WEIXIN not in config.platforms:
-            config.platforms[Platform.WEIXIN] = PlatformConfig()
-        config.platforms[Platform.WEIXIN].enabled = True
+        # Honors an explicit ``platforms.weixin.enabled: false`` (#48820).
+        _enable_from_env(Platform.WEIXIN)
         if weixin_token:
             config.platforms[Platform.WEIXIN].token = weixin_token
         extra = config.platforms[Platform.WEIXIN].extra
@@ -2447,9 +2620,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     bluebubbles_server_url = getenv("BLUEBUBBLES_SERVER_URL")
     bluebubbles_password = getenv("BLUEBUBBLES_PASSWORD")
     if bluebubbles_server_url and bluebubbles_password:
-        if Platform.BLUEBUBBLES not in config.platforms:
-            config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
-        config.platforms[Platform.BLUEBUBBLES].enabled = True
+        # Honors an explicit ``platforms.bluebubbles.enabled: false`` (#48820).
+        _enable_from_env(Platform.BLUEBUBBLES)
         config.platforms[Platform.BLUEBUBBLES].extra.update({
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
@@ -2487,9 +2659,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     qq_app_id = getenv("QQ_APP_ID")
     qq_client_secret = getenv("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
-        if Platform.QQBOT not in config.platforms:
-            config.platforms[Platform.QQBOT] = PlatformConfig()
-        config.platforms[Platform.QQBOT].enabled = True
+        # Honors an explicit ``platforms.qqbot.enabled: false`` (#48820).
+        _enable_from_env(Platform.QQBOT)
         extra = config.platforms[Platform.QQBOT].extra
         if qq_app_id:
             extra["app_id"] = qq_app_id
@@ -2529,9 +2700,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     yuanbao_app_id = getenv("YUANBAO_APP_ID") or getenv("YUANBAO_APP_KEY")
     yuanbao_app_secret = getenv("YUANBAO_APP_SECRET")
     if yuanbao_app_id and yuanbao_app_secret:
-        if Platform.YUANBAO not in config.platforms:
-            config.platforms[Platform.YUANBAO] = PlatformConfig()
-        config.platforms[Platform.YUANBAO].enabled = True
+        # Honors an explicit ``platforms.yuanbao.enabled: false`` (#48820).
+        _enable_from_env(Platform.YUANBAO)
         extra = config.platforms[Platform.YUANBAO].extra
         extra["app_id"] = yuanbao_app_id
         extra["app_secret"] = yuanbao_app_secret
@@ -2751,7 +2921,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # config.platforms for start_gateway()'s connect loop to bring it up. The
     # connected-checker (Platform.RELAY in _PLATFORM_CONNECTED_CHECKERS) keys on
     # extra["relay_url"], so mirror the URL into extra here.
-    relay_url_env = os.getenv("GATEWAY_RELAY_URL", "").strip()
+    relay_url_env = getenv("GATEWAY_RELAY_URL", "").strip()
     relay_url_yaml = ""
     existing_relay = config.platforms.get(Platform.RELAY)
     if existing_relay is not None:
@@ -2760,6 +2930,52 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     if relay_url_val:
         relay_config = _enable_from_env(Platform.RELAY)
         relay_config.extra["relay_url"] = relay_url_val.rstrip("/")
+
+    # Relay-exclusive: a GATEWAY_RELAY_URL env stamp marks a connector-fronted
+    # deployment where the connector owns every platform connection. Any
+    # directly-connected messaging adapter in the same process would be a
+    # second, unmanaged ingress path (duplicate deliveries, split sessions,
+    # and a live socket that disarms scale-to-zero), so the env stamp disables
+    # all other messaging platforms — including ones explicitly enabled in
+    # config.yaml. Non-messaging surfaces (local, api_server, webhook — the
+    # same exclusion set as the scale-to-zero arm gate) are untouched.
+    # Deployments that configure relay only via gateway.relay_url in
+    # config.yaml keep the old additive behavior (relay beside direct
+    # adapters).
+    #
+    # Opt-out: GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true keeps direct
+    # adapters running beside the relay for deployments that intentionally
+    # mix both ingress paths. Like the trigger, it is a deploy-stamp env var,
+    # not a config.yaml setting. Both reads go through the profile-scope-aware
+    # getenv so multiplexed profiles see their own values, not the process
+    # globals.
+    allow_direct = is_truthy_value(
+        getenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "")
+    )
+    if relay_url_env and not allow_direct:
+        non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        for platform, platform_config in config.platforms.items():
+            if platform is Platform.RELAY or platform in non_messaging:
+                continue
+            if not platform_config.enabled:
+                continue
+            if platform_config.extra.get("_enabled_explicit"):
+                logger.warning(
+                    "Relay connector is configured via GATEWAY_RELAY_URL; "
+                    "disabling directly-connected platform '%s' even though "
+                    "it is explicitly enabled in this profile's configuration. "
+                    "All messaging goes through the connector on this "
+                    "deployment. Set GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true "
+                    "to keep direct platforms alongside the relay.",
+                    platform.value,
+                )
+            else:
+                logger.info(
+                    "Relay connector is configured via GATEWAY_RELAY_URL; "
+                    "disabling directly-connected platform '%s'.",
+                    platform.value,
+                )
+            platform_config.enabled = False
 
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)

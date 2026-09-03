@@ -99,7 +99,7 @@ def probe_gemini_tier(
     api_key: str,
     base_url: str = DEFAULT_GEMINI_BASE_URL,
     *,
-    model: str = "gemini-3.6-flash",
+    model: str = "gemini-3.7-flash",
     timeout: float = 10.0,
 ) -> str:
     """Probe a Google AI Studio API key and return its tier.
@@ -360,10 +360,39 @@ def _translate_tool_call_to_gemini(
     return part
 
 
+def _looks_like_json_schema(node: Any) -> bool:
+    """True if a parsed value contains a JSON-Schema-style ``$ref`` pointer.
+
+    Gemini 3 resolves ``$ref``/``$defs`` references inside a
+    functionResponse.response payload and rejects unknown pointers with
+    HTTP 400 INVALID_ARGUMENT. A tool result that is itself a JSON Schema
+    (e.g. the output of ``tool_describe`` for an MCP tool) must therefore be
+    forwarded as opaque text rather than as a structured response.
+
+    Detection is deliberately structural, not semantic: any ``$ref`` value
+    shaped like a JSON pointer (``#/...``) demotes the whole result. Non-schema
+    data that happens to carry such a pointer is a false positive, but the raw
+    content is preserved verbatim either way, so the cost is fidelity-free.
+    The recursive walk is O(n) over the parsed value; tool-result payloads are
+    small, so this is negligible per turn.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and value.startswith("#/"):
+                return True
+            if _looks_like_json_schema(value):
+                return True
+    elif isinstance(node, list):
+        return any(_looks_like_json_schema(item) for item in node)
+    return False
+
+
 def _translate_tool_result_to_gemini(
     message: Dict[str, Any],
     tool_name_by_call_id: Optional[Dict[str, str]] = None,
     include_ids: bool = False,
+    *,
+    is_gemini3: bool = False,
 ) -> Dict[str, Any]:
     tool_name_by_call_id = tool_name_by_call_id or {}
     tool_call_id = str(message.get("tool_call_id") or "")
@@ -377,10 +406,19 @@ def _translate_tool_result_to_gemini(
         or tool_call_id
         or "tool"
     )
-    content = _coerce_content_to_text(message.get("content"))
+    raw_content = message.get("content")
+    content = _coerce_content_to_text(raw_content)
     try:
         parsed = json.loads(content) if content.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
+        parsed = None
+    # Gemini 3 resolves JSON-Schema ``$ref`` pointers inside a
+    # functionResponse.response payload and rejects unknown references with
+    # HTTP 400 INVALID_ARGUMENT ("referenced name '#/$defs/...' does not match
+    # a display_name"; see vercel/ai#14369). A tool result that is itself a
+    # JSON Schema (e.g. tool_describe output for an MCP tool) must therefore
+    # be forwarded as opaque text, not as a structured response.
+    if isinstance(parsed, dict) and _looks_like_json_schema(parsed):
         parsed = None
     response = parsed if isinstance(parsed, dict) else {"output": content}
     function_response: Dict[str, Any] = {
@@ -389,12 +427,27 @@ def _translate_tool_result_to_gemini(
     }
     if include_ids and tool_call_id:
         function_response["id"] = tool_call_id
+    # Gemini 3.x supports embedding images directly inside
+    # functionResponse.parts (Google's recommended shape for multimodal tool
+    # results — see "Multimodal function responses" in the Gemini docs).
+    # Gemini 2.x rejects the field, so only attach inlineData when the target
+    # model supports it — otherwise the vision tool result is silently
+    # downgraded to text-only.
+    if is_gemini3:
+        image_parts = [
+            p for p in _extract_multimodal_parts(raw_content)
+            if "inlineData" in p
+        ]
+        if image_parts:
+            function_response["parts"] = image_parts
     return {"functionResponse": function_response}
 
 
 def _build_gemini_contents(
     messages: List[Dict[str, Any]],
     include_tool_call_ids: bool = False,
+    *,
+    is_gemini3: bool = False,
 ) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
     system_text_parts: List[str] = []
     contents: List[Dict[str, Any]] = []
@@ -418,6 +471,7 @@ def _build_gemini_contents(
                             msg,
                             tool_name_by_call_id=tool_name_by_call_id,
                             include_ids=include_tool_call_ids,
+                            is_gemini3=is_gemini3,
                         )
                     ],
                 }
@@ -615,9 +669,12 @@ def build_gemini_request(
     thinking_config: Any = None,
     model: str = "",
 ) -> Dict[str, Any]:
+    version = _gemini_major_version(model)
+    is_gemini3 = version is not None and version >= 3
     contents, system_instruction = _build_gemini_contents(
         messages,
         include_tool_call_ids=gemini_requires_tool_call_ids(model),
+        is_gemini3=is_gemini3,
     )
     request: Dict[str, Any] = {"contents": contents}
     if system_instruction:
@@ -1045,6 +1102,11 @@ class _AsyncGeminiChatNamespace:
 class GeminiNativeClient:
     """Minimal OpenAI-SDK-compatible facade over Gemini's native REST API."""
 
+    # Declared for agent/auxiliary_client.py: already a complete client, so it
+    # is never re-dispatched through a wire adapter. (No HERMES_SKIP_ASYNC_WRAP
+    # — the async path has a real conversion, AsyncGeminiNativeClient.)
+    HERMES_SKIP_TRANSPORT_WRAP = True
+
     def __init__(
         self,
         *,
@@ -1111,7 +1173,7 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-3.6-flash",
+        model: str = "gemini-3.7-flash",
         messages: Optional[List[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,

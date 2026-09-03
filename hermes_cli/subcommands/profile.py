@@ -120,16 +120,24 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="Custom alias name (default: profile name)",
     )
 
-    profile_rename = profile_subparsers.add_parser("rename", help="Rename a profile")
+    profile_rename = profile_subparsers.add_parser(
+        "rename",
+        help="Rename a profile ('default': sets a display name; id unchanged)",
+    )
     profile_rename.add_argument("old_name", help="Current profile name")
-    profile_rename.add_argument("new_name", help="New profile name")
+    profile_rename.add_argument(
+        "new_name",
+        help="New profile name (for 'default': a display name — the canonical id stays 'default')",
+    )
 
     profile_export = profile_subparsers.add_parser(
         "export", help="Export a profile to archive"
     )
     profile_export.add_argument("profile_name", help="Profile to export")
     profile_export.add_argument(
-        "-o", "--output", default=None, help="Output file (default: <name>.tar.gz)"
+        "-o", "--output", default=None,
+        help="Output file (default: a managed profile-exports/<name>-<timestamp>.tar.gz "
+             "under the default Hermes home)",
     )
 
     profile_import = profile_subparsers.add_parser(

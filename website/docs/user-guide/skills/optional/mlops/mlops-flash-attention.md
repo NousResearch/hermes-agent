@@ -15,7 +15,7 @@ Speed up long-sequence transformer training and inference.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/flash-attention` |
-| Path | `optional-skills/mlops/flash-attention` |
+| Path | `optional-skills/mlops\flash-attention` |
 | Version | `1.0.1` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -366,9 +366,9 @@ Flash Attention uses float16/bfloat16 for speed. Float32 not supported.
 
 ## Advanced topics
 
-**Integration with HuggingFace Transformers**: See [references/transformers-integration.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/flash-attention/references/transformers-integration.md) for enabling Flash Attention in BERT, GPT, Llama models.
+**Integration with HuggingFace Transformers**: See [references/transformers-integration.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\flash-attention/references/transformers-integration.md) for enabling Flash Attention in BERT, GPT, Llama models.
 
-**Performance benchmarks**: See [references/benchmarks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops/flash-attention/references/benchmarks.md) for detailed speed and memory comparisons across GPUs and sequence lengths.
+**Performance benchmarks**: See [references/benchmarks.md](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/mlops\flash-attention/references/benchmarks.md) for detailed speed and memory comparisons across GPUs and sequence lengths.
 
 ## Hardware requirements
 

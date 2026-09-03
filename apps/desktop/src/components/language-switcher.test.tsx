@@ -3,22 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
 import { type I18nConfigClient, I18nProvider } from '@/i18n'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { LanguageSwitcher } from './language-switcher'
 
-// cmdk (the searchable list) wires a ResizeObserver and scrolls the active
-// item into view — neither exists in jsdom. Stub them, matching the polyfill
-// idiom in tool-approval-group.test.tsx.
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
-
-Element.prototype.scrollIntoView = function scrollIntoView() {}
-
+stubResizeObserver()
+stubMenuDomApis()
 describe('LanguageSwitcher', () => {
   afterEach(() => {
     cleanup()

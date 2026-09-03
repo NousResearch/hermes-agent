@@ -10,6 +10,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.context_compressor import (
+    HISTORICAL_TASK_HEADING,
+    SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+)
 from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
@@ -159,6 +166,67 @@ def _make_runner(session_db=None):
     runner._set_session_reasoning_override = MagicMock()
     runner._format_session_info = MagicMock(return_value="")
     return runner
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_quote_never_exposes_compaction_scaffolding(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(
+        session_id="restorable",
+        source="telegram",
+        user_id="208214988",
+    )
+    db.set_session_title("restorable", "Browser control")
+    db.append_message("restorable", "assistant", "real completed answer")
+    summary = (
+        f"{SUMMARY_PREFIX}\n\n"
+        f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+        f"{_SUMMARY_END_MARKER}"
+    )
+    db.append_message("restorable", "assistant", summary)
+    runner = _make_runner(session_db=db)
+
+    result = await runner._restore_telegram_topic_session(
+        _make_event("/topic restorable", thread_id="17585"),
+        "restorable",
+    )
+
+    assert "Last Hermes message:\nreal completed answer" in result
+    assert "CONTEXT COMPACTION" not in result
+    assert "Historical Task Snapshot" not in result
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_quote_unwraps_merged_assistant_carrier(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(
+        session_id="restorable",
+        source="telegram",
+        user_id="208214988",
+    )
+    carrier = (
+        f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+        "real completed answer\n\n"
+        f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+        f"{SUMMARY_PREFIX}\n\n"
+        f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+        f"{_SUMMARY_END_MARKER}"
+    )
+    db.append_message("restorable", "assistant", carrier)
+    runner = _make_runner(session_db=db)
+
+    result = await runner._restore_telegram_topic_session(
+        _make_event("/topic restorable", thread_id="17585"),
+        "restorable",
+    )
+
+    assert "Last Hermes message:\nreal completed answer" in result
+    assert "PRIOR CONTEXT" not in result
+    assert "CONTEXT COMPACTION" not in result
+    db.close()
 
 
 @pytest.mark.asyncio

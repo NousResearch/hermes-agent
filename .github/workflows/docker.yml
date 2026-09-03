@@ -52,14 +52,14 @@ jobs:
       - name: Decide whether to build
         id: gate
         env:
-          # python_prod (not python): the image copies installed code, never
-          # tests/, so tests-only PRs skip the build.
-          PYTHON_PROD: ${{ steps.classify.outputs.python_prod }}
-          FRONTEND: ${{ steps.classify.outputs.frontend }}
-          DOCKER_META: ${{ steps.classify.outputs.docker_meta }}
+          # The docker lane derives from python_prod (not python: the image
+          # copies installed code, never tests/, so tests-only PRs skip the
+          # build), frontend and docker_meta. classify_changes.py owns the
+          # formula so this gate and the nix lane cannot drift apart.
+          DOCKER: ${{ steps.classify.outputs.docker }}
         run: |
           set -euo pipefail
-          if [ "$PYTHON_PROD" = "true" ] || [ "$FRONTEND" = "true" ] || [ "$DOCKER_META" = "true" ]; then
+          if [ "$DOCKER" = "true" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"
@@ -76,12 +76,14 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
+          # arm64 builds on the native arm64 larger runner. A build of
+          # linux/arm64 on an x64 host uses emulation.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest-32-arm-core
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64
@@ -91,6 +93,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Reject profile exports in the build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
 
       # Retry once on transient Docker Hub / buildkit pull failures
       # (connection reset, auth token timeout, rate limiting). The action
@@ -169,7 +174,11 @@ jobs:
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
         run: |
-          scripts/run_tests.sh tests/docker/ --file-timeout 600
+          # Each of these tests drives a container, so the docker daemon sets
+          # the limit and not the processor. This caps the workers. The
+          # default from run_tests.sh is cpu_count*2, which starts 64
+          # containers together on the 32-core amd64 runner.
+          HERMES_TEST_WORKERS=$(nproc) scripts/run_tests.sh tests/docker/ --file-timeout 600
 
   # ---------------------------------------------------------------------------
   # Rebuild and push each architecture only after the unprivileged build/test
@@ -184,12 +193,13 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-latest-32-core
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
+          # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-latest-32-arm-core
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64
@@ -198,6 +208,9 @@ jobs:
     steps:
       - name: Checkout trusted source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Reject profile exports in the build context
+        run: python3 scripts/ci/check_profile_archive_boundary.py
 
       # Retry once on transient Docker Hub / buildkit pull failures.
       # See build job for rationale; same pattern.

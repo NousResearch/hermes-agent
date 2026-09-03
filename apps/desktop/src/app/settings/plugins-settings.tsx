@@ -1,13 +1,16 @@
 import { useStore } from '@nanostores/react'
+import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
+import { getProfiles } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Monitor, Package, RefreshCw } from '@/lib/icons'
@@ -19,34 +22,27 @@ import {
   $agentPluginsStatus,
   type AgentPluginRow,
   type GatewayRequest,
+  isDesktopRelevantPlugin,
   loadAgentPlugins,
   toggleAgentPlugin
 } from '@/store/agent-plugins'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { EmptyState, ListRowSkeleton, Pill, SettingsContent, SettingsSection } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
-// User-installed plugins first, bundled last — mirrors `hermes plugins list`.
-const SOURCE_ORDER: Record<string, number> = { user: 0, git: 0, project: 1, entrypoint: 2, bundled: 3 }
-
-// Plugin categories (by registry key prefix) that other surfaces own — same
-// curation stance as desktop-slash-commands.ts. dashboard_auth/* only matters
-// to `hermes dashboard`; model-providers/* are configured in Settings →
-// Models; platforms/* are managed from Messaging. The plugin switch is not
-// the user-facing control for any of them, so listing them here is noise.
-const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
-
-const isDesktopRelevant = (row: AgentPluginRow) => {
-  const key = row.key
-
-  return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
-}
+// User-installed plugins first — mirrors `hermes plugins list --user`.
+const SOURCE_ORDER: Record<string, number> = { user: 0, git: 0, project: 1, entrypoint: 2 }
 
 const agentPluginRowKey = (row: AgentPluginRow) =>
   row.key ?? [row.name, row.source, row.version, row.description].join('\0')
+
+/** Deep-link anchor for a plugin row (`?tab=plugins&plugin=<id>`). */
+export const pluginElementId = (target: string) => `plugin-${target}`
 
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
@@ -106,14 +102,16 @@ async function revealAgentPluginsDir(request: GatewayRequest) {
 function PluginLine({
   title,
   description,
-  controls
+  controls,
+  id
 }: {
   title: ReactNode
   description?: ReactNode
   controls: ReactNode
+  id?: string
 }) {
   return (
-    <div className="flex items-start gap-3 py-2">
+    <div className="flex items-start gap-3 rounded-lg py-2" id={id}>
       <div className="min-w-0 flex-1 pr-4">
         <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
           {title}
@@ -129,7 +127,7 @@ function PluginLine({
   )
 }
 
-function AgentPluginRowView({ row }: { row: AgentPluginRow }) {
+function AgentPluginRowView({ row, profile }: { row: AgentPluginRow; profile: string | null }) {
   const { t } = useI18n()
   const p = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
@@ -151,7 +149,7 @@ function AgentPluginRowView({ row }: { row: AgentPluginRow }) {
         }
 
         triggerHaptic('selection')
-        void toggleAgentPlugin(requestGateway, key, on, p.agent.toggleFailed(row.name))
+        void toggleAgentPlugin(requestGateway, key, on, p.agent.toggleFailed(row.name), profile)
       }}
     />
   )
@@ -160,6 +158,7 @@ function AgentPluginRowView({ row }: { row: AgentPluginRow }) {
     <PluginLine
       controls={key ? toggle : <Tip label={p.agent.updateBackendToManage}>{toggle}</Tip>}
       description={row.description || (row.version ? `v${row.version}` : undefined)}
+      id={pluginElementId(key ?? row.name)}
       title={
         <>
           <span>{row.name}</span>
@@ -182,18 +181,44 @@ function AgentPluginsSection() {
   const error = useStore($agentPluginsError)
   const [query, setQuery] = useState('')
 
+  // 'Applies to' profile scope: which profile's plugins we list/toggle.
+  // Defaults to the app-wide active profile; overriding it here lets the user
+  // manage ANY profile's plugins without switching the whole app (same
+  // pattern as the Capabilities scope selector in app/skills). null = the
+  // active profile — the RPC is sent without a profile param so older
+  // backends keep working unchanged.
+  const activeProfile = useStore($activeGatewayProfile)
+  const [scopeOverride, setScopeOverride] = useState<null | string>(null)
+  const scopeProfile = scopeOverride ?? activeProfile ?? null
+  // The param we actually send: omit it for the active profile.
+  const requestProfile = scopeOverride && scopeOverride !== activeProfile ? scopeOverride : null
+
+  const { data: profilesData } = useQuery({
+    queryKey: ['agent-plugins-profiles'],
+    queryFn: getProfiles,
+    staleTime: 60_000
+  })
+
+  const profiles = profilesData?.profiles ?? []
+
+  // An app-wide profile switch retargets the default scope — drop the
+  // override so the list reloads for the profile the user just switched to.
+  useEffect(() => {
+    setScopeOverride(null)
+  }, [activeProfile])
+
   useEffect(() => {
     if (gatewayState !== 'open') {
       return
     }
 
-    void loadAgentPlugins(requestGateway)
-  }, [gatewayState, requestGateway])
+    void loadAgentPlugins(requestGateway, requestProfile)
+  }, [gatewayState, requestGateway, requestProfile])
 
   const needle = normalize(query)
 
   const sorted = rows
-    .filter(isDesktopRelevant)
+    .filter(isDesktopRelevantPlugin)
     .filter(
       row =>
         !needle ||
@@ -213,7 +238,30 @@ function AgentPluginsSection() {
         {p.agent.blurb}
       </p>
 
-      {connection?.mode !== 'remote' && (
+      {profiles.length > 1 && (
+        <div className="mb-2 flex items-center gap-2">
+          <span className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
+            {p.agent.appliesTo}
+          </span>
+          <Select
+            onValueChange={name => setScopeOverride(name === activeProfile ? null : name)}
+            value={scopeProfile ?? ''}
+          >
+            <SelectTrigger className="h-7 w-56 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {profiles.map(profile => (
+                <SelectItem key={profile.name} value={profile.name}>
+                  {profile.is_default ? 'Hermes (default)' : profile.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {connection?.mode !== 'remote' && !requestProfile && (
         <div className="mb-2 flex items-center gap-3">
           <Button
             onClick={() => void revealAgentPluginsDir(requestGateway)}
@@ -254,7 +302,7 @@ function AgentPluginsSection() {
       ) : (
         <div>
           {sorted.map(row => (
-            <AgentPluginRowView key={agentPluginRowKey(row)} row={row} />
+            <AgentPluginRowView key={agentPluginRowKey(row)} profile={requestProfile} row={row} />
           ))}
         </div>
       )}
@@ -294,6 +342,7 @@ function PluginRow({ record }: { record: PluginRecord }) {
           (record.description ?? record.file ?? record.id)
         )
       }
+      id={pluginElementId(record.id)}
       title={
         <>
           <span>{record.name}</span>
@@ -309,6 +358,15 @@ export function PluginsSettings() {
   const { t } = useI18n()
   const p = t.settings.plugins
   const records = useStore($pluginRecords)
+
+  // Deep-link from settings search (?plugin=<id or key>): rows render as soon
+  // as their store hydrates, so "ready" is simply target-present; the polling
+  // in the hook rides out the async list loads (agent rows arrive via RPC).
+  useDeepLinkHighlight({
+    param: 'plugin',
+    ready: () => true,
+    elementId: pluginElementId
+  })
 
   const rows = Object.values(records).sort(
     (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name)

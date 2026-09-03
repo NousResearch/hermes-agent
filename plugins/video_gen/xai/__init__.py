@@ -423,6 +423,8 @@ class XAIVideoGenProvider(VideoGenProvider):
             "min_duration": 1,
             "supports_audio": False,
             "supports_negative_prompt": False,
+            "supports_seed": True,
+            "supports_upscale": False,
             "max_reference_images": MAX_REFERENCE_IMAGES,
         }
 

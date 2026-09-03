@@ -37,6 +37,7 @@ class ActivityProvenance(str, Enum):
     AGENT_COMPRESSION = "agent.compression"
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
+    AGENT_COMPRESSION_TURNHOLD = "agent.compression_turnhold"
 
 
 def bound_activity_description(description: Optional[str]) -> str:

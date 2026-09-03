@@ -13,7 +13,7 @@ or a linked OpenViking CLI config:
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
   OPENVIKING_ACCOUNT   — Tenant account for local/trusted mode (default: default)
   OPENVIKING_USER      — Tenant user for local/trusted mode (default: default)
-  OPENVIKING_AGENT     — Hermes peer ID in OpenViking (default: hermes)
+  OPENVIKING_AGENT     — Optional peer ID (default: no peer)
 
 Capabilities:
   - Automatic memory extraction on session commit (6 categories)
@@ -52,6 +52,7 @@ from urllib.request import url2pathname
 from agent.message_content import flatten_message_text
 from agent.memory_provider import MemoryProvider
 from agent.skill_commands import extract_user_instruction_from_skill_message
+from hermes_cli import __version__ as _HERMES_VERSION
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
 
@@ -64,8 +65,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
-_DEFAULT_AGENT = "hermes"
-_AGENT_PROMPT_LABEL = "Hermes peer ID in OpenViking"
+_DEFAULT_AGENT = ""
+_OPENVIKING_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -93,9 +94,43 @@ _RECALL_QUERY_MIN_CHARS = 5
 _RECALL_MIN_TIMEOUT_SECONDS = 0.05
 _READ_BATCH_LIMIT = 3
 _READ_BATCH_FULL_LIMIT = 2500
-_PROFILE_URI = "viking://user/memories/profile.md"
-_PREFERENCES_URI = "viking://user/memories/preferences"
-_ENTITIES_URI = "viking://user/memories/entities"
+# Explicit-uid URIs are canonical and work under every OpenViking auth mode
+# (dev/ROOT, trusted/USER, api-key) on every server version. The `~` home
+# alias only expands for USER/ADMIN roles (#4167/#4196): the DEFAULT dev auth
+# mode resolves every request as ROOT, and the canonical parser rejects `~`
+# with 400 — so `~` must not be the primary spelling the plugin emits. The
+# user space is resolved client-side from /api/v1/system/status (server-
+# asserted), mirroring the upstream first-party plugin pattern (#91995).
+_PROFILE_SUFFIX = "memories/profile.md"
+_PREFERENCES_SUFFIX = "memories/preferences"
+_ENTITIES_SUFFIX = "memories/entities"
+
+
+def _resolve_user_space(client, *, timeout: Optional[float] = None) -> Optional[str]:
+    """Server-asserted current user for explicit-uid URIs.
+
+    Return ``None`` when the probe fails or reports no user. Callers can use a
+    configured fallback for that operation, but must not cache an unverified
+    identity because a later probe can succeed.
+    """
+    try:
+        kwargs = {"timeout": timeout} if timeout is not None else {}
+        status = client.get("/api/v1/system/status", **kwargs)
+        result = (status or {}).get("result") or {}
+        user = str(result.get("user") or "").strip()
+        if user:
+            return user
+    except Exception:
+        logger.debug(
+            "OpenViking user-space probe failed; using configured fallback for "
+            "this operation and retrying later",
+            exc_info=True,
+        )
+    return None
+
+
+def _user_scoped_uri(user_space: str, suffix: str) -> str:
+    return f"viking://user/{user_space}/{suffix}"
 _SESSION_START_LIST_PARAMS = {
     "output": "agent",
     "recursive": True,
@@ -103,15 +138,6 @@ _SESSION_START_LIST_PARAMS = {
     "node_limit": 512,
 }
 
-# Maps the viking_remember `category` enum to a viking:// subdirectory.
-# Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
-_CATEGORY_SUBDIR_MAP = {
-    "preference": "preferences",
-    "entity": "entities",
-    "event": "events",
-    "case": "cases",
-    "pattern": "patterns",
-}
 _DEFAULT_MEMORY_SUBDIR = "preferences"
 
 # Maps the built-in memory tool's `target` ("user" vs "memory") to a subdir
@@ -306,7 +332,10 @@ class _VikingClient:
         if include_tenant is None:
             include_tenant = not bool(self._api_key)
 
-        h = {"Content-Type": "application/json"}
+        h = {
+            "Content-Type": "application/json",
+            "User-Agent": _OPENVIKING_USER_AGENT,
+        }
         if self._agent:
             h["X-OpenViking-Actor-Peer"] = self._agent
         if include_tenant:
@@ -447,7 +476,9 @@ class _VikingClient:
     def _anonymous_json(self, path: str) -> dict:
         """Probe server identity without disclosing credentials or tenant IDs."""
         resp = self._httpx.get(
-            self._url(path), headers={"Accept": "application/json"}, timeout=3.0
+            self._url(path),
+            headers={"Accept": "application/json"},
+            timeout=3.0,
         )
         return self._parse_response(resp)
 
@@ -573,7 +604,7 @@ BROWSE_SCHEMA = {
             },
             "path": {
                 "type": "string",
-                "description": "Viking URI path (default: viking://). Examples: 'viking://resources/', 'viking://user/memories/'.",
+                "description": "Viking URI path (default: viking://). Examples: 'viking://resources/', 'viking://~/memories/'.",
             },
         },
         "required": ["action"],
@@ -583,19 +614,19 @@ BROWSE_SCHEMA = {
 REMEMBER_SCHEMA = {
     "name": "viking_remember",
     "description": (
-        "Explicitly store a fact or memory in the OpenViking knowledge base. "
-        "Use for important information the agent should remember long-term. "
-        "The system automatically categorizes and indexes the memory."
+        "Submit important long-term information to OpenViking through session "
+        "memory extraction. Success means the source was submitted, not that a "
+        "distinct memory file was created. OpenViking can add, merge, or skip the "
+        "final memory. Use this tool when OpenViking should decide how to retain "
+        "the information. Do not use it when an exact memory file or URI is "
+        "required. If the message is accepted but commit fails, it normally "
+        "remains live and unextracted because server auto-commit is disabled by "
+        "default; follow the returned recovery instructions."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "The information to remember."},
-            "category": {
-                "type": "string",
-                "enum": ["preference", "entity", "event", "case", "pattern"],
-                "description": "Memory category (default: auto-detected).",
-            },
         },
         "required": ["content"],
     },
@@ -1217,7 +1248,15 @@ def _env_line_safe(value: Any) -> str:
 def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ...] = ()) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     remove_set = set(remove_keys) - set(env_writes)
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    # A Windows editor can leave a UTF-8 BOM, which prevents the first key
+    # from matching, or save the file as cp1252, which makes a strict UTF-8
+    # read fail. Strip the BOM and round-trip undecodable bytes unchanged so
+    # updating one credential cannot corrupt an unrelated value.
+    existing_lines = (
+        env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines()
+        if env_path.exists()
+        else []
+    )
     updated_keys = set()
     new_lines = []
     for line in existing_lines:
@@ -1234,7 +1273,11 @@ def _write_env_vars(env_path: Path, env_writes: dict, remove_keys: tuple[str, ..
             new_lines.append(f"{key}={_env_line_safe(val)}")
     # Pre-create with 0600 so secrets are never briefly world-readable.
     _precreate_secret_file(env_path)
-    env_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    env_path.write_text(
+        "\n".join(new_lines) + ("\n" if new_lines else ""),
+        encoding="utf-8",
+        errors="surrogateescape",
+    )
     _restrict_secret_file_permissions(env_path)
 
 
@@ -1536,6 +1579,18 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     log_path = _openviking_server_log_path()
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Do not let the server child inherit this process's PYTHONPATH.
+        # The Hermes Desktop backend can include the Hermes venv's
+        # site-packages in PYTHONPATH. If inherited, openviking-server would
+        # import aiohttp and friends from the Hermes venv instead of its own
+        # (its venv's site-packages are shadowed because PYTHONPATH precedes
+        # them) —
+        # and on Windows the loaded DLLs then lock the Hermes venv,
+        # aborting `hermes update` with access-denied on .pyd files.
+        # Strip PYTHONPATH so the server resolves packages from its own
+        # venv. (#78153)
+        child_env = os.environ.copy()
+        child_env.pop("PYTHONPATH", None)
         with log_path.open("ab") as log_file:
             subprocess.Popen(
                 [server_cmd, "--host", host, "--port", str(port)],
@@ -1543,6 +1598,7 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
                 stderr=log_file,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=child_env,
             )
     except Exception as e:
         return _LOCAL_SERVER_FAILED, f"Could not start openviking-server: {e}"
@@ -1769,7 +1825,6 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
     is_local = _is_local_openviking_url(endpoint)
     api_key_type = "user" if service else ""
     prefilled_api_key = ""
-    prefilled_agent = ""
     while True:
         values = {
             "endpoint": endpoint,
@@ -1793,9 +1848,6 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
             if credential_choice == cancelled:
                 return _SETUP_CANCELLED
             if credential_choice == 2:
-                values["agent"] = _clean_config_value(
-                    prompt(_AGENT_PROMPT_LABEL, default=_DEFAULT_AGENT)
-                ) or _DEFAULT_AGENT
                 _print_validation_progress("Validating OpenViking local dev access...")
                 valid, message, _role = _validate_openviking_setup_values(values)
                 if valid:
@@ -1909,13 +1961,6 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
                 prefilled_api_key = values["api_key"]
                 continue
 
-        if prefilled_agent:
-            values["agent"] = prefilled_agent
-            prefilled_agent = ""
-        else:
-            values["agent"] = _clean_config_value(
-                prompt(_AGENT_PROMPT_LABEL, default=_DEFAULT_AGENT)
-            ) or _DEFAULT_AGENT
         _print_validation_progress("Validating OpenViking API access...")
         valid, message, role = _validate_openviking_setup_values(
             values,
@@ -1937,7 +1982,6 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
                     )
                     if route_choice == 0:
                         prefilled_api_key = values["api_key"]
-                        prefilled_agent = values["agent"]
                         api_key_type = "root"
                         continue
                     if route_choice == 1:
@@ -1997,12 +2041,19 @@ def _save_hermes_only_config(
 ) -> None:
     provider_config["use_ovcli_config"] = False
     provider_config.pop("ovcli_config_path", None)
+    # A newly selected connection must not inherit the previous YAML peer.
+    # Non-empty peer values, if supplied, are saved with the connection below.
+    provider_config.pop("agent", None)
     _set_openviking_provider(config, provider_config)
-    _write_env_vars(
-        env_path,
-        _env_writes_from_connection_values(values),
-        remove_keys=_OPENVIKING_ENV_KEYS,
-    )
+    # Use the file writer's cleaned values in the current process as well.
+    writes = {
+        key: _env_line_safe(value)
+        for key, value in _env_writes_from_connection_values(values).items()
+    }
+    _write_env_vars(env_path, writes, remove_keys=_OPENVIKING_ENV_KEYS)
+    os.environ.update(writes)
+    for key in set(_OPENVIKING_ENV_KEYS) - set(writes):
+        os.environ.pop(key, None)
 
 
 def _profile_display_name(profile: _OvcliProfile) -> str:
@@ -2212,6 +2263,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._agent = ""
         self._session_id = ""
         self._turn_count = 0
+        # Server-asserted user space for explicit-uid URIs (#91995). Key the
+        # cache on the connection snapshot so all clients built from the same
+        # snapshot share the resolved user. /reload can swap endpoint,
+        # credentials, and identity on this provider instance — a different
+        # snapshot invalidates the cache automatically.
+        self._user_space_cache: Optional[tuple[Any, str]] = None
         self._hermes_home = ""
         self._run_id = uuid.uuid4().hex
         self._run_lock_file: Optional[Any] = None
@@ -2314,10 +2371,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             {
                 "key": "agent",
                 "description": (
-                    "Hermes peer ID in OpenViking, sent as the actor peer and "
-                    "used for peer-scoped memories"
+                    "Optional peer ID for separate assistant context. "
+                    "Uses user memory when no peer is configured."
                 ),
-                "default": "hermes",
+                "default": _DEFAULT_AGENT,
                 "env_var": "OPENVIKING_AGENT",
             },
             {
@@ -2442,8 +2499,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "use_ovcli_config": True,
                 "ovcli_config_path": str(ovcli_path),
                 "endpoint": settings.get("endpoint") or _DEFAULT_ENDPOINT,
-                "agent": settings.get("agent") or _DEFAULT_AGENT,
             }
+            if settings.get("agent"):
+                display["agent"] = settings["agent"]
             if settings.get("account"):
                 display["account"] = settings["account"]
             if settings.get("user"):
@@ -3846,9 +3904,47 @@ class OpenVikingMemoryProvider(MemoryProvider):
         ).lstrip()
         return f"{head}{marker}{tail}" if tail else _head_only()
 
+    def _user_space(self, client=None, *, timeout: Optional[float] = None) -> str:
+        """Resolve the user space, caching only a confirmed connection identity."""
+        active = client if client is not None else getattr(self, "_client", None)
+        # Key the cache on the connection snapshot, not the client object.
+        # _new_client() builds fresh _VikingClient objects from the same
+        # snapshot, so object-identity keying would miss the cache on every
+        # write. The snapshot tuple is published atomically under
+        # _client_refresh_lock and changes on every config reload.
+        snapshot = getattr(self, "_conn_snapshot", None)
+        cached = getattr(self, "_user_space_cache", None)
+        if active is not None and cached is not None and cached[0] == snapshot:
+            return cached[1]
+
+        if active is not None:
+            resolved = _resolve_user_space(active, timeout=timeout)
+            if resolved:
+                # Only publish when the snapshot hasn't changed under us.
+                current_snapshot = getattr(self, "_conn_snapshot", None)
+                if snapshot is not None and snapshot is current_snapshot:
+                    self._user_space_cache = (snapshot, resolved)
+                return resolved
+
+        configured = str(
+            getattr(active, "_user", "")
+            or getattr(self, "_user", "")
+            or "default"
+        ).strip()
+        return configured or "default"
+
+    def _session_start_uris(self, user: Optional[str] = None) -> tuple:
+        user = user or self._user_space()
+        return (
+            _user_scoped_uri(user, _PROFILE_SUFFIX),
+            _user_scoped_uri(user, _PREFERENCES_SUFFIX),
+            _user_scoped_uri(user, _ENTITIES_SUFFIX),
+        )
+
     def _read_session_start_profile(
         self,
         client: _VikingClient,
+        uri: str,
         *,
         deadline: float,
         request_timeout: float,
@@ -3857,7 +3953,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             timeout = self._remaining_recall_timeout(deadline, request_timeout)
             resp = client.get(
                 "/api/v1/content/read",
-                params={"uri": _PROFILE_URI},
+                params={"uri": uri},
                 timeout=timeout,
             )
         except Exception as e:
@@ -3896,8 +3992,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not active_client:
             return {}
 
+        try:
+            identity_timeout = self._remaining_recall_timeout(deadline, request_timeout)
+            user = self._user_space(active_client, timeout=identity_timeout)
+        except Exception:
+            return {"profile": None, "preferences": [], "entities": []}
+        uris = self._session_start_uris(user)
+
         profile = self._read_session_start_profile(
             active_client,
+            uris[0],
             deadline=deadline,
             request_timeout=request_timeout,
         )
@@ -3907,16 +4011,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "profile": profile,
             "preferences": self._list_session_start_memories(
                 active_client,
-                _PREFERENCES_URI,
+                uris[1],
                 deadline=deadline,
                 request_timeout=request_timeout,
             ),
             "entities": self._list_session_start_memories(
                 active_client,
-                _ENTITIES_URI,
+                uris[2],
                 deadline=deadline,
                 request_timeout=request_timeout,
             ),
+            "uris": uris,
         }
 
     @staticmethod
@@ -3924,11 +4029,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         profile: str,
         preference_lines: List[str],
         entity_lines: List[str],
+        profile_uri: str = "viking://user/default/memories/profile.md",
     ) -> str:
         lines: List[str] = []
         if profile:
             lines.extend([
-                f'<user-profile uri="{_PROFILE_URI}">',
+                f'<user-profile uri="{profile_uri}">',
                 profile,
                 "</user-profile>",
             ])
@@ -3984,7 +4090,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         preferences: List[Dict[str, str]],
         entities: List[Dict[str, str]],
         token_budget: int,
+        uris: Optional[tuple] = None,
     ) -> str:
+        profile_uri, preferences_uri, entities_uri = uris or (
+            _user_scoped_uri("default", _PROFILE_SUFFIX),
+            _user_scoped_uri("default", _PREFERENCES_SUFFIX),
+            _user_scoped_uri("default", _ENTITIES_SUFFIX),
+        )
         profile = profile.strip()
         if not profile and not preferences and not entities:
             return ""
@@ -3994,6 +4106,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             placeholder if profile else "",
             [placeholder] if preferences else [],
             [placeholder] if entities else [],
+            profile_uri=profile_uri,
         )
         placeholder_count = int(bool(profile)) + int(bool(preferences)) + int(bool(entities))
         overhead_units = cls._token_units(scaffold) - placeholder_count
@@ -4012,13 +4125,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
         else:
             preference_budget = available_units
         preference_lines, preference_units = cls._format_memory_listing(
-            _PREFERENCES_URI,
+            preferences_uri,
             preferences,
             preference_budget,
         )
         available_units -= preference_units
         entity_lines, _ = cls._format_memory_listing(
-            _ENTITIES_URI,
+            entities_uri,
             entities,
             available_units,
         )
@@ -4027,6 +4140,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             profile_text,
             preference_lines,
             entity_lines,
+            profile_uri=profile_uri,
         )
 
     def _session_start_memory_context(self, session_id: str) -> str:
@@ -4052,6 +4166,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             preferences=raw_parts.get("preferences") or [],
             entities=raw_parts.get("entities") or [],
             token_budget=self._profile_token_budget(),
+            uris=raw_parts["uris"],
         )
 
     @staticmethod
@@ -4751,10 +4866,23 @@ class OpenVikingMemoryProvider(MemoryProvider):
             old_session_id, new_id, parent_session_id, reset,
         )
 
-    def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured peer namespace."""
+    def _build_memory_uri(self, subdir: str, *, client=None, timeout: Optional[float] = None) -> str:
+        """Build a user memory URI, optionally under the configured peer."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/peers/{self._agent}/memories/{subdir}/mem_{slug}.md"
+        # Explicit-uid URIs are canonical under every auth mode; the uid-less
+        # `viking://user/peers/...` shorthand was removed upstream (#4196) and
+        # `viking://~/...` only expands for USER/ADMIN roles, not dev/ROOT.
+        active_client = client if client is not None else getattr(self, "_client", None)
+        # An empty peer on a captured client is intentional. Do not borrow a
+        # later peer from the provider after a configuration reload.
+        agent = str(
+            getattr(active_client, "_agent", getattr(self, "_agent", "")) or ""
+        ).strip()
+        peer_prefix = f"peers/{agent}/" if agent else ""
+        return _user_scoped_uri(
+            self._user_space(active_client, timeout=timeout),
+            f"{peer_prefix}memories/{subdir}/mem_{slug}.md",
+        )
 
     def on_memory_write(
         self,
@@ -4768,11 +4896,19 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        try:
+            # Keep identity resolution, URI construction, and the write on one
+            # connection snapshot even if the active profile reloads.
+            client = self._new_client()
+        except Exception as e:
+            logger.debug("OpenViking memory mirror client creation failed: %s", e)
+            return
 
         def _write():
             try:
-                client = self._new_client()
+                uri = self._build_memory_uri(
+                    subdir, client=client, timeout=_RECALL_MIN_TIMEOUT_SECONDS,
+                )
                 client.post("/api/v1/content/write", {
                     "uri": uri,
                     "content": content,
@@ -5122,27 +5258,77 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not content:
             return tool_error("content is required")
 
-        category = args.get("category", "")
-        subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
-        uri = self._build_memory_uri(subdir)
+        client = self._ensure_client()
+        if not client:
+            return tool_error("OpenViking server not connected")
 
-        # Write directly via content/write API.
-        # This creates the file, stores the content, and queues vector indexing
-        # in a single call — no dependency on session commit / VLM extraction.
+        session_id = f"hermes-remember-{uuid.uuid4().hex[:12]}"
+        session_uri = _user_scoped_uri(
+            self._user_space(client),
+            f"sessions/{session_id}",
+        )
+        recovery_command = f"ov session commit {session_id}"
+        recovery_note = (
+            "Inspect session_uri before recovery. If history/archive_* exists, do not "
+            "retry. If messages.jsonl contains the fact and no archive exists, run "
+            "recovery_command with the same OpenViking profile and credentials as "
+            "Hermes. Otherwise, do not resubmit automatically; report the uncertain "
+            "state to the user."
+        )
+        message: Dict[str, Any] = {
+            "role": "user",
+            "parts": [self._text_part(content)],
+        }
+
+        # Use a dedicated session so explicit remember does not commit or
+        # otherwise alter the live Hermes conversation session.
         try:
-            result = self._client.post("/api/v1/content/write", {
-                "uri": uri,
-                "content": content,
-                "mode": "create",
-            })
-            written = result.get("result", {}).get("written_bytes", 0)
-            return json.dumps({
-                "status": "stored",
-                "message": f"Memory stored ({written}b) and queued for vector indexing.",
-            })
+            client.post(f"/api/v1/sessions/{session_id}/messages", message)
         except Exception as e:
-            logger.error("OpenViking content/write failed: %s", e)
-            return tool_error(f"Failed to store memory: {e}")
+            logger.error("OpenViking remember message failed for %s: %s", session_id, e)
+            return tool_error(
+                f"Memory message submission failed for session {session_id}: {e}",
+                session_id=session_id,
+                session_uri=session_uri,
+                failure_stage="message",
+                message_status="unknown",
+                recovery_command=recovery_command,
+                recovery_note=recovery_note,
+            )
+
+        try:
+            commit = self._unwrap_result(client.post(
+                f"/api/v1/sessions/{session_id}/commit",
+                {"keep_recent_count": 0},
+            ))
+            commit = commit if isinstance(commit, dict) else {}
+            result: Dict[str, Any] = {
+                "status": "submitted",
+                "session_id": session_id,
+                "session_uri": session_uri,
+                "message_status": "accepted",
+                "extraction_status": str(commit.get("status") or "accepted"),
+                "message": (
+                    "Memory source submitted to OpenViking session extraction. "
+                    "OpenViking may add, merge, or skip the final memory."
+                ),
+            }
+            if commit.get("task_id"):
+                result["task_id"] = commit["task_id"]
+            if commit.get("trace_id"):
+                result["trace_id"] = commit["trace_id"]
+            return json.dumps(result)
+        except Exception as e:
+            logger.error("OpenViking remember commit failed for %s: %s", session_id, e)
+            return tool_error(
+                f"Memory message was accepted, but commit failed for session {session_id}: {e}",
+                session_id=session_id,
+                session_uri=session_uri,
+                failure_stage="commit",
+                message_status="accepted",
+                recovery_command=recovery_command,
+                recovery_note=recovery_note,
+            )
 
     def _tool_forget(self, args: dict) -> str:
         uri, error = _validate_forget_memory_uri(args.get("uri"))

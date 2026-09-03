@@ -47,13 +47,16 @@ logger = logging.getLogger("hermes.mcp_serve")
 # Lazy MCP SDK import
 # ---------------------------------------------------------------------------
 
+# mcp 2.0 removed `mcp.server.fastmcp`; its decorator-driven server is now
+# `mcp.server.MCPServer` with the same `@server.tool()` / `run_stdio_async()`
+# surface (docstring -> tool description, signature -> input schema).
 _MCP_SERVER_AVAILABLE = False
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server import MCPServer
 
     _MCP_SERVER_AVAILABLE = True
 except ImportError:
-    FastMCP = None  # type: ignore[assignment,misc]
+    MCPServer = None  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +75,8 @@ def _get_sessions_dir() -> Path:
 def _get_session_db():
     """Get a SessionDB instance for reading message transcripts."""
     try:
-        from hermes_state import SessionDB
-        return SessionDB()
+        from hermes_state import get_shared_session_db
+        return get_shared_session_db()
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
         return None
@@ -90,7 +93,8 @@ def _load_session_messages(session_id: str):
         return None, f"Failed to read messages: {e}"
     finally:
         try:
-            db.close()
+            from hermes_state import release_or_close
+            release_or_close(db)
         except Exception:
             logger.debug("Failed to close MCP SessionDB", exc_info=True)
 
@@ -617,7 +621,7 @@ class EventBridge:
 # MCP Server
 # ---------------------------------------------------------------------------
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
+def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
@@ -625,7 +629,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             f"Install with: {sys.executable} -m pip install 'mcp'"
         )
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "hermes",
         instructions=(
             "Hermes Agent messaging bridge. Use these tools to interact with "

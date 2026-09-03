@@ -157,9 +157,9 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
             if call_count["n"] == 1:
                 raise ClosedResourceError
             result = MagicMock()
-            result.isError = False
+            result.is_error = False
             result.content = [MagicMock(type="text", text="reconnected")]
-            result.structuredContent = None
+            result.structured_content = None
             return result
 
     class _LifecycleTask(MCPServerTask):
@@ -247,9 +247,9 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
 
     async def _new_call(*a, **kw):
         result = MagicMock()
-        result.isError = False
+        result.is_error = False
         result.content = [MagicMock(type="text", text="bank ok")]
-        result.structuredContent = None
+        result.structured_content = None
         return result
 
     new_session.call_tool = _new_call

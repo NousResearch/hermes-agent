@@ -8,6 +8,7 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 """
 
 from __future__ import annotations
+from hermes_cli.cli_output import line_input
 
 import functools
 import importlib.metadata
@@ -484,7 +485,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
             if secret:
                 value = masked_secret_prompt(f"  {name}: ").strip()
             else:
-                value = input(f"  {name}: ").strip()
+                value = line_input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
             return
@@ -1336,14 +1337,14 @@ def _save_enabled_set(enabled: set) -> None:
 def _resolve_plugin_key(name: str) -> Optional[str]:
     """Resolve a user-supplied plugin identifier to its canonical registry key.
 
-    Accepts either the bare manifest name (``nemo_relay``), the directory
-    name, or the full path-derived key (``observability/nemo_relay``) and
+    Accepts either the bare manifest name (``langfuse``), the directory
+    name, or the full path-derived key (``observability/langfuse``) and
     returns the canonical key the loader gates on (``manifest.key`` or, for a
     flat plugin, the bare name). Returns ``None`` when no plugin matches.
 
     This is the single normalization point so ``hermes plugins enable`` /
     ``disable`` write the same key that ``PluginManager`` matches against —
-    nested category plugins (e.g. ``observability/nemo_relay``) included.
+    nested category plugins (e.g. ``observability/langfuse``) included.
     """
     entries = _discover_all_plugins()
     # 1. Exact match on canonical key or manifest name — always unambiguous.
@@ -1351,8 +1352,8 @@ def _resolve_plugin_key(name: str) -> Optional[str]:
         # entry = (name, version, description, source, dir_path, key)
         if name == entry[5] or name == entry[0]:
             return entry[5]
-    # 2. Fall back to a bare leaf-name match (e.g. "nemo_relay" ->
-    #    "observability/nemo_relay"), but only when it resolves to exactly one
+    # 2. Fall back to a bare leaf-name match (e.g. "langfuse" ->
+    #    "observability/langfuse"), but only when it resolves to exactly one
     #    plugin so we never silently pick the wrong same-named nested plugin.
     leaf_matches = [entry[5] for entry in entries if name == entry[5].split("/")[-1]]
     if len(leaf_matches) == 1:
@@ -1412,8 +1413,19 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     trusted and never prompted.
     """
     from rich.console import Console
+    from hermes_cli.relay_plugin_cutover import (
+        LEGACY_RELAY_PLUGIN_KEYS,
+        RELAY_PLUGINS_CONFIG_ENV,
+    )
 
     console = Console()
+    if name in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{name}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
+
     # Discover the plugin — check installed (user) AND bundled, including
     # nested category plugins — and normalize to its canonical registry key.
     resolved = _resolve_plugin_key_and_source(name)
@@ -1421,6 +1433,13 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
     key, source = resolved
+
+    if key in LEGACY_RELAY_PLUGIN_KEYS:
+        console.print(
+            f"[red]Plugin '{key}' was removed.[/red] Relay lifecycle is owned "
+            f"by Hermes core; configure {RELAY_PLUGINS_CONFIG_ENV} instead."
+        )
+        sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
@@ -1857,11 +1876,14 @@ def _discover_all_plugins() -> list:
     """
     seen: dict = {}  # key -> (name, version, description, source, path, key)
 
-    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
+    # Bundled (<repo>/plugins/<name>/), excluding memory/, context_engine/
+    # and model-providers/ — model providers load through the dedicated
+    # provider registry (providers/__init__.py), not the general PluginManager
+    # opt-in surface, so listing them as toggleable plugins is misleading.
     from hermes_cli.plugins import get_bundled_plugins_dir
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
-        (repo_plugins, "bundled", {"memory", "context_engine"}),
+        (repo_plugins, "bundled", {"memory", "context_engine", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

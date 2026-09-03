@@ -56,9 +56,9 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
-    cache_document_from_bytes,
-    cache_image_from_bytes,
-    cache_video_from_bytes,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    cache_video_from_bytes_async,
 )
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms.helpers import MessageDeduplicator
@@ -1261,6 +1261,27 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
+def _yb_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Resolve a per-profile ``YUANBAO_*`` / gateway setting honoring the
+    active secret scope (#93522).
+
+    Under ``gateway.multiplex_profiles`` every secondary profile is
+    constructed inside ``_profile_runtime_scope`` (``gateway/run.py``) and
+    its ``.env`` lives in that scope — raw ``os.getenv`` misses it and
+    leaks the default profile's values instead. The primary/active profile
+    is constructed without a scope and legitimately owns ``os.environ``,
+    so fall back to it there (same canonical shape as QQ's
+    ``_resolve_qq_secret``).
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret
+
+    try:
+        val = get_secret(name, default)
+    except UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 class AccessPolicy:
     """Platform-level DM / Group access control policy.
 
@@ -1282,9 +1303,9 @@ class AccessPolicy:
         self._group_allow_from = group_allow_from
 
     def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if (_yb_secret("GATEWAY_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}:
             return True
-        return os.getenv("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        return (_yb_secret("YUANBAO_ALLOW_ALL_USERS", "") or "").lower() in {"true", "1", "yes"}
 
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
@@ -1753,7 +1774,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
     # Slash command allowlist that bot owner can execute in group without @Bot
     ALLOWLIST: frozenset = frozenset({
         "/new", "/reset", "/retry", "/undo", "/stop",
-        "/approve", "/deny", "/background", "/bg",
+        "/approve", "/deny", "/bg",
         "/btw", "/queue", "/q",
     })
 
@@ -2501,7 +2522,7 @@ class MediaResolveMiddleware(InboundMiddleware):
         if kind == "image":
             ext = cls._guess_image_ext_from_url(fetch_url)
             try:
-                local_path = cache_image_from_bytes(file_bytes, ext=ext)
+                local_path = await cache_image_from_bytes_async(file_bytes, ext=ext)
             except ValueError as exc:
                 logger.warning(
                     "[%s] inbound image cache rejected: %s err=%s",
@@ -2516,7 +2537,7 @@ class MediaResolveMiddleware(InboundMiddleware):
 
         if kind == "video":
             # Yuanbao video resources carry no reliable extension; default to mp4.
-            local_path = cache_video_from_bytes(file_bytes)
+            local_path = await cache_video_from_bytes_async(file_bytes)
             mime = guess_mime_type(local_path) or (
                 content_type if content_type.startswith("video/") else "video/mp4"
             )
@@ -2528,7 +2549,7 @@ class MediaResolveMiddleware(InboundMiddleware):
             parsed = urllib.parse.urlparse(fetch_url)
             file_name = os.path.basename(parsed.path) or "file"
         try:
-            local_path = cache_document_from_bytes(file_bytes, file_name)
+            local_path = await cache_document_from_bytes_async(file_bytes, file_name)
         except Exception as exc:
             logger.warning(
                 "[%s] inbound file cache failed: %s err=%s",
@@ -3876,7 +3897,7 @@ class MediaSendHandler(ABC):
                 "[%s] %s.handle() failed: %s",
                 adapter.name, handler_name, exc, exc_info=True,
             )
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
 
 class ImageUrlHandler(MediaSendHandler):
@@ -4942,27 +4963,29 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         # Reply-to dedup: inbound_msg_id -> expire_ts
         # ------------------------------------------------------------------
-        # Access control policy (DM / Group)
+        # Access control policy (DM / Group) — scoped reads (#93522)
         # ------------------------------------------------------------------
         dm_policy: str = (
             _extra.get("dm_policy")
-            or os.getenv("YUANBAO_DM_POLICY", "pairing")
+            or _yb_secret("YUANBAO_DM_POLICY")
+            or "pairing"
         ).strip().lower()
 
         _dm_allow_from_raw: str = (
             _extra.get("dm_allow_from")
-            or os.getenv("YUANBAO_DM_ALLOW_FROM", "")
+            or _yb_secret("YUANBAO_DM_ALLOW_FROM", "")
         )
         dm_allow_from: list[str] = [x.strip() for x in _dm_allow_from_raw.split(",") if x.strip()]
 
         group_policy: str = (
             _extra.get("group_policy")
-            or os.getenv("YUANBAO_GROUP_POLICY", "pairing")
+            or _yb_secret("YUANBAO_GROUP_POLICY")
+            or "pairing"
         ).strip().lower()
 
         _group_allow_from_raw: str = (
             _extra.get("group_allow_from")
-            or os.getenv("YUANBAO_GROUP_ALLOW_FROM", "")
+            or _yb_secret("YUANBAO_GROUP_ALLOW_FROM", "")
         )
         group_allow_from: list[str] = [x.strip() for x in _group_allow_from_raw.split(",") if x.strip()]
 
@@ -5045,7 +5068,11 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         Delegates to ConnectionManager.open().
         """
-        return await self._connection.open()
+        ok = await self._connection.open()
+        if ok:
+            # Plugin-registered native handlers (ctx.register_platform_handler).
+            self._wire_plugin_handlers(None)
+        return ok
 
     async def disconnect(self) -> None:
         """Cancel background tasks and close the WebSocket connection."""

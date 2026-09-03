@@ -1,6 +1,6 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { useStore } from '@nanostores/react'
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -12,14 +12,10 @@ import {
   filterDesktopCommandsCatalog,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
-  rankSkillCommands
+  rankSkillCommands,
+  slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
-import {
-  $slashCompletionsEpoch,
-  cachedSlashCompletion,
-  hasCachedSlashCompletion,
-  peekCachedSlashCompletion
-} from '@/lib/slash-completion-cache'
+import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { $sessions } from '@/store/session'
 
@@ -72,6 +68,21 @@ export function useSlashCompletions(options: {
   const { gateway, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
+
+  // Warm argument_mode before the first `/` so Space treats /review as text.
+  useEffect(() => {
+    if (!gateway) {
+      return
+    }
+
+    void cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+      .then(catalog => {
+        filterDesktopCommandsCatalog(catalog)
+      })
+      .catch(() => {
+        // Next keystroke retries; don't block the composer on a warm-up miss.
+      })
+  }, [gateway, epoch])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -210,7 +221,9 @@ export function useSlashCompletions(options: {
             ...item,
             // Arg suggestions (e.g. `/handoff <platform>`) live under one
             // header; otherwise split skills out from built-in commands.
-            group: isArgCompletion ? 'Options' : isDesktopSlashExtensionCommand(item.text) ? 'Skills' : 'Commands',
+            // Kind comes from the backend — the desktop table is a visibility
+            // gate (`isDesktopSlashSuggestion`), not a classifier.
+            group: isArgCompletion ? 'Options' : slashCompletionGroup(item.text, item.kind),
             // Arg items carry their own meta (the personality/toolset/platform
             // blurb). Only command rows get the registry description — looking
             // one up for `/personality none` would clobber it with the parent
@@ -220,29 +233,18 @@ export function useSlashCompletions(options: {
 
         // Keep each group contiguous so headers render once: Commands before
         // Skills (stable within a group, preserving backend relevance order).
+        // Do not re-sort skills by usage here — complete.slash already ranked
+        // by fuzzy score, then usage. A second usage pass buried exact name
+        // matches that the table had mis-filed as skills.
         const groupOrder = ['Commands', 'Skills', 'Options']
 
         if (isArgCompletion) {
           return { items: decorated, query }
         }
 
-        // Rank the matched skills by use — `/re` should lead with the /research
-        // the user lives in, not the /research-paper-writing they've never
-        // opened. Nothing is pruned here: a typed query is a search, and a
-        // search that hides a match is broken. Usage rides along on the catalog
-        // response, which the popover has already fetched by the time anyone
-        // types; if it somehow hasn't, order falls back to the backend's.
-        const catalogSkills = peekCachedSlashCompletion<CommandsCatalogLike>('catalog')?.skills
-
-        const ranked = [
-          ...decorated.filter(item => item.group !== 'Skills'),
-          ...rankSkillCommands(
-            decorated.filter(item => item.group === 'Skills'),
-            catalogSkills
-          )
-        ]
-
-        const items = [...ranked].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
+        const items = [...decorated].sort(
+          (a, b) => groupOrder.indexOf(a.group ?? '') - groupOrder.indexOf(b.group ?? '')
+        )
 
         return { items, query }
       } catch {

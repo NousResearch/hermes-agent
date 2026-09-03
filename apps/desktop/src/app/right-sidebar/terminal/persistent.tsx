@@ -103,8 +103,25 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
       }
     }
 
+    // Visibility is CORRECTNESS, not perf. The rect chase below forces layout,
+    // so it stays gated on the renderer pause — but `hidden` is a cheap
+    // attribute walk, and skipping it while paused strands the overlay over a
+    // tab the user has already switched away from: the terminal keeps covering
+    // the chat, opaque and pointer-interactive, until something refocuses the
+    // window. Sample it on every wake, paused or not.
+    const syncHidden = () => {
+      const hidden = isElementInHiddenPane(slot)
+
+      if (prev && prev.hidden !== hidden) {
+        prev = { ...prev, hidden }
+        setRect(prev)
+      }
+    }
+
     const measure = (reason: string): boolean => {
       if (rendererPaused()) {
+        syncHidden()
+
         return false
       }
 
@@ -140,7 +157,20 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     }
 
     const scheduleMeasure = (reason = 'unknown') => {
-      if (stopped || rendererPaused() || frame !== 0) {
+      if (stopped) {
+        return
+      }
+
+      // Paused: no frame is coming (and none is wanted — the rect chase is the
+      // expensive half). Still settle visibility synchronously so a tab switch
+      // while the window is unfocused can't leave the overlay stranded.
+      if (rendererPaused()) {
+        syncHidden()
+
+        return
+      }
+
+      if (frame !== 0) {
         return
       }
 
@@ -158,6 +188,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     const handleVisibilityChange = () => {
       if (rendererPaused()) {
         cancelFrame()
+        syncHidden()
 
         return
       }

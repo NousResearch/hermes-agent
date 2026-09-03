@@ -50,8 +50,15 @@ def _contents(rows):
     return [r.get("content") for r in rows]
 
 
-def test_rotation_flush_without_history_boundary_duplicates(tmp_path: Path) -> None:
-    """Control: bare flush of unstamped cold-resume rows double-writes (#68454)."""
+def test_rotation_flush_without_history_boundary_is_safe(tmp_path: Path) -> None:
+    """Bare flush of cold-resumed rows must NOT double-write (#68454 → #92231).
+
+    Historically this was a control test asserting the double-write: loaded
+    rows carried no ``_DB_PERSISTED_MARKER``, so a flush without
+    ``conversation_history=`` re-appended the whole transcript. Since #92231
+    the loaders stamp the marker at row-materialization time, so even the
+    "wrong" call shape (no history boundary) is idempotent.
+    """
     db = SessionDB(db_path=tmp_path / "state.db")
     sid = "COLD_ROTATE_DUP"
     db.create_session(sid, source="cli")
@@ -63,7 +70,7 @@ def test_rotation_flush_without_history_boundary_duplicates(tmp_path: Path) -> N
     agent._flush_messages_to_session_db(loaded)  # missing conversation_history=
 
     rows = db.get_messages_as_conversation(sid, include_inactive=True)
-    assert _contents(rows).count("persisted question") == 2
+    assert _contents(rows) == ["persisted question", "persisted answer"]
 
 
 def test_rotation_flush_with_history_boundary_is_noop(tmp_path: Path) -> None:

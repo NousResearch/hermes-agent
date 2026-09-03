@@ -37,7 +37,7 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
-    queryFn: getHermesConfigSchema,
+    queryFn: () => getHermesConfigSchema(),
     staleTime: 5 * 60 * 1000
   })
 

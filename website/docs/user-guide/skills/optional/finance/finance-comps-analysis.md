@@ -15,7 +15,7 @@ Build comparable-company valuation workbooks in Excel.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/finance/comps-analysis` |
-| Path | `optional-skills/finance/comps-analysis` |
+| Path | `optional-skills/finance\comps-analysis` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Nous Research) |
 | License | Apache-2.0 |

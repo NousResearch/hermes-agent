@@ -82,22 +82,22 @@ class TestPerCapabilityBackendSelection:
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
             "backend": "firecrawl",
-            "search_backend": "tavily",
+            "search_backend": "keenable",
         })
-        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-        assert web_tools._get_search_backend() == "tavily"
+        monkeypatch.setenv("KEENABLE_API_KEY", "test-key")
+        assert web_tools._get_search_backend() == "keenable"
 
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "backend": "tavily",
+            "backend": "keenable",
         })
-        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+        monkeypatch.setenv("KEENABLE_API_KEY", "test-key")
         # No search_backend or extract_backend set — both fall through
-        assert web_tools._get_search_backend() == "tavily"
-        assert web_tools._get_extract_backend() == "tavily"
+        assert web_tools._get_search_backend() == "keenable"
+        assert web_tools._get_extract_backend() == "keenable"
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         for k in (
             "BRAVE_SEARCH_API_KEY",
             "SEARXNG_URL",
-            "TAVILY_API_KEY",
+            "KEENABLE_API_KEY",
             "EXA_API_KEY",
             "PARALLEL_API_KEY",
             "FIRECRAWL_API_KEY",
@@ -193,23 +193,78 @@ class TestUnconfiguredErrorEnvelopeParity:
     def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
         """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
         — matching main's ``tool_error()`` envelope, not a per-result shape.
+
+        Keyless fallback (Parallel/Exa free tiers) is disabled here: with it
+        on, a zero-credential install routes to the keyless tier instead of
+        erroring (covered in test_web_keyless_fallback.py).
         """
         from tools import web_tools
+        from agent import web_search_registry
 
         self._clear_web_creds(monkeypatch)
-        # Reset firecrawl client cache so the unconfigured state is re-evaluated
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_search_registry, "_keyless_tier_enabled", lambda: False)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
         assert "Error searching web:" in result["error"]
         assert "FIRECRAWL_API_KEY" in result["error"]
-        # No per-result burying
         assert "results" not in result
+
+
+    def test_explicit_firecrawl_unconfigured_uses_firecrawl_keyless(self, monkeypatch):
+        """``web.backend: firecrawl`` with no creds routes through Firecrawl's
+        keyless cloud client (PR #50659 salvage) — a keyless ring peer must not
+        silently take over, and the request must hit api.firecrawl.dev.
+        """
+        from tools import web_tools
+        from plugins.web.firecrawl import provider as fc
+
+        self._clear_web_creds(monkeypatch)
+        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
+        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
+        monkeypatch.setattr(fc, "_load_web_config", lambda: {"backend": "firecrawl"}, raising=False)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        # Developer machines may carry FIRECRAWL_* in ~/.hermes/.env — the
+        # config-aware lookup must see a truly keyless environment here.
+        monkeypatch.setattr(
+            "hermes_cli.config.get_env_value", lambda name: None, raising=True
+        )
+
+        calls = {}
+
+        class _FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "success": True,
+                    "data": [
+                        {"url": "https://example.com", "title": "Example",
+                         "description": "desc"},
+                    ],
+                }
+
+        def _fake_post(url, **kwargs):
+            calls["url"] = url
+            return _FakeResponse()
+
+        monkeypatch.setattr(fc.httpx, "post", _fake_post)
+
+        result = json.loads(web_tools.web_search_tool("hello world", limit=3))
+        assert result.get("success") is True, result
+        assert calls["url"].startswith("https://api.firecrawl.dev"), calls
+        assert result["data"]["web"], result
 
 
 class TestDispatchersTriggerPluginDiscovery:
@@ -311,6 +366,10 @@ class TestDispatchersTriggerPluginDiscovery:
                 web_tools, "_load_web_config",
                 lambda: {"extract_backend": "firecrawl"},
             )
+            monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test")
+            async def _allow_ssrf(_url: str) -> bool:
+                return True
+            monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
             # Sanity: registry IS empty before the tool call.
             assert web_search_registry.get_provider("firecrawl") is None
 

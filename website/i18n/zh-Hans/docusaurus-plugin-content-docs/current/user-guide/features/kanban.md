@@ -703,7 +703,7 @@ EOF
 
 ### 调解冲突的 worker 分支
 
-在工程流水线（使用 worktree 的 P1/P2）中，两个 worker 的分支合并时可能发生冲突。不要让任一 worker 自行裁决 —— 发生冲突的 agent 缺乏对方的上下文，往往会覆盖对方的改动或放弃自己的改动。正确做法是：创建一张调解卡片，指派给**第三个中立配置文件**，并把**两张**冲突卡片都链接为其父任务：父任务链接会把双方的完成摘要带入调解者的上下文，使其同时获得双方的 diff *和*双方的意图。内置的 [`merge-reconciler` 技能](https://github.com/NousResearch/hermes-agent/blob/main/skills/autonomous-ai-agents/merge-reconciler/SKILL.md) 为该 worker 提供完整流程：对每个冲突块分类、公正地解决、验证，并在交回摘要中说明每一项决定。
+在工程流水线（使用 worktree 的 P1/P2）中，两个 worker 的分支合并时可能发生冲突。不要让任一 worker 自行裁决 —— 发生冲突的 agent 缺乏对方的上下文，往往会覆盖对方的改动或放弃自己的改动。正确做法是：创建一张调解卡片，指派给**第三个中立配置文件**，并把**两张**冲突卡片都链接为其父任务：父任务链接会把双方的完成摘要带入调解者的上下文，使其同时获得双方的 diff *和*双方的意图。内置的 [`agent-merge-conflict-arbiter` 技能](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/autonomous-ai-agents/agent-merge-conflict-arbiter/SKILL.md) 为该 worker 提供完整流程：对每个冲突块分类、公正地解决、验证，并在交回摘要中说明每一项决定。
 
 ### 并行战役中的碰撞热点（Collision hotspots）
 
@@ -713,7 +713,7 @@ EOF
 hotspot: hermes_cli/kanban_db.py — 本轮对 dispatch 循环的第三次冲突性编辑
 ```
 
-并在完成时的 `metadata` 中重复该标记。编排者（或查看看板的人类）如果看到**两条或更多 `hotspot:` 评论指向同一路径**，应在继续排入任何触碰该文件的工作**之前**，为该文件创建一张专门的重构/分解卡片 —— 拆分磁石文件比调解它未来引发的每一次冲突更便宜。对于*已经*发生的冲突，请使用上文的调解卡片模式配合 `merge-reconciler` 技能；hotspot 标记是上游修复，能避免调解者变成一条常设车道。
+并在完成时的 `metadata` 中重复该标记。编排者（或查看看板的人类）如果看到**两条或更多 `hotspot:` 评论指向同一路径**，应在继续排入任何触碰该文件的工作**之前**，为该文件创建一张专门的重构/分解卡片 —— 拆分磁石文件比调解它未来引发的每一次冲突更便宜。对于*已经*发生的冲突，请使用上文的调解卡片模式配合 `agent-merge-conflict-arbiter` 技能；hotspot 标记是上游修复，能避免调解者变成一条常设车道。
 
 ## 多租户使用
 

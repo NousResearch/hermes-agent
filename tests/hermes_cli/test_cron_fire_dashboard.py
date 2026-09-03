@@ -250,6 +250,41 @@ def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
     assert url == "http://127.0.0.1:8642/p/worker_alpha/api/cron/fire"
 
 
+def test_fire_endpoint_multiplex_reads_port_from_default_listener(tmp_path, monkeypatch):
+    """Multiplex mode: only the DEFAULT profile's api_server is bound, so a
+    secondary's fire URL must use the default home's port — not the
+    secondary's own config.yaml/.env port, which nothing listens on
+    (PR #84755). Real config files, real load_config()."""
+    default_home = tmp_path / "root"
+    worker_home = default_home / "profiles" / "worker_alpha"
+    default_home.mkdir()
+    worker_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text(
+        "gateway:\n  multiplex_profiles: true\n"
+        "platforms:\n  api_server:\n    extra:\n      port: 8650\n",
+        encoding="utf-8",
+    )
+    (worker_home / "config.yaml").write_text(
+        "platforms:\n  api_server:\n    enabled: false\n    extra:\n      port: 8702\n",
+        encoding="utf-8",
+    )
+    (worker_home / ".env").write_text("API_SERVER_PORT=8701\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(web_server, "_cron_default_profile", lambda: "default")
+
+    url = web_server._gateway_fire_endpoint("worker_alpha", worker_home)
+
+    assert url == "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
+    # The GATEWAY_MULTIPLEX_PROFILES env override is still honored (parity
+    # with gateway/config.py): forcing it off restores per-profile routing.
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "0")
+    assert web_server._gateway_fire_endpoint("worker_alpha", worker_home) == (
+        "http://127.0.0.1:8702/api/cron/fire"
+    )
+
+
 # ── OOF-266: intentional-stop drop + Retry-After on transient 503 ─────────
 
 
@@ -438,3 +473,106 @@ def test_intentionally_stopped_false_when_profile_resolution_fails(monkeypatch):
 
     monkeypatch.setattr(web_server, "_cron_profile_home", boom)
     assert web_server._gateway_intentionally_stopped("ghost") is False
+
+
+# ── last_fire_error stamp on forward failure (missed-fire visibility) ─────
+
+
+def test_forward_failure_stamps_last_fire_error(monkeypatch):
+    """Gateway unreachable -> the job record gets a durable last_fire_error
+    stamp (via note_fire_forward_failure) so the miss is visible in
+    `cronjob list` / the dashboard instead of only in gui.log."""
+    stamped = []
+
+    async def fake_forward(profile, job_id, authorization):
+        return None  # unreachable
+
+    def fake_call_cron(profile, func_name, *args, **kwargs):
+        stamped.append((profile, func_name, args))
+        return True
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(web_server, "_gateway_intentionally_stopped", lambda p: False)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", fake_call_cron)
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j8"})
+        assert resp.status_code == 503  # retry contract unchanged
+        assert len(stamped) == 1
+        profile, func_name, args = stamped[0]
+        assert profile == "default"
+        assert func_name == "note_fire_forward_failure"
+        assert args[0] == "j8"
+        assert "api_server" in args[1]  # detail names the dead hop
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+def test_forward_failure_stamp_error_never_breaks_retry_contract(monkeypatch):
+    """Stamping is best-effort observability: if the jobs store write blows
+    up, the webhook still returns the retryable 503 + Retry-After."""
+
+    async def fake_forward(profile, job_id, authorization):
+        return None
+
+    def boom(profile, func_name, *args, **kwargs):
+        raise RuntimeError("jobs.json locked")
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(web_server, "_gateway_intentionally_stopped", lambda p: False)
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", boom)
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j9"})
+        assert resp.status_code == 503
+        assert resp.headers.get("Retry-After") == "60"
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+def test_reachable_gateway_does_not_stamp(monkeypatch):
+    """A successful forward must not touch the job record."""
+    stamped = []
+
+    async def fake_forward(profile, job_id, authorization):
+        return 202, {"status": "accepted", "job_id": job_id}
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(
+        web_server, "_call_cron_for_profile",
+        lambda *a, **k: stamped.append(a),
+    )
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j10"})
+        assert resp.status_code == 202
+        assert stamped == []
+    finally:
+        _restore(pa, ph)
+        client.close()

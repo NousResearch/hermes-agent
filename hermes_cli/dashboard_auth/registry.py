@@ -122,6 +122,44 @@ def list_session_providers() -> List[DashboardAuthProvider]:
     return [p for p in list_providers() if getattr(p, "supports_session", True)]
 
 
+def register_global_provider(provider: DashboardAuthProvider) -> None:
+    """Register a host-owned provider in the process-global slot (upsert).
+
+    The dashboard auth registry is process-global and shared across every
+    profile the dashboard serves from one process, so its providers must
+    outlive any single per-home plugin manager. Unlike ``register_provider``
+    this always targets the global ``_providers`` map (never a per-home
+    overlay) and *replaces* any same-name entry instead of raising, so a
+    forced plugin re-discovery (e.g. after a password change) rotates the
+    provider in place. Pairs with ``unregister_global_provider`` for teardown
+    of the exact object still current (#91701).
+    """
+    assert_protocol_compliance(type(provider))
+    with _lock:
+        _providers[provider.name] = provider
+    _log.info(
+        "dashboard-auth: registered global provider %r (%s)",
+        provider.name, provider.display_name,
+    )
+
+
+def unregister_global_provider(
+    name: str,
+    provider: DashboardAuthProvider,
+) -> bool:
+    """Remove a global provider registration if ``provider`` is still current.
+
+    Identity-conditional so a stale handle (whose provider was already
+    replaced by a later ``register_global_provider``) never clears the live
+    registration.
+    """
+    with _lock:
+        if _providers.get(name) is provider:
+            _providers.pop(name, None)
+            return True
+    return False
+
+
 def clear_providers() -> None:
     """Test-only: drop all registrations."""
     with _lock:

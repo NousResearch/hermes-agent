@@ -16,6 +16,57 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# botocore import hygiene (anti-flake, Aug 2026)
+#
+# Several tests in this file plant fake ``botocore`` modules in sys.modules
+# (to run without the real package / without touching the AWS credential
+# chain). The real package's ``botocore.exceptions`` lazily executes
+# ``from botocore.vendored import requests`` on FIRST import — if that first
+# import happens while a fake parent is (or was) installed, the chain
+# resolves against a module with no real __path__ and the whole file's
+# exception tests die with ``No module named 'botocore.vendored'`` — but
+# only in interpreter states where nothing imported it earlier (the exact
+# CI-vs-local flake on PR #92617).
+#
+# Two defenses, both required:
+#   1. Import the real exception types HERE, at module scope, before any
+#      test can stub sys.modules. Once cached, later ``from
+#      botocore.exceptions import X`` is a dict hit and can never
+#      re-execute the vendored import under a poisoned parent.
+#   2. An autouse fixture snapshots every boto* sys.modules entry before
+#      each test and restores it after, so no stub window can leak state
+#      into a later test regardless of ordering.
+# ---------------------------------------------------------------------------
+
+try:  # pragma: no cover - exercised implicitly by every exception test
+    from botocore.exceptions import (  # noqa: F401
+        ClientError as _RealClientError,
+        ConnectionClosedError as _RealConnectionClosedError,
+    )
+except Exception:  # botocore genuinely not installed / torn — tests skip
+    _RealClientError = _RealConnectionClosedError = None
+
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Restore every boto* sys.modules entry after each test (see above)."""
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [
+        n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES
+    ]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
 
 @contextmanager
 def _mock_botocore_session(*, return_value=None, side_effect=None):
@@ -297,6 +348,85 @@ class TestNormalizeConverseResponse:
         assert tool_calls[0].function.name == "read_file"
         assert json.loads(tool_calls[0].function.arguments) == {"path": "/tmp/test.txt"}
 
+    def test_redacted_reasoning_is_preserved_for_replay(self):
+        from agent.bedrock_adapter import normalize_converse_response
+
+        response = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"reasoningContent": {"redactedContent": b"opaque-bedrock-bytes"}},
+                        {"toolUse": {"toolUseId": "call_1", "name": "read_file", "input": {}}},
+                    ],
+                },
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 1, "outputTokens": 2},
+        }
+
+        result = normalize_converse_response(response)
+        details = result.choices[0].message.reasoning_details
+        assert details == [{
+            "type": "redacted_thinking",
+            "data": "b3BhcXVlLWJlZHJvY2stYnl0ZXM=",
+        }]
+
+
+    def test_redacted_reasoning_replays_as_bedrock_content_block(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+
+        _system, messages = convert_messages_to_converse([
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning_details": [{
+                    "type": "redacted_thinking",
+                    "data": "b3BhcXVlLWJlZHJvY2stYnl0ZXM=",
+                }],
+                "tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ])
+        assistant = next(m for m in messages if m["role"] == "assistant")
+        assert assistant["content"][0] == {
+            "reasoningContent": {"redactedContent": b"opaque-bedrock-bytes"}
+        }
+
+    def test_interleaved_reasoning_and_tools_keep_exact_order(self):
+        from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_response
+
+        normalized = normalize_converse_response({
+            "output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"redactedContent": b"r1"}},
+                {"toolUse": {"toolUseId": "t1", "name": "one", "input": {"n": 1}}},
+                {"reasoningContent": {"redactedContent": b"r2"}},
+                {"toolUse": {"toolUseId": "t2", "name": "two", "input": {"n": 2}}},
+            ]}},
+            "stopReason": "tool_use",
+        })
+        msg = normalized.choices[0].message
+        _system, replay = convert_messages_to_converse([{
+            "role": "user", "content": "go",
+        }, {
+            "role": "assistant", "content": msg.content,
+            "tool_calls": [{
+                "id": tc.id, "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            } for tc in msg.tool_calls],
+            "reasoning_details": msg.reasoning_details,
+            "bedrock_content_blocks": msg.bedrock_content_blocks,
+        }])
+        blocks = replay[1]["content"]
+        assert [next(iter(block)) for block in blocks] == [
+            "reasoningContent", "toolUse", "reasoningContent", "toolUse"
+        ]
+        assert blocks[0]["reasoningContent"]["redactedContent"] == b"r1"
+        assert blocks[2]["reasoningContent"]["redactedContent"] == b"r2"
+
 
 
 
@@ -325,6 +455,27 @@ class TestNormalizeConverseStreamEvents:
         assert result.choices[0].finish_reason == "stop"
         assert result.usage.prompt_tokens == 5
         assert result.usage.completion_tokens == 3
+
+    def test_redacted_reasoning_stream_is_preserved(self):
+        from agent.bedrock_adapter import normalize_converse_stream_events
+
+        events = {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {}}},
+            {"contentBlockDelta": {
+                "contentBlockIndex": 0,
+                "delta": {"reasoningContent": {"redactedContent": b"stream-secret"}},
+            }},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 2, "outputTokens": 3}}},
+        ]}
+
+        result = normalize_converse_stream_events(events)
+        assert result.choices[0].message.reasoning_details == [{
+            "type": "redacted_thinking",
+            "data": "c3RyZWFtLXNlY3JldA==",
+        }]
 
     def test_tool_use_stream(self):
         from agent.bedrock_adapter import normalize_converse_stream_events
@@ -490,6 +641,176 @@ class TestBuildConverseKwargs:
         assert {"cachePoint": {"type": "default"}} not in kwargs["system"]
         for m in kwargs["messages"]:
             assert {"cachePoint": {"type": "default"}} not in m["content"]
+
+
+# ---------------------------------------------------------------------------
+# cachePoint rejection self-heal (#97281)
+# ---------------------------------------------------------------------------
+
+CACHE_POINT = {"cachePoint": {"type": "default"}}
+
+NOVA_TOOLS_REJECTION = (
+    "An error occurred (ValidationException) when calling the ConverseStream "
+    "operation: The model returned the following errors: Malformed input "
+    "request: #/toolConfig/tools/18: extraneous key [cachePoint] is not "
+    "permitted, please reformat your input and try again."
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache_point_rejections():
+    """Rejections are process-wide; keep them from leaking between tests."""
+    from agent.bedrock_adapter import reset_cache_point_rejections
+    reset_cache_point_rejections()
+    yield
+    reset_cache_point_rejections()
+
+
+class TestCachePointRejectionRecovery:
+    """Bedrock placement rules are per-family and per-field: Nova accepts
+    cachePoint in system/messages but rejects it inside toolConfig.tools,
+    failing 100% of tool-enabled turns (#97281). The server verdict is the
+    authority - record it, drop that one marker, and retry."""
+
+    def _nova_kwargs(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+        return build_converse_kwargs(
+            model="us.amazon.nova-pro-v1:0",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "First"},
+                {"role": "assistant", "content": "Reply"},
+                {"role": "user", "content": "Second"},
+            ],
+            tools=[{"type": "function", "function": {
+                "name": "test", "description": "Test", "parameters": {},
+            }}],
+        )
+
+    def test_classifies_tools_rejection(self):
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(
+            Exception(NOVA_TOOLS_REJECTION)
+        ) == "tools"
+
+    def test_classifies_system_and_messages_rejections(self):
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(Exception(
+            "Malformed input request: #/system/1: extraneous key [cachePoint] "
+            "is not permitted"
+        )) == "system"
+        assert cache_point_rejection_placement(Exception(
+            "Malformed input request: #/messages/2/content/3: extraneous key "
+            "[cachePoint] is not permitted"
+        )) == "messages"
+
+    def test_ignores_unrelated_errors(self):
+        from agent.bedrock_adapter import cache_point_rejection_placement
+        assert cache_point_rejection_placement(
+            Exception("ThrottlingException: Too many requests")
+        ) is None
+        assert cache_point_rejection_placement(Exception(
+            "Malformed input request: #/toolConfig/tools/0: extraneous key "
+            "[toolChoice] is not permitted"
+        )) is None
+
+    def test_strip_removes_only_the_rejected_placement(self):
+        from agent.bedrock_adapter import strip_cache_points
+        kwargs = self._nova_kwargs()
+        assert CACHE_POINT in kwargs["toolConfig"]["tools"]
+        stripped = strip_cache_points(kwargs, "tools")
+        assert CACHE_POINT not in stripped["toolConfig"]["tools"]
+        # system and messages markers survive - Nova accepts those.
+        assert stripped["system"][-1] == CACHE_POINT
+        assert stripped["messages"][-2]["content"][-1] == CACHE_POINT
+        # Original kwargs are untouched (no in-place mutation).
+        assert CACHE_POINT in kwargs["toolConfig"]["tools"]
+
+    def test_strip_is_identity_when_marker_absent(self):
+        """No marker to remove -> same object, so callers know a retry is futile."""
+        from agent.bedrock_adapter import strip_cache_points
+        kwargs = {"modelId": "x", "toolConfig": {"tools": [{"toolSpec": {}}]}}
+        assert strip_cache_points(kwargs, "tools") is kwargs
+
+    def test_recovery_records_verdict_so_later_turns_omit_the_marker(self):
+        from agent.bedrock_adapter import recover_from_cache_point_rejection
+        kwargs = self._nova_kwargs()
+        retry = recover_from_cache_point_rejection(
+            Exception(NOVA_TOOLS_REJECTION), kwargs
+        )
+        assert retry is not None
+        assert CACHE_POINT not in retry["toolConfig"]["tools"]
+        # Next turn is built clean without another round-trip failure.
+        rebuilt = self._nova_kwargs()
+        assert CACHE_POINT not in rebuilt["toolConfig"]["tools"]
+        assert rebuilt["system"][-1] == CACHE_POINT
+        assert rebuilt["messages"][-2]["content"][-1] == CACHE_POINT
+
+    def test_verdict_is_scoped_to_the_rejecting_model(self):
+        from agent.bedrock_adapter import (
+            build_converse_kwargs,
+            recover_from_cache_point_rejection,
+        )
+        recover_from_cache_point_rejection(
+            Exception(NOVA_TOOLS_REJECTION), self._nova_kwargs()
+        )
+        claude = build_converse_kwargs(
+            model="anthropic.claude-sonnet-4-6-20250514-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {
+                "name": "test", "description": "Test", "parameters": {},
+            }}],
+        )
+        assert claude["toolConfig"]["tools"][-1] == CACHE_POINT
+
+    def test_recovery_declines_when_nothing_can_be_stripped(self):
+        """A cachePoint rejection with no marker present must re-raise, not loop."""
+        from agent.bedrock_adapter import recover_from_cache_point_rejection
+        kwargs = {"modelId": "us.amazon.nova-pro-v1:0",
+                  "toolConfig": {"tools": [{"toolSpec": {}}]}}
+        assert recover_from_cache_point_rejection(
+            Exception(NOVA_TOOLS_REJECTION), kwargs
+        ) is None
+
+    def test_call_converse_retries_without_the_marker(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = [
+            Exception(NOVA_TOOLS_REJECTION),
+            {"output": {"message": {"role": "assistant",
+                                    "content": [{"text": "ok"}]}},
+             "stopReason": "end_turn",
+             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}},
+        ]
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            response = call_converse(
+                region="us-east-1",
+                model="us.amazon.nova-pro-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {
+                    "name": "test", "description": "Test", "parameters": {},
+                }}],
+            )
+        assert response.choices[0].message.content == "ok"
+        assert client.converse.call_count == 2
+        first, second = client.converse.call_args_list
+        assert CACHE_POINT in first.kwargs["toolConfig"]["tools"]
+        assert CACHE_POINT not in second.kwargs["toolConfig"]["tools"]
+
+    def test_call_converse_reraises_unrelated_errors(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.side_effect = Exception("ThrottlingException")
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=client):
+            with pytest.raises(Exception, match="ThrottlingException"):
+                call_converse(
+                    region="us-east-1",
+                    model="us.amazon.nova-pro-v1:0",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        assert client.converse.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +1244,7 @@ class TestIsStaleConnectionError:
 
 
     def test_detects_botocore_read_timeout(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ReadTimeoutError
         exc = ReadTimeoutError(endpoint_url="https://bedrock.example")
@@ -962,7 +1283,7 @@ class TestCallConverseInvalidatesOnStaleError:
 
 
     def test_converse_stream_evicts_client_on_stale_error(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse_stream,
@@ -988,7 +1309,7 @@ class TestCallConverseInvalidatesOnStaleError:
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,
@@ -1040,7 +1361,7 @@ class TestStreamingAccessDeniedDetection:
         )
 
     def test_matches_access_denied_client_error(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import is_streaming_access_denied_error
         assert is_streaming_access_denied_error(self._denied_client_error()) is True
 
@@ -1060,7 +1381,7 @@ class TestCallConverseStreamIamFallback:
     streaming action — InvokeModel-only policies keep working."""
 
     def test_falls_back_to_converse_on_streaming_denial(self):
-        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        pytest.importorskip("botocore.exceptions", reason="botocore (with working exceptions module) required")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse_stream,

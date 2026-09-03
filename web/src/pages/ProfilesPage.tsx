@@ -1092,7 +1092,7 @@ export default function ProfilesPage() {
                       <div className="flex items-start gap-2">
                         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                           <span className="font-medium text-sm truncate">
-                            {p.name}
+                            {p.display_name?.trim() ? `${p.display_name.trim()} (${p.name})` : p.name}
                           </span>
 
                           {active && (

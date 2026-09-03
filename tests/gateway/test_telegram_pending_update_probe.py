@@ -12,28 +12,11 @@ entirely (``running=False``) with no reconnect in flight — the long-poll task
 is gone, so the gateway silently stops receiving messages while the process
 stays alive (#55769) — and feeds it into the same recovery ladder.
 """
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import PlatformConfig
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-    mod = MagicMock()
-    mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("telegram.error", mod.error)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 

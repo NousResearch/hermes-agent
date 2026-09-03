@@ -23,6 +23,7 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   dedupeInflightUserAgainstTranscript,
+  goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
   preserveLocalPendingTurnMessages,
@@ -236,6 +237,24 @@ describe('isSessionGoneError', () => {
     expect(isSessionGoneError(new Error('Session not found'))).toBe(true)
     expect(isSessionGoneError(new Error('ECONNREFUSED'))).toBe(false)
     expect(isSessionGoneError(null)).toBe(false)
+  })
+})
+
+describe('goneSessionVerdict', () => {
+  it('drafts only when the id is verifiably gone in calm conditions', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: false, switchInFlight: false })).toBe('draft')
+  })
+
+  it('retries when a profile/connection switch is in flight (#88540 route revert)', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: false, switchInFlight: true })).toBe('retry')
+  })
+
+  it('retries when the session is still listed on some profile', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: true, switchInFlight: false })).toBe('retry')
+  })
+
+  it('never discards a session created by this window in this run', () => {
+    expect(goneSessionVerdict({ createdThisRun: true, stillListed: false, switchInFlight: false })).toBe('retry')
   })
 })
 

@@ -110,9 +110,13 @@ class TestDynamicSchemaBuilder:
         video_gen_registry.register_provider(_BothModalitiesProvider())
         _write_cfg(cfg_home, {"video_gen": {"provider": "both", "model": "family-a"}})
 
-        desc = _build_dynamic_video_schema()["description"]
-        assert "supports both text-to-video" in desc
-        assert "duration range: 1-15s" in desc
+        schema = _build_dynamic_video_schema()
+        # Dual-modality (#95681 diet): capability surfaces as PARAMS —
+        # image_url advertised; duration bounds from the model window.
+        props = schema["parameters"]["properties"]
+        assert "image_url" in props
+        assert props["duration"]["minimum"] == 1
+        assert props["duration"]["maximum"] == 15
 
     def test_i2v_only_model_does_not_claim_text_to_video(self, cfg_home):
         """A dual-modality backend with an i2v-only active model must not
@@ -154,8 +158,14 @@ class TestDynamicSchemaBuilder:
             {"video_gen": {"provider": "dual-i2v", "model": "gemini-like"}},
         )
 
-        desc = _build_dynamic_video_schema()["description"]
+        schema = _build_dynamic_video_schema()
+        desc = schema["description"]
         assert "image-to-video only" in desc
         assert "supports both text-to-video" not in desc
-        # Prefer the active model's duration window over the backend union.
-        assert "duration range: 3-10s" in desc
+        # Prefer the active model's duration window over the backend union
+        # — now expressed as param bounds, not prose.
+        props = schema["parameters"]["properties"]
+        assert props["duration"]["minimum"] == 3
+        assert props["duration"]["maximum"] == 10
+        # i2v-only still advertises image_url.
+        assert "image_url" in props

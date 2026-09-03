@@ -64,6 +64,10 @@ hermes profile create backup --clone-all
 
 Copies **everything** — config, API keys, personality, all memories, skills, cron jobs, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. For a full backup including history, use `hermes profile export` or `hermes backup` instead.
 
+:::note OAuth logins are shared, not copied
+Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use refresh tokens** — a copy of one is not a second credential, it is the same credential with two owners, and the first profile to refresh it revokes it for every other copy. `--clone-all` (and the dashboard's credential mirroring) therefore drops those OAuth rows from the clone. The new profile keeps reading the login from the root `~/.hermes/auth.json`, and a token refresh performed inside any profile is written back to root, so all profiles stay signed in. Static API keys are copied as usual. To give a profile its own separate OAuth login, run `hermes -p <name> auth add <provider>` inside it.
+:::
+
 ### Clone from a specific profile
 
 ```bash
@@ -246,6 +250,24 @@ hermes profile import coder.tar.gz   # install an archive as a new profile
 ```
 
 In chat, the same two live as `/export` and `/import` — and in the desktop app as **⌘K → Export/Import profile…**. See [Sharing a profile](#sharing-a-profile).
+
+### Naming the default profile
+
+The default profile's internal ID is always `default` — it can't be truly
+renamed because `~/.hermes` is the installation root. Renaming it instead
+sets a **display name**, which UI surfaces show in place of the bare ID:
+
+```bash
+hermes profile rename default Harumesu   # Unicode fine: 小助手
+```
+
+The display name appears in `hermes profile list`/`show`, the `/profile`
+chat command, the dashboard, and the desktop app (including the Bot Mode
+roster). It is presentation-only: `-p default`, service names, cron jobs,
+and every other reference keep using the canonical `default` ID. It is
+stored as `display_name` in `~/.hermes/profile.yaml`; remove that line to
+revert. Named profiles can carry a `display_name` too (it survives a real
+rename), but `rename` for them still renames the profile itself.
 
 ## Deleting a profile
 

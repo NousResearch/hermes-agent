@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { isViewportPinnedToBottom, shouldFollowPtyOutput } from "./pty-scroll";
+import {
+	isViewportPinnedToBottom,
+	parseResumeControlMessage,
+	shouldFollowPtyOutput,
+} from "./pty-scroll";
 
 describe("isViewportPinnedToBottom", () => {
 	it("is pinned when the viewport sits on the bottom row", () => {
@@ -45,5 +49,32 @@ describe("shouldFollowPtyOutput", () => {
 
 	it("treats an empty resume param as non-resume", () => {
 		expect(shouldFollowPtyOutput("", true)).toBe(false);
+	});
+});
+
+describe("parseResumeControlMessage", () => {
+	it("extracts the id from a resume control frame", () => {
+		// #93518: the implicit active-session fallback has no `?resume=` on the
+		// URL, so the server names the session it resolved in a control frame.
+		expect(
+			parseResumeControlMessage('{"type":"resume","id":"sess-123"}'),
+		).toBe("sess-123");
+	});
+
+	it("ignores plain ANSI banner text sent as a text frame", () => {
+		// pty_ws also sends "Chat unavailable: ..." error banners as text
+		// frames; those must keep rendering into the terminal, not get
+		// swallowed as a (mis-parsed) control message.
+		expect(
+			parseResumeControlMessage("\r\n\x1b[31mChat unavailable: x\x1b[0m\r\n"),
+		).toBeNull();
+	});
+
+	it("ignores JSON of the wrong shape", () => {
+		expect(parseResumeControlMessage('{"type":"other","id":"x"}')).toBeNull();
+		expect(parseResumeControlMessage('{"type":"resume"}')).toBeNull();
+		expect(parseResumeControlMessage('{"type":"resume","id":""}')).toBeNull();
+		expect(parseResumeControlMessage("null")).toBeNull();
+		expect(parseResumeControlMessage('"resume"')).toBeNull();
 	});
 });

@@ -26,7 +26,9 @@ Contract (mirrors Muse Code's documented semantics):
   dirty state so the parent can review or merge each branch.
 - **Clean worktrees are pruned.** A worktree with no new commits and a
   clean tree is removed automatically after the child finishes; anything
-  holding work is kept and reported.
+  holding work is kept and reported. Pruning requires affirmative proof:
+  if a git inspection probe fails the state is unknown, so the worktree is
+  kept and the result entry carries ``inspection_failed`` + ``note`` (#88113).
 
 Only the local terminal backend is supported: on docker/ssh/modal/etc. the
 worktree created on the host would not be visible inside the sandbox, so
@@ -42,6 +44,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 30
@@ -50,15 +54,24 @@ _BRANCH_NAMESPACE = "hermes-subagent"
 
 
 def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
-    """Run a git command, capturing output. Never raises on non-zero exit."""
+    """Run a git command, capturing output. Never raises on non-zero exit.
+
+    Runs under :func:`noninteractive_git_env` (GHSA-7x36-8jrh-v4pw): worktree
+    isolation runs automatically for delegated subagents against whatever repo
+    the parent sits in, and ``worktree add`` runs checkout hooks. Disabling the
+    fsmonitor/hooks/pager/credential config sinks keeps a malicious ``.git/config``
+    from executing on the host.
+    """
     return subprocess.run(
-        ["git", *args],
+        ["git", *harden_git_argv(args)],
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        stdin=subprocess.DEVNULL,
+        env=noninteractive_git_env(),
     )
 
 
@@ -170,6 +183,65 @@ def create_subagent_worktree(
     }
 
 
+def mark_worktree_payload_unproven(
+    payload: Dict[str, Any], reason: str, *, unmeasured: str = "commits/dirty"
+) -> Dict[str, Any]:
+    """Flag a worktree result payload as un-inspected, in place (#88113).
+
+    A failed probe proves nothing about the tree, so the fields it would have
+    filled keep their defaults. The parent agent only ever sees this dict — it
+    cannot read logs — so the uncertainty has to travel *in the payload*, or
+    "0 commits, clean" reads as "the child produced nothing" and the work we
+    just preserved is never looked at.
+
+    *unmeasured* names only the fields this failure actually left unproven: one
+    probe can succeed while the other fails (a bad ``base_commit`` fails
+    ``rev-list`` while ``status`` still reports a real ``dirty``), and claiming
+    a measured value is UNKNOWN would be its own kind of misreport.
+
+    Shared by ``finalize_subagent_worktree`` and ``delegate_tool``'s
+    finalize-raised fallback so the two producers of this schema cannot drift.
+    """
+    path = payload.get("path", "")
+    branch = payload.get("branch", "")
+    payload["inspection_failed"] = True
+    payload["note"] = (
+        f"git inspection failed ({reason}): {unmeasured} UNKNOWN — not "
+        "proven zero/clean. The worktree and branch were preserved "
+        f"— inspect {path} (branch {branch}) before assuming no work."
+    )
+    logger.warning(
+        "subagent worktree: git inspection failed (%s) — keeping %s "
+        "(branch %s) for manual review",
+        reason,
+        path,
+        branch,
+    )
+    return payload
+
+
+def unproven_worktree_payload(
+    info: Dict[str, str], reason: str
+) -> Dict[str, Any]:
+    """Build a complete un-inspected payload from creation-side *info*.
+
+    For callers that never got a payload back at all (``delegate_tool``'s
+    fallback when ``finalize_subagent_worktree`` itself raises). Emits exactly
+    the schema the parent expects — notably WITHOUT the creation-side
+    ``repo_root``/``base_commit`` internals.
+    """
+    return mark_worktree_payload_unproven(
+        {
+            "path": info.get("path", ""),
+            "branch": info.get("branch", ""),
+            "commits": 0,
+            "dirty": False,
+            "pruned": False,
+        },
+        reason,
+    )
+
+
 def finalize_subagent_worktree(
     info: Dict[str, str], *, prune: bool = True
 ) -> Dict[str, Any]:
@@ -177,8 +249,15 @@ def finalize_subagent_worktree(
 
     Returns a result-entry payload: path, branch, ``commits`` ahead of the
     base, ``dirty`` (uncommitted changes present), and ``pruned``. A worktree
-    with zero commits and a clean tree is removed when *prune* is true;
-    anything holding work is always kept for the parent to review or merge.
+    with zero commits and a clean tree is removed when *prune* is true **and
+    both git probes succeeded**; anything holding work is always kept for the
+    parent to review or merge.
+
+    If ``git rev-list``/``git status`` exits non-zero (or the inspection
+    raises), the tree state is unknown, so the worktree and branch are kept
+    and the payload carries ``inspection_failed: True`` plus a ``note``.
+    ``commits``/``dirty`` are then defaults, NOT measurements — the parent
+    must inspect the worktree instead of concluding the child did no work.
     """
     path = info.get("path", "")
     branch = info.get("branch", "")
@@ -196,20 +275,59 @@ def finalize_subagent_worktree(
         payload["pruned"] = True  # nothing on disk to review
         return payload
 
+    def _unproven(
+        reason: str, *, unmeasured: str = "commits/dirty"
+    ) -> Dict[str, Any]:
+        return mark_worktree_payload_unproven(
+            payload, reason, unmeasured=unmeasured
+        )
+
+    # A worktree whose commit count was never measured must not be pruned
+    # either: the prune condition reads payload["commits"], and without a base
+    # commit that value is an unproven default, exactly the class of bug
+    # #88113 is about.
+    if not base_commit:
+        return _unproven(
+            "no base_commit recorded — commit count unmeasurable",
+            unmeasured="commits",
+        )
+
+    failed: list = []
+    unmeasured: list = []
     try:
-        if base_commit:
-            counted = _run_git(
-                ["rev-list", "--count", f"{base_commit}..HEAD"], cwd=path
+        counted = _run_git(
+            ["rev-list", "--count", f"{base_commit}..HEAD"], cwd=path
+        )
+        if counted.returncode == 0:
+            payload["commits"] = int(counted.stdout.strip() or 0)
+        else:
+            failed.append(
+                f"rev-list exit {counted.returncode}: "
+                f"{counted.stderr.strip()[:200]}"
             )
-            if counted.returncode == 0:
-                payload["commits"] = int(counted.stdout.strip() or 0)
+            unmeasured.append("commits")
         status = _run_git(["status", "--porcelain"], cwd=path)
         if status.returncode == 0:
             payload["dirty"] = bool(status.stdout.strip())
+        else:
+            failed.append(
+                f"status exit {status.returncode}: "
+                f"{status.stderr.strip()[:200]}"
+            )
+            unmeasured.append("dirty")
     except Exception as exc:
-        logger.debug("subagent worktree: finalize inspection failed: %s", exc)
-        # Unknown state — keep the worktree rather than risk deleting work.
-        return payload
+        # Same unknown state as a non-zero exit (timeout, OSError, or a
+        # non-numeric rev-list stdout) — keep the worktree rather than risk
+        # deleting work, and tell the caller the numbers are unproven. Which
+        # probe raised is unknowable here, so neither value is trustworthy.
+        return _unproven(f"inspection raised: {exc}")
+
+    if failed:
+        # Fail-safe (#88113): a destructive cleanup requires affirmative proof
+        # of "zero commits + clean tree"; the defaults prove nothing.
+        return _unproven(
+            "; ".join(failed), unmeasured="/".join(unmeasured)
+        )
 
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         try:

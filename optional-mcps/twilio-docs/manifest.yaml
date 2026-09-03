@@ -1,0 +1,29 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: twilio-docs
+description: 'Twilio developer docs search (public beta, read-only).'
+source: https://www.twilio.com/docs/ai/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://mcp.twilio.com/docs
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - twilio docs
+  hosts:
+    - twilio.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.

@@ -1007,6 +1007,39 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
     )
 
 
+def test_sqlite_connect_closes_tracked_conn_on_setup_failure(tmp_path, monkeypatch):
+    """A PRAGMA failure after connect must not abandon a tracked kanban fd."""
+    from hermes_cli import sqlite_safe_read
+
+    db_path = tmp_path / "kanban.db"
+    real_connect = sqlite3.connect
+    opened = []
+
+    class _BusyTimeoutFailure(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if str(sql).startswith("PRAGMA busy_timeout="):
+                raise sqlite3.OperationalError("simulated setup failure")
+            return super().execute(sql, *args, **kwargs)
+
+    def failing_connect(*args, **kwargs):
+        kwargs.pop("factory", None)
+        conn = real_connect(*args, factory=_BusyTimeoutFailure, **kwargs)
+        opened.append(conn)
+        return conn
+
+    key = sqlite_safe_read._key(db_path)
+    with sqlite_safe_read._live_lock:
+        before = sqlite_safe_read._live_connections.get(key, 0)
+    monkeypatch.setattr(kb.sqlite3, "connect", failing_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="simulated setup failure"):
+        kb._sqlite_connect(db_path)
+
+    with sqlite_safe_read._live_lock:
+        after = sqlite_safe_read._live_connections.get(key, 0)
+    assert after == before
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 
@@ -1245,6 +1278,29 @@ def _make_task(**overrides) -> "kb.Task":
 # dispatch_once — max_in_progress
 # ---------------------------------------------------------------------------
 
+
+def test_dispatch_max_in_progress_blocks_review_when_at_limit(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review-only backlog must still respect max_in_progress."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        kb.claim_task(conn, running)
+        review = kb.create_task(conn, title="review", assignee="bob")
+        _set_task_status(conn, review, "review")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_in_progress=1)
+        review_task = kb.get_task(conn, review)
+
+    assert not res.spawned
+    assert not spawns
+    assert review_task is not None
+    assert review_task.status == "review"
 
 # Review column dispatch
 # ---------------------------------------------------------------------------

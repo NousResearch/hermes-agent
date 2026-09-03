@@ -46,6 +46,38 @@ That does not stop Hermes from working well as a phone-native CLI agent — it j
 
 ---
 
+## Community-maintained native `pkg` option
+
+:::caution Contributor-operated distribution
+This APT repository is **community-maintained by `@adybag14-cyber` and is not an official NousResearch distribution**. NousResearch does not build, sign, host, or audit these packages. Enabling the repository means trusting the contributor-operated repository and its signing key. Termux itself remains a Tier 2 / best-effort platform.
+:::
+
+For users who prefer a native package-manager install rather than building Python/Rust dependencies on the phone, a community-maintained APT repository is available. The repository bootstrap and packaging sources are published in [`adybag14-cyber/termux-python`](https://github.com/adybag14-cyber/termux-python), with the Hermes package build in [`adybag14-cyber/termux-hermes`](https://github.com/adybag14-cyber/termux-hermes).
+
+Install the repository key/source and Hermes with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/adybag14-cyber/termux-python/main/scripts/setup_apt_repo.sh | bash
+pkg install hermes-agent
+```
+
+The repository signing-key fingerprint currently documented by the community distribution is:
+
+```text
+EAD24A2124EFA7393A78B7B14699F966313F7A6B
+```
+
+APT-managed Hermes installs are marked with install method `apt`. Hermes therefore does not run its Git self-updater against package-owned files; use the package manager instead:
+
+```bash
+pkg update
+pkg upgrade hermes-agent
+```
+
+Packaging/repository/signing problems for this option should be reported to the community packaging repositories above. Hermes runtime bugs can still be reported here, keeping in mind that Android/Termux support is best-effort.
+
+---
+
 ## Option 1: One-line installer
 
 Hermes now ships a Termux-aware installer path:
@@ -78,6 +110,22 @@ pkg install -y git python clang rust make pkg-config libffi openssl nodejs ripgr
 Why these packages?
 
 - `python` — runtime + venv support
+
+:::warning Supported Python range
+Hermes requires **Python >=3.11,&lt;3.14**. Current Termux ships `python`
+3.14.x, which is outside that range — the installer detects this, and will
+automatically try the [Termux User Repository (TUR)](https://github.com/termux-user-repository/tur)
+for a supported interpreter. For a manual install, get one yourself:
+
+```bash
+pkg install tur-repo
+pkg install python3.13
+```
+
+Then use `python3.13` in place of `python` in the commands below
+(e.g. `python3.13 -m venv venv`).
+:::
+
 - `git` — clone/update the repo
 - `clang`, `rust`, `make`, `pkg-config`, `libffi`, `openssl` — needed to build a few Python dependencies on Android
 - `nodejs` — optional Node runtime for experiments beyond the tested core path
@@ -125,7 +173,7 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 ### 6. Verify the install
 
 ```bash
-hermes version
+hermes --version
 hermes doctor
 ```
 

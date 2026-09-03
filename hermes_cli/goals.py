@@ -29,16 +29,20 @@ Nothing in this module touches the agent's system prompt or toolset.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+from hermes_cli._subprocess_compat import noninteractive_git_env
 
 logger = logging.getLogger(__name__)
 
@@ -151,12 +155,22 @@ JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text, the agent's "
     "most recent response, and — when present — a list of background "
-    "processes the agent has running. Decide one of three verdicts.\n\n"
+    "processes the agent has running. Decide one of four verdicts.\n\n"
     "DONE — the goal is fully satisfied:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
-    "- The response clearly shows the final deliverable was produced, OR\n"
-    "- The response explains the goal is unachievable / blocked / needs "
-    "user input (treat this as DONE with reason describing the block).\n\n"
+    "- The response clearly shows the final deliverable was produced.\n"
+    "DONE requires the deliverable to actually exist. If the response only "
+    "explains why the goal cannot be reached, the verdict is BLOCKED, not "
+    "DONE.\n\n"
+    "BLOCKED — the goal cannot be satisfied as stated:\n"
+    "- The response explains the goal is genuinely unachievable (impossible, "
+    "out of scope, no valid path to the deliverable), or refuses to "
+    "fabricate a deliverable that cannot exist, OR\n"
+    "- The response explains progress is blocked and the next step needs "
+    "user input to proceed.\n"
+    "Return BLOCKED with the reason describing what is blocking. BLOCKED is "
+    "a refusal, not a completion — never return BLOCKED for a goal that "
+    "was achieved.\n\n"
     "WAIT — the goal is NOT done, but the next step is to wait for async "
     "work to finish rather than act again. Choose this ONLY when the agent's "
     "progress is genuinely gated on something running on its own:\n"
@@ -178,6 +192,7 @@ JUDGE_SYSTEM_PROMPT = (
     "take right now. This is the default when in doubt.\n\n"
     "Reply ONLY with a single JSON object on one line. Shapes:\n"
     '{"verdict": "done", "reason": "<one sentence>"}\n'
+    '{"verdict": "blocked", "reason": "<one sentence>"}\n'
     '{"verdict": "continue", "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
     '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
@@ -201,7 +216,7 @@ JUDGE_USER_PROMPT_TEMPLATE = (
     "Agent's most recent response:\n{response}\n\n"
     "{background_block}"
     "Current time: {current_time}\n\n"
-    "Is the goal satisfied — done, continue, or wait?"
+    "Is the goal satisfied — done, blocked, continue, or wait?"
 )
 
 # Used when the user has added /subgoal criteria. The judge must
@@ -245,11 +260,11 @@ JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
     "process to satisfy the Verification criterion (e.g. CI is the "
     "verification and it's still running), return WAIT on that process "
     "instead of re-poking — re-poking now would be pure busy-work.\n"
-    "- If the response explains the work is blocked / unachievable / needs "
-    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
-    "with the reason describing the block.\n"
+    "- If the response explains the work is genuinely unachievable or hits "
+    "the stated Stop condition and needs user input, the goal is NOT done — "
+    "return BLOCKED with the reason describing the block.\n"
     "- Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Is the goal satisfied per its completion contract — done, continue, or wait?"
+    "Is the goal satisfied per its completion contract — done, blocked, continue, or wait?"
 )
 
 
@@ -481,6 +496,7 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=10, cwd=workdir,
+            stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
         )
         if head.returncode != 0:
             return ""
@@ -488,6 +504,7 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
             ["git", "status", "--porcelain"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=30, cwd=workdir,
+            stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
         )
         if status.returncode != 0:
             return ""
@@ -551,7 +568,7 @@ class GoalState:
     max_turns: int = DEFAULT_MAX_TURNS
     created_at: float = 0.0
     last_turn_at: float = 0.0
-    last_verdict: Optional[str] = None        # "done" | "continue" | "skipped"
+    last_verdict: Optional[str] = None        # "done" | "blocked" | "continue" | "wait" | "skipped"
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
@@ -661,6 +678,58 @@ def _meta_key(session_id: str) -> str:
 
 
 _DB_CACHE: Dict[str, Any] = {}
+_DB_BOOTSTRAP_LOCK = threading.Lock()
+_DB_BOOTSTRAP_INFLIGHT: Dict[str, threading.Event] = {}
+
+# How long a loop-thread caller waits for an ALREADY-RUNNING bootstrap
+# before degrading to None. Normal SessionDB init is ~10-100ms, so a call
+# that arrives mid-bootstrap usually picks the cached instance up within
+# this window. A contended init (locked state.db mid-migration) blows past
+# it and the caller degrades. The loop stalls far under the watchdog's
+# probe window.
+_DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
+
+# The call that STARTS the bootstrap (cold cache, nothing in flight)
+# waits this long instead of the short window above. A fresh state.db
+# init measures ~300ms warm on a fast machine: schema DDL, FTS table
+# creation, and the first hermes_cli.config import (journal-mode
+# resolution). It is longer on a slow CI box, and it is well past 0.25s.
+# The old window dropped the first /goal write. The response said
+# "Goal set" but nothing persisted. The longer window is a bounded
+# one-time stall. Only the kick call pays it. Every later call keeps
+# the short window, so a contended migration never stalls the loop
+# repeatedly.
+_DB_BOOTSTRAP_INIT_WAIT_S = 1.5
+
+
+def _bootstrap_session_db(home: str, done: threading.Event) -> None:
+    """Construct SessionDB off-loop and populate the cache (worker thread)."""
+    try:
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from hermes_state import SessionDB
+
+        # Bind the caller's home for this thread. The cache key is the
+        # caller's scoped home, so the constructed SessionDB must point at
+        # that home's state.db too. Without the override, a multiplexed
+        # worker thread resolves the process env (the default profile's
+        # HERMES_HOME). It then caches the wrong profile's DB under this
+        # profile's key.
+        token = set_hermes_home_override(home)
+        try:
+            db = SessionDB()
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as exc:  # pragma: no cover
+        logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
+        db = None
+    with _DB_BOOTSTRAP_LOCK:
+        if db is not None and home not in _DB_CACHE:
+            _DB_CACHE[home] = db
+        _DB_BOOTSTRAP_INFLIGHT.pop(home, None)
+    done.set()
 
 
 def _get_session_db() -> Optional[Any]:
@@ -671,6 +740,19 @@ def _get_session_db() -> Optional[Any]:
     ``hermes_home`` path so profile switches still pick up the right DB.
     Defensive against import/instantiation failures so tests and
     non-standard launchers can still use the GoalManager.
+
+    Never constructs SessionDB on an event-loop thread. ``SessionDB.__init__``
+    runs schema init, and a migration against a contended state.db blocks for
+    seconds — on the gateway's loop thread that starves the loop-liveness
+    watchdog, which hard-exits the process (exit 75) and crash-loops the
+    gateway (enterprise field report, 2026-08-14). On a cache miss with a running
+    loop we kick a one-shot background bootstrap and wait a bounded grace
+    window for it. The kick call waits the one-time init window
+    (``_DB_BOOTSTRAP_INIT_WAIT_S``), so a healthy cold init completes and
+    the first write is not dropped. Later calls wait only the short window
+    (``_DB_BOOTSTRAP_LOOP_WAIT_S``). On timeout we return None. Every
+    caller degrades gracefully on None, and a later call returns the
+    cached instance.
     """
     try:
         from hermes_constants import get_hermes_home
@@ -684,13 +766,80 @@ def _get_session_db() -> Optional[Any]:
     cached = _DB_CACHE.get(home)
     if cached is not None:
         return cached
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        on_loop_thread = False
+    else:
+        on_loop_thread = True
+
+    if on_loop_thread:
+        with _DB_BOOTSTRAP_LOCK:
+            # Re-check under the lock: a bootstrap may have finished between
+            # the unlocked read above and here.
+            cached = _DB_CACHE.get(home)
+            if cached is not None:
+                return cached
+            done = _DB_BOOTSTRAP_INFLIGHT.get(home)
+            if done is None:
+                done = threading.Event()
+                _DB_BOOTSTRAP_INFLIGHT[home] = done
+                threading.Thread(
+                    target=_bootstrap_session_db,
+                    args=(home, done),
+                    name="goals-sessiondb-bootstrap",
+                    daemon=True,
+                ).start()
+                # This call starts the bootstrap, so it pays the one-time
+                # init cost. Wait long enough for a healthy cold init
+                # (~300ms warm, more on slow CI) to finish. This keeps the
+                # first goal/heartbeat write from being silently dropped.
+                wait = _DB_BOOTSTRAP_INIT_WAIT_S
+            else:
+                # Bootstrap already running: brief grace window only. A
+                # healthy init usually finishes in tens of ms, so this
+                # still picks the cached instance up. A contended init
+                # (the crash-loop scenario) exceeds the window and we
+                # degrade to None. The stall is bounded, far below the
+                # watchdog's probe timeout.
+                wait = _DB_BOOTSTRAP_LOOP_WAIT_S
+        done.wait(wait)
+        return _DB_CACHE.get(home)
+
     try:
         db = SessionDB()
     except Exception as exc:  # pragma: no cover
         logger.debug("GoalManager: SessionDB() raised (%s)", exc)
         return None
-    _DB_CACHE[home] = db
+    with _DB_BOOTSTRAP_LOCK:
+        existing = _DB_CACHE.get(home)
+        if existing is not None:
+            # A concurrent bootstrap won the race; keep one instance and
+            # close ours so connections don't leak.
+            try:
+                db.close()
+            except Exception:
+                pass
+            return existing
+        _DB_CACHE[home] = db
     return db
+
+
+def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
+    """Log a dropped state write at WARNING.
+
+    The reply already told the user that the state was set. A silent
+    drop makes that reply a lie. One shared message keeps the goal,
+    loop, and heartbeat logs greppable as one bug class.
+    """
+    logger.warning(
+        "%s: %s for %s not persisted — session DB unavailable "
+        "(bootstrap window exceeded, in-memory state still active)",
+        manager,
+        kind,
+        session_id,
+    )
 
 
 def load_goal(session_id: str) -> Optional[GoalState]:
@@ -720,6 +869,7 @@ def save_goal(session_id: str, state: GoalState) -> None:
         return
     db = _get_session_db()
     if db is None:
+        _warn_dropped_write("GoalManager", "goal", session_id)
         return
     try:
         db.set_meta(_meta_key(session_id), state.to_json())
@@ -860,11 +1010,39 @@ def _goal_judge_max_tokens() -> int:
     return DEFAULT_JUDGE_MAX_TOKENS
 
 
+def _goal_judge_timeout() -> float:
+    """Resolve auxiliary.goal_judge.timeout, falling back to the default.
+
+    Mirrors :func:`_goal_judge_max_tokens`. The key is declared in
+    ``DEFAULT_CONFIG`` and surfaces in the auxiliary config UI, but the
+    judge path used to hardcode ``DEFAULT_JUDGE_TIMEOUT`` and never read
+    it — so a user raising the timeout for a slow-but-healthy reasoning
+    endpoint got no effect, and the loop auto-paused on misleading
+    transport failures pointing at provider/key (#91022). A non-positive
+    or non-numeric value falls back rather than crashing the goal loop.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        value = (
+            (cfg.get("auxiliary") or {})
+            .get("goal_judge", {})
+            .get("timeout", DEFAULT_JUDGE_TIMEOUT)
+        )
+        value = float(value)
+        if value > 0:
+            return value
+    except Exception:
+        pass
+    return DEFAULT_JUDGE_TIMEOUT
+
+
 def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
     """Parse the judge's reply. Fail-open on unusable output.
 
     Returns ``(verdict, reason, parse_failed, wait_directive)`` where:
-      - ``verdict`` is ``"done"``, ``"continue"``, or ``"wait"``.
+      - ``verdict`` is ``"done"``, ``"blocked"``, ``"continue"``, or ``"wait"``.
       - ``parse_failed`` is True when the judge returned output that couldn't
         be interpreted as the expected JSON verdict (empty body, prose,
         malformed JSON). Callers use it to auto-pause after N consecutive
@@ -921,7 +1099,7 @@ def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, 
             done = bool(done_val)
         verdict = "done" if done else "continue"
 
-    if verdict not in {"done", "continue", "wait"}:
+    if verdict not in {"done", "blocked", "continue", "wait"}:
         verdict = "continue"
 
     if verdict != "wait":
@@ -1007,7 +1185,7 @@ def judge_goal(
     goal: str,
     last_response: str,
     *,
-    timeout: float = DEFAULT_JUDGE_TIMEOUT,
+    timeout: Optional[float] = None,
     subgoals: Optional[List[str]] = None,
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
@@ -1015,7 +1193,7 @@ def judge_goal(
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)`` where verdict
-    is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
+    is ``"done"``, ``"blocked"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
     judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
     (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
 
@@ -1054,6 +1232,10 @@ def judge_goal(
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
         return "continue", "empty response (nothing to evaluate)", False, None, False
+    if timeout is None:
+        # The declared default for this path is the config key, not the
+        # module constant — see _goal_judge_timeout (#91022).
+        timeout = _goal_judge_timeout()
 
     try:
         from agent.auxiliary_client import call_llm
@@ -1155,7 +1337,7 @@ def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str,
     return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
 
 
-def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) -> Optional[GoalContract]:
+def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
     """Expand a plain-language objective into a structured completion contract.
 
     Uses the ``goal_judge`` auxiliary task (main-model-first, cache-safe — it
@@ -1168,6 +1350,9 @@ def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) ->
     objective = (objective or "").strip()
     if not objective:
         return None
+    if timeout is None:
+        # Same config-backed default as judge_goal (#91022).
+        timeout = _goal_judge_timeout()
 
     try:
         from agent.auxiliary_client import call_llm
@@ -1712,7 +1897,7 @@ class GoalManager:
           - ``status``: current goal status after update
           - ``should_continue``: bool — caller should fire another turn
           - ``continuation_prompt``: str or None
-          - ``verdict``: "done" | "continue" | "wait" | "skipped" | "inactive"
+          - ``verdict``: "done" | "blocked" | "continue" | "wait" | "skipped" | "inactive"
           - ``reason``: str
           - ``message``: user-visible one-liner to print/send
         """
@@ -1827,6 +2012,28 @@ class GoalManager:
                 "verdict": "wait",
                 "reason": reason,
                 "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+            }
+
+        # BLOCKED verdict: the judge ruled the goal genuinely cannot be
+        # satisfied as stated (impossible, out of scope, needs user input).
+        # This is NOT done — don't keep burning turns on an unachievable goal
+        # and don't wave it through as complete (#100954). Pause so the user
+        # sees the judge's reason and can re-scope (/goal set) or override
+        # (/goal resume).
+        if verdict == "blocked":
+            state.status = "paused"
+            state.paused_reason = f"judged unachievable: {reason}"
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "blocked",
+                "reason": reason,
+                "message": (
+                    f"🚫 Goal judged unachievable — paused: {reason} "
+                    "Re-scope with /goal set, or override with /goal resume."
+                ),
             }
 
         if verdict == "done":
@@ -2032,7 +2239,7 @@ def run_kanban_goal_loop(
     Returns a decision dict: ``{"outcome", "turns_used", "reason"}`` where
     outcome is one of ``"completed_by_worker"``, ``"review_requested_by_worker"``,
     ``"changes_requested_by_reviewer"``, ``"blocked_budget"``,
-    ``"blocked_by_worker"``, or ``"stopped"``.
+    ``"blocked_unachievable"``, ``"blocked_by_worker"``, or ``"stopped"``.
     """
 
     def _log(msg: str) -> None:
@@ -2087,6 +2294,22 @@ def run_kanban_goal_loop(
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        if verdict == "blocked":
+            # The judge ruled the goal cannot be satisfied at all — this is
+            # NOT done (#100954). Block the card now with the judge's reason
+            # instead of spending the remaining turns re-poking an impossible
+            # goal, and never let it land in done.
+            _log(f"kanban goal loop: task {task_id} judged unachievable; blocking")
+            try:
+                block_fn(f"Goal-mode judge ruled the goal unachievable: {reason}")
+            except Exception as exc:
+                _log(f"kanban goal loop: block_fn failed ({exc})")
+            return {
+                "outcome": "blocked_unachievable",
+                "turns_used": turns_used,
+                "reason": f"judge verdict blocked: {reason}",
+            }
 
         if verdict == "done":
             if nudged_to_finalize:

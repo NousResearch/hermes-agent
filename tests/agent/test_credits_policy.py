@@ -351,6 +351,47 @@ class TestIsFreeTierModel:
         monkeypatch.setattr(models_mod, "_pricing_cache", _Exploding())
         assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com") is False
 
+    def test_stealth_prefix_detected_as_free(self):
+        """Stealth-preview SKUs (stealth/...) are free-tier but carry no
+        :free suffix.  Suppression must engage so the depleted banner doesn't
+        fire on a false paid_access:false from the server's stealth pool."""
+        from agent.credits_tracker import is_free_tier_model
+
+        # No base_url needed — stealth/ is a zero-network signal, same as :free.
+        assert is_free_tier_model("stealth/ox-alpha", "") is True
+        assert is_free_tier_model("stealth/ox-alpha", "https://inference-api.nousresearch.com/v1") is True
+        # Non-stealth model without :free suffix → not free (without pricing cache).
+        assert is_free_tier_model("some/paid-model", "") is False
+
+    def test_depleted_suppressed_for_stealth_model(self):
+        """End-to-end: paid_access:false on a stealth/ model must NOT fire
+        the depleted banner (the exact scenario from issue #91843)."""
+        from agent.credits_tracker import (
+            CreditsState, evaluate_credits_notices, is_free_tier_model,
+        )
+
+        state = CreditsState(
+            version=1,
+            remaining_micros=0,
+            remaining_usd="0.00",
+            subscription_micros=0,
+            subscription_usd="0.00",
+            purchased_micros=0,
+            purchased_usd="0.00",
+            paid_access=False,
+            captured_at=1.0,
+            from_header=True,
+        )
+        model = "stealth/ox-alpha"
+        base_url = "https://inference-api.nousresearch.com/v1"
+        model_is_free = is_free_tier_model(model, base_url)
+        assert model_is_free is True
+
+        latch = fresh_latch()
+        to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
+        assert all(n.key != "credits.depleted" for n in to_show)
+        assert "credits.depleted" not in latch["active"]
+
 
 # ── Scenario 6: denominator none (uf is None) ────────────────────────────────
 

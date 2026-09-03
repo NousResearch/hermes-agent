@@ -26,6 +26,14 @@
       url = "github:jeslie0/npm-lockfile-fix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Used only by nix/checks.nix, to evaluate homeManagerModules.default
+    # against the real Home Manager module system rather than a stub of it.
+    # Consuming the module does not require this input — import it from your
+    # own home-manager, exactly as you would any other HM module.
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -41,6 +49,7 @@
         ./nix/packages.nix
         ./nix/overlays.nix
         ./nix/nixosModules.nix
+        ./nix/homeManagerModules.nix
         ./nix/checks.nix
         ./nix/devShell.nix
       ];

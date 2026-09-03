@@ -3667,6 +3667,10 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Maximum seconds `hermes update` waits for running Kanban workers
+        # after pausing new dispatch. A timeout refuses the update and leaves
+        # ESTOP engaged so no in-flight work is killed.
+        "drain_timeout_seconds": 1800,
         # When `hermes update` finds the source checkout parked on a feature
         # branch (left behind by tooling or a manual checkout), switch back
         # to the update target automatically whenever the working tree is

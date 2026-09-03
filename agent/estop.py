@@ -107,9 +107,14 @@ def is_engaged() -> bool:
     return saw_stat_error
 
 
-def engage(reason: Optional[str] = None) -> Path:
-    """Create the ESTOP sentinel. Idempotent; re-engaging updates the file."""
-    path = sentinel_path()
+def engage(reason: Optional[str] = None, *, global_scope: bool = False) -> Path:
+    """Create the ESTOP sentinel. Idempotent; re-engaging updates the file.
+
+    ``global_scope`` writes the fleet-root sentinel even when a profile gateway
+    invokes the operation. This keeps the embedded dispatcher pause global
+    instead of only pausing the updater's profile.
+    """
+    path = (_canonical_root() if global_scope else _hermes_home()) / SENTINEL_NAME
     payload = {
         "engaged_at": datetime.now(timezone.utc).isoformat(),
         "reason": reason or None,

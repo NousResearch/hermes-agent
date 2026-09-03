@@ -1997,6 +1997,10 @@ updates:
   #             installs where local source edits should not persist
   non_interactive_local_changes: "stash"
 
+  # Maximum seconds `hermes update` waits for running Kanban workers after
+  # pausing new dispatch. On timeout, update refuses and leaves ESTOP engaged.
+  drain_timeout_seconds: 1800
+
 
 # =============================================================================
 # Web Dashboard

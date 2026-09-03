@@ -110,7 +110,7 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     runner.session_store = MagicMock()
     runner.session_store._ensure_loaded = MagicMock()
     runner.session_store._entries = {session_key: expired_entry}
-    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._session_expiry_reason = MagicMock(return_value="idle")
     runner.session_store._lock = MagicMock()
     runner.session_store._lock.__enter__ = MagicMock(return_value=None)
     runner.session_store._lock.__exit__ = MagicMock(return_value=None)
@@ -147,6 +147,9 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     assert "sess-expired" in session_ids, (
         f"on_session_finalize was not fired during idle expiry; "
         f"got session_ids={session_ids} (regression of #14981)"
+    )
+    runner.session_store.set_expiry_finalized.assert_called_once_with(
+        expired_entry, end_reason="idle"
     )
 
 
@@ -188,7 +191,7 @@ async def test_idle_expiry_clears_last_resolved_model(mock_invoke_hook):
     runner.session_store = MagicMock()
     runner.session_store._ensure_loaded = MagicMock()
     runner.session_store._entries = {session_key: expired_entry}
-    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._session_expiry_reason = MagicMock(return_value="idle")
     runner.session_store._lock = MagicMock()
     runner.session_store._lock.__enter__ = MagicMock(return_value=None)
     runner.session_store._lock.__exit__ = MagicMock(return_value=None)
@@ -225,4 +228,7 @@ async def test_idle_expiry_clears_last_resolved_model(mock_invoke_hook):
     assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me", (
         "session-expiry finalization must only clear the expired session's "
         "own key, not unrelated sessions' cached entries"
+    )
+    runner.session_store.set_expiry_finalized.assert_called_once_with(
+        expired_entry, end_reason="idle"
     )

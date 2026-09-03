@@ -329,3 +329,57 @@ class TestResumePendingExpiredAutoReset:
         db.promote_to_session_reset.assert_called_once()
         _, ended_reason = db.promote_to_session_reset.call_args.args
         assert ended_reason == "idle"
+
+
+class TestBackgroundExpiryReason:
+    """The background watcher must preserve the same policy reason as lazy reset."""
+
+    def test_idle_policy_reason_is_preserved(self, tmp_path):
+        store = _make_store(
+            SessionResetPolicy(mode="idle", idle_minutes=1),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="sid-idle",
+            created_at=datetime.now() - timedelta(minutes=10),
+            updated_at=datetime.now() - timedelta(minutes=5),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+
+        assert store._session_expiry_reason(entry) == "idle"
+        assert store._is_session_expired(entry) is True
+
+    def test_daily_policy_reason_is_preserved(self, tmp_path):
+        now = datetime.now()
+        reset_hour = (now.hour - 1) % 24
+        store = _make_store(
+            SessionResetPolicy(mode="daily", at_hour=reset_hour),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="test",
+            session_id="sid-daily",
+            created_at=now - timedelta(days=2),
+            updated_at=now - timedelta(days=1),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+
+        assert store._session_expiry_reason(entry) == "daily"
+
+    def test_expiry_finalization_forwards_reason_to_state_db(self, tmp_path):
+        db = _make_db_mock()
+        store = _make_store_with_db(tmp_path, db)
+        entry = SessionEntry(
+            session_key="test",
+            session_id="sid-finalized",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries[entry.session_key] = entry
+
+        store.set_expiry_finalized(entry, end_reason="idle")
+
+        db.promote_to_session_reset.assert_called_once_with("sid-finalized", "idle")

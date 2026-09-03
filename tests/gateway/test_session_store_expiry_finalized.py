@@ -1,10 +1,11 @@
-"""Session expiry finalization closes sessions as session_reset.
+"""Session expiry finalization persists a durable reset boundary.
 
 Regression coverage for #61220: the expiry watcher marks a session expired,
 then agent cleanup can close it as ``agent_close``. Stale routing recovery treats
 ``agent_close`` as recoverable, so expired sessions were reopened with full
-history unless expiry finalization also persisted the real conversation boundary
-as ``end_reason='session_reset'``.
+history unless expiry finalization also persisted the real conversation boundary.
+The backward-compatible direct-call default remains ``session_reset``; the
+background watcher forwards the exact automatic reason, ``idle`` or ``daily``.
 
 These tests use a real ``SessionDB`` (in-memory) to verify the actual recovery
 contract in ``find_latest_gateway_session_for_peer`` — not just call counts on
@@ -13,11 +14,14 @@ a MagicMock.
 
 from __future__ import annotations
 
-import time
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from gateway.config import GatewayConfig, SessionResetPolicy
+from gateway.session import SessionEntry, SessionStore
 from hermes_state import SessionDB
 
 
@@ -93,5 +97,62 @@ class TestPromotionBlocksRecovery:
         )
         assert recovered is not None
         assert recovered["id"] == "sid-pre"
+
+
+class TestSessionStoreAutomaticExpiryReasons:
+    """Background-style finalization preserves its durable policy reason."""
+
+    @pytest.mark.parametrize("reason", ["idle", "daily"])
+    def test_persists_reason_and_blocks_recovery(
+        self,
+        db: SessionDB,
+        tmp_path: Path,
+        reason: str,
+    ) -> None:
+        session_id = f"sid-{reason}"
+        db.create_session(
+            session_id,
+            _SOURCE,
+            user_id=_USER_ID,
+            session_key=_SESSION_KEY,
+            chat_id=_USER_ID,
+            chat_type="dm",
+        )
+        db.append_message(session_id, "user", "hello")
+
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="none")
+        )
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+        entry = SessionEntry(
+            session_key=_SESSION_KEY,
+            session_id=session_id,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        store._entries[_SESSION_KEY] = entry
+
+        store.set_expiry_finalized(
+            entry,
+            clear_model_override=False,
+            end_reason=reason,
+        )
+
+        row = db.get_session(session_id)
+        assert row["end_reason"] == reason
+        assert row["ended_at"] is not None
+        assert (
+            db.find_latest_gateway_session_for_peer(
+                source=_SOURCE,
+                session_key=_SESSION_KEY,
+                user_id=_USER_ID,
+                chat_id=_USER_ID,
+                chat_type="dm",
+            )
+            is None
+        )
 
 

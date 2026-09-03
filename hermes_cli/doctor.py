@@ -573,6 +573,34 @@ _DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
 )
 
 
+def collect_unknown_config_keys(raw_config: dict | None) -> list[str]:
+    """Return dotted paths for user-config keys not present in DEFAULT_CONFIG.
+
+    Walks the raw (on-disk) config tree and checks each key against
+    DEFAULT_CONFIG.  Only truly unknown keys are reported — keys that
+    exist in the defaults are valid even if the user's file doesn't set
+    them.  Internal keys (starting with ``_``) are skipped.
+    """
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    unknown: list[str] = []
+    if not isinstance(raw_config, dict):
+        return unknown
+
+    def _walk(user: dict, defaults: dict, prefix: str = ""):
+        for key in user:
+            if key.startswith("_"):
+                continue
+            full = key if not prefix else f"{prefix}.{key}"
+            if key not in defaults:
+                unknown.append(full)
+            elif isinstance(user[key], dict) and isinstance(defaults.get(key), dict):
+                _walk(user[key], defaults[key], full)
+
+    _walk(raw_config, DEFAULT_CONFIG)
+    return unknown
+
+
 def collect_deprecated_config_keys(raw_config: dict | None) -> list[tuple[str, str]]:
     """Return ``(legacy_path, replacement)`` for deprecated keys present in *raw_config*.
 
@@ -1874,6 +1902,28 @@ def run_doctor(args):
             except Exception:
                 _env_for_depr = {}
             report_deprecated_config_and_env(_raw_for_depr, _env_for_depr)
+        except Exception:
+            pass
+
+        # Unknown config keys: user-config keys not present in DEFAULT_CONFIG.
+        try:
+            from hermes_cli.config import read_user_config_raw
+
+            unknown_keys = collect_unknown_config_keys(
+                read_user_config_raw(config_path)
+            )
+            if unknown_keys:
+                for key in unknown_keys[:15]:
+                    check_warn(
+                        f"Unknown config key '{key}'",
+                        "not in DEFAULT_CONFIG — possible typo or obsolete key",
+                    )
+                if len(unknown_keys) > 15:
+                    check_info(
+                        f"  ... and {len(unknown_keys) - 15} more unknown keys"
+                    )
+            else:
+                check_ok("No unknown config keys")
         except Exception:
             pass
 

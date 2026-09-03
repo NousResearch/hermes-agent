@@ -3,10 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesModule from '@/hermes'
 import { getSession } from '@/hermes'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $projectTree } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { resolveSessionProfile, resolveStoredSession } from './utils'
+import { cachedSessionRow, resolveSessionProfile, resolveStoredSession } from './utils'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
@@ -24,6 +25,7 @@ describe('resolveStoredSession profile ownership', () => {
     $cronSessions.set([])
     $messagingSessions.set([])
     $sessions.set([])
+    $projectTree.set([])
     $profiles.set(profiles('default', 'meta'))
     $activeGatewayProfile.set('meta')
     mockGetSession.mockReset()
@@ -33,6 +35,7 @@ describe('resolveStoredSession profile ownership', () => {
     $cronSessions.set([])
     $messagingSessions.set([])
     $sessions.set([])
+    $projectTree.set([])
     $profiles.set([])
     $activeGatewayProfile.set('default')
   })
@@ -142,5 +145,52 @@ describe('resolveStoredSession profile ownership', () => {
     mockGetSession.mockResolvedValueOnce(session({ id: 's1', profile: 'default' }))
 
     await expect(resolveSessionProfile('s1')).resolves.toBe('default')
+  })
+})
+
+describe('cachedSessionRow owner preference', () => {
+  const projectNode = (sessions: SessionInfo[], preview: SessionInfo[] = []) =>
+    ({
+      previewSessions: preview,
+      repos: [{ groups: [{ sessions }] }]
+    }) as never
+
+  beforeEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $sessions.set([])
+    $projectTree.set([])
+    mockGetSession.mockReset()
+  })
+
+  afterEach(() => {
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $sessions.set([])
+    $projectTree.set([])
+  })
+
+  it('prefers a self-describing project-tree row over an ownerless Recents duplicate', () => {
+    // The same conversation, listed twice: a legacy Recents row with no owner
+    // and the profile-scoped project-tree row the gateway stamped. Picking the
+    // Recents copy throws away the only routing information there is, and the
+    // branch then creates its child on whichever backend is active.
+    $sessions.set([session({ cwd: '/wrong', id: 's1' })])
+    $projectTree.set([projectNode([session({ connection_id: 'pandora', cwd: '/right', id: 's1', profile: 'work' })])])
+
+    expect(cachedSessionRow('s1')).toMatchObject({ connection_id: 'pandora', cwd: '/right', profile: 'work' })
+  })
+
+  it('finds a project-tree preview row when the session is in no other list', () => {
+    $projectTree.set([projectNode([], [session({ connection_id: 'rigremote', id: 's1', profile: 'default' })])])
+
+    expect(cachedSessionRow('s1')).toMatchObject({ connection_id: 'rigremote' })
+  })
+
+  it('keeps the plain Recents row when nothing carries an owner', () => {
+    $sessions.set([session({ cwd: '/only', id: 's1' })])
+
+    expect(cachedSessionRow('s1')).toMatchObject({ cwd: '/only' })
+    expect(cachedSessionRow('missing')).toBeUndefined()
   })
 })

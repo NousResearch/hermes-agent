@@ -98,7 +98,7 @@ def profile_dbs(monkeypatch, tmp_path):
     # The handler builds nothing on the paths under test; keep it hermetic and
     # off the real agent/secret/HERMES_HOME machinery.
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key: None)
+    monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key, *_a: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *a, **k: None)
@@ -196,7 +196,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
     monkeypatch.setattr(
         server,
         "_find_live_session_by_key",
-        lambda _key: ("live-sid", live_session),
+        lambda _key, *_a: ("live-sid", live_session),
     )
     monkeypatch.setattr(
         server,

@@ -487,6 +487,8 @@ export const ar = defineLocale({
       embedsAlways: 'دائما',
       embedsOff: 'إيقاف',
       embedsReset: count => `إعادة تعيين ${count} ${count === 1 ? 'خدمة مسموح بها' : 'خدمة مسموح بها'}`,
+      resumeLastSessionTitle: 'إعادة فتح آخر محادثة عند التشغيل',
+      resumeLastSessionDesc: 'متابعة من حيث توقفت عند بدء التطبيق. أوقفه للبدء دائمًا بمحادثة جديدة.',
       product: 'مبسط',
       productDesc: 'عرض أنظف يركز على النتيجة.',
       technical: 'تقني',
@@ -672,6 +674,10 @@ export const ar = defineLocale({
       bundleOutOfSyncDesc:
         'تم تحديث وقت تشغيل Hermes، لكن تطبيق سطح المكتب نفسه لا يزال إصدارًا قديمًا — لن تظهر ميزات الواجهة الجديدة (مثل Bot Mode) حتى يتم تحديث التطبيق. شغّل التحديث أدناه لإعادة بناء التطبيق. إذا لم يختفِ هذا التحذير، فأعد التثبيت من أحدث مثبّت لسطح المكتب.',
       bundleOutOfSyncAction: 'الحصول على المثبّت',
+      bundleSwapPending: 'أعد التشغيل لإكمال التحديث',
+      bundleSwapPendingDesc:
+        'تم تثبيت التطبيق المحدَّث بالفعل — يكفي إعادة تشغيل Hermes لتحميله. لن تتأثر المحادثات أو الإعدادات.',
+      bundleSwapPendingAction: 'إعادة تشغيل Hermes',
       updates: 'التحديثات',
       checkNow: 'التحقق الآن',
       checking: 'جار التحقق...',
@@ -2886,9 +2892,10 @@ export const ar = defineLocale({
         title: 'المرفقات والأوامر',
         text: 'اكتب @ لإحضار ملف إلى المحادثة، و / لتشغيل أمر.'
       },
-      'model-switch': {
-        title: 'بدّل النموذج أثناء المحادثة',
-        text: 'اسم النموذج زر. غيّره كلما تغيّرت طبيعة العمل.'
+      'local-setup': {
+        title: 'هذا الجهاز يمكنه تشغيل النماذج محليًا',
+        text: 'عتادك قادر على تشغيل نموذج محلي. تبقى محادثاتك على جهازك ولا تكلف شيئًا.',
+        action: 'إعداد الآن'
       },
       'right-pane': {
         title: 'لوحة العمل',

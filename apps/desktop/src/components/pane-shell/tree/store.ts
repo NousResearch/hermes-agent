@@ -1040,6 +1040,13 @@ export function revealTreePane(paneId: string) {
   // Reveal beats a Close: un-dismiss and let adoption put the pane back.
   if ($dismissedPanes.get().has(paneId)) {
     setDismissed(paneId, false)
+  }
+
+  // A layout replacement can omit a still-registered pane without dismissing
+  // it. Reconcile that saved contribution before claiming to reveal it.
+  const currentTree = $layoutTree.get()
+
+  if (currentTree && !findGroupOfPane(currentTree, paneId)) {
     adoptContributedPanes()
   }
 
@@ -1064,8 +1071,8 @@ export function revealTreePane(paneId: string) {
 
   if (hiddenNow.has(paneId)) {
     setTreePaneHidden(paneId, false)
-
-    return
+    // Reactive unhide preserves a visible sibling. Explicit reveal must also
+    // front this pane and restore its group below.
   }
 
   const tree = $layoutTree.get()

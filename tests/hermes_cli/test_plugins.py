@@ -933,6 +933,13 @@ class TestDeliveryParity:
 class TestForceReloadSymmetry:
     """Force rediscovery restores non-plugin state it wiped (#64178)."""
 
+    @pytest.fixture(autouse=True)
+    def _cleanup_shell_hook_registry(self):
+        yield
+        import agent.shell_hooks as shell_hooks_mod
+
+        shell_hooks_mod.reset_for_tests()
+
     def test_force_reload_re_registers_shell_hooks(self, monkeypatch):
         """config.yaml shell hooks are re-wired after force=True (#60036)."""
         calls = []
@@ -992,6 +999,7 @@ class TestForceReloadSymmetry:
 
     def test_re_register_config_hooks_clears_idempotence_set(self, monkeypatch):
         import agent.shell_hooks as shell_hooks_mod
+        from hermes_constants import get_hermes_home
 
         recorded = {}
         monkeypatch.setattr(
@@ -1002,8 +1010,9 @@ class TestForceReloadSymmetry:
         monkeypatch.setattr(
             "hermes_cli.config.load_config", lambda: {"hooks": {}}
         )
+        home_key = str(get_hermes_home().expanduser().resolve())
         with shell_hooks_mod._registered_lock:
-            shell_hooks_mod._registered.add(("post_llm_call", None, "echo hi"))
+            shell_hooks_mod._registered.add((home_key, "post_llm_call", None, "echo hi"))
 
         shell_hooks_mod.re_register_config_hooks()
 
@@ -1218,6 +1227,50 @@ class TestForceReloadSymmetry:
         assert dispatch_calls == []
         assert _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE in result
         hold.set()
+
+    def test_force_reload_of_one_profile_does_not_orphan_another(self, monkeypatch):
+        """Real two-manager regression: force-reloading profile A's plugin
+        manager must leave profile B's shell hook registered exactly once —
+        not duplicated, not dropped (#92682 review).
+        """
+        import hermes_cli.plugins as plugins_mod
+        import agent.shell_hooks as shell_hooks_mod
+
+        cfg = {"hooks": {"on_session_start": [{"command": "/bin/true"}]}}
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-a")
+        mgr_a = PluginManager()
+        plugins_mod._plugin_manager = mgr_a
+        shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
+
+        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b")
+        mgr_b = PluginManager()
+        plugins_mod._plugin_manager = mgr_b
+        shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
+
+        assert len(mgr_a._hooks.get("on_session_start", [])) == 1
+        assert len(mgr_b._hooks.get("on_session_start", [])) == 1
+
+        # Force-reload A. Its own manager's hook is wiped and restored;
+        # B's manager (and idempotence key) must be untouched.
+        mgr_a.discover_and_load(force=True)
+
+        assert len(mgr_a._hooks.get("on_session_start", [])) == 1
+        assert len(mgr_b._hooks.get("on_session_start", [])) == 1
+
+        # B's later adapter reconnect re-runs register_from_config(); its
+        # idempotence key must still be intact, so this must be a no-op
+        # rather than appending a second callback to B's live manager.
+        monkeypatch.setenv("HERMES_HOME", "/tmp/profile-b")
+        second = shell_hooks_mod.register_from_config(cfg, accept_hooks=True)
+
+        assert second == []
+        assert len(mgr_b._hooks.get("on_session_start", [])) == 1
 
 
 class TestPreToolCallBlocking:

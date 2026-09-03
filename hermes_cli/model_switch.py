@@ -1016,11 +1016,18 @@ def resolve_persist_behavior(
     1. ``--once`` explicitly opts out → ``False`` (next turn only).
     2. ``--session`` explicitly opts out → ``False`` (this session only).
     3. ``--global`` explicitly opts in → ``True``.
-    4. ``--provider`` given without an explicit persist flag → ``False``
+    4. No default configured yet (neither ``model.default`` nor
+       ``model.provider`` set — a fresh install whose first-ever pick this
+       is) → ``True``.  Without a persisted provider, ``resolve_provider``
+       falls through to whatever ``*_API_KEY`` env var is lying around on
+       the next launch (#86414), so the first pick becomes the default
+       instead of evaporating.  Applies to every surface (CLI, gateway,
+       Desktop picker) so no client has to hardcode ``--global``.
+    5. ``--provider`` given without an explicit persist flag → ``False``
        (session only).  Provider switches are typically exploratory — the
        user is trying a different backend for this conversation, not
        reconfiguring the default.  ``--global`` can still force persist.
-    5. Otherwise defer to ``model.persist_switch_by_default`` in
+    6. Otherwise defer to ``model.persist_switch_by_default`` in
        ``config.yaml`` (defaults to ``False``: a plain ``/model <name>``
        affects only the current session).  Users who want the old
        persist-by-default behavior can set the key to ``true``; a one-off
@@ -1036,17 +1043,20 @@ def resolve_persist_behavior(
         return False
     if is_global:
         return True
-    if explicit_provider:
-        return False
     try:
         from hermes_cli.config import load_config
 
         model_cfg = load_config().get("model")
-        if isinstance(model_cfg, dict):
-            return bool(model_cfg.get("persist_switch_by_default", False))
     except Exception:
-        pass
-    return False
+        return False
+    if isinstance(model_cfg, dict):
+        if not (model_cfg.get("default") or model_cfg.get("provider")):
+            return True
+        if explicit_provider:
+            return False
+        return bool(model_cfg.get("persist_switch_by_default", False))
+    # Flat-string form: a non-empty string IS a configured default.
+    return not model_cfg
 
 
 # ---------------------------------------------------------------------------
@@ -2934,7 +2944,10 @@ def _collect_authed_provider_slugs(
             slugs.append(_cp.slug)
             seen.add(_cp.slug.lower())
 
-    return slugs
+    # Nous excluded: its picker branch builds from the curated list and it
+    # cannot reach the api_key-only pathway, so a prefetched entry is written
+    # and never read.
+    return [s for s in slugs if s != "nous"]
 
 
 def list_authenticated_providers(
@@ -3351,6 +3364,19 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
+        # External-process providers (copilot-acp) hold no API key, OAuth
+        # token, or pool entry by design — the spawned ACP subprocess brings
+        # its own auth. "Configured" means the executable resolves, which is
+        # exactly what get_auth_status() reports for them; without this branch
+        # the has_creds filter below unconditionally hides the provider from
+        # every picker (#63662).
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                from hermes_cli.auth import get_auth_status
+                _ext_status = get_auth_status(hermes_slug) or {}
+                has_creds = bool(_ext_status.get("logged_in") or _ext_status.get("configured"))
+            except Exception as exc:
+                logger.debug("External-process check failed for %s: %s", pid, exc)
         # Check auth store and credential pool for non-env-var credentials.
         # This applies to OAuth providers AND api_key providers that also
         # support OAuth (e.g. anthropic supports both API key and Claude Code
@@ -3465,6 +3491,19 @@ def list_authenticated_providers(
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
                 pass
+            # Outside the try above, so a failed recommendation fetch still
+            # yields a policy-filtered curated list.
+            try:
+                from hermes_cli.models import (
+                    nous_policy_allowed_ids as _nous_policy,
+                    restrict_to_nous_policy as _nous_restrict,
+                )
+
+                model_ids = _nous_restrict(
+                    model_ids, _nous_policy(), rescue_empty=True,
+                )
+            except Exception:
+                pass
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
@@ -3512,7 +3551,20 @@ def list_authenticated_providers(
         _cp_config = _auth_registry.get(_cp.slug)
         _cp_has_creds = False
         if _cp_config and _cp_config.api_key_env_vars:
-            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+            _cp_lit = {ev for ev in _cp_config.api_key_env_vars if os.environ.get(ev)}
+            _cp_has_creds = bool(_cp_lit)
+            # A regional "-cn" twin lit only by key vars it shares with its
+            # non-CN sibling (e.g. alibaba-coding-plan-cn off the intl
+            # ALIBABA_CODING_PLAN_API_KEY) is a phantom picker row (#101122).
+            # Hide it unless the user configured that CN provider -- and only
+            # when it has a dedicated var of its own the user could set instead.
+            _sib = _auth_registry.get(_cp.slug[:-3]) if _cp.slug.endswith("-cn") else None
+            _sib_vars = set(_sib.api_key_env_vars) if _sib else set()
+            if (
+                _cp_lit and _cp_lit <= _sib_vars < set(_cp_config.api_key_env_vars)
+                and _cp.slug != current_provider
+            ):
+                continue
         # Also check auth store and credential pool
         if not _cp_has_creds:
             try:

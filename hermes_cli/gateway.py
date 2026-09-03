@@ -481,6 +481,46 @@ def _probe_loop_tick_socket(
                 pass
 
 
+def _probe_loop_tick_tcp(
+    port: int,
+    timeout: float = 1.0,
+) -> bool | None:
+    """Ping the loop-scheduling witness via TCP loopback (Windows).
+
+    Same protocol and semantics as the Unix socket variant: connect to
+    127.0.0.1:<port> and expect one byte "1" as proof the loop is
+    dispatching. Used on Windows / non-POSIX systems where AF_UNIX is not
+    available in asyncio.
+
+    Returns:
+      True  — the loop answered.
+      False — the port was reachable but did not answer, or refused.
+      None  — invalid port / could not connect for unrelated reasons.
+    """
+    try:
+        port_num = int(port)
+        if port_num <= 0 or port_num > 65535:
+            return None
+    except (TypeError, ValueError):
+        return None
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(max(float(timeout), 0.0))
+        sock.connect(("127.0.0.1", port_num))
+        return sock.recv(1) == b"1"
+    except Exception:
+        # Connection refused, timeout, transient errors: witness exists
+        # but is silent (or the process is dead and the port is closed).
+        return False
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
 def _probe_loop_tick_socket_sustained(
     pid: int,
     home: Path | None,
@@ -488,6 +528,7 @@ def _probe_loop_tick_socket_sustained(
     timeout: float = 1.0,
     strikes: int = 3,
     gap_s: float = 0.2,
+    tcp_port: int | None = None,
 ) -> bool | None:
     """Probe the tick socket until a reply or the sustained-miss budget.
 
@@ -509,7 +550,10 @@ def _probe_loop_tick_socket_sustained(
     """
     total = max(int(strikes), 0)
     for attempt in range(total):
-        result = _probe_loop_tick_socket(pid, home, timeout=timeout)
+        if tcp_port is not None:
+            result = _probe_loop_tick_tcp(tcp_port, timeout=timeout)
+        else:
+            result = _probe_loop_tick_socket(pid, home, timeout=timeout)
         if result is True:
             return True
         if result is None:
@@ -579,14 +623,26 @@ def probe_gateway_loop_liveness(
         # up, or a stale file from a previous PID.  Not evidence of a wedge.
         return GATEWAY_LOOP_UNKNOWN
 
-    witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+    # Pick the right witness probe: TCP loopback (Windows / non-POSIX)
+    # takes priority if the producer published a port, otherwise fall back
+    # to the AF_UNIX socket (POSIX / legacy).
+    tcp_port = payload.get("loop_tick_tcp_port")
+    try:
+        tcp_port_int = int(tcp_port) if tcp_port is not None else None
+    except (TypeError, ValueError):
+        tcp_port_int = None
+
+    if tcp_port_int is not None and tcp_port_int > 0:
+        witness = _probe_loop_tick_tcp(tcp_port_int, timeout=tick_timeout)
+        tick_armed = True
+    else:
+        witness = _probe_loop_tick_socket(pid, home, timeout=tick_timeout)
+        tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     if witness is True:
         # The loop answered a ping — it is dispatching right now. A stale
         # heartbeat file is a stalled write or a saturated executor, not a
         # wedge (#90502).
         return GATEWAY_LOOP_ALIVE
-
-    tick_armed = payload.get("loop_tick_socket", _LOOP_TICK_ABSENT)
     age = time.time() - mtime
     if age <= stale_budget:
         if witness is False:
@@ -620,6 +676,7 @@ def probe_gateway_loop_liveness(
             timeout=tick_timeout,
             strikes=tick_strikes - 1,
             gap_s=tick_gap_s,
+            tcp_port=tcp_port_int,
         )
         if sustained is False:
             # Both witnesses agree, sustained: the loop did not schedule for
@@ -2162,14 +2219,17 @@ def _gateway_list() -> None:
             label += " (current)"
         parts = [f"  {marker} {label:<24s}"]
         if prof.gateway_running:
+            pid = None
             try:
                 from gateway.status import get_running_pid
 
                 pid = get_running_pid(prof.path / "gateway.pid", cleanup_stale=False)
-                if pid:
-                    parts.append(f"PID {pid}")
             except Exception:
                 pass
+            if pid:
+                parts.append(f"PID {pid}")
+            elif named_profile_served_by_running_multiplexer(prof.name):
+                parts.append("served by the default multiplexer")
         else:
             parts.append("not running")
         print(" — ".join(parts))
@@ -6219,18 +6279,20 @@ def _running_under_gateway_supervisor() -> bool:
     return is_gateway_supervisor_process()
 
 
-def named_profile_served_by_running_multiplexer() -> bool:
+def named_profile_served_by_running_multiplexer(profile_name: str | None = None) -> bool:
     """True when a live default multiplexer already ticks this named profile.
 
-    Shared by the named-profile start guard and cron liveness: a satellite
-    profile has no gateway.pid of its own, but the default multiplexer's
-    ticker still fires its jobs (#97120).
+    Shared by the named-profile start guard, cron liveness, and the
+    ``gateway status`` / ``gateway list`` / ``profile list`` reports: a
+    satellite profile has no gateway.pid of its own, but the default
+    multiplexer's ticker still fires its jobs (#97120) and serves its
+    platforms. ``profile_name`` defaults to the current HERMES_HOME profile.
     """
     try:
-        suffix = _profile_suffix()
+        suffix = profile_name if profile_name is not None else _profile_suffix()
     except Exception:
         return False
-    if not suffix:
+    if not suffix or suffix == "default":
         return False
 
     try:
@@ -9014,7 +9076,12 @@ def _gateway_command_inner(args):
             from hermes_cli import gateway_windows
 
             _windows_service_installed = gateway_windows.is_installed()
-        if supports_systemd_services() and (
+        if not snapshot.running and named_profile_served_by_running_multiplexer():
+            # Satellite profile: no gateway.pid / service of its own, but the
+            # default multiplexer is the live inbound process for it.
+            print("✓ Gateway is running via the default-profile multiplexer")
+            print("  Manage it from the default profile: hermes gateway status")
+        elif supports_systemd_services() and (
             get_systemd_unit_path(system=False).exists()
             or get_systemd_unit_path(system=True).exists()
         ):

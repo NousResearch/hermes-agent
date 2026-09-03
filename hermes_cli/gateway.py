@@ -3995,6 +3995,24 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
+def _stable_node_bin_dir(node: str) -> str:
+    """Return a stable bin directory for a Node executable found on PATH.
+
+    Preserve ordinary symlink parents (notably ``~/.local/bin`` profile
+    shims), but resolve fnm's per-shell ``fnm_multishells`` symlink.  The
+    latter lives below ``/run/user`` and changes between shells, which would
+    otherwise make service definitions perpetually stale and eventually leave
+    them pointing at a removed directory.
+    """
+    node_path = Path(node)
+    if "fnm_multishells" in node_path.parts:
+        try:
+            node_path = node_path.resolve(strict=True)
+        except OSError:
+            pass
+    return str(node_path.parent)
+
+
 def _systemd_watchdog_seconds(hermes_home: str | Path | None = None) -> int:
     """Resolve the managed-overlay-aware watchdog setting for a service home."""
     override_token = None
@@ -4080,15 +4098,10 @@ def _append_node_dir_for_service(
     if not resolved_node:
         return
 
-    # Use the directory where ``node`` is *found on PATH*, NOT the symlink's
-    # resolved target. ``~/.local/bin/node`` is often a symlink into a
-    # specific profile's node install (e.g. profiles/jarvis/node/bin/node);
-    # calling .resolve() here would chase that symlink and bake one profile's
-    # node path into *every* profile's service unit. That cross-profile leak
-    # makes systemd_unit_is_current() perpetually false, so each gateway
-    # rewrites its unit + daemon-reload on every boot. Using the symlink's own
-    # parent keeps the generated unit profile-agnostic.
-    resolved_node_dir = str(Path(resolved_node).parent)
+    # Preserve the directory where ordinary PATH symlinks are found (notably
+    # ~/.local/bin profile shims), but resolve fnm's ephemeral multishell shim
+    # to its stable installation directory. See _stable_node_bin_dir().
+    resolved_node_dir = _stable_node_bin_dir(resolved_node)
     if resolved_node_dir not in path_entries:
         path_entries.append(resolved_node_dir)
 
@@ -5436,11 +5449,19 @@ def generate_launchd_plist() -> str:
     # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = _build_service_path_dirs()
     _append_node_dir_for_service(priority_dirs)
-    sane_path = ":".join(
-        dict.fromkeys(
-            priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
-        )
-    )
+    shell_path_dirs = [p for p in os.environ.get("PATH", "").split(":") if p]
+    resolved_node = shutil.which("node")
+    if resolved_node:
+        # The helper above already adds the stable Node directory. Remove any
+        # stale fnm multishell entries captured from the interactive shell.
+        found_node_dir = Path(resolved_node).parent
+        if Path(_stable_node_bin_dir(resolved_node)) != found_node_dir:
+            shell_path_dirs = [
+                path
+                for path in shell_path_dirs
+                if "fnm_multishells" not in Path(path).parts
+            ]
+    sane_path = ":".join(dict.fromkeys(priority_dirs + shell_path_dirs))
 
     err_path = log_dir / "gateway.error.log"
 

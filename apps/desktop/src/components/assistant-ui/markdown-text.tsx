@@ -7,6 +7,7 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { cjk as streamdownCjk } from '@streamdown/cjk'
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
@@ -547,7 +548,18 @@ function MarkdownTextSurface({
   // `SyntaxHighlighter` below when `isStreaming` is true, and the code plugin
   // itself arrives async (useCodePlugin) so shiki never blocks cold start.
   const code = useCodePlugin()
-  const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
+
+  // CJK-friendly emphasis (#92814): without the plugin, CommonMark's Unicode
+  // punctuation delimiter rules reject `**…**는`-style closings (Korean
+  // particles, CJK quote-adjacent spans), so bold markers leak as literal
+  // `**`. The official @streamdown/cjk plugin fixes delimiter acceptance.
+  // Deps note: `streamdownCjk` is a stable module-level import (~2KB chain),
+  // so [code] remains exhaustive — unlike the async code plugin it never
+  // changes identity between renders.
+  const plugins = useMemo(
+    () => (code ? { math: mathPlugin, code, cjk: streamdownCjk } : { math: mathPlugin, cjk: streamdownCjk }),
+    [code]
+  )
 
   const components = useMemo(
     () =>

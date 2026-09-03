@@ -1132,7 +1132,11 @@ class QQAdapter(BasePlatformAdapter):
 
         chat_type = parsed.get("chat_type", "")
         chat_id = parsed.get("chat_id", "")
-        if chat_type == "c2c":
+        if chat_type in {"c2c", "dm"}:
+            # build_session_key() uses "dm" for every platform's private
+            # chat (gateway/session.py); QQ C2C DMs surface both variants
+            # depending on the code path, and in both the chat_id is the
+            # operator's own identifier.
             return bool(chat_id) and operator == chat_id
 
         if chat_type in {"group", "guild"}:

@@ -27,7 +27,7 @@ export async function releaseLocalBackendSlotAfterExit(
  * the child exits or the start fails. Remote descriptors never call request().
  */
 export class LocalBackendSpawnCoordinator {
-  readonly #limit: number
+  #limit: number
   #active = 0
   #queue: Waiter[] = []
 
@@ -41,6 +41,25 @@ export class LocalBackendSpawnCoordinator {
 
   get activeCount(): number {
     return this.#active
+  }
+
+  get limit(): number {
+    return this.#limit
+  }
+
+  /**
+   * Adopt a new cap at runtime (the pool size is a live device preference).
+   * Raising it drains waiters into the newly freed slots immediately; lowering
+   * it never revokes a granted slot — the running backends simply stay over
+   * the cap until they exit, and LRU eviction (main.ts) converges the pool.
+   */
+  setLimit(limit: number): void {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new RangeError('Local backend spawn limit must be a positive integer.')
+    }
+
+    this.#limit = limit
+    this.#drain()
   }
 
   get queuedCount(): number {
@@ -119,12 +138,16 @@ export class LocalBackendSpawnCoordinator {
 
       released = true
       this.#active -= 1
-      const next = this.#queue.shift()
+      this.#drain()
+    }
+  }
 
-      if (next) {
-        this.#clearTimer(next)
-        next.resolve(this.#grant())
-      }
+  /** Hand free slots to queued waiters while under the (possibly lowered) cap. */
+  #drain(): void {
+    while (this.#active < this.#limit && this.#queue.length > 0) {
+      const next = this.#queue.shift()!
+      this.#clearTimer(next)
+      next.resolve(this.#grant())
     }
   }
 }

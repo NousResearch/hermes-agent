@@ -269,6 +269,56 @@ test('a failed or repeated cleanup releases exactly one slot', async () => {
 })
 
 
+test('raising the limit at runtime drains queued waiters into the new slots', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(1)
+  const first = await coordinator.acquire('a')
+  const queuedB = coordinator.request('b')
+  const queuedC = coordinator.request('c')
+  await flush()
+  assert.equal(coordinator.activeCount, 1)
+  assert.equal(coordinator.queuedCount, 2)
+
+  coordinator.setLimit(2)
+  const releaseB = await queuedB.acquired
+  assert.equal(coordinator.activeCount, 2)
+  assert.equal(coordinator.queuedCount, 1)
+
+  first()
+  const releaseC = await queuedC.acquired
+  assert.equal(coordinator.activeCount, 2)
+  releaseB()
+  releaseC()
+  assert.equal(coordinator.activeCount, 0)
+})
+
+test('lowering the limit never revokes granted slots; new requests queue until under cap', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+  const releases = await Promise.all(['a', 'b', 'c'].map(key => coordinator.acquire(key)))
+  coordinator.setLimit(1)
+  assert.equal(coordinator.activeCount, 3, 'granted slots stay granted')
+
+  const queued = coordinator.request('d')
+  await flush()
+  assert.equal(coordinator.queuedCount, 1)
+
+  releases[0]()
+  releases[1]()
+  await flush()
+  assert.equal(coordinator.queuedCount, 1, 'still over the new cap of 1')
+
+  releases[2]()
+  const releaseD = await queued.acquired
+  assert.equal(coordinator.activeCount, 1)
+  releaseD()
+})
+
+test('setLimit rejects a non-positive or fractional cap', () => {
+  const coordinator = new LocalBackendSpawnCoordinator(2)
+  assert.throws(() => coordinator.setLimit(0), RangeError)
+  assert.throws(() => coordinator.setLimit(1.5), RangeError)
+  assert.equal(coordinator.limit, 2)
+})
+
 // ── main.ts wiring ──────────────────────────────────────────────────────────
 // The coordinator is only as good as the timeout main.ts hands it. A queued
 // ticket that outlives the renderer's backend-boot budget holds the pool key
@@ -295,5 +345,13 @@ test('a failed or repeated cleanup releases exactly one slot', async () => {
     assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
     assert.match(mainSource, /localBackendSpawnCoordinator\.request\(poolKey, \{ timeoutMs: POOL_SLOT_WAIT_MS \}\)/)
     assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
+  })
+
+  test('main.ts pushes the live pool max into the coordinator when the preference changes', () => {
+    // Pool sizing is a live device preference (#92581); the hard cap must
+    // follow it, otherwise raising the max in Settings would leave spawns
+    // queued behind the launch-time value.
+    assert.match(mainSource, /new LocalBackendSpawnCoordinator\(poolLimits\.maxBackends\)/)
+    assert.match(mainSource, /localBackendSpawnCoordinator\.setLimit\(poolLimits\.maxBackends\)/)
   })
 }

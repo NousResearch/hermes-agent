@@ -221,7 +221,7 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
     monkeypatch.setattr(
         scheduler,
         "mark_execution_running",
-        lambda execution_id: events.append(("running", execution_id)),
+        lambda execution_id: events.append(("running", execution_id)) or {},
         raising=False,
     )
     monkeypatch.setattr(

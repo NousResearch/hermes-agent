@@ -475,6 +475,7 @@ from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.inventory import build_inventory_parsers
 from hermes_cli.subcommands.setup import build_setup_parser
 
 from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
@@ -3841,6 +3842,18 @@ def cmd_model(args):
         lambda: select_provider_and_model(args=args),
         cancelled_message="No change.",
     )
+
+
+def cmd_models(args):
+    from hermes_cli.inventory_cmd import cmd_models as _cmd_models
+
+    _cmd_models(args)
+
+
+def cmd_providers(args):
+    from hermes_cli.inventory_cmd import cmd_providers as _cmd_providers
+
+    _cmd_providers(args)
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:
@@ -11225,6 +11238,8 @@ def _coalesce_session_name_args(argv: list) -> list:
         "import",
         "completion",
         "logs",
+        "models",
+        "providers",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -12676,7 +12691,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "model", "models", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
+        "providers",
         "project", "proxy",
         "prompt-size",
         "resume",
@@ -13597,6 +13613,9 @@ def main():
     # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
+    build_inventory_parsers(
+        subparsers, cmd_models=cmd_models, cmd_providers=cmd_providers
+    )
 
     from hermes_cli.moa_cmd import cmd_moa
 

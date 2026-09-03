@@ -30,6 +30,17 @@ _REDACTED_FIELDS: frozenset = frozenset({
     "state", "ticket", "cookie", "Authorization", "authorization",
 })
 
+# ``ws_ticket_minted`` fires on every dashboard WebSocket (re)connect and,
+# with an aggressive UI reconnect loop, dominates dashboard-auth.log without
+# carrying information beyond the first mint after an idle gap (#57749 —
+# unbounded log growth; ~600KB/day observed on a single-dashboard install).
+# Sample it: keep the first mint of every batch of _TICKET_MINT_SAMPLE_EVERY.
+# Rejections are security-relevant and are never sampled.
+_TICKET_MINT_SAMPLE_EVERY = 50
+_ticket_mint_count = 0
+_ticket_mint_lock = threading.Lock()
+_ticket_mint_since_last_logged = 0
+
 
 class AuditEvent(enum.Enum):
     """Event types written to dashboard-auth.log.
@@ -71,10 +82,25 @@ def _resolve_log_path() -> Path:
 def audit_log(event: AuditEvent, **fields: Any) -> None:
     """Append one event to the audit log.
 
-    Token-like fields are dropped. Missing log directory is created.
-    Write failures are logged at WARNING but never raise — auth must not
-    fail because the audit logger broke.
+    Token-like fields are dropped. ``ws_ticket_minted`` is sampled (first of
+    every ``_TICKET_MINT_SAMPLE_EVERY``) — see the constant's comment for why.
+    Missing log directory is created. Write failures are logged at WARNING
+    but never raise — auth must not fail because the audit logger broke.
     """
+    global _ticket_mint_count, _ticket_mint_since_last_logged
+    if event is AuditEvent.WS_TICKET_MINTED:
+        with _ticket_mint_lock:
+            _ticket_mint_count += 1
+            _ticket_mint_since_last_logged += 1
+            current_count = _ticket_mint_count
+            suppressed_since_last = _ticket_mint_since_last_logged - 1
+            should_log = (current_count - 1) % _TICKET_MINT_SAMPLE_EVERY == 0
+            if should_log:
+                _ticket_mint_since_last_logged = 0
+        if not should_log:
+            return
+        # Add suppressed count to the logged event so operators can see burst patterns
+        fields = {**fields, "suppressed_mints_since_last_logged": suppressed_since_last}
     safe_fields = {
         k: v for k, v in fields.items()
         if k not in _REDACTED_FIELDS

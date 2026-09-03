@@ -3436,6 +3436,8 @@ class CLICommandsMixin:
             return
 
         set_active_skin(new_skin)
+        from agent.display import invalidate_diff_color_cache
+        invalidate_diff_color_cache()  # Re-resolve diff colors for the new skin
         _ACCENT.reset()  # Re-resolve ANSI color for the new skin
         # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
         # so it doesn't need re-resolving on skin switch.

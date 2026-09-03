@@ -314,3 +314,30 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
+
+
+def test_diff_color_cache_is_invalidated_after_skin_switch(monkeypatch):
+    """Switching skins must clear the cached diff colors so the new skin is used."""
+    import agent.display as d
+
+    # Reset any cached state from earlier tests.
+    d._diff_colors_cached = None
+
+    # First resolution caches colors for the current skin.
+    first = d._diff_ansi()
+    assert d._diff_colors_cached is not None
+
+    # A skin switch must invalidate the cache so the next resolve re-reads the skin.
+    assert hasattr(d, "invalidate_diff_color_cache"), (
+        "display.py must expose invalidate_diff_color_cache() so a skin switch "
+        "can clear the stale diff colors"
+    )
+    d.invalidate_diff_color_cache()
+    assert d._diff_colors_cached is None, (
+        "diff color cache must be cleared after a skin switch, otherwise the "
+        "inline diff keeps the old skin's colors"
+    )
+
+    # Re-resolving picks up the new skin rather than the stale cached colors.
+    second = d._diff_ansi()
+    assert second is not first or d._diff_colors_cached is not None

@@ -704,6 +704,7 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
     """
+    (kanban_home / "profiles" / "some-profile").mkdir(parents=True)
     captured = {}
 
     class FakeProc:

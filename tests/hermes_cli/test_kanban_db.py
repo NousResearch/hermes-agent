@@ -805,6 +805,7 @@ class TestSharedBoardPaths:
         # never one inherited from whatever the gateway last routed.
         default_home = tmp_path / ".hermes"
         default_home.mkdir()
+        (default_home / "profiles" / "coder").mkdir(parents=True)
         self._set_home(monkeypatch, tmp_path, default_home)
 
         from gateway import session_context as sc

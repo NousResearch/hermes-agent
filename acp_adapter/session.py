@@ -172,6 +172,9 @@ class SessionState:
 
     session_id: str
     agent: Any  # AIAgent instance
+    # ACP exposes session_id as a stable client handle. A rollover can resolve
+    # it to a child tip, which must own agent recreation and durable writes.
+    persistence_session_id: str = ""
     cwd: str = "."
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
@@ -217,6 +220,7 @@ class SessionManager:
         state = SessionState(
             session_id=session_id,
             agent=agent,
+            persistence_session_id=session_id,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
             cancel_event=threading.Event(),
@@ -268,6 +272,7 @@ class SessionManager:
         state = SessionState(
             session_id=new_id,
             agent=agent,
+            persistence_session_id=new_id,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
@@ -429,6 +434,7 @@ class SessionManager:
         db = self._get_db()
         if db is None:
             return
+        persistence_session_id = state.persistence_session_id or state.session_id
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
@@ -446,10 +452,10 @@ class SessionManager:
 
         try:
             # Ensure the session record exists.
-            existing = db.get_session(state.session_id)
+            existing = db.get_session(persistence_session_id)
             if existing is None:
                 db.create_session(
-                    session_id=state.session_id,
+                    session_id=persistence_session_id,
                     source="acp",
                     model=model_str,
                     model_config={"cwd": state.cwd},
@@ -457,7 +463,7 @@ class SessionManager:
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
-                    db.update_session_meta(state.session_id, cwd_json, model_str)
+                    db.update_session_meta(persistence_session_id, cwd_json, model_str)
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
@@ -501,7 +507,7 @@ class SessionManager:
                 # archive_and_compact — the same probe failure mode #80216's
                 # /retry fix (gateway/slash_commands.py) deliberately avoids.
                 db.replace_messages(
-                    state.session_id, state.history, active_only=True
+                    persistence_session_id, state.history, active_only=True
                 )
         except Exception:
             logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
@@ -576,6 +582,7 @@ class SessionManager:
         state = SessionState(
             session_id=session_id,
             agent=agent,
+            persistence_session_id=resolved_session_id,
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
             history=history,

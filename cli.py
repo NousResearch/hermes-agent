@@ -13623,6 +13623,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             db = getattr(self, "_session_db", None)
             append_delivery = getattr(db, "append_message", None)
             append_once = getattr(db, "append_async_delegation_completion", None)
+            inserted = not callable(append_once)
             if event.get("type") == "async_delegation" and (
                 callable(append_once) or callable(append_delivery)
             ):
@@ -13637,7 +13638,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             and len(append_result) == 2
                         ):
                             raise TypeError("invalid async completion append result")
-                        row_id = append_result[0]
+                        row_id, inserted = append_result
                     else:
                         if not callable(append_delivery):
                             raise TypeError("SessionDB cannot append completion delivery")
@@ -13674,7 +13675,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         conversation_history.append(completion)
                     # A completion is an immediate CLI-visible display event,
                     # not a queued synthetic prompt/model turn.
-                    _cli_visible_print(synthetic_message)
+                    if not callable(append_once) or inserted:
+                        _cli_visible_print(synthetic_message)
                 except Exception:
                     # Leave retryable failures pending.  Ack follows durable,
                     # live-history, and visible-display acceptance only.
@@ -13683,7 +13685,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 self._pending_input.put(synthetic_message)
                 _cli_visible_print(synthetic_message)
-            complete_event_delivery(event, claim)
+            try:
+                complete_event_delivery(event, claim)
+            except Exception:
+                # Durable/live/display acceptance succeeded, but a failed ack
+                # must immediately release the claim for a safe replay.
+                release_event_delivery(event, claim)
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.

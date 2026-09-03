@@ -169,8 +169,60 @@ def test_cli_stale_replay_after_crash_does_not_duplicate_durable_or_live_history
         for message in cli.conversation_history
     ) == 1
     assert cli._pending_input.empty()
-    assert visible == ["completion payload"]
+    # The durable row predates this replay, so it was already accepted for
+    # display. A reclaimed stale claim still gets acknowledged, but does not
+    # print the completion again.
+    assert visible == []
     assert delivered == [(event, "stale-claim")]
+
+
+def test_cli_ack_failure_releases_claim_then_replay_acks_without_reprinting(monkeypatch, tmp_path):
+    """Ack failures retry immediately without duplicating durable/live/visible delivery."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("visible-session", source="cli")
+    event = {
+        "type": "async_delegation",
+        "delegation_id": "deleg-ack-retry",
+        "session_key": "visible-session",
+    }
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "visible-session"
+    cli._session_db = db
+    cli._pending_input = queue.Queue()
+    cli.conversation_history = []
+    visible = []
+    released = []
+    acknowledged = []
+    claims = iter(("first-claim", "retry-claim"))
+
+    class FakeRegistry:
+        def drain_notifications(self, **_kwargs):
+            return [(event, "completion payload")]
+
+    def complete(_event, claim):
+        if claim == "first-claim":
+            raise OSError("ack unavailable")
+        acknowledged.append((_event, claim))
+
+    monkeypatch.setattr("tools.process_registry.process_registry", FakeRegistry())
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *_args: next(claims))
+    monkeypatch.setattr("tools.async_delegation.release_event_delivery", lambda *args: released.append(args))
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", complete)
+    monkeypatch.setattr("cli._cli_visible_print", visible.append)
+
+    cli._drain_process_notifications("cli-idle")
+    cli._drain_process_notifications("cli-idle")
+
+    assert len(db.get_messages("visible-session")) == 1
+    assert sum(
+        message.get("display_metadata", {}).get("delegation_id") == "deleg-ack-retry"
+        for message in cli.conversation_history
+    ) == 1
+    assert visible == ["completion payload"]
+    assert released == [(event, "first-claim")]
+    assert acknowledged == [(event, "retry-claim")]
 
 
 def test_cli_releases_claim_when_durable_delivery_fails(monkeypatch):

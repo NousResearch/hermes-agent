@@ -184,6 +184,67 @@ def test_acp_restart_parent_handle_restores_turn_boundary_child_tip(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("switch_path", ("slash", "protocol"))
+async def test_acp_model_switch_persists_to_rollover_child_not_stable_parent(
+    monkeypatch, tmp_path, switch_path,
+):
+    """The ACP handle stays stable while model/history writes target the child tip."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"session_rollover": {"enabled": True, "ratio": 0.75}},
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        "acp-parent", source="acp", model="parent-model", model_config={"cwd": "/parent"},
+    )
+    db.append_message("acp-parent", "user", "parent-only")
+    assert TurnBoundaryRollover(db).mark_pending("acp-parent", threshold_tokens=1) is True
+    child_id = TurnBoundaryRollover(db).adopt_at_turn_boundary("acp-parent", active_work=False)
+    assert child_id
+    db.update_session_meta(child_id, json.dumps({"cwd": "/child"}), "child-model")
+    db.append_message(child_id, "user", "child-only")
+
+    made = []
+
+    class _Agent:
+        model = "factory-model"
+        provider = "factory-provider"
+
+    manager = SessionManager(agent_factory=_Agent, db=db)
+    original_make_agent = manager._make_agent
+
+    def capture_make_agent(**kwargs):
+        made.append(kwargs)
+        return original_make_agent(**kwargs)
+
+    manager._make_agent = capture_make_agent
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.get_session("acp-parent")
+    assert state is not None
+
+    if switch_path == "slash":
+        assert "Model switched to: next-model" in acp_agent._cmd_model("next-model", state)
+    else:
+        assert await acp_agent.set_session_model("next-model", "acp-parent") is not None
+
+    parent = db.get_session("acp-parent")
+    child = db.get_session(child_id)
+    assert parent is not None
+    assert child is not None
+    assert parent["model"] == "parent-model"
+    assert [message["content"] for message in db.get_messages_as_conversation("acp-parent")] == ["parent-only"]
+    assert child["model"] == "next-model"
+    assert [message["content"] for message in db.get_messages_as_conversation(child_id)] == ["child-only"]
+    assert made[-1]["session_id"] == child_id
+
+    restarted = SessionManager(agent_factory=_Agent, db=db).get_session("acp-parent")
+    assert restarted is not None
+    assert restarted.session_id == "acp-parent"
+    assert restarted.model == "next-model"
+    assert [message["content"] for message in restarted.history] == ["child-only"]
+
+
+@pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()
     state.is_running = True

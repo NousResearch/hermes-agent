@@ -104,6 +104,30 @@ class TestTrustGateAtCallTime:
         assert json.loads(raw) == {"result": "ok"}
         fake_session.call_tool.assert_awaited_once()
 
+    def test_approval_card_shows_redacted_bounded_arguments(self, fake_session):
+        """The approver sees the exact call payload without exposed secrets."""
+        _set_trust("srv", "untrusted")
+        handler = mcp_tool._make_tool_handler("srv", "trigger_build", 30.0)
+        args = {
+            "job": "release",
+            "api_key": "sk-supersecretcredential123456",
+            "notes": "x" * 5_000,
+        }
+
+        with patch(
+            "tools.approval.request_elicitation_consent",
+            return_value="decline",
+        ) as consent:
+            handler(args)
+
+        message = consent.call_args.args[0]
+        assert "```json" in message
+        assert '"job": "release"' in message
+        assert "sk-supersecretcredential123456" not in message
+        assert "truncated" in message
+        assert len(message) < 3_000
+        fake_session.call_tool.assert_not_awaited()
+
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""
         _set_trust("srv", "untrusted")

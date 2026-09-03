@@ -5923,6 +5923,8 @@ def request_elicitation_consent(
             "description": description,
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],
+            "allow_session": False,
+            "allow_permanent": False,
         }
         try:
             decision = _await_gateway_decision(
@@ -5939,18 +5941,19 @@ def request_elicitation_consent(
         if not decision.get("resolved"):
             return "cancel"
         choice = decision.get("choice")
-        if choice in ("once", "session", "always"):
+        if choice == "once":
             return "accept"
         return "decline"
 
-    # CLI / TUI path. allow_permanent=False because elicitation is a
-    # per-call confirmation — there is no pattern to remember.
+    # CLI / TUI path. Elicitation is a per-call confirmation with no
+    # persistence key, so offering broader scopes would be misleading.
     try:
         choice = prompt_dangerous_approval(
             message,
             description,
             timeout_seconds=timeout_seconds,
             allow_permanent=False,
+            allow_session=False,
         )
     except Exception as exc:
         logger.error(
@@ -5958,7 +5961,7 @@ def request_elicitation_consent(
         )
         return "decline"
 
-    if choice in ("once", "session", "always"):
+    if choice == "once":
         return "accept"
     if choice == "timeout":
         # Prompt expired without a user response — mirror the gateway's

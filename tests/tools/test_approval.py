@@ -24,6 +24,79 @@ from tools.approval import (
 )
 
 
+class TestElicitationConsentScope:
+    def test_gateway_payload_offers_only_one_shot_consent(self, monkeypatch):
+        session_key = "gateway:slack:approval"
+        notify_cb = object()
+        monkeypatch.setattr(
+            approval_module, "get_current_session_key", lambda: session_key
+        )
+        monkeypatch.setattr(
+            approval_module, "_is_gateway_approval_context", lambda: True
+        )
+
+        with mock_patch.dict(
+            approval_module._gateway_notify_cbs,
+            {session_key: notify_cb},
+            clear=True,
+        ), mock_patch.object(
+            approval_module,
+            "_await_gateway_decision",
+            return_value={"resolved": True, "choice": "once"},
+        ) as await_decision:
+            result = approval_module.request_elicitation_consent(
+                "MCP write", "untrusted MCP server"
+            )
+
+        approval_data = await_decision.call_args.args[2]
+        assert result == "accept"
+        assert approval_data["allow_session"] is False
+        assert approval_data["allow_permanent"] is False
+
+    def test_cli_prompt_offers_only_one_shot_consent(self, monkeypatch):
+        monkeypatch.setattr(
+            approval_module, "get_current_session_key", lambda: "cli:approval"
+        )
+        monkeypatch.setattr(
+            approval_module, "_is_gateway_approval_context", lambda: False
+        )
+
+        with mock_patch.object(
+            approval_module, "prompt_dangerous_approval", return_value="once"
+        ) as prompt:
+            result = approval_module.request_elicitation_consent(
+                "MCP write", "untrusted MCP server"
+            )
+
+        assert result == "accept"
+        assert prompt.call_args.kwargs["allow_session"] is False
+        assert prompt.call_args.kwargs["allow_permanent"] is False
+
+    def test_gateway_rejects_an_unoffered_broader_scope(self, monkeypatch):
+        session_key = "gateway:slack:stale-scope"
+        monkeypatch.setattr(
+            approval_module, "get_current_session_key", lambda: session_key
+        )
+        monkeypatch.setattr(
+            approval_module, "_is_gateway_approval_context", lambda: True
+        )
+
+        with mock_patch.dict(
+            approval_module._gateway_notify_cbs,
+            {session_key: object()},
+            clear=True,
+        ), mock_patch.object(
+            approval_module,
+            "_await_gateway_decision",
+            return_value={"resolved": True, "choice": "always"},
+        ):
+            result = approval_module.request_elicitation_consent(
+                "MCP write", "untrusted MCP server"
+            )
+
+        assert result == "decline"
+
+
 class TestApprovalModeParsing:
     def test_normalization_table(self):
         # Unquoted YAML `off`/`on` arrive as booleans; unknown/empty fall back

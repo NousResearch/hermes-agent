@@ -4947,6 +4947,8 @@ _tool_read_only_hints: Dict[str, Dict[str, bool]] = {}
 
 _TRUST_FULL = "full"
 _TRUST_UNTRUSTED = "untrusted"
+_TRUST_GATE_ARGUMENTS_MAX_CHARS = 2_048
+_TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER = "\n... [arguments truncated]"
 
 
 def _normalize_server_trust(value: Any) -> str:
@@ -5003,7 +5005,27 @@ def _record_tool_trust_metadata(
                 hints[name] = _annotation_read_only_hint(tool)
 
 
-def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
+def _format_trust_gate_arguments(args: dict) -> str:
+    """Return redacted, bounded JSON for the user-facing approval card."""
+    from agent.redact import redact_sensitive_text
+
+    rendered = json.dumps(args, ensure_ascii=False, indent=2, default=str)
+    rendered = redact_sensitive_text(rendered)
+    if len(rendered) > _TRUST_GATE_ARGUMENTS_MAX_CHARS:
+        prefix_length = (
+            _TRUST_GATE_ARGUMENTS_MAX_CHARS
+            - len(_TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER)
+        )
+        rendered = (
+            rendered[:prefix_length].rstrip()
+            + _TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER
+        )
+    return rendered
+
+
+def _trust_gate_check(
+    server_name: str, tool_name: str, args: dict
+) -> Optional[str]:
     """Consult the approval path for write-capable tools on untrusted servers.
 
     Returns None when the call may proceed, or an error string (already
@@ -5022,12 +5044,13 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     try:
         from tools.approval import request_elicitation_consent
 
+        display_args = _format_trust_gate_arguments(args)
         answer = request_elicitation_consent(
             (
                 f"MCP tool '{tool_name}' on UNTRUSTED server "
                 f"'{server_name}' wants to run. This tool is write-capable "
                 f"(no readOnlyHint=true annotation) and may modify external "
-                f"state."
+                f"state.\n\nArguments:\n```json\n{display_args}\n```"
             ),
             (
                 f"Server '{server_name}' is configured 'trust: untrusted'. "
@@ -6585,7 +6608,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         # servers configured ``trust: untrusted`` must be approved by the
         # user before ANY transport work happens — including the lazy
         # first-use spawn below. A denied call never touches the server.
-        gate_error = _trust_gate_check(server_name, tool_name)
+        gate_error = _trust_gate_check(server_name, tool_name, args)
         if gate_error is not None:
             return gate_error
 

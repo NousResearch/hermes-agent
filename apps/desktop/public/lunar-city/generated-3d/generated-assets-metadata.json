@@ -424,7 +424,7 @@
   "notes": [
     "GLBs are generated from approved visual references with local TripoSR.",
     "Wireframe overlays are inspection-only, non-destructive, and hidden from renders.",
-    "Reference crop cards remain visible behind meshes for direct quality review.",
+    "Reference crop cards are included in a separate Blender collection but hidden from renders.",
     "The exported review GLB excludes reference cards and inspection overlays to keep PR size bounded.",
     "PBR fields are marked needs_rebake until texture baking is complete."
   ],

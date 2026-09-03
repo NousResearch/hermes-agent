@@ -134,12 +134,22 @@ def add_label(text: str, loc: tuple[float, float, float], size: float = 0.22) ->
     obj.data.align_y = "CENTER"
     obj.data.size = size
     mat = bpy.data.materials.get("label_white") or bpy.data.materials.new("label_white")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (0.95, 0.98, 1.0, 1)
+    bsdf.inputs["Emission Color"].default_value = (0.4, 0.75, 1.0, 1)
+    bsdf.inputs["Emission Strength"].default_value = 0.25
     mat.diffuse_color = (0.85, 0.95, 1.0, 1)
     obj.data.materials.append(mat)
     return obj
 
 
-def add_reference_card(card: dict, loc: tuple[float, float, float], size: float) -> bpy.types.Object | None:
+def add_reference_card(
+    card: dict,
+    loc: tuple[float, float, float],
+    size: float,
+    reference_collection: bpy.types.Collection,
+) -> bpy.types.Object | None:
     image_path = PUBLIC / card["uri"]
     if not image_path.exists():
         return None
@@ -160,6 +170,8 @@ def add_reference_card(card: dict, loc: tuple[float, float, float], size: float)
     obj.data.materials.append(mat)
     obj["lunar_city_asset_id"] = card["id"]
     obj["reference_only"] = True
+    obj.hide_render = True
+    link_to_collection(obj, reference_collection)
     return obj
 
 
@@ -207,7 +219,12 @@ def add_wire_overlay(obj: bpy.types.Object, wire_material: bpy.types.Material) -
     return overlay
 
 
-def import_asset(card: dict, index_by_kind: dict[str, int], root_collection: bpy.types.Collection) -> dict:
+def import_asset(
+    card: dict,
+    index_by_kind: dict[str, int],
+    root_collection: bpy.types.Collection,
+    reference_collection: bpy.types.Collection,
+) -> dict:
     asset_id = card["id"]
     kind = card["kind"]
     mesh_path = PUBLIC / card["targetMesh"]
@@ -224,7 +241,12 @@ def import_asset(card: dict, index_by_kind: dict[str, int], root_collection: bpy
     x = (slot - 4.5) * 2.35 if kind == "building" else (slot - 3) * 2.0
     y = ROW_Y.get(kind, -7.5)
     center_and_scale(imported, TARGET_SIZE.get(kind, 1.2), (x, y, 0))
-    add_reference_card(card, (x, y + 1.05, TARGET_SIZE.get(kind, 1.2) * 0.5), TARGET_SIZE.get(kind, 1.2))
+    add_reference_card(
+        card,
+        (x, y + 1.05, TARGET_SIZE.get(kind, 1.2) * 0.5),
+        TARGET_SIZE.get(kind, 1.2),
+        reference_collection,
+    )
 
     kind_collection = collection(f"{kind}s", root_collection)
     for obj in imported:
@@ -270,7 +292,7 @@ def setup_camera_and_lighting() -> None:
     bpy.ops.object.light_add(type="AREA", location=(0, -4, 8))
     key = bpy.context.object
     key.name = "large_softbox_asset_review_key"
-    key.data.energy = 650
+    key.data.energy = 950
     key.data.size = 8
     bpy.ops.object.light_add(type="POINT", location=(-7, 5, 3))
     rim = bpy.context.object
@@ -278,11 +300,11 @@ def setup_camera_and_lighting() -> None:
     rim.data.color = (0.2, 0.75, 1.0)
     rim.data.energy = 160
 
-    bpy.ops.object.camera_add(location=(0, -14.5, 10.5), rotation=(math.radians(57), 0, 0))
+    bpy.ops.object.camera_add(location=(0, -15.5, 9.0), rotation=(math.radians(60), 0, 0))
     camera = bpy.context.object
     bpy.context.scene.camera = camera
     camera.name = "lunar_city_generated_assets_camera"
-    camera.data.lens = 24
+    camera.data.lens = 22
     camera.data.dof.use_dof = False
 
     scene = bpy.context.scene
@@ -300,14 +322,15 @@ def main() -> None:
     skin, wire, floor_material = add_materials()
     _ = skin, wire
     root_collection = collection("Lunar City Generated 3D Asset Board")
+    reference_collection = collection("Reference Crop Cards Hidden From Render", root_collection)
     add_floor(floor_material)
-    add_label("Lunar City image-to-3D mesh assets", (0, 7.9, 0.25), size=0.38)
+    add_label("Lunar City image-to-3D mesh assets only", (0, 7.9, 0.25), size=0.38)
     for kind, y in ROW_Y.items():
         add_label(kind.upper(), (-10.6, y, 0.2), size=0.24)
 
     data = json.loads(REFERENCE_MANIFEST.read_text())
     index_by_kind: dict[str, int] = {}
-    assets = [import_asset(card, index_by_kind, root_collection) for card in data["cards"]]
+    assets = [import_asset(card, index_by_kind, root_collection, reference_collection) for card in data["cards"]]
 
     setup_camera_and_lighting()
     metadata = {
@@ -325,7 +348,7 @@ def main() -> None:
         "notes": [
             "GLBs are generated from approved visual references with local TripoSR.",
             "Wireframe overlays are inspection-only, non-destructive, and hidden from renders.",
-            "Reference crop cards remain visible behind meshes for direct quality review.",
+            "Reference crop cards are included in a separate Blender collection but hidden from renders.",
             "The exported review GLB excludes reference cards and inspection overlays to keep PR size bounded.",
             "PBR fields are marked needs_rebake until texture baking is complete.",
         ],

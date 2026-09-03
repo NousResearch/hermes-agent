@@ -622,7 +622,9 @@ class TestVoiceChannelCommands:
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_fast_lane_matches = MagicMock(return_value=(False, ""))
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
         mock_adapter.handle_message.assert_called_once()
         event = mock_adapter.handle_message.call_args[0][0]
@@ -670,7 +672,9 @@ class TestVoiceChannelCommands:
         mock_adapter._client = MagicMock()
         mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
         mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value=None)
         runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._voice_fast_lane_matches = MagicMock(return_value=(False, ""))
 
         await runner._handle_voice_channel_input(111, 42, "Hello from VC")
 
@@ -680,6 +684,77 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "group"
         assert event.source.chat_name == "Hermes Server / #general"
         assert event.source.user_id == "42"
+
+    @pytest.mark.asyncio
+    async def test_input_marks_configured_fast_lane_without_changing_reply_channel(
+        self, runner, monkeypatch
+    ):
+        """Configured voice fast lane gets an isolated session, not a new Discord target."""
+        import gateway.run as _gr
+        from gateway.config import Platform
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "discord": {
+                    "voice_fast_lane": {
+                        "enabled": True,
+                        "channel_id": "456",
+                        "user_ids": ["42"],
+                    }
+                }
+            },
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_clients = {
+            111: SimpleNamespace(channel=SimpleNamespace(id=456))
+        }
+        mock_adapter._resolve_channel_prompt = None
+        mock_adapter._client = MagicMock()
+        mock_channel = MagicMock()
+        mock_channel.send = AsyncMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "What did you just say?")
+
+        event = mock_adapter.handle_message.call_args.args[0]
+        assert event.source.chat_id == "123"
+        assert event.source._voice_fast_lane is True
+        assert event.source._session_key_lane == "discord-voice:456"
+
+    def test_fast_lane_session_key_isolates_voice_context(self):
+        """The private lane marker must change storage identity, never Discord delivery."""
+        from gateway.config import Platform
+        from gateway.platforms.base import build_session_key
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="123",
+            chat_type="channel",
+            user_id="42",
+        )
+        normal_key = build_session_key(source)
+        source._session_key_lane = "discord-voice:456"
+        assert build_session_key(source) != normal_key
+        assert build_session_key(source).endswith(":lane:discord-voice:456")
+
+    def test_fast_lane_work_detection_is_explicit(self):
+        """Conversation stays tool-free; an explicit operation keeps task capability."""
+        from gateway.run import GatewayRunner
+
+        assert not GatewayRunner._voice_fast_lane_requests_work("Can you hear me?")
+        assert not GatewayRunner._voice_fast_lane_requests_work("What did you just say?")
+        assert GatewayRunner._voice_fast_lane_requests_work(
+            "Please inspect the Hermes worktree and fix the voice delay."
+        )
+        assert GatewayRunner._voice_fast_lane_requests_work(
+            "Run the tests and commit the patch."
+        )
 
 
     # -- _get_guild_id --
@@ -1700,6 +1775,21 @@ class TestVoiceReception:
 
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
+
+    def test_on_packet_infers_sole_user_before_dave_decrypt(self):
+        """First speech after reconnect must not decode encrypted audio as silence."""
+        dave = MagicMock()
+        receiver = self._make_receiver_with_nacl(dave_session=dave)
+        receiver._infer_user_for_ssrc = MagicMock(return_value=42)
+        self._inject_mock_decoder(receiver, 100)
+
+        with patch("nacl.secret.Aead") as mock_aead:
+            mock_aead.return_value.decrypt.return_value = b"\xf8\xff\xfe"
+            receiver._on_packet(self._build_rtp_packet(ssrc=100))
+
+        receiver._infer_user_for_ssrc.assert_called_once_with(100)
+        assert dave.decrypt.call_args.args[0] == 42
+        assert 100 in receiver._buffers
 
 
 class TestVoiceTTSPlayback:

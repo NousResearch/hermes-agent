@@ -98,6 +98,30 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_voice_fast_lane_queues_followup_instead_of_interrupting(self):
+        """Speech must not discard an in-progress voice reply or task."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="And what about tomorrow?", platform_val="discord")
+        event.message_type = MessageType.VOICE
+        event.source._voice_fast_lane = True
+        session_key = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        agent = MagicMock()
+        runner._running_agents[session_key] = agent
+
+        handled = await GatewayRunner._handle_active_session_busy_message(
+            runner, event, session_key
+        )
+
+        assert handled is True
+        assert adapter._pending_messages[session_key] is event
+        agent.interrupt.assert_not_called()
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
@@ -469,5 +493,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

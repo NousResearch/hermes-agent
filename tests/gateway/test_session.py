@@ -579,6 +579,38 @@ class TestSessionStoreLookup:
         assert store.lookup_by_session_key("agent:main:telegram:dm:missing") is None
         assert store.lookup_by_session_key("") is None
 
+    def test_private_voice_lane_never_recovers_peer_transcript(self, store):
+        """A same-chat fallback must not erase an intentional voice boundary."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="voice-text-channel",
+            chat_type="channel",
+            user_id="voice-user",
+        )
+        source._session_key_lane = "discord-voice:dedicated-room"
+        store._db = MagicMock()
+        store._db.get_compression_tip.side_effect = lambda session_id: session_id
+
+        def _find(**kwargs):
+            # Model the real DB: the old session is discoverable only through
+            # the platform/chat peer fallback, not by the new lane key.
+            if kwargs["chat_id"] is not None:
+                return {
+                    "id": "legacy-voice-session",
+                    "started_at": datetime.now().timestamp(),
+                    "last_activity_at": datetime.now().timestamp(),
+                }
+            return None
+
+        store._db.find_latest_gateway_session_for_peer.side_effect = _find
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.session_id != "legacy-voice-session"
+        call = store._db.find_latest_gateway_session_for_peer.call_args
+        assert call.kwargs["chat_id"] is None
+        assert call.kwargs["chat_type"] is None
+
 
 class TestSlackWorkspaceSessionIsolation:
     @pytest.fixture()
@@ -1656,5 +1688,4 @@ class TestGatewayRoutingTable:
         recovered = restarted.get_or_create_session(self._source())
         assert recovered.session_id == entry.session_id
         restarted._db.close()
-
 

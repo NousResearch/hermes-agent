@@ -1216,6 +1216,16 @@ def build_session_key(
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
 
+    # A receiving adapter may attach a private lane marker for a distinct
+    # conversational surface that still replies through the same platform
+    # channel (for example, the Discord voice fast lane). Keep it out of
+    # SessionSource serialization and delivery metadata: it affects only
+    # durable conversation identity, so a short spoken exchange cannot pull
+    # a long text-task transcript into its prompt.
+    lane = str(getattr(source, "_session_key_lane", "") or "").strip()
+    if lane:
+        key_parts.extend(("lane", lane))
+
     return ":".join(str(part) for part in key_parts)
 
 
@@ -2407,10 +2417,17 @@ class SessionStore:
         resurrected as freshly active.
         """
         legacy_key = self._legacy_slack_session_key(source)
+        # A private lane is an intentional conversation boundary.  Its key
+        # may share platform/chat/user fields with an ordinary session, but a
+        # peer fallback would silently reattach the old transcript and defeat
+        # the boundary (notably the Discord voice fast lane).
+        allow_peer_fallback = legacy_key is None and not bool(
+            getattr(source, "_session_key_lane", "")
+        )
         recovered = self._find_gateway_session_row(
             session_key=session_key,
             source=source,
-            allow_peer_fallback=legacy_key is None,
+            allow_peer_fallback=allow_peer_fallback,
             raise_on_lookup_error=raise_on_lookup_error,
         )
         migrated_legacy = False
@@ -2485,10 +2502,15 @@ class SessionStore:
         evaluates the reset policy first and decides reset vs resume.
         """
         legacy_key = self._legacy_slack_session_key(source)
+        # See _recover_session_from_db: private lanes must only recover an
+        # exact matching key, never a same-peer transcript.
+        allow_peer_fallback = legacy_key is None and not bool(
+            getattr(source, "_session_key_lane", "")
+        )
         recovered = self._find_gateway_session_row(
             session_key=session_key,
             source=source,
-            allow_peer_fallback=legacy_key is None,
+            allow_peer_fallback=allow_peer_fallback,
         )
         migrated_legacy = False
         if (

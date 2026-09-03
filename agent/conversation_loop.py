@@ -902,6 +902,41 @@ def _billing_terminal_label(summary: str, unverified: bool) -> str:
     return f"Billing or credits exhausted: {summary}"
 
 
+def _rate_limit_terminal_hint(model: str) -> str:
+    """Terminal-failure recovery hint for a rate-limited model (#101445).
+
+    Mirrors ``_billing_guidance`` / ``build_thinking_timeout_guidance``: the
+    retry loop already classified the error (``is_rate_limited``); this just
+    renders the model-specific recovery text so the final response names the
+    model and the tier-shaped recovery instead of the bare provider summary.
+
+    ``:free`` check is case-insensitive (OpenRouter exposes ``:Free`` variants).
+    Upstream ``metadata.reasons`` is deliberately NOT parsed — free-tier
+    providers routinely omit it, so the model name is the reliable signal.
+    """
+    _model = (model or "").strip()
+    if not _model:
+        return ""
+    if re.search(r":free\b", _model, flags=re.IGNORECASE):
+        _bare = re.sub(r":free\b", "", _model, flags=re.IGNORECASE).rstrip(":")
+        return (
+            "\n\n💡 This looks like a `:free`-tier rate limit "
+            f"({_model}). Free models on OpenRouter are capped "
+            "at 20 requests/min and 50 requests/day without funding; "
+            "funding the account ($10 lifetime) lifts the daily cap "
+            "to 1000 requests/day without charging per token. To switch "
+            "this caller off the free tier: "
+            f"`hermes cron edit <id> --model {_bare}` "
+            "or top up at https://openrouter.ai/credits."
+        )
+    return (
+        "\n\n💡 Rate limit hit on a paid model. The provider returned a 429 "
+        "— this is usually transient (back off and retry later) or a "
+        "per-account request cap. Check your provider dashboard for quota "
+        "details, or contact the provider if it persists."
+    )
+
+
 def _billing_failure_result(
     *,
     classified,
@@ -7148,6 +7183,14 @@ def run_conversation(
                         )
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                        if is_rate_limited:
+                            # #101445: the classifier already proved a quota
+                            # wall; mirror the billing/thinking-timeout
+                            # pattern and render the tier-shaped recovery
+                            # hint instead of stopping at the bare summary.
+                            # (Billing walls took the branch above, so here
+                            # ``is_rate_limited`` means pure rate limiting.)
+                            _final_response += _rate_limit_terminal_hint(_model)
                     if _is_thinking_timeout:
                         # Thinking-timeout guidance overrides the generic
                         # stream-drop guidance — the latter is wrong for

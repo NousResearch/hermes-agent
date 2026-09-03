@@ -132,3 +132,48 @@ def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):
     assert not saved_dir.exists() or not list(saved_dir.iterdir())
     out = capsys.readouterr().out
     assert "Usage:" in out
+
+
+_FAKE_GH_TOKEN = "ghp_" + "F" * 36
+
+
+def test_save_conversation_redacts_secrets_by_default(hermes_home, tmp_path, monkeypatch):
+    """Regression: /save must scrub secrets by default — the export can be
+    shared or leave the machine even for a local snapshot, so it must not
+    require the user to remember an opt-in `redact` token."""
+    monkeypatch.chdir(tmp_path)
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
+        sys.modules.pop(mod, None)
+    import cli
+
+    stub = _make_stub_cli([
+        {"role": "user", "content": f"export GITHUB_TOKEN={_FAKE_GH_TOKEN}"},
+        {"role": "assistant", "content": "Got it."},
+    ])
+    cli.HermesCLI.save_conversation(stub, "/save json")
+
+    saved_dir = hermes_home / "sessions" / "saved"
+    files = list(saved_dir.glob("hermes_conversation_*.json"))
+    assert len(files) == 1, files
+    content = files[0].read_text()
+    assert _FAKE_GH_TOKEN not in content, "raw secret leaked into the default /save export"
+
+
+def test_save_conversation_noredact_skips_redaction(hermes_home, tmp_path, monkeypatch):
+    """`noredact` opts out of the default scrubbing for a reviewed export."""
+    monkeypatch.chdir(tmp_path)
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
+        sys.modules.pop(mod, None)
+    import cli
+
+    stub = _make_stub_cli([
+        {"role": "user", "content": f"export GITHUB_TOKEN={_FAKE_GH_TOKEN}"},
+        {"role": "assistant", "content": "Got it."},
+    ])
+    cli.HermesCLI.save_conversation(stub, "/save json noredact")
+
+    saved_dir = hermes_home / "sessions" / "saved"
+    files = list(saved_dir.glob("hermes_conversation_*.json"))
+    assert len(files) == 1, files
+    content = files[0].read_text()
+    assert _FAKE_GH_TOKEN in content

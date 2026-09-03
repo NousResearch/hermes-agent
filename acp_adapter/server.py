@@ -70,6 +70,7 @@ from acp_adapter.events import (
     make_thinking_cb,
     make_tool_progress_cb,
 )
+from acp_adapter.keepalive import make_turn_keepalive
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
@@ -1808,6 +1809,11 @@ class HermesACPAgent(acp.Agent):
         if not has_content:
             return PromptResponse(stop_reason="end_turn")
 
+        # TurnKeepalive is instantiated later — only once we've decided this
+        # call is actually going to execute a turn (past the slash-command,
+        # active-turn-redirect, and queue-for-next-turn early returns).
+        keepalive = None
+
         # /steer on an idle session has no in-flight tool call to inject into.
         # Rewrite it so the payload runs as a normal user prompt, matching the
         # gateway's behavior (gateway/run.py ~L4898). Two sub-cases:
@@ -1928,6 +1934,15 @@ class HermesACPAgent(acp.Agent):
         conn = self._conn
         loop = asyncio.get_running_loop()
 
+        # We're committed to running a turn — start the keepalive now so that
+        # the run_in_executor call below is always paired with a stop() in the
+        # finally block. Skipping this for the early-return paths above avoids
+        # a leaked worker thread when we never enter the executor.
+        if conn is not None:
+            keepalive = make_turn_keepalive(conn, session_id, loop)
+            if keepalive is not None:
+                keepalive.start()
+
         if state.cancel_event:
             state.cancel_event.clear()
 
@@ -1956,6 +1971,9 @@ class HermesACPAgent(acp.Agent):
                 if text:
                     streamed_message = True
                 message_cb(text)
+                # Reset keepalive on real update
+                if keepalive is not None:
+                    keepalive.mark_activity()
 
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
             try:
@@ -2110,34 +2128,27 @@ class HermesACPAgent(acp.Agent):
                     except Exception:
                         logger.debug("Could not clear ACP session context", exc_info=True)
 
+        # Main agent execution, wrapped with TurnKeepalive stop for both error/success
         try:
-            # Snapshot the internal Hermes DB session id before the turn so we
-            # can detect a compression-driven session rotation afterwards. The
-            # ACP `session_id` stays the stable client handle; agent.session_id
-            # is the live internal head that compression may rotate.
             pre_turn_hermes_id = getattr(state.agent, "session_id", None)
-            # Wrap the executor call in a fresh copy of the current context so
-            # concurrent ACP sessions on the shared ThreadPoolExecutor don't
-            # stomp on each other's ContextVar writes (HERMES_SESSION_KEY in
-            # particular — used by the interactive sudo password cache scope).
             ctx = contextvars.copy_context()
-            result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
-        except Exception:
-            logger.exception("Executor error for session %s", session_id)
-            with state.runtime_lock:
-                state.is_running = False
-                state.current_prompt_text = ""
-            return PromptResponse(stop_reason="end_turn")
+            try:
+                result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+            except Exception:
+                logger.exception("Executor error for session %s", session_id)
+                with state.runtime_lock:
+                    state.is_running = False
+                    state.current_prompt_text = ""
+                return PromptResponse(stop_reason="end_turn")
+        finally:
+            if keepalive is not None:
+                keepalive.stop()
 
         if result.get("messages"):
             state.history = result["messages"]
-            # Persist updated history so sessions survive process restarts.
             self.session_manager.save_session(session_id)
 
-        # Detect a compression-driven internal session rotation. If the agent's
-        # DB head moved during the turn, emit a session_info_update carrying
-        # _meta.hermes.sessionProvenance so ACP clients can render the boundary
-        # and keep old/new ids in lineage. The ACP session_id is unchanged.
+        # Detect a compression-driven internal session rotation
         post_turn_hermes_id = getattr(state.agent, "session_id", None)
         if (
             conn
@@ -2161,8 +2172,6 @@ class HermesACPAgent(acp.Agent):
         final_response = result.get("final_response", "")
         cancelled = bool(state.cancel_event and state.cancel_event.is_set())
         interrupted = bool(result.get("interrupted")) or cancelled
-        # Hermes' local "waiting for model response" interrupt status is metadata,
-        # not assistant prose — clients get cancellation from stop_reason instead.
         from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
         suppress_interrupt_response = interrupted and final_response.startswith(
@@ -2174,16 +2183,9 @@ class HermesACPAgent(acp.Agent):
             and not suppress_interrupt_response
             and (not streamed_message or result.get("response_transformed"))
         ):
-            # Deliver the final response when streaming did not already send it,
-            # or when a plugin hook transformed the response after streaming
-            # finished (e.g. transform_llm_output) — otherwise the appended /
-            # rewritten text never reaches the client.
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 
-        # Mark this turn idle before draining queued work so recursive prompt()
-        # calls can acquire the session. Queued turns are intentionally run as
-        # normal follow-up user prompts, preserving role alternation and history.
         with state.runtime_lock:
             state.is_running = False
             state.current_prompt_text = ""

@@ -3,7 +3,7 @@
 Status: design proposal (not yet implemented; design-review updates applied 2026-09-03)
 Depends on: unified lifecycle service (Chunk 2)
 Fix target: GitHub issue #76590
-Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §6.2, §6.3, §8.2, §18
+Architecture: [`../architecture/mcp-oauth-credential-store-architecture.md`](../architecture/mcp-oauth-credential-store-architecture.md) §4.1, §5.3, §6.2, §6.3, §8.2, §14, §15, §18
 Design-review updates: [`../requirements/mcp-oauth-design-review-approaches.md`](../requirements/mcp-oauth-design-review-approaches.md) (F-2 behavior, F-4 commit order; forward notes F-0/F-3, F-5)
 
 ## Purpose
@@ -25,14 +25,14 @@ class StagedOAuthStorageAdapter:
     async def set_client_info(self, client) -> None: ...
     def load_oauth_metadata(self): ...
     def save_oauth_metadata(self, metadata) -> None: ...
-    def build_validated_state(self, identity) -> LegacyOAuthState: ...
+    def build_bundle(self, identity) -> LegacyOAuthState: ...   # architecture §5.3; transitional return type
 ```
 
 `get_tokens()` always returns `None` at flow start. Client and metadata may be seeded from active validated state to reuse a working dynamic registration and correct token endpoint. New SDK writes remain in the adapter.
 
 No staged secret is written to disk or Keychain.
 
-`build_validated_state` returns the legacy `LegacyOAuthState` shape in this chunk. Chunk 4 extends the committed token record with `original_expires_in` and adds the wall-clock plausibility guard on load (architecture §4.2, §4.3).
+`build_bundle` (architecture §5.3) returns the transitional `LegacyOAuthState` shape in this chunk; Chunk 4 gives its token record `original_expires_in`, and Chunk 5 makes it return `OAuthCredentialBundle`. The wall-clock plausibility guard on load is added in Chunk 4 (architecture §4.2, §4.3).
 
 ## Administrative lock
 
@@ -44,7 +44,7 @@ HERMES_HOME/runtime/mcp-oauth-locks/<identity-digest>.admin.lock
 
 `<identity-digest>` is the SHA-256 of the canonical identity — `hermes_home_key()`-canonicalized `profile_home` plus normalized server URL and name (architecture §4.1, established in Chunk 1). This is the first use of the digest; Chunk 5 reuses it for credential filenames.
 
-The lifecycle service acquires it before loading seed state and holds it through authorization commit or abort, including the single ~2 s per-stage retry that F-2 adds (a bounded step, never a backoff loop). A competing explicit authorization, migration, or deletion returns `reauthorization_in_progress` after a short bounded wait.
+The lifecycle service acquires it before loading seed state and holds it through authorization commit or abort, including the one retry per stage that F-2 adds — an immediate retry for a failed pre-token sub-step, a ~2 s wait before the probe re-check (architecture §6.2, §6.3), a bounded step and never a backoff loop. A competing explicit authorization, migration, or deletion returns `reauthorization_in_progress` after a short bounded wait.
 
 Runtime reads remain available. Runtime refresh concurrency is fully revision-safe in Chunk 4; during this transitional chunk, the lifecycle service rechecks active token state immediately before commit and logs a safe warning if it changed.
 

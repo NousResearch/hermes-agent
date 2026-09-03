@@ -65,7 +65,7 @@ describe('shared-files states and recovery', () => {
     expect(screen.getByRole('dialog').textContent).toContain('Core')
     expect(screen.getByRole('status', { name: 'Loading files' })).toBeTruthy()
     expect(screen.queryByText('No files shared yet.')).toBeNull()
-    await waitFor(() => expect(loadPage).toHaveBeenCalledWith('Core', { limit: 8 }))
+    await waitFor(() => expect(loadPage).toHaveBeenCalledWith('Core', { limit: 8 }, expect.any(AbortSignal)))
     await act(async () => response.resolve(parsedFilePage([])))
     expect(screen.getByText('No files shared yet.')).toBeTruthy()
     expect(screen.queryByRole('status')).toBeNull()
@@ -106,7 +106,7 @@ describe('shared-files states and recovery', () => {
     await screen.findByText('No matching files.')
     expect(screen.queryByText('No files shared yet.')).toBeNull()
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('missing')
-    expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8, query: 'missing' })
+    expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8, query: 'missing' }, expect.any(AbortSignal))
   })
 
   it('retains navigation on an empty bounded scan page', async () => {
@@ -120,7 +120,7 @@ describe('shared-files states and recovery', () => {
     expect(screen.queryByText('No files shared yet.')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     await screen.findByText('file-10.txt')
-    expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8, cursor: 'cursor-after-20' })
+    expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8, cursor: 'cursor-after-20' }, expect.any(AbortSignal))
   })
 })
 
@@ -250,7 +250,7 @@ describe('snapshot navigation and restart recovery', () => {
     expect(loadPage).toHaveBeenCalledTimes(2)
     fireEvent.click(screen.getByRole('button', { name: 'Show latest' }))
     await screen.findByText('new-arrival.txt')
-    expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8 })
+    expect(loadPage).toHaveBeenLastCalledWith('Core', { limit: 8 }, expect.any(AbortSignal))
   })
 
   it('offers Return to latest after a restart invalidates an Older cursor', async () => {
@@ -392,6 +392,12 @@ describe('capability, keyboard and narrow layout', () => {
     expect(action.getAttribute('data-size')).toBe('icon-xs')
     expect(action.getAttribute('title')).toBeNull()
     expect(screen.getByRole('dialog').className).toContain('max-w-xl')
+    expect(screen.getByRole('dialog').className).toContain('h-[min(36rem,85vh)]')
+    expect(screen.getByRole('list').parentElement?.className).toContain('flex-1')
+    expect(screen.getByRole('list').className).toContain('flex-1')
+    expect(screen.getByRole('button', { name: 'Older' }).closest('[class*="min-h-8"]')?.previousElementSibling).toBe(
+      screen.getByRole('list')
+    )
     expect(row.querySelector('.codicon-file-pdf')).toBeTruthy()
   })
 

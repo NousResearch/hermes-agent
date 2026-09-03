@@ -19,13 +19,14 @@ import {
   uniqueGroupChatName,
   updateGroupChat
 } from './group-chat'
+import { assertGroupFileIntent } from './group-file-errors'
 import {
   clearHostedRoomApprovalState,
   resetHostedRoomApprovalState,
   resolveHostedRoomApprovalAttention,
   syncHostedRoomApprovals
 } from './hosted-room-approval-state'
-import { readHostedMessageAttachment, stageHostedMessageAttachments } from './hosted-room-attachments-client'
+import { stageHostedMessageAttachments } from './hosted-room-attachments-client'
 import { $hostedRoomCapabilities } from './hosted-room-capability-state'
 import {
   addHostedRoomCleanup,
@@ -63,6 +64,7 @@ import {
   safetyCommandsBlockedByFailure,
   surfaceHostedRoomCommandFailure
 } from './hosted-room-command-failures'
+import { readHostedGroupAttachment } from './hosted-room-file-read'
 import {
   hostedReadOnlyState,
   hostedRoomCapabilityFingerprint,
@@ -259,7 +261,8 @@ async function verifiedHostedAuthorityRoute(
   routes: ProfileRoute[],
   authorityId: string,
   preferredConnectionId = '',
-  purpose: 'control' | 'read' = 'control'
+  purpose: 'control' | 'read' = 'control',
+  signal?: AbortSignal
 ) {
   const ordered = [...routes].sort(
     (left, right) =>
@@ -267,6 +270,7 @@ async function verifiedHostedAuthorityRoute(
   )
 
   for (const route of ordered) {
+    assertGroupFileIntent(signal)
     const connectionId = String(route.connectionId || '')
     const observation = hostedRoomObservations.captureCapability(connectionId)
 
@@ -277,6 +281,8 @@ async function verifiedHostedAuthorityRoute(
         ),
         { connectionId }
       )
+
+      assertGroupFileIntent(signal)
 
       if (!hostedRoomObservations.current(observation)) {
         continue
@@ -290,6 +296,8 @@ async function verifiedHostedAuthorityRoute(
         return route
       }
     } catch (error) {
+      assertGroupFileIntent(signal)
+
       if (hostedRoomObservations.current(observation)) {
         storeHostedCapabilities({
           [connectionId]: classifyHostedRoomCapability({ ok: false, error }, { connectionId })
@@ -1285,13 +1293,19 @@ async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
   return !pending
 }
 
-export async function hostedRouteForRoom(room: GroupChat, purpose: 'control' | 'read' = 'control') {
+export async function hostedRouteForRoom(
+  room: GroupChat,
+  purpose: 'control' | 'read' = 'control',
+  signal?: AbortSignal
+) {
+  assertGroupFileIntent(signal)
   const connectionId = String(room?.hostedConnectionId || '')
   const routes = await hostedDefaultRoutes()
+  assertGroupFileIntent(signal)
   const authorityId = groupChatHostedGateway(room)
 
   if (authorityId) {
-    return verifiedHostedAuthorityRoute(routes, authorityId, connectionId, purpose)
+    return verifiedHostedAuthorityRoute(routes, authorityId, connectionId, purpose, signal)
   }
 
   if (connectionId) {
@@ -1731,25 +1745,13 @@ export async function sendHostedGroupChat(group: string, message: GroupMessage, 
   return !pending
 }
 
-export async function readHostedGroupChatAttachment(group: string, message: GroupMessage, attachment: Attachment) {
-  const room = $groupChats.get()[group]
-  const route = room ? await hostedRouteForRoom(room, 'read') : null
-  const roomId = String(room?.roomId || '')
-  const eventId = String(message.eventId || message.id || '')
-  const current = $groupChats.get()[group]
-
-  if (
-    !roomId ||
-    !route ||
-    (message.roomId && message.roomId !== roomId) ||
-    current?.roomId !== roomId ||
-    current?.hosted !== room?.hosted ||
-    current?.hostedEpoch !== room?.hostedEpoch
-  ) {
-    throw new Error('This Group Chat attachment is unavailable.')
-  }
-
-  return readHostedMessageAttachment(requestHostedConnection, route, roomId, eventId, attachment)
+export async function readHostedGroupChatAttachment(
+  group: string,
+  message: GroupMessage,
+  attachment: Attachment,
+  signal?: AbortSignal
+) {
+  return readHostedGroupAttachment(group, message, attachment, hostedRouteForRoom, signal)
 }
 
 export async function stopHostedGroupChat(group: string) {

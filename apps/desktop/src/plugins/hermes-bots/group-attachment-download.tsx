@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { $groupChats } from './group-chat'
 import { GroupFileError, groupFileFailure, type GroupFileFailure, withGroupFileDeadline } from './group-file-errors'
+import { beginGroupFileDelivery, groupFileAccessCurrent, invalidateGroupFileAccess } from './group-files-access'
 import { readHostedGroupChatAttachment } from './hosted-room-runtime'
 import { useBots } from './i18n'
 import type { Attachment, GroupMessage } from './types'
@@ -21,38 +22,58 @@ export async function downloadGroupChatAttachment(
     throw new GroupFileError('gone')
   }
 
-  const resolved = attachment.data
-    ? attachment
-    : await withGroupFileDeadline(readHostedGroupChatAttachment(group, message, attachment), signal)
-
-  if (signal?.aborted) {
-    return
-  }
-
-  if (!resolved.data) {
-    throw new GroupFileError('gone')
-  }
-
-  const current = $groupChats.get()[group]
-
-  if (
-    room &&
-    (current?.roomId !== room.roomId || current?.hosted !== room.hosted || current?.hostedEpoch !== room.hostedEpoch)
-  ) {
-    throw new Error('Attachment scope changed.')
-  }
-
-  const link = document.createElement('a')
-
-  link.href = resolved.data
-  link.download = resolved.name || 'attachment'
-  link.style.display = 'none'
-  document.body.appendChild(link)
+  const delivery = beginGroupFileDelivery(room, signal)
 
   try {
-    link.click()
+    const resolved = attachment.data
+      ? attachment
+      : await withGroupFileDeadline(
+          readHostedGroupChatAttachment(group, message, attachment, delivery.signal),
+          delivery.signal
+        )
+
+    if (!delivery.current()) {
+      return
+    }
+
+    if (!resolved.data) {
+      throw new GroupFileError('gone')
+    }
+
+    const current = $groupChats.get()[group]
+
+    if (
+      current?.roomId !== room.roomId ||
+      current?.hosted !== room.hosted ||
+      current?.hostedEpoch !== room.hostedEpoch
+    ) {
+      throw new Error('Attachment scope changed.')
+    }
+
+    const link = document.createElement('a')
+    link.href = resolved.data
+    link.download = resolved.name || 'attachment'
+    link.style.display = 'none'
+    document.body.appendChild(link)
+
+    try {
+      link.click()
+    } finally {
+      link.remove()
+    }
+  } catch (error) {
+    if (groupFileFailure(error) === 'access') {
+      invalidateGroupFileAccess(delivery.token)
+    }
+
+    if (!signal?.aborted && !groupFileAccessCurrent(delivery.token)) {
+      throw new GroupFileError('access')
+    }
+
+    throw error
   } finally {
-    link.remove()
+    delivery.cancel()
+    delivery.release()
   }
 }
 
@@ -63,6 +84,7 @@ interface GroupAttachmentDownloadProps {
   presentation?: 'chip' | 'icon'
   disabled?: boolean
   onFailure?: (failure: GroupFileFailure) => void
+  intentSignal?: AbortSignal
 }
 
 export function GroupAttachmentDownload({
@@ -71,7 +93,8 @@ export function GroupAttachmentDownload({
   message,
   presentation = 'chip',
   disabled = false,
-  onFailure
+  onFailure,
+  intentSignal
 }: GroupAttachmentDownloadProps) {
   const b = useBots()
   const [pending, setPending] = useState(false)
@@ -90,11 +113,13 @@ export function GroupAttachmentDownload({
   }, [attachment.attachmentId, group, message.eventId, message.roomId])
 
   const download = async () => {
-    if (request.current) {
+    if (request.current || intentSignal?.aborted) {
       return
     }
 
     const controller = new AbortController()
+    const abort = () => controller.abort()
+    intentSignal?.addEventListener('abort', abort, { once: true })
     request.current = controller
     setPending(true)
 
@@ -121,6 +146,8 @@ export function GroupAttachmentDownload({
         }
       }
     } finally {
+      intentSignal?.removeEventListener('abort', abort)
+
       if (request.current === controller) {
         request.current = null
         setPending(false)

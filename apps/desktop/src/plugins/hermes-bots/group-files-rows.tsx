@@ -22,13 +22,27 @@ function fileSize(bytes: number | undefined, locale: string) {
   }).format(bytes / divisor)
 }
 
+function fileDate(date: Date, locale: string, precise: boolean) {
+  const today = date.toDateString() === new Date().toDateString()
+
+  return new Intl.DateTimeFormat(locale, {
+    ...(today ? {} : ({ year: 'numeric', month: 'short', day: 'numeric' } as const)),
+    hour: 'numeric',
+    minute: '2-digit',
+    ...(precise ? ({ second: '2-digit' } as const) : {})
+  }).format(date)
+}
+
 function FileRow({
   item,
   group,
   roomId,
   active,
   onFocus,
-  onRefresh
+  onRefresh,
+  onRoomAccessDenied,
+  intentSignal,
+  preciseTime
 }: {
   item: GroupFileItem
   group: string
@@ -36,19 +50,27 @@ function FileRow({
   active: boolean
   onFocus: () => void
   onRefresh: () => void
+  onRoomAccessDenied: () => void
+  intentSignal: AbortSignal
+  preciseTime: boolean
 }) {
   const b = useBots()
   const { locale } = useI18n()
   const [failure, setFailure] = useState<GroupFileFailure | null>(null)
   const row = useRef<HTMLDivElement>(null)
   const attachment = item.attachment
-  const date = new Date(item.sharedAt * 1000).toLocaleString(locale)
+  const sharedAt = new Date(item.sharedAt * 1000)
+  const date = fileDate(sharedAt, locale, preciseTime)
   const extension = attachment.name.includes('.') ? attachment.name.split('.').pop() : ''
   const type = String(extension || attachment.mime?.split('/')[1] || '').toUpperCase()
-  const metadata = [item.producer.label, date, type, fileSize(attachment.size, locale)].filter(Boolean).join(' · ')
+
+  const metadata = [item.producer.label, sharedAt.toLocaleString(locale), type, fileSize(attachment.size, locale)]
+    .filter(Boolean)
+    .join(' · ')
+
   const message = item.localMessage || ({ eventId: item.eventId, id: item.eventId, roomId } as GroupMessage)
   useEffect(() => setFailure(null), [item])
-  const gone = failure === 'gone' || failure === 'access'
+  const gone = failure === 'gone'
 
   const failedText = gone
     ? b.group.fileGone
@@ -86,8 +108,15 @@ function FileRow({
           attachment={attachment}
           disabled={gone}
           group={group}
+          intentSignal={intentSignal}
           message={message}
-          onFailure={setFailure}
+          onFailure={failure => {
+            if (failure === 'access') {
+              onRoomAccessDenied()
+            } else {
+              setFailure(failure)
+            }
+          }}
           presentation="icon"
         />
       </div>
@@ -119,13 +148,17 @@ export function GroupFilesRows({
   group,
   roomId,
   loading,
-  onRefresh
+  onRefresh,
+  onRoomAccessDenied,
+  intentSignal
 }: {
   items: GroupFileItem[]
   group: string
   roomId: string
   loading: boolean
   onRefresh: () => void
+  onRoomAccessDenied: () => void
+  intentSignal: AbortSignal
 }) {
   const [active, setActive] = useState(0)
 
@@ -157,10 +190,13 @@ export function GroupFilesRows({
         <FileRow
           active={active === index}
           group={group}
+          intentSignal={intentSignal}
           item={item}
           key={item.key || `${item.eventId}:${item.attachment.attachmentId}`}
           onFocus={() => setActive(index)}
           onRefresh={onRefresh}
+          onRoomAccessDenied={onRoomAccessDenied}
+          preciseTime={items.some(other => other !== item && other.attachment.name === item.attachment.name)}
           roomId={roomId}
         />
       ))}

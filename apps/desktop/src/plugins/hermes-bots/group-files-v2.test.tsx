@@ -146,7 +146,7 @@ describe('Desktop Files v2 acceptance regressions', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'old-query' } })
     view.rerender(<SharedFilesDialog {...props} group="A" loadPage={loadPage} roomId="B:C" />)
     expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('')
-    await waitFor(() => expect(loadPage).toHaveBeenLastCalledWith('A', { limit: 8 }))
+    await waitFor(() => expect(loadPage).toHaveBeenLastCalledWith('A', { limit: 8 }, expect.any(AbortSignal)))
   })
 
   it('rejects a repeated sparse cursor instead of allowing an Older loop', async () => {

@@ -2,12 +2,23 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { $groupChats } from './group-chat'
 import { groupFileFailure, type GroupFileFailure, withGroupFileDeadline } from './group-file-errors'
+import {
+  captureGroupFileAccess,
+  groupFileAccessCurrent,
+  invalidateGroupFileAccess,
+  subscribeGroupFileAccess
+} from './group-files-access'
 import { GROUP_FILES_PAGE_SIZE, isGroupFilesCursorError, validateGroupFilesContinuation } from './group-files-client'
 import type { GroupFilesListInput, GroupFilesPage } from './group-files-client'
 
 export type GroupFilesAvailability = 'available' | 'offline' | 'unavailable'
-export type GroupFilesLoader = (group: string, input?: GroupFilesListInput) => Promise<GroupFilesPage>
+export type GroupFilesLoader = (
+  group: string,
+  input?: GroupFilesListInput,
+  signal?: AbortSignal
+) => Promise<GroupFilesPage>
 interface CachedPage {
   data: GroupFilesPage
   cursor?: string
@@ -54,7 +65,9 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
     misses: 0,
     availability,
     open,
-    controller: null as AbortController | null
+    controller: null as AbortController | null,
+    deliveries: new AbortController(),
+    access: captureGroupFileAccess($groupChats.get()[group])
   })
 
   const publish = useCallback((patch: Partial<FilesState>) => {
@@ -62,6 +75,37 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
     model.current.state = next
     setState(next)
   }, [])
+
+  const denied = useCallback(() => {
+    const current = model.current
+    current.generation += 1
+    current.controller?.abort()
+    current.deliveries.abort()
+    publish({
+      pages: [],
+      index: 0,
+      loading: false,
+      failure: 'access',
+      offline: false,
+      reconnected: false,
+      latestFileSeq: 0
+    })
+  }, [publish])
+
+  useEffect(() => subscribeGroupFileAccess(model.current.access, denied), [denied])
+
+  const invalidateAccess = () => {
+    const access = model.current.access
+    invalidateGroupFileAccess(access ? { state: access.state, generation: access.state.generation } : null)
+    denied()
+  }
+
+  const cancel = () => {
+    const current = model.current
+    current.generation += 1
+    current.controller?.abort()
+    current.deliveries.abort()
+  }
 
   const fetchPage = useCallback(
     async (mode: 'latest' | 'older' | 'retry') => {
@@ -75,9 +119,16 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
       const held = before.pages[before.index]
       const cursor = mode === 'older' ? held?.data.nextCursor || undefined : mode === 'retry' ? held?.cursor : undefined
       const generation = ++current.generation
+      const access = captureGroupFileAccess($groupChats.get()[group])
       current.controller?.abort()
       const controller = new AbortController()
       current.controller = controller
+
+      if (mode === 'latest') {
+        current.deliveries.abort()
+        current.deliveries = new AbortController()
+      }
+
       publish({
         loading: true,
         failure: null,
@@ -87,16 +138,24 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
 
       try {
         const data = await withGroupFileDeadline(
-          loadPage(group, {
-            limit: GROUP_FILES_PAGE_SIZE,
-            ...(cursor ? { cursor } : {}),
-            ...(before.query.trim() ? { query: before.query.trim() } : {})
-          }),
+          loadPage(
+            group,
+            {
+              limit: GROUP_FILES_PAGE_SIZE,
+              ...(cursor ? { cursor } : {}),
+              ...(before.query.trim() ? { query: before.query.trim() } : {})
+            },
+            controller.signal
+          ),
           controller.signal
         )
 
         if (!model.current.open || generation !== model.current.generation) {
           return
+        }
+
+        if (!groupFileAccessCurrent(access)) {
+          throw new Error('Files access changed during listing')
         }
 
         if (mode === 'older' && held) {
@@ -128,6 +187,11 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
 
         model.current.misses = 0
         model.current.availability = 'available'
+
+        if (current.deliveries.signal.aborted) {
+          current.deliveries = new AbortController()
+        }
+
         publish({
           loading: false,
           offline: false,
@@ -146,16 +210,23 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
         }
 
         const failure = groupFileFailure(error)
+
+        if (failure === 'access') {
+          invalidateGroupFileAccess(access)
+          denied()
+
+          return
+        }
+
         publish({
           loading: false,
           failure,
           cursorExpired: isGroupFilesCursorError(error),
-          ...(failure === 'access' ? { pages: [], index: 0, offline: false } : {}),
           ...(failure === 'offline' || failure === 'timeout' ? { offline: true } : {})
         })
       }
     },
-    [group, loadPage, publish]
+    [group, loadPage, publish, denied]
   )
 
   useEffect(() => {
@@ -171,6 +242,7 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
     if (availability === 'unavailable') {
       current.generation += 1
       current.controller?.abort()
+      current.deliveries.abort()
       publish({ unavailable: true, loading: false })
     } else if (availability === 'offline') {
       current.misses += 1
@@ -196,6 +268,7 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
     if (!open) {
       publish({ pages: [], index: 0, query: '', loading: false, failure: null, latestFileSeq: 0, reconnected: false })
       current.controller?.abort()
+      current.deliveries.abort()
 
       return
     }
@@ -213,6 +286,7 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
       clearTimeout(timer)
       current.generation += 1
       current.controller?.abort()
+      current.deliveries.abort()
     }
   }, [open, state.query, fetchPage, publish])
 
@@ -223,6 +297,7 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
       current.open = false
       current.generation += 1
       current.controller?.abort()
+      current.deliveries.abort()
     }
   }, [])
 
@@ -235,6 +310,8 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
 
     model.current.generation += 1
     model.current.controller?.abort()
+    model.current.deliveries.abort()
+    model.current.deliveries = new AbortController()
     publish({
       query: next,
       pages: [],
@@ -269,6 +346,9 @@ export function useGroupFiles({ group, open, availability, observation, loadPage
     ...state,
     page: state.pages[state.index]?.data,
     setQuery: query,
+    invalidateAccess,
+    cancel,
+    deliverySignal: model.current.deliveries.signal,
     older,
     newer,
     retry: () => void fetchPage('retry'),

@@ -12,6 +12,28 @@ export class GroupFileError extends Error {
   }
 }
 
+// Exact room-level outcomes from the catalog/service/viewer-read contracts.
+// A 4141/4142 alone, or an individual attachment's expiry, is not revocation.
+const ROOM_ACCESS_DENIALS = new Set([
+  'this group chat is managed by another gateway',
+  'hosted room not found',
+  'group chat history expired; room_id remains permanently retired',
+  'hosted room is being disbanded',
+  'room quarantined',
+  'room authority is quarantined',
+  'stale hosted room authority',
+  'hosted room authority changed',
+  'attachment catalogue is unavailable for this room authority',
+  'group chat is unavailable to viewers',
+  'group chat viewer authority changed'
+])
+
+export function assertGroupFileIntent(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new DOMException('Cancelled', 'AbortError')
+  }
+}
+
 export function groupFileFailure(error: unknown): GroupFileFailure {
   if (error instanceof GroupFileError) {
     return error.kind
@@ -20,10 +42,14 @@ export function groupFileFailure(error: unknown): GroupFileFailure {
   const outer = error as { code?: unknown; message?: unknown; error?: { code?: unknown; message?: unknown } } | null
   const code = outer?.code ?? outer?.error?.code
   const message = String(outer?.message || outer?.error?.message || '')
+  const normalized = message.trim().toLowerCase().replace(/\.$/, '')
 
   if (
     (code === 4141 || code === 4142) &&
-    /quarantin|authorit|disband|permission|denied|revoked|access/i.test(message)
+    (ROOM_ACCESS_DENIALS.has(normalized) ||
+      normalized.startsWith(
+        'this group chat has an unverified authority takeover and is read-only until its history is reconciled ('
+      ))
   ) {
     return 'access'
   }

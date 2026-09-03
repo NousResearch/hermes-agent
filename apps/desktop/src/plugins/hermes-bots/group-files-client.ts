@@ -1,7 +1,8 @@
 /** Strict metadata-only client for the hosted Group Chat shared-files RPC. */
 
 import { $groupChats, groupChatHostedGateway } from './group-chat'
-import { withGroupFileDeadline as boundedRequest } from './group-file-errors'
+import { assertGroupFileIntent, withGroupFileDeadline as boundedRequest } from './group-file-errors'
+import { captureGroupFileAccess, confirmGroupFileCatalog, guardGroupFileRequest } from './group-files-access'
 import { hostedRouteForRoom, requestHostedConnection } from './hosted-room-runtime'
 import type { Attachment, GroupChat, GroupMessage } from './types'
 
@@ -243,7 +244,12 @@ export function validateGroupFilesContinuation(previous: GroupFilesPage, next: G
   }
 }
 
-export async function listHostedGroupFiles(group: string, input: GroupFilesListInput = {}): Promise<GroupFilesPage> {
+export async function listHostedGroupFiles(
+  group: string,
+  input: GroupFilesListInput = {},
+  signal?: AbortSignal
+): Promise<GroupFilesPage> {
+  assertGroupFileIntent(signal)
   const room: GroupChat | undefined = $groupChats.get()[group]
   const roomId = String(room?.roomId || '')
   const authorityId = groupChatHostedGateway(room)
@@ -264,7 +270,8 @@ export async function listHostedGroupFiles(group: string, input: GroupFilesListI
     throw new Error('Invalid shared-files query')
   }
 
-  const route = room ? await boundedRequest(hostedRouteForRoom(room, 'read')) : null
+  const route = room ? await boundedRequest(hostedRouteForRoom(room, 'read', signal), signal) : null
+  assertGroupFileIntent(signal)
   const limit = Math.min(GROUP_FILES_MAX_PAGE_SIZE, limitInput)
   const currentRoom = $groupChats.get()[group]
 
@@ -280,19 +287,32 @@ export async function listHostedGroupFiles(group: string, input: GroupFilesListI
     throw new Error('Shared files are unavailable.')
   }
 
+  const access = captureGroupFileAccess(room)
+
   const response = await boundedRequest(
-    requestHostedConnection(route, 'groups.attachment.list', {
+    guardGroupFileRequest(
+      requestHostedConnection,
+      access,
+      signal,
+      true
+    )(route, 'groups.attachment.list', {
       room_id: roomId,
       purpose: 'viewer',
       limit,
       ...(input.cursor ? { cursor: input.cursor } : {}),
       ...(input.query ? { query: input.query } : {})
-    })
+    }),
+    signal
   )
 
-  return parseGroupFilesPage(response, {
+  const page = parseGroupFilesPage(response, {
     authorityEpoch: room.hostedEpoch,
     authorityId,
     limit
   })
+
+  assertGroupFileIntent(signal)
+  confirmGroupFileCatalog(access)
+
+  return page
 }

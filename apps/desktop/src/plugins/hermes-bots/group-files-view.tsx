@@ -110,7 +110,15 @@ function FilesDialogBody({
   const body = files.unavailable ? (
     <EmptyState className="my-auto" title={b.group.sharedFilesUnavailable} />
   ) : page?.items.length ? (
-    <GroupFilesRows group={group} items={page.items} loading={files.loading} onRefresh={files.latest} roomId={roomId} />
+    <GroupFilesRows
+      group={group}
+      intentSignal={files.deliverySignal}
+      items={page.items}
+      loading={files.loading}
+      onRefresh={files.latest}
+      onRoomAccessDenied={files.invalidateAccess}
+      roomId={roomId}
+    />
   ) : files.loading ? (
     <Loader className="m-auto size-16" label={b.group.sharedFilesLoading} type="lemniscate-bloom" />
   ) : files.failure || files.offline ? (
@@ -141,9 +149,17 @@ function FilesDialogBody({
   )
 
   return (
-    <Dialog onOpenChange={value => !value && onClose()} open={open}>
+    <Dialog
+      onOpenChange={value => {
+        if (!value) {
+          files.cancel()
+          onClose()
+        }
+      }}
+      open={open}
+    >
       <DialogContent
-        bodyClassName="flex min-h-0 flex-col gap-3"
+        bodyClassName="flex min-h-0 flex-1 flex-col gap-3"
         className="h-[min(36rem,85vh)] max-w-xl"
         onKeyDown={event => {
           const target = event.target as HTMLElement

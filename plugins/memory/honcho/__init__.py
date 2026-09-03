@@ -323,6 +323,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Cron and flush contexts disable the plugin entirely.
         self._cron_skipped = False
+        self._chat_type: Optional[str] = None
+        self._thread_id: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -374,6 +376,8 @@ class HonchoMemoryProvider(MemoryProvider):
         try:
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
+            self._chat_type = kwargs.get("chat_type")
+            self._thread_id = kwargs.get("thread_id")
             if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
@@ -544,7 +548,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Query-aware base retrieval starts with the first substantive message.
         # Generic dialectic prewarm is incompatible with latest-message rewriting.
-        if self._recall_mode in {"context", "hybrid"}:
+        if (
+            self._recall_mode in {"context", "hybrid"}
+            and self._allow_dialectic_auto_injection()
+        ):
             if self._query_rewriter is None or not self._query_rewrite_enabled:
                 _prewarm_query = (
                     "Summarize what you know about this user. "
@@ -646,6 +653,26 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._session_initialized:
             return True
         return not (self._init_thread and self._init_thread.is_alive())
+
+    def _summary_only_auto_injection(self) -> bool:
+        """Restrict automatic recall to the session summary in shared venues."""
+        chat_type = (self._chat_type or "").lower()
+        if chat_type in {"dm", "direct", "direct_message", "private"}:
+            return False
+        return bool(self._thread_id) or chat_type in {
+            "group", "supergroup", "channel", "guild", "forum", "public",
+        }
+
+    def _allow_dialectic_auto_injection(self) -> bool:
+        """Never inject peer-global dialectic memory into shared venues."""
+        return not self._summary_only_auto_injection()
+
+    def _filter_auto_injection_context(self, context: dict) -> dict:
+        """Filter stale rich prefetch-cache entries before prompt formatting."""
+        if not context or not self._summary_only_auto_injection():
+            return context
+        summary = context.get("summary", "")
+        return {"summary": summary} if summary else {}
 
     def _format_first_turn_context(self, ctx: dict) -> str:
         """Format the prefetch context dict into a readable system prompt block."""
@@ -791,7 +818,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 def _fetch_base() -> None:
                     try:
                         ctx = self._manager.get_prefetch_context(
-                            self._session_key, query or None
+                            self._session_key,
+                            query or None,
+                            summary_only=self._summary_only_auto_injection(),
                         ) or {}
                         _ctx_holder["ctx"] = ctx
                         if ctx:
@@ -810,7 +839,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 _ctx = _ctx_holder.get("ctx")
                 if _ctx:
                     self._manager.pop_context_result(self._session_key)
-                    formatted = self._format_first_turn_context(_ctx)
+                    formatted = self._format_first_turn_context(
+                        self._filter_auto_injection_context(_ctx)
+                    )
                     if formatted:
                         with self._base_context_lock:
                             self._base_context_cache = formatted
@@ -825,7 +856,9 @@ class HonchoMemoryProvider(MemoryProvider):
             if not _first_base_fetch and self._manager:
                 fresh_ctx = self._manager.pop_context_result(self._session_key)
                 if fresh_ctx:
-                    formatted = self._format_first_turn_context(fresh_ctx)
+                    formatted = self._format_first_turn_context(
+                        self._filter_auto_injection_context(fresh_ctx)
+                    )
                     if formatted:
                         with self._base_context_lock:
                             self._base_context_cache = formatted
@@ -841,7 +874,11 @@ class HonchoMemoryProvider(MemoryProvider):
         if _prewarm_landed and self._last_dialectic_turn == -999:
             self._last_dialectic_turn = self._turn_count
 
-        if self._last_dialectic_turn == -999 and query:
+        if (
+            self._allow_dialectic_auto_injection()
+            and self._last_dialectic_turn == -999
+            and query
+        ):
             # Reuse an in-flight prewarm; otherwise start one dialectic. A short
             # request timeout may tighten, but never expand, the turn-1 wait.
             _dia_wait = self._FIRST_TURN_DIALECTIC_CAP
@@ -890,7 +927,11 @@ class HonchoMemoryProvider(MemoryProvider):
         # Consume only results that are already ready; later turns never wait.
         dialectic_result = self._consume_pending_dialectic()
 
-        if dialectic_result and dialectic_result.strip():
+        if (
+            self._allow_dialectic_auto_injection()
+            and dialectic_result
+            and dialectic_result.strip()
+        ):
             parts.append(dialectic_result)
 
         if not parts:
@@ -985,9 +1026,16 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._injection_frequency != "first-turn" and context_due:
             self._last_context_turn = self._turn_count
             try:
-                self._manager.prefetch_context(self._session_key, query)
+                self._manager.prefetch_context(
+                    self._session_key,
+                    query,
+                    summary_only=self._summary_only_auto_injection(),
+                )
             except Exception as e:
                 logger.debug("Honcho context prefetch failed: %s", e)
+
+        if not self._allow_dialectic_auto_injection():
+            return
 
         # ----- Dialectic prefetch (supplement layer) -----
         # Thread-alive guard with stale-thread recovery: a hung Honcho call

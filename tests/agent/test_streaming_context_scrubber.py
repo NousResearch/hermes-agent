@@ -122,6 +122,24 @@ class TestSanitizeContextUnchanged:
         out = sanitize_context(leaked).strip()
         assert out == "Visible"
 
+    def test_internal_tagged_blocks_are_never_visible(self):
+        leaked = (
+            "Visible before\n"
+            "<prior_memory_file><context>hidden</context></prior_memory_file>\n"
+            "Visible middle\n"
+            "<ai_identity_seed>also hidden</ai_identity_seed>\n"
+            "Visible after"
+        )
+
+        out = sanitize_context(leaked)
+
+        assert "prior_memory_file" not in out
+        assert "ai_identity_seed" not in out
+        assert "hidden" not in out
+        assert "Visible before" in out
+        assert "Visible middle" in out
+        assert "Visible after" in out
+
 
 class TestStreamingContextScrubberCrossTurn:
     """A scrubber instance is reused across turns (per agent).  reset() must

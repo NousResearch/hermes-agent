@@ -222,7 +222,7 @@ class TestHonchoUserIdScoping:
         with patch.object(manager, "_get_or_create_peer", return_value=MagicMock()), patch.object(
             manager,
             "_get_or_create_honcho_session",
-            return_value=(MagicMock(), []),
+            return_value=(MagicMock(), [], {}),
         ):
             session = manager.get_or_create("discord:channel-1")
 

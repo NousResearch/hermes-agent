@@ -115,6 +115,21 @@ class HonchoSession:
         self.updated_at = datetime.now()
 
 
+def _observation_metadata(
+    *,
+    user_observe_me: bool,
+    user_observe_others: bool,
+    ai_observe_me: bool,
+    ai_observe_others: bool,
+) -> dict[str, bool]:
+    return {
+        "user_observe_me": bool(user_observe_me),
+        "user_observe_others": bool(user_observe_others),
+        "ai_observe_me": bool(ai_observe_me),
+        "ai_observe_others": bool(ai_observe_others),
+    }
+
+
 class HonchoSessionManager:
     """
     Manages conversation sessions using Honcho.
@@ -205,6 +220,20 @@ class HonchoSessionManager:
         self._async_thread_lock = threading.Lock()
         if write_frequency == "async":
             self._async_queue = queue.Queue()
+
+    def _default_observation_metadata(self) -> dict[str, bool]:
+        return _observation_metadata(
+            user_observe_me=self._user_observe_me,
+            user_observe_others=self._user_observe_others,
+            ai_observe_me=self._ai_observe_me,
+            ai_observe_others=self._ai_observe_others,
+        )
+
+    def _session_observation_metadata(self, session: HonchoSession | None) -> dict[str, bool]:
+        metadata = self._default_observation_metadata()
+        if session and session.metadata:
+            metadata.update({key: bool(value) for key, value in session.metadata.items() if key in metadata})
+        return metadata
 
     @property
     def honcho(self) -> Honcho:
@@ -370,23 +399,24 @@ class HonchoSessionManager:
 
     def _get_or_create_honcho_session(
         self, session_id: str, user_peer: Any, assistant_peer: Any
-    ) -> tuple[Any, list]:
+    ) -> tuple[Any, list, dict[str, bool]]:
         """
         Get or create a Honcho session with peers configured.
 
         Returns:
-            Tuple of (honcho_session, existing_messages).
+            Tuple of (honcho_session, existing_messages, effective observation metadata).
         """
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], []
+                return self._sessions_cache[session_id], [], self._default_observation_metadata()
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
 
         # Configure per-peer observation from granular booleans.
         # These map 1:1 to Honcho's SessionPeerConfig toggles.
         auth_dead = False
+        effective_observation = self._default_observation_metadata()
         try:
             from honcho.session import SessionPeerConfig
             user_config = SessionPeerConfig(
@@ -404,10 +434,8 @@ class HonchoSessionManager:
                 lambda: self._sdk_session(session_id).add_peers(peer_entries),
             )
 
-            # Sync back: server-side config (set via Honcho UI) wins over
-            # local defaults. Read the effective config after add_peers.
-            # Note: observation booleans are manager-scoped, not per-session.
-            # Last session init wins. Fine for CLI; gateway should scope per-session.
+            # Server-side config wins for this session only. A shared gateway
+            # manager may serve many sessions, so never mutate its defaults.
             try:
                 def _read_server_configs() -> tuple[Any, Any]:
                     sdk_session = self._sdk_session(session_id)
@@ -419,18 +447,16 @@ class HonchoSessionManager:
                 server_user, server_ai = self._authed_call(
                     "peer configuration read", _read_server_configs
                 )
-                if server_user.observe_me is not None:
-                    self._user_observe_me = server_user.observe_me
-                if server_user.observe_others is not None:
-                    self._user_observe_others = server_user.observe_others
-                if server_ai.observe_me is not None:
-                    self._ai_observe_me = server_ai.observe_me
-                if server_ai.observe_others is not None:
-                    self._ai_observe_others = server_ai.observe_others
+                effective_observation = _observation_metadata(
+                    user_observe_me=(server_user.observe_me if server_user.observe_me is not None else self._user_observe_me),
+                    user_observe_others=(server_user.observe_others if server_user.observe_others is not None else self._user_observe_others),
+                    ai_observe_me=(server_ai.observe_me if server_ai.observe_me is not None else self._ai_observe_me),
+                    ai_observe_others=(server_ai.observe_others if server_ai.observe_others is not None else self._ai_observe_others),
+                )
                 logger.debug(
                     "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
-                    self._user_observe_me, self._user_observe_others,
-                    self._ai_observe_me, self._ai_observe_others,
+                    effective_observation["user_observe_me"], effective_observation["user_observe_others"],
+                    effective_observation["ai_observe_me"], effective_observation["ai_observe_others"],
                 )
             except HonchoAuthError:
                 raise
@@ -495,7 +521,7 @@ class HonchoSessionManager:
             honcho_session = self._authed_call(
                 "session setup", lambda: self._sdk_session(session_id)
             )
-        return honcho_session, existing_messages
+        return honcho_session, existing_messages, effective_observation
 
     def _sanitize_id(self, id_str: str) -> str:
         """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
@@ -630,7 +656,7 @@ class HonchoSessionManager:
         honcho_session_id = self._sanitize_id(key)
         user_peer = self._get_or_create_peer(user_peer_id)
         assistant_peer = self._get_or_create_peer(assistant_peer_id)
-        honcho_session, existing_messages = self._get_or_create_honcho_session(
+        honcho_session, existing_messages, effective_observation = self._get_or_create_honcho_session(
             honcho_session_id, user_peer, assistant_peer
         )
 
@@ -650,6 +676,7 @@ class HonchoSessionManager:
             assistant_peer_id=assistant_peer_id,
             honcho_session_id=honcho_session_id,
             messages=local_messages,
+            metadata=effective_observation,
         )
 
         # Write to cache under lock — only one writer wins
@@ -672,7 +699,7 @@ class HonchoSessionManager:
             assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session is None:
-                honcho_session, _ = self._get_or_create_honcho_session(
+                honcho_session, _, _ = self._get_or_create_honcho_session(
                     session.honcho_session_id, user_peer, assistant_peer
                 )
             honcho_messages = [
@@ -919,7 +946,7 @@ class HonchoSessionManager:
             level = self._default_reasoning_level()
 
         def _chat_once() -> str:
-            if self._ai_observe_others:
+            if self._session_observation_metadata(session)["ai_observe_others"]:
                 # AI peer can observe other peers — use assistant as observer.
                 ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
                 if target_peer_id == session.assistant_peer_id:
@@ -952,7 +979,13 @@ class HonchoSessionManager:
                 raise
             return ""
 
-    def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
+    def prefetch_context(
+        self,
+        session_key: str,
+        user_message: str | None = None,
+        *,
+        summary_only: bool = False,
+    ) -> None:
         """
         Fire get_prefetch_context in a background thread, caching the result.
 
@@ -960,7 +993,11 @@ class HonchoSessionManager:
         a synchronous HTTP round-trip blocking every response.
         """
         def _run():
-            result = self.get_prefetch_context(session_key, user_message)
+            result = self.get_prefetch_context(
+                session_key,
+                user_message,
+                summary_only=summary_only,
+            )
             if result:
                 self.set_context_result(session_key, result)
 
@@ -983,7 +1020,13 @@ class HonchoSessionManager:
         with self._prefetch_cache_lock:
             return self._context_cache.pop(session_key, {})
 
-    def get_prefetch_context(self, session_key: str, user_message: str | None = None) -> dict[str, str]:
+    def get_prefetch_context(
+        self,
+        session_key: str,
+        user_message: str | None = None,
+        *,
+        summary_only: bool = False,
+    ) -> dict[str, str]:
         """
         Pre-fetch user and AI peer context from Honcho.
 
@@ -1025,6 +1068,9 @@ class HonchoSessionManager:
             return result
         except Exception as e:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
+
+        if summary_only:
+            return result
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, "user")
@@ -1429,7 +1475,7 @@ class HonchoSessionManager:
         if target_peer_id == session.assistant_peer_id:
             return session.assistant_peer_id, session.assistant_peer_id
 
-        if self._ai_observe_others:
+        if self._session_observation_metadata(session)["ai_observe_others"]:
             return session.assistant_peer_id, target_peer_id
 
         return target_peer_id, None
@@ -1574,7 +1620,7 @@ class HonchoSessionManager:
         if target_peer_id == session.assistant_peer_id:
             observer = self._get_or_create_peer(session.assistant_peer_id)
             return observer.conclusions_of(session.assistant_peer_id)
-        elif self._ai_observe_others:
+        elif self._session_observation_metadata(session)["ai_observe_others"]:
             observer = self._get_or_create_peer(session.assistant_peer_id)
             return observer.conclusions_of(target_peer_id)
         else:

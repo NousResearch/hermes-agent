@@ -19,6 +19,10 @@ from typing import Any
 
 from agent.auxiliary_client import call_llm
 from agent.message_content import flatten_message_text
+from agent.message_sanitization import (
+    apply_tool_role_policy,
+    requires_assistant_after_tool,
+)
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
@@ -1766,6 +1770,24 @@ class MoAChatCompletions:
         tools: Any = agg_kwargs.get("tools")
         extra_body: Any = agg_kwargs.get("extra_body")
         agg_runtime = _slot_runtime(aggregator)
+        # Role policy for the ACTING aggregator. The outer agent runtime is
+        # provider="moa" with the preset name as its model, so the main loop's
+        # destination gate cannot see that the resolved aggregator is a
+        # Mistral-family endpoint that rejects a `user` turn straight after a
+        # `tool` result (#20154) — and the prepared transcript carries the tool
+        # results, so it can hold exactly that shape. Project on a
+        # request-local copy; the prepared state stays canonical. Runs before
+        # cache planning so breakpoints are placed over the final shape.
+        if requires_assistant_after_tool(
+            agg_runtime.get("provider"),
+            agg_runtime.get("model"),
+            agg_runtime.get("base_url"),
+        ):
+            projected = [
+                dict(m) if isinstance(m, dict) else m for m in agg_messages
+            ]
+            if apply_tool_role_policy(projected, True, mark=False):
+                agg_messages = projected
         try:
             from agent.agent_runtime_helpers import (
                 plan_cache_sections_for_destination,

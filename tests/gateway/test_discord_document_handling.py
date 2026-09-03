@@ -99,7 +99,7 @@ def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     # These tests mock the actual download. Do not let host DNS/proxy mappings
     # for cdn.discordapp.com decide whether document handling is exercised.
-    monkeypatch.setattr(discord_platform, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(discord_platform, "async_is_safe_url", AsyncMock(return_value=True))
 
     config = PlatformConfig(enabled=True, token="fake-token")
     a = DiscordAdapter(config)
@@ -349,5 +349,4 @@ class TestAllowAnyAttachment:
 
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
-
 

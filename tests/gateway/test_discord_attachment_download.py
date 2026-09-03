@@ -177,7 +177,7 @@ class TestCacheDiscordDocument:
 
     @pytest.mark.asyncio
     async def test_fallback_blocked_by_ssrf_guard(self):
-        """Document fallback path now honors is_safe_url — was missing before.
+        """Document fallback path now honors async_is_safe_url — was missing before.
 
         Regression guard for #11345: the old aiohttp block skipped the
         SSRF check entirely; a non-CDN ``att.url`` could have reached
@@ -187,12 +187,14 @@ class TestCacheDiscordDocument:
         att = _make_attachment_without_read()  # no .read → forces fallback
 
         with patch(
-            "plugins.platforms.discord.adapter.is_safe_url", return_value=False
+            "plugins.platforms.discord.adapter.async_is_safe_url",
+            new_callable=AsyncMock,
+            return_value=False,
         ) as mock_safe, patch("aiohttp.ClientSession") as mock_session:
             with pytest.raises(ValueError, match="SSRF"):
                 await adapter._cache_discord_document(att, ".pdf")
 
-        mock_safe.assert_called_once_with(att.url)
+        mock_safe.assert_awaited_once_with(att.url)
         # aiohttp must NOT be contacted when the URL is blocked.
         mock_session.assert_not_called()
 
@@ -254,5 +256,4 @@ class TestHandleMessageUsesAuthenticatedRead:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls == ["/tmp/img_from_read.png"]
         assert event.media_types == ["image/png"]
-
 

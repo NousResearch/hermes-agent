@@ -298,6 +298,7 @@ def test_successful_idle_compaction_does_not_repeat_in_preflight(
 
     def _compress_once(messages, *_args, **_kwargs):
         calls.append(list(messages))
+        agent._last_compaction_in_place = True
         return list(messages), "SYSTEM"
 
     agent._compress_context = _compress_once
@@ -306,16 +307,24 @@ def test_successful_idle_compaction_does_not_repeat_in_preflight(
     compressor.should_defer_preflight_to_real_usage = MagicMock(
         return_value=False
     )
+    db.set_latest_user_api_content = MagicMock(return_value=1)
 
-    ctx = _run_prologue(
-        agent,
-        _history(),
-        preflight_estimate=True,
-    )
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[{"context": "PLUGIN-CTX"}],
+    ):
+        ctx = _run_prologue(
+            agent,
+            _history(),
+            preflight_estimate=True,
+        )
 
     assert len(calls) == 1
     assert len(ctx.messages) == len(_history()) + 1
     compressor.should_compress.assert_not_called()
+    db.set_latest_user_api_content.assert_called_once_with(
+        sid, "hello again", "hello again\n\nPLUGIN-CTX"
+    )
 
     # The suppression is scoped to this prologue invocation, not latched on
     # the agent. On the next non-idle turn, threshold preflight runs normally.

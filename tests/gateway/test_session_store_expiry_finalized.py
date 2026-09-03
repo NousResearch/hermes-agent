@@ -1,10 +1,11 @@
-"""Session expiry finalization closes sessions as session_reset.
+"""Session expiry finalization persists a durable reset boundary.
 
 Regression coverage for #61220: the expiry watcher marks a session expired,
 then agent cleanup can close it as ``agent_close``. Stale routing recovery treats
 ``agent_close`` as recoverable, so expired sessions were reopened with full
-history unless expiry finalization also persisted the real conversation boundary
-as ``end_reason='session_reset'``.
+history unless expiry finalization also persisted the real conversation boundary.
+The backward-compatible direct-call default remains ``session_reset``; the
+background watcher forwards the exact automatic reason, ``idle`` or ``daily``.
 
 These tests use a real ``SessionDB`` (in-memory) to verify the actual recovery
 contract in ``find_latest_gateway_session_for_peer`` — not just call counts on

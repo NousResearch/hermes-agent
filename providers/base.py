@@ -72,6 +72,14 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # True when the provider's API accepts multimodal USER messages
+    # (text + image parts) even though it rejects image_url parts inside
+    # tool-role messages (see ``supports_vision_tool_messages``).  Set on
+    # providers like opencode-go / Console Go: image parts must then be
+    # deferred to a follow-up user-role message instead of downgraded to
+    # a text summary, so vision-capable models keep native pixels.
+    supports_vision_user_messages: bool = False
+
     # True only when this provider's Chat Completions endpoint explicitly
     # documents ``prompt_cache_key`` as an accepted request body field.  This
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown

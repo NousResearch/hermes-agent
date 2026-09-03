@@ -1570,7 +1570,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
-        _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
+        # KR-022: use the shared detect_parse_mode utility (requires matched
+        # tag pair) instead of the naive regex, to avoid false positives on
+        # comparison text like ``a<b and c>d``.
+        from gateway.platforms.helpers import detect_parse_mode
+        _has_html = detect_parse_mode(message) == "HTML"
 
         if _has_html:
             formatted = message
@@ -1677,9 +1681,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             # every chunk is deliverable. (issue #28557)
             from gateway.platforms.base import BasePlatformAdapter, utf16_len
 
-            text_chunks = BasePlatformAdapter.truncate_message(
-                formatted, 4096, len_fn=utf16_len
-            )
+            # KR-022: when sending as HTML, use the HTML-aware chunker so tags
+            # are balanced across chunk boundaries (no mid-tag splits that
+            # Telegram rejects with "can't parse entities").
+            if _has_html:
+                from gateway.platforms.helpers import chunk_html
+                text_chunks = chunk_html(formatted, 4096, len_fn=utf16_len)
+            else:
+                text_chunks = BasePlatformAdapter.truncate_message(
+                    formatted, 4096, len_fn=utf16_len
+                )
             for chunk in text_chunks:
                 try:
                     last_msg = await _send_telegram_message_with_retry(

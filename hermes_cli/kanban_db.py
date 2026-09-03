@@ -9246,11 +9246,18 @@ def _record_task_failure(
 
         if force_trip or failures >= effective_limit:
             # Trip the breaker.
+            # Stamp block_kind='transient' so auto-blocked tasks from the
+            # crash-park path are classified (not NULL-kind) and routeable.
+            # ``transient`` is the correct VALID_BLOCK_KIND here: these are
+            # flaky/temporary failures (spawn_failed / timed_out / crashed)
+            # that may clear on retry, distinct from a deliberate
+            # worker/operator block_task() which sets its own kind.
             if release_claim:
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, "
+                    "block_kind = 'transient', "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'review')",
                     (failures, error[:500], task_id),
@@ -9261,6 +9268,7 @@ def _record_task_failure(
                 # counter fields.
                 conn.execute(
                     "UPDATE tasks SET status = 'blocked', "
+                    "block_kind = 'transient', "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('ready', 'review', 'running')",
                     (failures, error[:500], task_id),

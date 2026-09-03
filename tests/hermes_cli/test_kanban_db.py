@@ -1647,3 +1647,70 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Circuit-breaker trip stamps block_kind='transient' (crash-park gap)
+# W1 recon: 152 blocked cards with block_kind NULL, ~117 mechanical
+# provider-crash signatures. The crash-park path (_record_task_failure trip)
+# must classify these as block_kind='transient' at gave_up time so they are
+# distinguishable from deliberate worker/operator blocks and routeable.
+# ---------------------------------------------------------------------------
+
+
+def test_circuit_breaker_trip_stamps_transient_block_kind(kanban_home):
+    """When _record_task_failure trips the breaker (timeout/crash path,
+    release_claim=False), the task must land in ``blocked`` with
+    ``block_kind='transient'`` — not NULL.  This is what stops a mechanical
+    provider-crash pile from being unclassifiable."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="crashable", assignee="a")
+        # Task is at 'ready' (below threshold). Force-trip the breaker via
+        # the timeout/crash path (release_claim=False, end_run=False).
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="worker crashed (pid 12345)",
+            outcome="crashed",
+            failure_limit=1,
+            force_trip=True,
+            release_claim=False,
+            end_run=False,
+        )
+        assert tripped is True
+        conn.commit()
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "transient", (
+            f"circuit-breaker trip must stamp block_kind='transient', "
+            f"got block_kind={task.block_kind!r}"
+        )
+
+
+def test_spawn_failure_trip_stamps_transient_block_kind(kanban_home):
+    """The spawn-failure path (release_claim=True) must also stamp
+    block_kind='transient' when the breaker trips."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="spawnable", assignee="a")
+        kb.claim_task(conn, tid)
+        # Simulate a running task then force-trip via release_claim=True path.
+        conn.execute(
+            "UPDATE tasks SET status='running', consecutive_failures=0 "
+            "WHERE id=?", (tid,)
+        )
+        conn.commit()
+        tripped = kb._record_task_failure(
+            conn, tid,
+            error="spawn failed: cannot pull image",
+            outcome="spawn_failed",
+            failure_limit=1,
+            force_trip=True,
+            release_claim=True,
+            end_run=True,
+        )
+        assert tripped is True
+        conn.commit()
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "transient"

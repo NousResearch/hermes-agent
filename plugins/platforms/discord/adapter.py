@@ -1114,6 +1114,10 @@ class DiscordAdapter(BasePlatformAdapter):
     # incident delivered 60,698 chars as 31 messages).  Chunks beyond the
     # cap are replaced by a short notice.
     MAX_SPLIT_MESSAGES = 8
+    # Opt-in extended delivery stays bounded to two paced batches.
+    SPLIT_BATCH_SIZE = 20
+    MAX_CONFIGURED_SPLIT_MESSAGES = 2 * SPLIT_BATCH_SIZE
+    SPLIT_BATCH_DELAY_SECONDS = 2.0
 
     # Auto-disconnect from voice channel after this many seconds of inactivity.
     # Config key: discord.voice_channel_inactivity_timeout_seconds (0 disables)
@@ -1133,6 +1137,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
+        limit = self._config_value("max_split_messages", self.MAX_SPLIT_MESSAGES)
+        if type(limit) is not int or not 1 <= limit <= self.MAX_CONFIGURED_SPLIT_MESSAGES:
+            logger.warning("Invalid discord.max_split_messages; using default %s", self.MAX_SPLIT_MESSAGES)
+            limit = self.MAX_SPLIT_MESSAGES
+        self._max_split_messages = limit
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
@@ -3475,23 +3484,47 @@ class DiscordAdapter(BasePlatformAdapter):
 
         A degenerate turn can produce tens of thousands of characters; the
         #86581 incident delivered 60,698 chars as 31 back-to-back Discord
-        messages.  When ``chunks`` exceeds ``MAX_SPLIT_MESSAGES``, keep the
+        messages.  When ``chunks`` exceeds the configured limit, keep the
         first ``N-1`` chunks and replace the rest with a short notice so the
         user sees a clear signal instead of a flood.  The full response
         remains available in the gateway session history / logs.
         """
-        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+        if len(chunks) <= self._max_split_messages:
             return chunks
-        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
-        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        kept = chunks[: self._max_split_messages - 1]
+        dropped_chars = sum(len(c) for c in chunks[self._max_split_messages - 1 :])
         notice = (
             f"\n\n⚠️ **Response truncated** — this reply exceeded the "
-            f"delivery limit ({self.MAX_SPLIT_MESSAGES} messages). "
+            f"delivery limit ({self._max_split_messages} messages). "
             f"{dropped_chars} characters were not delivered; the full "
             f"response is in the session logs."
         )
         kept.append(notice)
         return kept
+
+    def _prepare_split_chunks(self, formatted: str) -> List[str]:
+        """Keep the default delivery unchanged; label opt-in multi-batch replies."""
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        )
+        if len(chunks) <= self.SPLIT_BATCH_SIZE:
+            return chunks
+
+        # Reserve space before splitting so labels cannot exceed Discord's
+        # message limit or clip a code fence. Two batches of 20 is the ceiling.
+        label_reserve = len("**Part 2 of 2 — 20/20**\n")
+        chunks = self._cap_split_chunks(
+            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH - label_reserve)
+        )
+        parts = (len(chunks) + self.SPLIT_BATCH_SIZE - 1) // self.SPLIT_BATCH_SIZE
+        labelled = []
+        for i, chunk in enumerate(chunks):
+            part, offset = divmod(i, self.SPLIT_BATCH_SIZE)
+            count = min(self.SPLIT_BATCH_SIZE, len(chunks) - part * self.SPLIT_BATCH_SIZE)
+            # Replace only the splitter's trailing indicator, outside fences.
+            chunk = re.sub(r" \(\d+/\d+\)$", "", chunk)
+            labelled.append(f"**Part {part + 1} of {parts} — {offset + 1}/{count}**\n{chunk}")
+        return labelled
 
     async def send(
         self,
@@ -3579,15 +3612,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(
-                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            )
+            chunks = self._prepare_split_chunks(formatted)
 
             message_ids = []
             # Build the reference from ids — no fetch_message round trip.
             reference = self._reply_reference_for_send(reply_to, channel)
 
             for i, chunk in enumerate(chunks):
+                if i and i % self.SPLIT_BATCH_SIZE == 0:
+                    await asyncio.sleep(self.SPLIT_BATCH_DELAY_SECONDS)
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
@@ -3680,9 +3713,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(
-            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        )
+        chunks = self._prepare_split_chunks(formatted)
 
         thread_name = _derive_forum_thread_name(content)
 
@@ -3706,7 +3737,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # per-chunk failures so the caller sees partial-send outcomes.
         message_ids = [message_id]
         warnings: list[str] = []
-        for chunk in chunks[1:]:
+        for i, chunk in enumerate(chunks[1:], start=1):
+            if i % self.SPLIT_BATCH_SIZE == 0:
+                await asyncio.sleep(self.SPLIT_BATCH_DELAY_SECONDS)
             try:
                 msg = await thread_channel.send(content=chunk)
                 message_ids.append(str(msg.id))
@@ -3949,9 +3982,7 @@ class DiscordAdapter(BasePlatformAdapter):
         returns ``success=False`` (a real adapter problem, not overflow).
         """
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(
-            self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        )
+        chunks = self._prepare_split_chunks(formatted)
         if len(chunks) <= 1:
             # Defensive: caller's pre-flight should guarantee >1 chunk, but if
             # not, just edit normally.
@@ -3972,7 +4003,9 @@ class DiscordAdapter(BasePlatformAdapter):
         continuation_ids: list[str] = []
         delivered = 1
         prev_msg = msg
-        for chunk in chunks[1:]:
+        for i, chunk in enumerate(chunks[1:], start=1):
+            if i % self.SPLIT_BATCH_SIZE == 0:
+                await asyncio.sleep(self.SPLIT_BATCH_DELAY_SECONDS)
             reference = None
             if hasattr(prev_msg, "to_reference"):
                 try:
@@ -10517,6 +10550,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
     seeded_extra = {}
+    # Keep the delivery limit on the adapter's profile, never in process env.
+    if "max_split_messages" in discord_cfg:
+        seeded_extra["max_split_messages"] = discord_cfg["max_split_messages"]
     # Authorization gate keys are ALWAYS seeded into PlatformConfig.extra so
     # every adapter carries its own profile's allow/deny lists (issue #72348).
     # The os.environ writes below remain first-writer-wins for legacy env-only

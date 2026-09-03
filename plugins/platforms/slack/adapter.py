@@ -596,6 +596,63 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     return "\n".join(parts)
 
 
+def _extract_file_ids_from_slack_blocks(blocks: list) -> list[str]:
+    """Return structured Slack file IDs embedded anywhere in Block Kit.
+
+    Slack can deliver the same authored message as both ``message`` and
+    ``app_mention`` events.  The latter may omit the top-level ``files`` array
+    while retaining ``rich_text`` elements of type ``file``.  Recovering the
+    IDs from the structured blocks lets the normal, authorization-gated
+    ``files.info`` path hydrate and download those attachments before the
+    richer duplicate event is suppressed.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "file":
+                file_id = node.get("file_id")
+                if (
+                    isinstance(file_id, str)
+                    and re.fullmatch(r"F[A-Z0-9]+", file_id)
+                    and file_id not in seen
+                ):
+                    seen.add(file_id)
+                    found.append(file_id)
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(blocks or [])
+    return found
+
+
+def _slack_file_is_shared_in_message(
+    file_obj: dict, *, channel_id: str, message_ts: str
+) -> bool:
+    """Prove a hydrated block-only file reference belongs to this message."""
+    shares = file_obj.get("shares")
+    if not isinstance(shares, dict) or not channel_id or not message_ts:
+        return False
+
+    for visibility in ("public", "private"):
+        by_channel = shares.get(visibility)
+        if not isinstance(by_channel, dict):
+            continue
+        channel_shares = by_channel.get(channel_id)
+        if not isinstance(channel_shares, list):
+            continue
+        if any(
+            isinstance(share, dict) and str(share.get("ts") or "") == message_ts
+            for share in channel_shares
+        ):
+            return True
+    return False
+
+
 def _extract_text_from_slack_attachments(attachments: list) -> str:
     """Extract readable text from legacy Slack message ``attachments``.
 
@@ -6118,6 +6175,31 @@ class SlackAdapter(BasePlatformAdapter):
                 normalized_event["_slack_changed_event_ts"] = changed_event_ts
             event = normalized_event
 
+        # ``app_mention`` duplicates can omit top-level files[] even though the
+        # rich-text blocks still carry structured file elements.  Recover only
+        # those structured IDs (never regex arbitrary message text) as Slack
+        # Connect-style stubs.  The existing attachment loop resolves them via
+        # files.info *after* the adapter-side authorization gate below.
+        recovered_block_file_ids: set[str] = set()
+        block_file_ids = _extract_file_ids_from_slack_blocks(event.get("blocks") or [])
+        if block_file_ids:
+            files = list(event.get("files") or [])
+            existing_file_ids = {
+                file_obj.get("id")
+                for file_obj in files
+                if isinstance(file_obj, dict) and file_obj.get("id")
+            }
+            missing_file_ids = [
+                file_id for file_id in block_file_ids if file_id not in existing_file_ids
+            ]
+            if missing_file_ids:
+                recovered_block_file_ids.update(missing_file_ids)
+                event = dict(event)
+                event["files"] = files + [
+                    {"id": file_id, "file_access": "check_file_info"}
+                    for file_id in missing_file_ids
+                ]
+
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         # Scope the dedup id by workspace: Slack event ts values are only
         # unique within one workspace, so two teams' events with the same ts
@@ -6797,6 +6879,8 @@ class SlackAdapter(BasePlatformAdapter):
         attachment_notices: List[str] = []
         files = event.get("files", [])
         for f in files:
+            file_id = f.get("id") if isinstance(f, dict) else None
+            recovered_from_block = file_id in recovered_block_file_ids
             # Slack Connect channels return stub file objects with
             # file_access="check_file_info" and no URL fields. We must
             # call files.info to retrieve the full object (including url_private_download)
@@ -6812,6 +6896,19 @@ class SlackAdapter(BasePlatformAdapter):
                     ).files_info(file=file_id)
                     if info_resp.get("ok"):
                         f = info_resp["file"]
+                        if recovered_from_block and not _slack_file_is_shared_in_message(
+                            f,
+                            channel_id=channel_id,
+                            message_ts=str(ts or ""),
+                        ):
+                            logger.warning(
+                                "[Slack] Refusing block-only file reference %s: "
+                                "files.info does not show it shared in channel %s at %s",
+                                file_id,
+                                channel_id,
+                                ts,
+                            )
+                            continue
                     else:
                         detail = self._describe_slack_api_error(info_resp, file_obj=f)
                         if detail:

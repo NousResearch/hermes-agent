@@ -1696,6 +1696,141 @@ class TestIncomingDocumentHandling:
         assert "# Title" in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_app_mention_file_block_resolves_document_when_files_array_is_missing(
+        self, adapter
+    ):
+        """Slack app_mention variants can omit files[] but retain a rich-text file block."""
+        content = b"# X Playwright Attended Canary\nImplement this plan"
+        file_id = "F0BMF4381RC"
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": file_id,
+                    "mimetype": "text/plain",
+                    "filetype": "markdown",
+                    "name": "x-playwright-attended-canary.md",
+                    "url_private_download": "https://files.slack.com/canary.md",
+                    "size": len(content),
+                    "file_access": "visible",
+                    "shares": {
+                        "private": {
+                            "D123": [{"ts": "1234567890.000001"}],
+                        }
+                    },
+                },
+            }
+        )
+        event = self._make_event(
+            text=f"<@U_BOT> {file_id} proceed to implement",
+            files=[],
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "user", "user_id": "U_BOT"},
+                                {"type": "text", "text": " "},
+                                {
+                                    "type": "file",
+                                    "file_id": file_id,
+                                    "url": "https://workspace.slack.com/files/U_USER/F0BMF4381RC/file.md",
+                                },
+                                {"type": "text", "text": " proceed to implement"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+        event["type"] = "app_mention"
+        event.pop("files")
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as download:
+            download.return_value = content
+            await adapter._handle_slack_message(event)
+
+            # Slack also emits the richer generic message event for the same
+            # timestamp. It must be deduplicated after the app_mention has
+            # recovered and delivered the attachment.
+            duplicate = self._make_event(
+                text=event["text"],
+                files=[adapter._app.client.files_info.return_value["file"]],
+                blocks=event["blocks"],
+            )
+            duplicate["type"] = "message"
+            await adapter._handle_slack_message(duplicate)
+
+        adapter._app.client.files_info.assert_awaited_once_with(file=file_id)
+        download.assert_awaited_once_with(
+            "https://files.slack.com/canary.md", team_id=""
+        )
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Content of x-playwright-attended-canary.md]" in msg_event.text
+        assert "# X Playwright Attended Canary" in msg_event.text
+        assert "proceed to implement" in msg_event.text
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_file_block_recovery_rejects_file_not_shared_in_trigger_message(
+        self, adapter
+    ):
+        """A structured block cannot pull an unrelated file visible to the bot token."""
+        file_id = "FOTHER123"
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": file_id,
+                    "mimetype": "text/plain",
+                    "name": "unrelated.txt",
+                    "url_private_download": "https://files.slack.com/unrelated.txt",
+                    "size": 12,
+                    "shares": {
+                        "private": {
+                            "D_OTHER": [{"ts": "999.000001"}],
+                        }
+                    },
+                },
+            }
+        )
+        event = self._make_event(
+            text=f"<@U_BOT> {file_id} read this",
+            files=[],
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "user", "user_id": "U_BOT"},
+                                {"type": "file", "file_id": file_id},
+                                {"type": "text", "text": " read this"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+        event.pop("files")
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as download:
+            await adapter._handle_slack_message(event)
+
+        adapter._app.client.files_info.assert_awaited_once_with(file=file_id)
+        download.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
     async def test_json_snippet_injects_content(self, adapter):
         """A .json snippet should be treated as a text document and injected."""
         content = b'{"hello": "world", "count": 2}'

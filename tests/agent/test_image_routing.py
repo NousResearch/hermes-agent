@@ -665,3 +665,44 @@ class TestProbeApiKeyForwarding:
         ) as detect:
             _lookup_supports_vision("custom", "llava", {"model": {"api_key": key}})
         assert detect.call_args.kwargs.get("api_key") == key
+
+
+class TestCodexContextVariantVisionLookup:
+    """Regression tests for Codex -900k large-context variant vision capability (#102189)."""
+
+    def test_valid_codex_900k_variant_normalizes_to_base_for_capabilities(self):
+        """A valid -900k variant (gpt-5.6-sol-900k) should look up capabilities
+        using its base model (gpt-5.6-sol) in models.dev."""
+        caps_mock = type("Caps", (), {"supports_vision": True})()
+
+        def _fake_caps(provider, model, allow_network=True):
+            if provider == "openai-codex" and model == "gpt-5.6-sol":
+                return caps_mock
+            return None
+
+        with patch("agent.models_dev.get_model_capabilities", side_effect=_fake_caps):
+            assert _lookup_supports_vision("openai-codex", "gpt-5.6-sol-900k", {}) is True
+            assert decide_image_input_mode("openai-codex", "gpt-5.6-sol-900k", {}) == "native"
+
+    def test_invalid_900k_variant_does_not_normalize(self):
+        """An ineligible string (gpt-5.5-900k) must not be stripped or gain capabilities."""
+        caps_mock = type("Caps", (), {"supports_vision": True})()
+
+        def _fake_caps(provider, model, allow_network=True):
+            if provider == "openai-codex" and model == "gpt-5.5":
+                return caps_mock
+            return None
+
+        with patch("agent.models_dev.get_model_capabilities", side_effect=_fake_caps):
+            # gpt-5.5-900k is not an eligible 900k base, so lookup model remains gpt-5.5-900k
+            assert _lookup_supports_vision("openai-codex", "gpt-5.5-900k", {}) is None
+            assert decide_image_input_mode("openai-codex", "gpt-5.5-900k", {}) == "text"
+
+    def test_config_override_matches_base_or_variant(self):
+        """Config supports_vision override matches either the variant or base slug."""
+        cfg_base = {"providers": {"openai-codex": {"models": {"gpt-5.6-sol": {"supports_vision": True}}}}}
+        assert _lookup_supports_vision("openai-codex", "gpt-5.6-sol-900k", cfg_base) is True
+
+        cfg_variant = {"providers": {"openai-codex": {"models": {"gpt-5.6-sol-900k": {"supports_vision": True}}}}}
+        assert _lookup_supports_vision("openai-codex", "gpt-5.6-sol-900k", cfg_variant) is True
+

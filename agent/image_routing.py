@@ -487,6 +487,19 @@ def _lookup_supports_vision(
     (so custom/local models declared as vision-capable don't fall through to
     text routing in ``auto`` mode), then falls back to models.dev.
     """
+    lookup_provider = str(provider or "").strip().lower()
+    lookup_model = str(model or "").strip()
+
+    # When resolving capabilities for OpenAI Codex models, normalize valid
+    # -900k large-context picker aliases (e.g. gpt-5.6-sol-900k -> gpt-5.6-sol)
+    # so capability lookup finds the base model in the catalog (#102189).
+    if lookup_provider in {"openai-codex", "openai", "codex"}:
+        from agent.model_metadata import strip_codex_context_variant_suffix
+
+        canonical_lookup_model = strip_codex_context_variant_suffix(lookup_model)
+    else:
+        canonical_lookup_model = lookup_model
+
     # Named custom providers are canonicalized to ``provider="custom"`` by
     # runtime resolution.  The original CLI/config name is carried in the
     # context-local main runtime so capability lookup can still select the
@@ -500,8 +513,6 @@ def _lookup_supports_vision(
                 _runtime_main_value("provider") or ""
             ).strip().lower()
             runtime_model = str(_runtime_main_value("model") or "").strip()
-            lookup_provider = str(provider or "").strip().lower()
-            lookup_model = str(model or "").strip()
             if runtime_provider == lookup_provider and runtime_model == lookup_model:
                 requested_provider = str(
                     _runtime_main_value("requested_provider") or ""
@@ -517,6 +528,15 @@ def _lookup_supports_vision(
     )
     if override is not None:
         return override
+    if canonical_lookup_model != model:
+        override = _supports_vision_override(
+            cfg,
+            provider,
+            canonical_lookup_model,
+            requested_provider=requested_provider,
+        )
+        if override is not None:
+            return override
     if not provider or not model:
         return None
 
@@ -534,7 +554,7 @@ def _lookup_supports_vision(
         )
 
         if is_managed_provider(provider, _resolve_inference_base_url(cfg, provider) or ""):
-            managed = managed_model_supports_vision(model)
+            managed = managed_model_supports_vision(canonical_lookup_model)
             if managed is not None:
                 return managed
     except Exception as exc:  # pragma: no cover - defensive
@@ -551,7 +571,7 @@ def _lookup_supports_vision(
         # reintroduce the bug. This preserves the historical
         # network-on-cold-cache behavior for this one path; the fetch is
         # cached (4h TTL) and backoff-limited after failures.
-        caps = get_model_capabilities(provider, model, allow_network=True)
+        caps = get_model_capabilities(provider, canonical_lookup_model, allow_network=True)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("image_routing: caps lookup failed for %s:%s — %s", provider, model, exc)
     if caps is not None:

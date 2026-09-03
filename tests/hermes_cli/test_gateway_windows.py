@@ -296,6 +296,7 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "/Change" not in [arg for call in calls for arg in call]
     assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
     assert calls[1][0] == "/Create"
+    assert "/IT" in calls[1] and "/NP" not in calls[1]
     assert "/XML" in calls[1]
     assert "/SC" not in calls[1]
     assert "<Delay>PT30S</Delay>" in xml_seen["text"]
@@ -339,6 +340,44 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
 
+
+@pytest.mark.parametrize(
+    ("userdomain", "username", "expected"),
+    [
+        ("WORKGROUP", "alice", "alice"),
+        ("workgroup", "alice", "alice"),
+        ("MICROSOFTACCOUNT", "alice", "alice"),
+        (None, "alice", "alice"),
+        ("CORP", "alice", r"CORP\alice"),
+        ("HELEN_REDMI", "qiaoa", r"HELEN_REDMI\qiaoa"),
+    ],
+)
+def test_resolve_task_user_workgroup_uses_bare_username(monkeypatch, userdomain, username, expected):
+    """Workgroup/local accounts must not be prefixed with the WORKGROUP domain:
+    schtasks cannot map ``WORKGROUP\\user`` to a SID, so the task principal
+    falls back to the bare username (issue #89807)."""
+
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    monkeypatch.setenv("USERNAME", username)
+    if userdomain is None:
+        monkeypatch.delenv("USERDOMAIN", raising=False)
+    else:
+        monkeypatch.setenv("USERDOMAIN", userdomain)
+    assert gateway_windows._resolve_task_user() == expected
+
+
+def test_resolve_task_user_returns_none_without_username(monkeypatch):
+    monkeypatch.delenv("USERNAME", raising=False)
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    assert gateway_windows._resolve_task_user() is None
+
+
+def test_resolve_task_user_passes_through_qualified_username(monkeypatch):
+    monkeypatch.delenv("USERDOMAIN", raising=False)
+    monkeypatch.setenv("USERNAME", r"DOMAIN\bob")
+    assert gateway_windows._resolve_task_user() == r"DOMAIN\bob"
 
 
 

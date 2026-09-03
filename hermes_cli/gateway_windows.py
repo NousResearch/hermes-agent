@@ -588,13 +588,20 @@ def _write_task_script() -> Path:
 # ---------------------------------------------------------------------------
 
 def _resolve_task_user() -> str | None:
-    """Return ``DOMAIN\\USER`` if available, else bare USERNAME, else None."""
+    """Return ``DOMAIN\\USER`` if available, else bare USERNAME, else None.
+
+    Workgroup machines report ``USERDOMAIN=WORKGROUP``; schtasks rejects
+    ``WORKGROUP\\user`` as a task principal ("No mapping between account
+    names and security IDs"), so local accounts must use the bare username.
+    """
     username = os.environ.get("USERNAME") or os.environ.get("USER") or os.environ.get("LOGNAME")
     if not username:
         return None
     if "\\" in username:
         return username
     domain = os.environ.get("USERDOMAIN")
+    if not domain or domain.upper() in {"WORKGROUP", "MICROSOFTACCOUNT"}:
+        return username
     return f"{domain}\\{username}" if domain else username
 
 
@@ -687,7 +694,12 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     launcher_path = script_path.with_suffix(".vbs")
     xml_path = _write_scheduled_task_xml(task_name, launcher_path, user)
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
-    variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
+    # Do not combine /NP with /IT: newer Windows builds reject the pair
+    # ("/IT switch cannot be used with /NP"), and /NP alone makes schtasks
+    # prompt for a run-as password instead of creating the task. The XML
+    # already declares the principal (InteractiveToken), so /IT alone keeps
+    # the task interactive without requiring a stored password.
+    variants = [[*base, "/RU", user, "/IT"]] if user else []
     variants.append(base)
 
     last_code = 1

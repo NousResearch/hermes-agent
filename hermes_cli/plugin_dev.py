@@ -82,8 +82,17 @@ def _doctor_runtime(plugin_path: Path):
     from hermes_cli.plugins import PluginManager
     from tools.registry import registry
 
-    entries_before = {entry.name: entry for entry in registry._snapshot_entries()}
-    policy_before = dict(registry._plugin_override_policy)
+    with registry._lock:
+        tools_before = dict(registry._tools)
+        scoped_tools_before = {
+            scope: dict(entries)
+            for scope, entries in registry._scoped_tools.items()
+        }
+        policy_before = dict(registry._plugin_override_policy)
+        module_scopes_before = {
+            module: set(scopes)
+            for module, scopes in registry._plugin_module_scopes.items()
+        }
     modules_before = {
         name
         for name in sys.modules
@@ -116,23 +125,30 @@ def _doctor_runtime(plugin_path: Path):
             registered_hooks=tuple(loaded.hooks_registered),
         )
     finally:
-        entries_after = {entry.name: entry for entry in registry._snapshot_entries()}
-        changed_names = {
-            name
-            for name in set(entries_before) | set(entries_after)
-            if entries_after.get(name) is not entries_before.get(name)
-        }
         with registry._lock:
-            for name in changed_names:
-                previous = entries_before.get(name)
-                if previous is None:
-                    registry._tools.pop(name, None)
-                else:
-                    registry._tools[name] = previous
+            registry._tools.clear()
+            registry._tools.update(tools_before)
+
+            registry._scoped_tools.clear()
+            registry._scoped_tools.update(
+                {
+                    scope: dict(entries)
+                    for scope, entries in scoped_tools_before.items()
+                }
+            )
+
             registry._plugin_override_policy.clear()
             registry._plugin_override_policy.update(policy_before)
-            if changed_names:
-                registry._generation += 1
+
+            registry._plugin_module_scopes.clear()
+            registry._plugin_module_scopes.update(
+                {
+                    module: set(scopes)
+                    for module, scopes in module_scopes_before.items()
+                }
+            )
+
+            registry._generation += 1
         for name in list(sys.modules):
             if (
                 name not in modules_before

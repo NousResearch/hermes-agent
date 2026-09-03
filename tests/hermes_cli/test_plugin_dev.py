@@ -259,3 +259,47 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     # exact window where a stranded hermes-plugin-doctor-* dir was observed.
     leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
     assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"
+
+
+def test_doctor_restores_scoped_registry_state(tmp_path: Path) -> None:
+    from hermes_cli.plugin_dev import doctor_plugin
+    from tools.registry import registry
+
+    target = tmp_path / "scoped-cleanup-plugin"
+    target.mkdir()
+    (target / "plugin.yaml").write_text(
+        "name: scoped-cleanup-plugin\nprovides_tools: [scoped_cleanup_ping]\n",
+        encoding="utf-8",
+    )
+    (target / "__init__.py").write_text(
+        "import json\n\n"
+        "def ping(args, **kwargs):\n"
+        "    return json.dumps({'ok': True})\n\n"
+        "def register(ctx):\n"
+        "    ctx.register_tool("
+        "name='scoped_cleanup_ping', "
+        "toolset='cleanup', "
+        "schema={'name': 'scoped_cleanup_ping', "
+        "'description': 'test', "
+        "'parameters': {'type': 'object'}}, "
+        "handler=ping)\n",
+        encoding="utf-8",
+    )
+
+    with registry._lock:
+        scoped_before = {
+            scope: dict(entries)
+            for scope, entries in registry._scoped_tools.items()
+        }
+        module_scopes_before = {
+            module: set(scopes)
+            for module, scopes in registry._plugin_module_scopes.items()
+        }
+
+    report = doctor_plugin(target)
+
+    assert report.ok, report.format_text()
+
+    with registry._lock:
+        assert registry._scoped_tools == scoped_before
+        assert registry._plugin_module_scopes == module_scopes_before

@@ -2232,7 +2232,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
-        return {"error": "Matrix dependencies not installed. Run: pip install 'mautrix[encryption]'"}
+        return {"error": "Matrix dependencies not installed. Run: pip install mautrix"}
 
     adapter = MatrixAdapter(pconfig)
     try:

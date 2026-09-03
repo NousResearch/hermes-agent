@@ -7060,13 +7060,15 @@ def _all_platforms() -> list[dict]:
     shape with ``_registry_entry`` holding the source.
 
     Platform-specific gating: some platforms can't be configured on
-    every host. Currently:
-      - Matrix is hidden on Windows. The [matrix] extra pulls
-        ``mautrix[encryption]`` -> ``python-olm``, which has no Windows
-        wheel and needs ``make`` + libolm to build from sdist. There's
-        no native Windows path that works, so we don't offer it in the
-        picker. Users who want Matrix on Windows can run hermes under
-        WSL.
+    every host. Currently: none.
+
+    Matrix used to be hidden on Windows because the [matrix] extra pulled
+    ``mautrix[encryption]`` -> ``python-olm``, which has no Windows wheel.
+    Since #62401 the crypto packages live in their own lazy feature
+    (``platform.matrix.e2ee``) and plain ``mautrix`` is a pure-python
+    wheel, so the plaintext adapter installs on every host and Matrix is
+    back in the picker (#76092). Only E2EE stays gated, in
+    ``tools/lazy_deps.py::_unsupported_feature_reason``.
     """
     # Populate the registry so plugin platforms are visible. Idempotent.
     # Bundled platform plugins (``kind: platform``) auto-load unconditionally,
@@ -7082,10 +7084,6 @@ def _all_platforms() -> list[dict]:
 
     platforms = [dict(p) for p in _PLATFORMS]
 
-    # Drop platforms that can't function on this host. See docstring.
-    if sys.platform == "win32":
-        platforms = [p for p in platforms if p.get("key") != "matrix"]
-
     by_key = {p["key"]: p for p in platforms}
 
     try:
@@ -7096,11 +7094,6 @@ def _all_platforms() -> list[dict]:
     for entry in platform_registry.all_entries():
         if entry.name in by_key:
             continue  # built-in already covers it
-        # Drop platforms that can't function on this host. Matrix is hidden on
-        # Windows (python-olm has no Windows wheel) — applies whether matrix is
-        # a built-in or, post-#41112, a registry-discovered plugin.
-        if sys.platform == "win32" and entry.name == "matrix":
-            continue
         platforms.append(
             {
                 "key": entry.name,

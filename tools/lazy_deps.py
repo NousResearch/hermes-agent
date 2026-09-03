@@ -223,8 +223,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "slack-sdk==3.43.0",
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
     ),
+    # Plaintext Matrix. Deliberately bare `mautrix` — the `[encryption]` extra
+    # pulls python-olm, and the adapter only imports mautrix.crypto behind
+    # `if self._encryption:`, so olm is dead weight for the default E2EE-off
+    # setup. Requiring it here made Matrix uninstallable on macOS for everyone
+    # (#62401, #85588); E2EE now lives in `platform.matrix.e2ee` below.
     "platform.matrix": (
-        "mautrix[encryption]==0.21.1",
+        "mautrix==0.21.1",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
@@ -232,6 +237,27 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # aiohttp transitively, so a vulnerable already-installed aiohttp still
         # satisfies both — pin the patched floor here too, like platform.discord.
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+    ),
+    # Matrix E2EE. Installed only when the resolved E2EE mode is
+    # optional/required — never as a side effect of enabling Matrix.
+    #
+    # python-olm leads on purpose: `active_features()` anchors on specs[0], and
+    # it is the only package here that proves E2EE was actually installed. With
+    # mautrix as the anchor, a plaintext install would mark this group active
+    # and `hermes update` would retry the doomed olm build every run (#64065).
+    #
+    # The extra's contents are also listed one by one because `_is_satisfied`
+    # strips `[extras]` before checking, so `mautrix[encryption]` alone is
+    # satisfied by bare mautrix and a half-installed crypto stack would go
+    # unnoticed. `mautrix[encryption]` stays last so uv still resolves the
+    # extra proper — the explicit pins are the detectable half, not a
+    # replacement. test_lazy_deps_matrix_split.py guards against drift.
+    "platform.matrix.e2ee": (
+        "python-olm==3.2.16",
+        "pycryptodome==3.23.0",
+        "unpaddedbase64==2.1.0",
+        "base58==2.1.1",
+        "mautrix[encryption]==0.21.1",
     ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
@@ -543,11 +569,22 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
     known-impossible installs out of both first-use lazy installation and the
     ``hermes update`` lazy-refresh pass.
     """
-    if sys.platform == "win32" and feature == "platform.matrix":
+    if feature == "platform.matrix.e2ee" and sys.platform in ("win32", "darwin"):
+        # python-olm publishes manylinux wheels only, so both hosts fall back
+        # to building the bundled libolm from sdist — and neither can:
+        #   Windows: no `make`, and cmake 4.x rejects libolm's ancient
+        #            cmake_minimum_required (#58063).
+        #   macOS:   libolm was archived upstream and dropped from Homebrew,
+        #            and its list.hh does `++other_pos` on a `T *const`, which
+        #            Apple Clang 21 rejects outright — no flag silences it.
+        # Only E2EE is affected; plaintext Matrix installs fine on both.
+        where = "Windows" if sys.platform == "win32" else "macOS"
         return (
-            "unsupported on Windows: Matrix E2EE depends on python-olm, "
-            "which has no Windows wheel and requires make + libolm to build "
-            "from sdist. Run Hermes under WSL to use Matrix on Windows."
+            f"unsupported on {where}: Matrix E2EE depends on python-olm "
+            f"(libolm), which has no {where} wheel and cannot be built from "
+            "sdist here. Plaintext Matrix works — this only disables "
+            "encrypted rooms. For E2EE, run Hermes under Linux, WSL, or "
+            "Docker, where 'pip install mautrix[encryption]' resolves."
         )
     return None
 
@@ -928,6 +965,18 @@ def feature_specs(feature: str) -> tuple[str, ...]:
 def feature_missing(feature: str) -> tuple[str, ...]:
     """Return the subset of specs for ``feature`` not currently installed."""
     return tuple(s for s in feature_specs(feature) if not _is_satisfied(s))
+
+
+def unsupported_reason(feature: str) -> Optional[str]:
+    """Public read of the host capability gate — see
+    :func:`_unsupported_feature_reason`.
+
+    Lets callers ask "can this feature install here?" *before* offering it,
+    instead of discovering it by catching :class:`FeatureUnavailable` from a
+    half-finished install. Used by the Matrix setup wizard to skip the E2EE
+    prompt on hosts where python-olm cannot build.
+    """
+    return _unsupported_feature_reason(feature)
 
 
 def ensure(feature: str, *, prompt: bool = True) -> None:

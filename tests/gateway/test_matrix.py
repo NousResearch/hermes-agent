@@ -907,6 +907,95 @@ class TestMatrixRequirements:
             "missing (#31116)"
         )
 
+    def test_e2ee_group_is_lazily_installed_when_encryption_on(self, monkeypatch):
+        """E2EE deps moved out of platform.matrix (#62401), so switching
+        encryption on must pull them in on first use — otherwise enabling E2EE
+        would silently never install olm."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_E2EE_MODE", "required")
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        ensured = []
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+             patch.object(matrix_mod, "_e2ee_unsupported_reason", return_value=""), \
+             patch("tools.lazy_deps.feature_missing", return_value=()), \
+             patch("tools.lazy_deps.ensure", side_effect=lambda f, **k: ensured.append(f)):
+            matrix_mod.check_matrix_requirements()
+
+        assert ensured == ["platform.matrix.e2ee"]
+
+    def test_e2ee_group_is_not_installed_when_encryption_off(self, monkeypatch):
+        """The whole point of the split: the default (E2EE off) path must not
+        touch python-olm, which cannot build on macOS or Windows."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_E2EE_MODE", "off")
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        ensured = []
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+             patch("tools.lazy_deps.feature_missing", return_value=()), \
+             patch("tools.lazy_deps.ensure", side_effect=lambda f, **k: ensured.append(f)):
+            assert matrix_mod.check_matrix_requirements() is True
+
+        assert ensured == []
+
+    def test_e2ee_gate_fails_closed_when_lazy_deps_is_unimportable(self, monkeypatch):
+        """A broken install must not be read as "E2EE is fine here".
+
+        ``_e2ee_unsupported_reason`` swallows exceptions so callers stay simple.
+        If that swallow returned "" on macOS/Windows it would mean "installable",
+        and the wizard would offer E2EE and trigger the python-olm build this
+        split exists to avoid. The platform check needs no imports, so it must
+        survive ``tools.lazy_deps`` failing to import at all.
+        """
+        import builtins
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        real_import = builtins.__import__
+
+        def _blocked(name, *a, **kw):
+            if name == "tools.lazy_deps" or name.startswith("tools.lazy_deps."):
+                raise ImportError("simulated broken install")
+            return real_import(name, *a, **kw)
+
+        for plat, label in (("darwin", "macOS"), ("win32", "Windows")):
+            monkeypatch.setattr(matrix_mod.sys, "platform", plat)
+            with patch.object(builtins, "__import__", _blocked):
+                reason = matrix_mod._e2ee_unsupported_reason()
+            assert reason, f"gate must stay closed on {label} when lazy_deps is broken"
+            assert label in reason
+
+        # ...but a host that *can* build olm is still not blocked by a
+        # transient import failure.
+        monkeypatch.setattr(matrix_mod.sys, "platform", "linux")
+        with patch.object(builtins, "__import__", _blocked):
+            assert matrix_mod._e2ee_unsupported_reason() == ""
+
+    def test_e2ee_install_is_skipped_on_hosts_where_olm_cannot_build(self, monkeypatch):
+        """Don't spend a doomed compile on macOS/Windows — the platform gate
+        answers before pip is invoked."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_E2EE_MODE", "optional")
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
+             patch.object(
+                 matrix_mod, "_e2ee_unsupported_reason",
+                 return_value="unsupported on macOS: ...",
+             ), \
+             patch("tools.lazy_deps.feature_missing", return_value=()), \
+             patch("tools.lazy_deps.ensure",
+                   side_effect=AssertionError("pip must not run on a gated host")):
+            # optional mode degrades to plaintext rather than failing.
+            assert matrix_mod.check_matrix_requirements() is True
+
 
 # ---------------------------------------------------------------------------
 # Access-token auth / E2EE bootstrap

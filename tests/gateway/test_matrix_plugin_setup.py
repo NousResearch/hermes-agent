@@ -81,3 +81,55 @@ class TestMatrixHomeChannelClear:
         assert "MATRIX_HOME_ROOM" not in saved
 
 
+
+class TestMatrixE2EEInstallRouting:
+    """The E2EE answer must decide what gets installed (#62401).
+
+    ``matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"`` used to
+    be cosmetic — it fed print strings while the install call hardcoded
+    ``platform.matrix``, whose spec carried the ``[encryption]`` extra. So
+    answering "no" still triggered a python-olm build, which is fatal on macOS.
+    """
+
+    def _run(self, monkeypatch, *, want_e2ee, blocked_reason=""):
+        import plugins.platforms.matrix.adapter as matrix_mod
+
+        ensured, saved, removed = [], {}, []
+        _patch_setup_io(
+            monkeypatch, _PROMPTS_BLANK, [want_e2ee], saved, removed, existing={}
+        )
+        # Every feature reports work to do, so a skipped install can only mean
+        # the wizard never asked for that feature.
+        monkeypatch.setattr(lazy_deps_mod, "feature_missing", lambda f: ("pkg==1",))
+        monkeypatch.setattr(
+            lazy_deps_mod, "ensure",
+            lambda feature, **kw: ensured.append(feature),
+        )
+        monkeypatch.setattr(
+            matrix_mod, "_e2ee_unsupported_reason", lambda: blocked_reason
+        )
+        interactive_setup()
+        return ensured, saved
+
+    def test_declining_e2ee_never_installs_the_crypto_group(self, monkeypatch):
+        ensured, saved = self._run(monkeypatch, want_e2ee=False)
+        assert ensured == ["platform.matrix"], (
+            "answering 'no' to E2EE must install the plaintext group only — "
+            f"got {ensured}"
+        )
+        assert "MATRIX_ENCRYPTION" not in saved
+
+    def test_accepting_e2ee_installs_both_groups(self, monkeypatch):
+        ensured, saved = self._run(monkeypatch, want_e2ee=True)
+        assert ensured == ["platform.matrix", "platform.matrix.e2ee"]
+        assert saved.get("MATRIX_ENCRYPTION") == "true"
+
+    def test_e2ee_not_offered_where_olm_cannot_build(self, monkeypatch):
+        """On macOS/Windows the wizard must not walk the user into a doomed
+        build. The queued answer is "yes", so if the E2EE question were still
+        asked the wizard would take it and both assertions below would fail."""
+        ensured, saved = self._run(
+            monkeypatch, want_e2ee=True, blocked_reason="unsupported on macOS: ..."
+        )
+        assert ensured == ["platform.matrix"]
+        assert "MATRIX_ENCRYPTION" not in saved

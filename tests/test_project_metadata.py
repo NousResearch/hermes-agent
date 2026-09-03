@@ -18,7 +18,7 @@ def _load_package_data():
 
 
 def test_matrix_extra_not_in_all():
-    """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
+    """The [matrix] extra used to pull `mautrix[encryption]` -> `python-olm`,
     which has Linux-only wheels and no native build path on Windows or
     modern macOS (archived libolm, C++ errors with Clang 21+).
 
@@ -27,6 +27,11 @@ def test_matrix_extra_not_in_all():
     [matrix] extra is excluded from [all] entirely and routed through
     `tools/lazy_deps.py` (LAZY_DEPS["platform.matrix"]) — installs at
     first use, where the user is expected to have a toolchain.
+
+    #62401 then moved olm out of [matrix] into [matrix-e2ee], so the
+    exclusion is no longer what keeps olm out of a fresh install. Keep it
+    anyway: the lazy-install policy below applies to every backend, and
+    [matrix] still carries asyncpg, which builds from sdist without a wheel.
     """
     optional_dependencies = _load_optional_dependencies()
 
@@ -42,6 +47,29 @@ def test_matrix_extra_not_in_all():
         "tools/lazy_deps.py LAZY_DEPS['platform.matrix']. Found: "
         f"{matrix_in_all}"
     )
+
+
+def test_matrix_extra_does_not_pull_python_olm():
+    """`uv sync --extra matrix` must resolve on macOS and Windows (#62401).
+
+    The [encryption] extra pulls python-olm, which only builds on Linux. It
+    belongs to the opt-in [matrix-e2ee] extra, so the plaintext adapter — the
+    default, since MATRIX_E2EE_MODE resolves to `off` when unset — installs
+    without a compiler.
+    """
+    optional_dependencies = _load_optional_dependencies()
+
+    offending = [d for d in optional_dependencies["matrix"] if "[encryption]" in d]
+    assert not offending, (
+        "[matrix] must pin bare mautrix — the [encryption] extra pulls "
+        f"python-olm and breaks macOS/Windows installs. Found: {offending}"
+    )
+    assert "matrix-e2ee" in optional_dependencies, (
+        "[matrix-e2ee] must exist so operators on Linux can still opt into E2EE"
+    )
+    assert any(
+        "[encryption]" in d for d in optional_dependencies["matrix-e2ee"]
+    ), "[matrix-e2ee] must be the extra that actually carries the crypto deps"
 
 
 def test_lazy_installable_extras_excluded_from_all():
@@ -70,7 +98,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "edge-tts", "tts-premium",
         "voice",  # faster-whisper / sounddevice / numpy
         "modal", "daytona", "vercel",
-        "messaging", "slack", "matrix", "dingtalk", "feishu",
+        "messaging", "slack", "matrix", "matrix-e2ee", "dingtalk", "feishu",
         "honcho", "hindsight",
         "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)

@@ -356,14 +356,30 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+:::warning Linux only
+E2EE depends on `python-olm`, which wraps the `libolm` C library. `libolm` has
+been archived upstream and only ships wheels for Linux, so **E2EE cannot be
+installed on macOS or Windows**:
+
+- **macOS** — `libolm` was removed from Homebrew, and building the bundled copy
+  fails under Apple Clang 21 (a const-correctness error in `list.hh`). No
+  compiler flag works around it.
+- **Windows** — there is no wheel, and the sdist build needs `make` plus a
+  toolchain that can build `libolm`.
+
+Plaintext Matrix works fine on both. To run an encrypted bot from a Mac or
+Windows box, host the gateway in Docker, WSL, or on a Linux server.
+:::
+
+On Linux, E2EE needs the `mautrix` encryption extras plus the `libolm` C library:
 
 ```bash
 # Install mautrix with E2EE support
 pip install 'mautrix[encryption]'
 
-# Or install with hermes extras
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+# Or install with hermes extras (this is the E2EE extra —
+# ".[matrix]" installs the plaintext adapter only)
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix-e2ee]"
 ```
 
 You also need `libolm` installed on your system:
@@ -372,12 +388,14 @@ You also need `libolm` installed on your system:
 # Debian/Ubuntu
 sudo apt install libolm-dev
 
-# macOS
-brew install libolm
-
 # Fedora
 sudo dnf install libolm-devel
 ```
+
+`hermes gateway setup` handles this for you: it installs the plaintext adapter
+first and only pulls the crypto packages after you answer **yes** to the E2EE
+prompt. On hosts where `libolm` cannot build, it skips the prompt entirely and
+tells you why rather than failing partway through a compile.
 
 ### Enable E2EE
 
@@ -617,7 +635,7 @@ If this returns your user info, the token is valid. If it returns an error, gene
 **Fix**: Install it:
 
 ```bash
-pip install 'mautrix[encryption]'
+pip install mautrix
 ```
 
 Or with Hermes extras:
@@ -625,6 +643,12 @@ Or with Hermes extras:
 ```bash
 cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
+
+:::tip
+Install plain `mautrix`, not `mautrix[encryption]`, unless you actually need
+encrypted rooms — the extra pulls `python-olm`, which only builds on Linux.
+See [Requirements](#requirements) above.
+:::
 
 ### Encryption errors / "could not decrypt event"
 

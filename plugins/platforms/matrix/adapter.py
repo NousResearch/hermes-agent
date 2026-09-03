@@ -2,7 +2,9 @@
 
 Connects to any Matrix homeserver (self-hosted or matrix.org) via the
 mautrix Python SDK.  Supports optional end-to-end encryption (E2EE)
-when installed with ``pip install "mautrix[encryption]"``.
+when additionally installed with ``pip install "mautrix[encryption]"`` —
+that extra pulls python-olm, which builds on Linux only, so E2EE is opt-in
+and the plaintext adapter never depends on it (#62401).
 
 Environment variables:
     MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
@@ -611,7 +613,8 @@ _OUTBOUND_MENTION_RE = re.compile(
 
 _E2EE_INSTALL_HINT = (
     "Install with: pip install 'mautrix[encryption]' asyncpg aiosqlite  "
-    "(requires libolm C library)"
+    "(needs the libolm C library, which builds on Linux only — see "
+    "hermes-agent[matrix-e2ee])"
 )
 
 _MATRIX_IMAGE_FILENAME_EXTS = frozenset({
@@ -806,6 +809,63 @@ def _check_e2ee_deps() -> bool:
         return True
     except (ImportError, AttributeError):
         return False
+
+
+def _e2ee_unsupported_reason() -> str:
+    """Why E2EE cannot be installed on this host, or ``""`` if it can.
+
+    Thin wrapper over the lazy-dep platform gate so callers (setup wizard,
+    dep installer) don't each re-derive "is python-olm buildable here".
+    """
+    try:
+        from tools.lazy_deps import unsupported_reason
+
+        return unsupported_reason("platform.matrix.e2ee") or ""
+    except Exception:
+        # Fail CLOSED on the hosts we know cannot build olm. Returning "" here
+        # would mean "E2EE is installable", so a broken/partial install (where
+        # importing tools.lazy_deps fails) would make the wizard offer E2EE and
+        # walk the user straight into the doomed build this split exists to
+        # prevent. The platform test needs no imports, so it still holds.
+        if sys.platform in ("win32", "darwin"):
+            where = "Windows" if sys.platform == "win32" else "macOS"
+            return (
+                f"unsupported on {where}: Matrix E2EE depends on python-olm "
+                f"(libolm), which has no {where} wheel and cannot be built "
+                "from sdist here."
+            )
+        return ""
+
+
+def _ensure_matrix_e2ee_deps() -> bool:
+    """Best-effort lazy install of the E2EE crypto group.
+
+    Split out of ``platform.matrix`` in #62401: enabling Matrix must never
+    pull python-olm, so the crypto packages install here instead — only once
+    the resolved E2EE mode says they're wanted. Returns False (with a logged
+    reason) rather than raising; the caller's ``required``/``optional`` policy
+    decides whether that is fatal.
+    """
+    blocked = _e2ee_unsupported_reason()
+    if blocked:
+        logger.warning("Matrix: cannot install E2EE dependencies — %s", blocked)
+        return False
+    # This can run mid-connect, and on a host with a toolchain python-olm
+    # builds libolm from sdist — tens of seconds with no output of its own.
+    # Announce it so an otherwise unexplained pause in adapter startup is
+    # attributable.
+    logger.info(
+        "Matrix: installing E2EE dependencies (python-olm + crypto stack) — "
+        "this may take a while if python-olm builds from source..."
+    )
+    try:
+        from tools.lazy_deps import ensure as _lazy_ensure
+
+        _lazy_ensure("platform.matrix.e2ee", prompt=False)
+    except Exception as exc:
+        logger.warning("Matrix: E2EE dependency install failed: %s", exc)
+        return False
+    return _check_e2ee_deps()
 
 
 def _normalize_e2ee_mode(value: Any) -> str:
@@ -1045,8 +1105,9 @@ def ensure_matrix_deps() -> bool:
     """
     # Check whether any package in the platform.matrix feature group is
     # missing.  ``feature_missing`` is cheap (per-spec importlib.metadata
-    # lookups) and correctly handles ``mautrix[encryption]`` by stripping
-    # the extras marker before checking the bare package.
+    # lookups).  This group is plaintext-only since #62401 — the crypto
+    # packages live in platform.matrix.e2ee and install further down, once
+    # the resolved E2EE mode says they're wanted.
     try:
         from tools.lazy_deps import feature_missing, ensure_and_bind
         missing = feature_missing("platform.matrix")
@@ -1080,13 +1141,18 @@ def ensure_matrix_deps() -> bool:
         if not ensure_and_bind("platform.matrix", _import, globals(), prompt=False):
             logger.warning(
                 "Matrix: required packages not installed (%s). "
-                "Run: pip install 'mautrix[encryption]' asyncpg aiosqlite "
+                "Run: pip install mautrix asyncpg aiosqlite "
                 "Markdown aiohttp-socks",
                 ", ".join(missing) if missing else "platform.matrix",
             )
             return False
 
     e2ee_mode = _resolve_e2ee_mode()
+    # The crypto packages are no longer part of platform.matrix (#62401), so
+    # install them on first use when E2EE is actually switched on. No-ops when
+    # they're already present; the checks below still decide the policy.
+    if e2ee_mode != "off" and not _check_e2ee_deps():
+        _ensure_matrix_e2ee_deps()
     if e2ee_mode == "required" and not _check_e2ee_deps():
         logger.error(
             "Matrix: E2EE is required but dependencies are missing. %s. "
@@ -5337,30 +5403,52 @@ def interactive_setup() -> None:
             print_success("Matrix credentials saved")
 
     if token or get_env_value("MATRIX_PASSWORD"):
-        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
+        # Only offer E2EE where its dependency can actually be installed.
+        # python-olm builds from sdist on macOS/Windows and fails; asking the
+        # question there just walks the user into a compiler traceback (#62401).
+        e2ee_blocked = _e2ee_unsupported_reason()
+        if e2ee_blocked:
+            want_e2ee = False
+            print_info(f"End-to-end encryption is unavailable here — {e2ee_blocked}")
+            print_info("   Continuing with plaintext Matrix (unencrypted rooms).")
+        else:
+            want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
         if want_e2ee:
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
-        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
+        # Always install the plaintext runtime; add the crypto group only when
+        # E2EE was requested, so answering "no" never pulls python-olm.
+        _features = ["platform.matrix"] + (["platform.matrix.e2ee"] if want_e2ee else [])
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
-            _missing_before = feature_missing("platform.matrix")
-            if _missing_before:
-                print_info(f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)...")
+            from tools.lazy_deps import (
+                ensure as _lazy_ensure,
+                feature_missing,
+                feature_specs,
+            )
+            for _feature in _features:
+                _missing_before = feature_missing(_feature)
+                if not _missing_before:
+                    continue
+                _label = "Matrix E2EE" if _feature.endswith(".e2ee") else "mautrix"
+                print_info(f"Installing {_label} ({len(_missing_before)} packages)...")
                 try:
-                    _lazy_ensure("platform.matrix", prompt=False)
-                    print_success(f"{matrix_pkg} installed")
+                    _lazy_ensure(_feature, prompt=False)
+                    print_success(f"{_label} installed")
                 except Exception as exc:
-                    print_warning(
-                        "Install failed — run manually: pip install "
-                        "'mautrix[encryption]' asyncpg aiosqlite Markdown aiohttp-socks"
-                    )
+                    _manual = " ".join(f"'{s}'" for s in feature_specs(_feature))
+                    print_warning(f"Install failed — run manually: pip install {_manual}")
                     print_info(f"  Error: {exc}")
+                    if _feature.endswith(".e2ee"):
+                        print_info(
+                            "  Matrix still works without E2EE — set "
+                            "MATRIX_E2EE_MODE=off to silence the startup warning."
+                        )
         except ImportError:
             try:
                 __import__("mautrix")
             except ImportError:
+                matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
                 print_info(f"Installing {matrix_pkg}...")
                 from hermes_cli.tools_config import _pip_install
 
@@ -5472,7 +5560,7 @@ def register(ctx) -> None:
         ensure_deps_fn=ensure_matrix_deps,
         is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"],
-        install_hint="pip install 'mautrix[encryption]'",
+        install_hint="pip install mautrix",
         setup_fn=interactive_setup,
         apply_yaml_config_fn=_apply_yaml_config,
         allowed_users_env="MATRIX_ALLOWED_USERS",

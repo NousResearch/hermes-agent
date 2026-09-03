@@ -239,14 +239,28 @@ Hermes 支持 Matrix 端对端加密，你可以在加密房间中与机器人�
 
 ### 前提条件
 
-E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
+:::warning 仅支持 Linux
+E2EE 依赖 `python-olm`，它封装了 `libolm` C 库。`libolm` 已被上游归档，且只发布
+Linux wheel，因此 **macOS 和 Windows 上无法安装 E2EE**：
+
+- **macOS** —— Homebrew 已移除 `libolm`，而自带副本在 Apple Clang 21 下编译失败
+  （`list.hh` 中的 const 正确性错误）。没有编译选项可以绕过。
+- **Windows** —— 没有 wheel，且从 sdist 构建需要 `make` 以及能够构建 `libolm`
+  的工具链。
+
+明文 Matrix 在两者上都能正常工作。若要从 Mac 或 Windows 运行加密机器人，请将
+网关部署在 Docker、WSL 或 Linux 服务器上。
+:::
+
+在 Linux 上，E2EE 需要 `mautrix` 的加密扩展以及 `libolm` C 库：
 
 ```bash
 # 安装带 E2EE 支持的 mautrix
 pip install 'mautrix[encryption]'
 
-# 或通过 hermes extras 安装
-cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
+# 或通过 hermes extras 安装（这是 E2EE extra，
+# ".[matrix]" 只安装明文适配器）
+cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix-e2ee]"
 ```
 
 你还需要在系统上安装 `libolm`：
@@ -255,12 +269,13 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 # Debian/Ubuntu
 sudo apt install libolm-dev
 
-# macOS
-brew install libolm
-
 # Fedora
 sudo dnf install libolm-devel
 ```
+
+`hermes gateway setup` 会自动处理：它先安装明文适配器，只有在你对 E2EE 提示回答
+**是** 之后才拉取加密相关的包。在无法构建 `libolm` 的主机上，它会直接跳过该提示
+并说明原因，而不是在编译中途失败。
 
 ### 启用 E2EE
 
@@ -421,7 +436,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 **解决方法**：安装它：
 
 ```bash
-pip install 'mautrix[encryption]'
+pip install mautrix
 ```
 
 或通过 Hermes extras：
@@ -429,6 +444,12 @@ pip install 'mautrix[encryption]'
 ```bash
 cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
+
+:::tip
+除非确实需要加密房间，否则请安装普通的 `mautrix` 而不是 `mautrix[encryption]`
+—— 该扩展会拉取 `python-olm`，而它只能在 Linux 上构建。参见上文的
+[前提条件](#前提条件)。
+:::
 
 ### 加密错误/"无法解密事件"
 

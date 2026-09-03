@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import contextvars
 import json
 import logging
 import os
@@ -63,18 +64,29 @@ logger = logging.getLogger(__name__)
 # Approval & safety
 # ---------------------------------------------------------------------------
 
-_approval_callback = None
+_approval_callback: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "computer_use_approval_callback",
+    default=None,
+)
 
 
-def set_approval_callback(cb) -> None:
+def set_approval_callback(cb) -> contextvars.Token:
     """Register a callback for computer_use approval prompts (used by CLI).
 
     Matches the terminal_tool._approval_callback pattern. The callback
     receives (action, args, summary) and returns one of:
       "approve_once" | "approve_session" | "always_approve" | "deny".
+
+    The returned token can be passed to :func:`reset_approval_callback` to
+    restore a previous callback after nested or concurrent session work.
     """
-    global _approval_callback
-    _approval_callback = cb
+    return _approval_callback.set(cb)
+
+
+def reset_approval_callback(token: contextvars.Token) -> None:
+    """Restore the approval callback that preceded *token*."""
+
+    _approval_callback.reset(token)
 
 
 # Actions that read, not mutate. Always allowed.
@@ -608,7 +620,7 @@ def _request_approval(action: str, args: Dict[str, Any],
             return None
         if scope_key in _always_allow.get(session_id, set()):
             return None
-    cb = _approval_callback
+    cb = _approval_callback.get()
     if cb is None:
         # No CLI approval wired — default allow. Gateway approval is handled
         # one layer out via the normal tool-approval infra.

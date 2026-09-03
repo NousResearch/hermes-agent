@@ -1963,6 +1963,7 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
 
     # Commands run on the Hermes host itself — controller-side platform

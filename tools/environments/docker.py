@@ -892,6 +892,7 @@ class DockerEnvironment(BaseEnvironment):
     across container restarts.
     """
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:

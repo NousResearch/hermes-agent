@@ -167,6 +167,8 @@ class SingularityEnvironment(BaseEnvironment):
     CWD persists via in-band stdout markers.
     """
 
+    _sudo_nopasswd_probe_supported = True
+
     def __init__(
         self,
         image: str,

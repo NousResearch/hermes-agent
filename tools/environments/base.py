@@ -629,6 +629,10 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Opt in only when a timed-out probe can kill its command without tearing
+    # down the whole backend. SDK adapters cancel by stopping the sandbox.
+    _sudo_nopasswd_probe_supported: bool = False
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope. Other backends keep their existing
     # snapshot semantics until they implement the same resolver contract.
@@ -1596,7 +1600,26 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
+        """Prepare sudo using this environment's passwordless-sudo probe."""
         from tools.terminal_tool import _transform_sudo_command
 
-        return _transform_sudo_command(command)
+        return _transform_sudo_command(
+            command,
+            sudo_nopasswd_check=self._sudo_nopasswd_works,
+        )
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """Probe passwordless sudo inside this execution environment."""
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        try:
+            proc = self._run_bash(
+                "sudo -n true",
+                login=False,
+                timeout=3,
+                stdin_data=None,
+            )
+            result = self._wait_for_process(proc, timeout=3)
+            return result.get("returncode") == 0
+        except Exception:
+            return False

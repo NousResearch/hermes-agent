@@ -52,6 +52,8 @@ class SSHEnvironment(BaseEnvironment):
     Uses SSH ControlMaster for connection reuse.
     """
 
+    _sudo_nopasswd_probe_supported = True
+
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = ""):
         super().__init__(cwd=cwd, timeout=timeout)

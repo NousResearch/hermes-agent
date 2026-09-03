@@ -6,11 +6,14 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
+import tools.terminal_tool as terminal_tool
 from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
     """Concrete subclass for testing base class methods."""
+
+    _sudo_nopasswd_probe_supported = True
 
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
@@ -20,6 +23,58 @@ class _TestableEnv(BaseEnvironment):
 
     def cleanup(self):
         pass
+
+
+def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    env = _TestableEnv()
+    monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda: True)
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("interactive sudo prompt should not run for NOPASSWD")
+
+    monkeypatch.setattr(terminal_tool, "_prompt_for_sudo_password", _fail_prompt)
+
+    transformed, sudo_stdin = env._prepare_command("sudo true")
+
+    assert transformed == "sudo true"
+    assert sudo_stdin is None
+
+
+def test_nopasswd_probe_runs_inside_selected_environment(monkeypatch):
+    env = _TestableEnv()
+    proc = object()
+    run = MagicMock(return_value=proc)
+    wait = MagicMock(return_value={"returncode": 0})
+    monkeypatch.setattr(env, "_run_bash", run)
+    monkeypatch.setattr(env, "_wait_for_process", wait)
+
+    assert env._sudo_nopasswd_works() is True
+    run.assert_called_once_with(
+        "sudo -n true",
+        login=False,
+        timeout=3,
+        stdin_data=None,
+    )
+    wait.assert_called_once_with(proc, timeout=3)
+
+
+def test_nopasswd_probe_fails_closed_on_backend_error(monkeypatch):
+    env = _TestableEnv()
+    monkeypatch.setattr(env, "_run_bash", MagicMock(side_effect=RuntimeError("offline")))
+
+    assert env._sudo_nopasswd_works() is False
+
+
+def test_nopasswd_probe_skips_backends_without_safe_process_cancel(monkeypatch):
+    env = _TestableEnv()
+    env._sudo_nopasswd_probe_supported = False
+    run = MagicMock(side_effect=AssertionError("probe must not start"))
+    monkeypatch.setattr(env, "_run_bash", run)
+
+    assert env._sudo_nopasswd_works() is False
+    run.assert_not_called()
 
 
 class TestBoundedOutputCollector:

@@ -22,8 +22,11 @@ class name MUST NOT change without updating
 from __future__ import annotations
 
 import html
+from typing import Iterable
+from urllib.parse import urlencode
 
 from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth.base import DashboardAuthProvider
 
 # Inline minimal CSS. The dashboard's full skin lives in the React
 # bundle, which we deliberately do NOT load here — the login page must
@@ -498,6 +501,39 @@ def render_login_html(*, next_path: str = "") -> str:
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=script,
+    )
+
+
+def render_native_provider_choice_html(
+    *,
+    providers: Iterable[DashboardAuthProvider],
+    authorize_path: str,
+    code_challenge: str,
+    code_challenge_method: str,
+    redirect_uri: str,
+    state: str,
+) -> str:
+    """Render a native OAuth provider chooser preserving desktop PKCE state."""
+    buttons = []
+    common_params = {
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+
+    for provider in providers:
+        query = urlencode({**common_params, "provider": provider.name})
+        href = html.escape(f"{authorize_path}?{query}", quote=True)
+        label = html.escape(provider.display_name)
+        buttons.append(f'  <a class="provider-btn" href="{href}">Sign in with {label}</a>')
+
+    if not buttons:
+        return _EMPTY_HTML
+
+    return _LOGIN_HTML_TEMPLATE.format(
+        provider_buttons="\n".join(buttons),
+        password_script="",
     )
 
 

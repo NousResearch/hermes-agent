@@ -47,7 +47,10 @@ from hermes_cli.dashboard_auth.cookies import (
     set_pkce_cookie,
     set_session_cookies,
 )
-from hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_cli.dashboard_auth.login_page import (
+    render_login_html,
+    render_native_provider_choice_html,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -361,6 +364,18 @@ async def auth_native_authorize(
         ]
         if len(native_eligible) == 1:
             p = native_eligible[0]
+        elif len(native_eligible) > 1:
+            return HTMLResponse(
+                render_native_provider_choice_html(
+                    providers=native_eligible,
+                    authorize_path=f"{_prefix(request)}/auth/native/authorize",
+                    code_challenge=code_challenge,
+                    code_challenge_method=code_challenge_method,
+                    redirect_uri=redirect_uri,
+                    state=state,
+                ),
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
         elif not native_eligible:
             # No brokerable provider at all. Preserve the old behaviour of
             # selecting a lone password provider so the explicit 400 below

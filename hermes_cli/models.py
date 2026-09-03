@@ -4734,9 +4734,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                                 merged_lower.add(_model_dedup_key(m))
                         return merged
                     return live
-            # Use profile's fallback_models if defined
+            # Live fetch unavailable: static catalog first (it carries the
+            # newest curated entries), profile fallback_models appended after.
+            # Returning ONLY the profile tuple would shadow the richer static
+            # catalog, so the picker regresses whenever the live probe fails
+            # or comes back empty (seen with zai on Z.AI's Anthropic wire,
+            # which has no /models route and answers 200 with an error body
+            # that parses as an empty catalog).
+            static_fallback = list(_PROVIDER_MODELS.get(normalized, []))
             if _p.fallback_models:
-                return list(_p.fallback_models)
+                seen = {_model_dedup_key(m) for m in static_fallback}
+                for m in _p.fallback_models:
+                    if _model_dedup_key(m) not in seen:
+                        static_fallback.append(m)
+                        seen.add(_model_dedup_key(m))
+            if static_fallback:
+                return static_fallback
     except Exception:
         pass
 

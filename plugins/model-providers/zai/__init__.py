@@ -119,8 +119,52 @@ def _glm_5_2_reasoning_effort(
     return clamped if clamped in efforts else floor
 
 
+def _catalog_url_for_base(base_url: str | None) -> str | None:
+    """Rewrite an inference base URL onto Z.AI's OpenAI-wire models catalog.
+
+    Z.AI splits wires: inference may run on the Anthropic Messages wire
+    (``/api/anthropic``) or the coding plan (``/api/coding/paas/v4``), but the
+    account-wide model catalog is only served on the ``/api/paas/v4/models``
+    route of the same host. The Anthropic wire answers ``/models`` with
+    HTTP 200 + an error body that parses as an EMPTY catalog, which downstream
+    code treats as "live fetch came back empty" rather than "no endpoint" —
+    so glm-5.3 vanished from the picker for coding-plan users.
+
+    Known Z.AI hosts get rewritten; foreign hosts (relays/proxies) return
+    None so the caller keeps its default ``base_url + /models`` behavior.
+    Returns the catalog BASE (no ``/models`` suffix — the base class appends
+    it).
+    """
+    from urllib.parse import urlsplit
+
+    raw = (base_url or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw if "//" in raw else f"https://{raw}")
+    host = (parts.hostname or "").lower()
+    if host not in ("api.z.ai", "open.bigmodel.cn", "api.bigmodel.cn"):
+        return None
+    return f"{parts.scheme or 'https'}://{parts.netloc}/api/paas/v4"
+
+
 class ZaiProfile(ProviderProfile):
     """Z.AI / GLM — extra_body.thinking on/off + GLM-5.2 reasoning_effort."""
+
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Probe the paas/v4 catalog even when inference runs on another wire."""
+        catalog = _catalog_url_for_base(base_url)
+        if catalog is None:
+            # Foreign host (relay/proxy) or empty — keep the caller's base.
+            return super().fetch_models(
+                api_key=api_key, base_url=base_url, timeout=timeout
+            )
+        return super().fetch_models(api_key=api_key, base_url=catalog, timeout=timeout)
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -153,6 +197,7 @@ zai = ZaiProfile(
     description="Z.AI / GLM — Zhipu AI models",
     signup_url="https://z.ai/",
     fallback_models=(
+        "glm-5.3",
         "glm-5.2",
         "glm-5",
         "glm-4-9b",

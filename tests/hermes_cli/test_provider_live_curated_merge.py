@@ -59,6 +59,36 @@ class TestGenericProviderLiveCuratedMerge:
         assert result.count("glm-5") == 1
 
 
+    def test_live_unavailable_falls_back_to_static_catalog_plus_profile_models(self):
+        """Live fetch fails/empty → static catalog must NOT be shadowed.
+
+        Regression: the no-live path used to return ONLY the profile's
+        ``fallback_models`` tuple. For zai that tuple lagged the static
+        catalog (no glm-5.3), so picker users on Z.AI's Anthropic wire —
+        whose /models probe returns 200 + an error body that parses as an
+        EMPTY catalog — silently lost every curated-only model. Static
+        entries must lead, profile-only entries append.
+        """
+        profile = self._make_profile(models=[])  # live probe "succeeds" empty
+        profile.fallback_models = ("glm-5.2", "glm-5", "glm-4-9b")
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+            patch.dict(
+                "hermes_cli.models._PROVIDER_MODELS",
+                {"zai": ["glm-5.3", "glm-5.2", "glm-5.1"]},
+            ),
+        ):
+            result = provider_model_ids("zai")
+
+        assert result[:3] == ["glm-5.3", "glm-5.2", "glm-5.1"]
+        assert "glm-5" in result and "glm-4-9b" in result  # profile-only appended
+        assert result.count("glm-5.2") == 1  # dedup across sources
+
     def test_no_models_dropped_either_direction(self):
         """Every live AND curated model survives the merge for both modes."""
         live = ["a", "b"]

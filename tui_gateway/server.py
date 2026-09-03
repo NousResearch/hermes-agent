@@ -13176,6 +13176,93 @@ def _start_usage_ticker(
     return stop, thread
 
 
+def _reconcile_history_with_session_db(agent, session, history):
+    """Prefer DB-backed real content for the turn's conversation history.
+
+    The Desktop/TUI gateway feeds ``run_conversation`` an in-memory
+    ``session["history"]`` as ``conversation_history``. That in-memory
+    transcript aliases the agent's working messages after a turn (server.py
+    note near ``_flush_messages_to_session_db``) and, across turns, can be
+    hollowed — prior-turn content arrives as empty strings while the session
+    DB still holds the real text. The CLI surface instead loads history from
+    ``SessionDB.get_messages_as_conversation`` every turn and always carries
+    real content (history-pipeline bug HISTORY_PIPELINE_BUG_CONFIRMED).
+
+    When the in-memory copy contains hollow (empty, non-final) entries, fall
+    back to the DB-backed transcript so the provider receives the real
+    prior-turn text. An in-memory tail that extends beyond the DB (messages
+    not yet flushed) is preserved, and any hollow in-memory entry is filled
+    from the DB by position. Intact in-memory history is returned unchanged —
+    no extra DB read on the healthy path.
+    """
+    if not isinstance(history, list) or not history:
+        return history
+
+    def _is_hollow(m):
+        if not isinstance(m, dict):
+            return True
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            return False
+        if isinstance(content, list) and any(
+            isinstance(b, dict)
+            and (
+                b.get("type") != "text"
+                or (isinstance(b.get("text"), str) and b["text"].strip())
+            )
+            for b in content
+        ):
+            return False
+        if (
+            m.get("tool_calls")
+            or m.get("tool_call_id")
+            or m.get("reasoning")
+            or m.get("reasoning_content")
+            or m.get("reasoning_details")
+        ):
+            return False
+        return True
+
+    if not any(_is_hollow(m) for m in history):
+        return history
+
+    db = getattr(agent, "_session_db", None)
+    if db is None:
+        try:
+            db = _session_db(session)
+        except Exception:
+            db = None
+    if db is None:
+        return history
+    key = session.get("session_key") or getattr(agent, "session_id", None)
+    if not key:
+        return history
+    try:
+        db_history = db.get_messages_as_conversation(
+            key, include_ancestors=True, repair_alternation=True
+        )
+    except Exception as exc:
+        logger.debug("history reconcile: DB load failed: %s", exc)
+        return history
+    if not db_history:
+        return history
+
+    if len(db_history) >= len(history):
+        # DB is authoritative for persisted turns. Keep any in-memory tail
+        # beyond the DB (unsaved messages) so in-flight turns are never lost.
+        return list(db_history[: len(history)]) + list(history[len(db_history):])
+
+    # DB shorter than in-memory (in-memory has newer unsaved entries): fill
+    # hollow in-memory entries from the DB by position where possible.
+    filled = []
+    for i, m in enumerate(history):
+        if _is_hollow(m) and i < len(db_history):
+            filled.append(db_history[i])
+        else:
+            filled.append(m)
+    return filled
+
+
 def _run_prompt_submit(
     rid,
     sid: str,
@@ -13369,6 +13456,12 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 history = list(session["history"])
                 history_version = int(session.get("history_version", 0))
+            # Reconcile the in-memory transcript with the DB-backed real content
+            # so hollowed prior-turn entries don't reach the provider (see
+            # _reconcile_history_with_session_db). The CLI path loads DB content
+            # directly every turn; Desktop must do the same or the model gets an
+            # empty context window across turns (HISTORY_PIPELINE_BUG_CONFIRMED).
+            history = _reconcile_history_with_session_db(agent, session, history)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)

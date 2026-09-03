@@ -1180,6 +1180,285 @@ class TestCheckpoint:
         stop_unit.assert_called_once_with(entry["systemd_unit"])
         assert json.loads(checkpoint.read_text()) == []
 
+    def test_cgroup2_mount_point_prefers_canonical_mount(self, tmp_path):
+        """With several cgroup2 mounts (host + container bind), the
+        canonical ``/sys/fs/cgroup`` mount wins — it is where systemd's
+        ControlGroup paths resolve."""
+        from tools.process_registry import _cgroup2_mount_point
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "34 33 253:0 / / rw,relatime - ext4 /dev/mapper/root rw\n"
+            "36 35 0:30 / /custom/cgroup rw,nosuid,nodev,noexec - cgroup2 none rw\n"
+            "37 35 0:31 / /sys/fs/cgroup rw,nosuid,nodev,noexec - cgroup2 none rw\n"
+        )
+        assert _cgroup2_mount_point(str(mi)) == "/sys/fs/cgroup"
+
+    def test_cgroup2_mount_point_uses_sole_custom_mount(self, tmp_path):
+        """A container exposes exactly one cgroup2 mount, mounted
+        wherever its namespace places it — that one is used."""
+        from tools.process_registry import _cgroup2_mount_point
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "34 33 253:0 / / rw,relatime - ext4 /dev/mapper/root rw\n"
+            "36 35 0:30 / /host/cgroupv2 rw,nosuid,nodev,noexec - cgroup2 none rw\n"
+        )
+        assert _cgroup2_mount_point(str(mi)) == "/host/cgroupv2"
+
+    def test_cgroup2_mount_point_falls_back_when_unreadable_or_absent(
+        self, tmp_path
+    ):
+        """Unreadable mountinfo (non-Linux) or no cgroup2 entry falls
+        back to the canonical mount instead of erroring."""
+        from tools.process_registry import _CGROUP_V2_MOUNT_FALLBACK
+        from tools.process_registry import _cgroup2_mount_point
+
+        missing = tmp_path / "does-not-exist"
+        assert _cgroup2_mount_point(str(missing)) == _CGROUP_V2_MOUNT_FALLBACK
+        no_cgroup2 = tmp_path / "mountinfo"
+        no_cgroup2.write_text(
+            "34 33 253:0 / / rw,relatime - ext4 /dev/mapper/root rw\n"
+        )
+        assert _cgroup2_mount_point(str(no_cgroup2)) == _CGROUP_V2_MOUNT_FALLBACK
+
+    def test_scope_cgroup_procs_path_joins_derived_mount_point(
+        self, tmp_path, monkeypatch
+    ):
+        """cgroupfs-relative ControlGroup values join onto the REAL
+        cgroup v2 mount point, not a hardcoded /sys/fs/cgroup prefix —
+        joining onto the wrong prefix yields an unopenable path, which
+        liveness would otherwise misread as verified death.  Absolute
+        paths outside the known slices (a test shim's state dir) are
+        honoured as-is, and a unit systemd did not report falls back
+        to the canonical user-scope location under the real mount."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (2, "/custom/cgroup")
+        )
+
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", "/user.slice/user-1000.slice/user@1000.service/app.slice/w.scope"
+        ) == (
+            "/custom/cgroup/user.slice/user-1000.slice/"
+            "user@1000.service/app.slice/w.scope/cgroup.procs"
+        )
+        # Absolute path outside the standard slices: honoured as-is.
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", f"{tmp_path}/units/w.scope"
+        ) == f"{tmp_path}/units/w.scope/cgroup.procs"
+        # No ControlGroup reported: canonical user-scope layout derived
+        # from the real uid under the real mount.
+        monkeypatch.setattr(pr.platform, "system", lambda: "Linux")
+        expected = (
+            f"/custom/cgroup/user.slice/user-{os.getuid()}.slice/"
+            f"user@{os.getuid()}.service/app.slice/w.scope/cgroup.procs"
+        )
+        assert pr._scope_cgroup_procs_path("w.scope", "") == expected
+
+    def test_cgroup_mount_point_v1_prefers_systemd_hierarchy(
+        self, tmp_path, monkeypatch
+    ):
+        """Gate B pass 4 (S): a v1 host (no cgroup2 mount) resolves its
+        procs paths against the systemd controller hierarchy's mount —
+        the hierarchy ControlGroup paths are relative to — not the
+        hardcoded /sys/fs/cgroup root, which on such hosts yields a
+        nonexistent path and liveness stuck at "unknown" forever."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "30 23 0:24 / /sys ro,nosuid - sysfs sysfs rw\n"
+            "36 30 0:26 / /sys/fs/cgroup/systemd rw,nosuid,nodev,noexec,relatime - cgroup cgroup rw,xattr,name=systemd\n"
+            "37 30 0:27 / /sys/fs/cgroup/pids rw,nosuid,nodev,noexec,relatime - cgroup cgroup rw,pids\n"
+            "38 30 0:28 / /sys/fs/cgroup/memory rw,nosuid,nodev,noexec,relatime - cgroup cgroup rw,memory\n",
+            encoding="utf-8",
+        )
+        assert pr._cgroup_mount_point(str(mi)) == (1, "/sys/fs/cgroup/systemd")
+        assert pr._cgroup_v1_controller_mount(
+            str(mi), preferred=("memory",)
+        ) == "/sys/fs/cgroup/memory"
+        assert pr._cgroup_v1_controller_mount(
+            str(mi), preferred=("pids",)
+        ) == "/sys/fs/cgroup/pids"
+        # cgroupfs-relative ControlGroup joins the v1 systemd mount
+        # (resolved against the same fake mountinfo).
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point",
+            lambda *a, **k: (1, "/sys/fs/cgroup/systemd"),
+        )
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", "/user.slice/user-1000.slice/app.slice/w.scope"
+        ) == (
+            "/sys/fs/cgroup/systemd/user.slice/user-1000.slice/"
+            "app.slice/w.scope/cgroup.procs"
+        )
+
+    def test_cgroup_mount_point_prefers_v2_when_both_mounted(self, tmp_path):
+        """A hybrid host with both hierarchies mounted: the unified
+        hierarchy wins (its mount, canonical preferred) — matches the
+        pre-existing v2 behaviour exactly."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "36 30 0:26 / /host/cgroupv2 rw,relatime - cgroup2 cgroup2 rw\n"
+            "37 30 0:27 / /sys/fs/cgroup/systemd rw,relatime - cgroup cgroup rw,name=systemd\n",
+            encoding="utf-8",
+        )
+        assert pr._cgroup_mount_point(str(mi)) == (2, "/host/cgroupv2")
+
+    def test_cgroup_mount_point_no_hierarchy_is_definite_unsupported(
+        self, tmp_path, monkeypatch,
+    ):
+        """A readable mountinfo with NO cgroup mount of either version
+        is a DEFINITE (0, None): cgroup verification is impossible by
+        construction, surfaced as "unsupported" so callers fall back to
+        PID semantics instead of retrying "unknown" forever. An
+        UNREADABLE mountinfo keeps the legacy canonical-v2 assumption
+        ("unknown", not a new definite verdict)."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mi.write_text(
+            "30 23 0:24 / / rw - apfs /dev/disk1 rw\n",
+            encoding="utf-8",
+        )
+        assert pr._cgroup_mount_point(str(mi)) == (0, None)
+        # Unreadable mountinfo (non-Linux): legacy fallback, not a
+        # definite verdict.
+        assert pr._cgroup_mount_point(str(tmp_path / "missing")) == (
+            2, "/sys/fs/cgroup",
+        )
+        # Canonical-prefix ControlGroup cannot be joined to anything.
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
+        )
+        assert pr._scope_cgroup_procs_path(
+            "w.scope", "/user.slice/user-1000.slice/app.slice/w.scope"
+        ) is None
+
+    def test_scope_unit_liveness_unsupported_when_no_hierarchy(
+        self, monkeypatch,
+    ):
+        """Liveness on a cgroupfs-less host with a loaded unit returns
+        the definite "unsupported" (and active_state maps it through) —
+        not "unknown", which callers would retry forever."""
+        import subprocess as _sp
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
+        )
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **k: _sp.CompletedProcess(
+                args=(a[0] if a else k.get("args", [])),
+                returncode=0,
+                stdout=(
+                    b"LoadState=loaded\nActiveState=active\n"
+                    b"ControlGroup=/user.slice/user-1000.slice/app.slice/w.scope\n"
+                ),
+            ),
+        )
+        assert pr._scope_unit_liveness("w.scope") == "unsupported"
+        assert pr._scope_unit_active_state("w.scope") == "unsupported"
+
+    def test_scope_unit_bus_inactive_confirms_only_terminal_bus_states(
+        self, monkeypatch,
+    ):
+        """The bus-truth fallback for cgroupfs-less hosts: not-found /
+        inactive / failed confirm, deactivating and loaded-active do
+        not."""
+        import subprocess as _sp
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+
+        def fake_show(props: bytes):
+            return lambda *a, **k: _sp.CompletedProcess(
+                args=(a[0] if a else k.get("args", [])),
+                returncode=0,
+                stdout=props,
+            )
+
+        for props, expected in [
+            (b"LoadState=not-found\nActiveState=inactive\n", True),
+            (b"LoadState=loaded\nActiveState=inactive\n", True),
+            (b"LoadState=loaded\nActiveState=failed\n", True),
+            (b"LoadState=loaded\nActiveState=deactivating\n", False),
+            (b"LoadState=loaded\nActiveState=active\n", False),
+        ]:
+            monkeypatch.setattr("subprocess.run", fake_show(props))
+            assert pr._scope_unit_bus_inactive("w.scope") is expected
+
+    def test_stop_systemd_unit_verified_confirms_via_bus_on_unsupported(
+        self, monkeypatch,
+    ):
+        """On a cgroupfs-less host the verified stop still terminates:
+        after the stop lands, the bus reporting the unit inactive is
+        the confirmation — previously every stop burned the full
+        escalation budget and re-queued forever."""
+        import subprocess as _sp
+        import tools.process_registry as pr
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            pr, "_cgroup_mount_point", lambda *a, **k: (0, None)
+        )
+        show_props: dict[str, bytes] = {"now": b"LoadState=loaded\nActiveState=active\n"}
+        # **kwargs: the verified stop threads its cancel plumbing into
+        # the stop call (pass 9, AH).
+        monkeypatch.setattr(
+            pr, "_stop_systemd_unit",
+            lambda unit, **kwargs: show_props.__setitem__(
+                "now", b"LoadState=loaded\nActiveState=inactive\n"
+            ),
+        )
+
+        def fake_run(*a, **k):
+            return _sp.CompletedProcess(
+                args=(a[0] if a else k.get("args", [])),
+                returncode=0,
+                stdout=show_props["now"],
+            )
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        # The SIGKILL escalation client is the cancellable helper now.
+        monkeypatch.setattr(
+            pr, "_run_systemctl_cancellable", lambda *a, **k: (0, b"", b"")
+        )
+        monkeypatch.setattr(pr, "_collect_dead_systemd_unit", lambda unit: None)
+
+        assert pr._stop_systemd_unit_verified("w.scope") is True
+
+    def test_worker_memory_limit_reads_v1_memory_controller(self, tmp_path):
+        """v1 host: the limit comes from the memory controller
+        hierarchy's memory.limit_in_bytes (mounted per controller), not
+        the hardcoded /sys/fs/cgroup v2 layout."""
+        import tools.process_registry as pr
+
+        mi = tmp_path / "mountinfo"
+        mem_mount = tmp_path / "memv1"
+        mi.write_text(
+            f"36 30 0:26 / {mem_mount} rw,relatime - cgroup cgroup rw,memory\n",
+            encoding="utf-8",
+        )
+        rel = "user.slice/user-1000.slice/user@1000.service"
+        limit_dir = tmp_path / "memv1" / rel
+        limit_dir.mkdir(parents=True)
+        (limit_dir / "memory.limit_in_bytes").write_text("536870912\n")
+        self_cgroup = tmp_path / "self_cgroup"
+        self_cgroup.write_text(
+            f"10:memory:/{rel}\n1:name=systemd:/{rel}\n", encoding="utf-8"
+        )
+
+        bound = pr._worker_memory_max_bytes(
+            str(self_cgroup), str(mi)
+        )
+        assert bound == 536870912  # 512 MiB — tighter than half of RAM
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
@@ -2289,6 +2568,9 @@ class TestSystemdCgroupIsolation:
             argv = pr._build_systemd_scope_argv(
                 ["/bin/bash", "-lc", "true"],
                 unit_suffix="test",
+                # Memory bounds are caller-resolved since the builder
+                # stopped auto-filling them.
+                memory_max_bytes=pr._worker_memory_max_bytes(),
             )
 
         warning.assert_not_called()
@@ -2445,12 +2727,12 @@ class TestSystemdCgroupIsolation:
         import tools.process_registry as pr
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
+        # Pass 9 (AH): the stop client runs through the cancellable
+        # Popen+poll helper, not subprocess.run — mock that seam.
         monkeypatch.setattr(
-            "subprocess.run",
-            lambda *args, **kwargs: subprocess.CompletedProcess(
-                args=args[0],
-                returncode=5,
-                stderr=b"Unit hermes-worker-gone.scope not loaded.\n",
+            pr, "_run_systemctl_cancellable",
+            lambda *args, **kwargs: (
+                5, b"", b"Unit hermes-worker-gone.scope not loaded.\n"
             ),
         )
 
@@ -2807,3 +3089,148 @@ def test_model_not_found_notice_absent_when_fallback_chain_configured(monkeypatc
     text = _format_async(evt)
     assert text.count("SUBAGENT MODEL REJECTED") == 1
     assert "No fallback chain is configured" not in text
+
+
+# ---------------------------------------------------------------------------
+# Cancellable systemctl helper (pass 9, AH / pass 10, AM)
+# ---------------------------------------------------------------------------
+
+_TERM_IGNORING_HELPER = (
+    "import os, signal, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "with open(os.environ['HELPER_PID_FILE'], 'w') as f:\n"
+    "    f.write(str(os.getpid()))\n"
+    "time.sleep(60)\n"
+)
+
+
+def test_scope_stop_helper_cancel_reaps_term_ignoring_helper(
+    tmp_path, monkeypatch,
+):
+    """Pass 10 (AM): the cancel path must kill AND unconditionally reap
+    the helper. A helper that ignores SIGTERM proves the kill is a real
+    SIGKILL, and a pathological caller poll interval (30 s, clamped to
+    <=0.5 s) proves cancellation is observed promptly — a reaped child's
+    pid is gone entirely, while a zombie would still answer ``kill(0)``.
+    """
+    from tools import process_registry as pr
+
+    helper = tmp_path / "helper.py"
+    helper.write_text(_TERM_IGNORING_HELPER)
+    pid_file = tmp_path / "helper.pid"
+    monkeypatch.setenv("HELPER_PID_FILE", str(pid_file))
+
+    cancel = threading.Event()
+
+    def cancel_once_running():
+        for _ in range(200):  # <=10 s, no blind sleep
+            if pid_file.exists():
+                cancel.set()
+                return
+            time.sleep(0.05)
+
+    watcher = threading.Thread(target=cancel_once_running, daemon=True)
+    watcher.start()
+
+    started = time.monotonic()
+    result = pr._run_systemctl_cancellable(
+        [sys.executable, str(helper)],
+        timeout=30,
+        cancel_event=cancel,
+        poll_interval=30.0,  # clamped to <=0.5 s internally
+    )
+    elapsed = time.monotonic() - started
+
+    assert result is None, "cancelled helper reports the None verdict"
+    assert elapsed < 5.0, (
+        "cancellation must be observed within the clamped poll, not the "
+        "caller's 30 s interval"
+    )
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the killed helper was left alive or unreaped (zombie)")
+
+
+def test_scope_stop_helper_reap_survives_kill_race(monkeypatch, tmp_path):
+    """Pass 10 (AM): a helper exiting during the kill race can make the
+    post-kill ``communicate`` raise; the swallowed exception used to
+    skip reaping entirely. The unconditional ``wait`` must reap the
+    child anyway, and the pipes must be closed."""
+    from tools import process_registry as pr
+
+    real_popen = pr.subprocess.Popen
+
+    class _RaceyHelper:
+        """Real child; communicate() breaks once killed (the race)."""
+
+        def __init__(self, real):
+            self._real = real
+            self._killed = False
+            self.waited = False
+
+        def kill(self):
+            self._killed = True
+            return self._real.kill()
+
+        def communicate(self, timeout=None):
+            if self._killed:
+                raise OSError("helper exited during the kill race")
+            return self._real.communicate(timeout=timeout)
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return self._real.wait(timeout=timeout)
+
+        @property
+        def pid(self):
+            return self._real.pid
+
+        @property
+        def returncode(self):
+            return self._real.returncode
+
+        @property
+        def stdout(self):
+            return self._real.stdout
+
+        @property
+        def stderr(self):
+            return self._real.stderr
+
+    wrapped: dict = {}
+
+    def popen_racey(argv, *args, **kwargs):
+        wrapped["proc"] = _RaceyHelper(real_popen(argv, *args, **kwargs))
+        return wrapped["proc"]
+
+    monkeypatch.setattr(pr.subprocess, "Popen", popen_racey)
+
+    script = tmp_path / "sleeper.py"
+    script.write_text("import time\ntime.sleep(60)\n")
+    cancel = threading.Event()
+    cancel.set()  # already expired: the first poll kills immediately
+
+    result = pr._run_systemctl_cancellable(
+        [sys.executable, str(script)], timeout=30, cancel_event=cancel,
+    )
+
+    assert result is None
+    racey = wrapped["proc"]
+    assert racey.waited, "the unconditional wait() ran despite the race"
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            os.kill(racey.pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the race-killed helper was left unreaped (zombie)")
+    assert racey.stdout.closed and racey.stderr.closed

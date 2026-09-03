@@ -60,8 +60,19 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     class FakeProc:
         pid = 4242
 
+        def poll(self):
+            # Still running: the scoped-spawn launch probe polls the
+            # systemd-run client for a fast refusal before returning.
+            return None
+
     def fake_popen(cmd, **kwargs):
         nonlocal captured_cwd
+        if captured_cmd:
+            # Only the first Popen is the worker spawn. The scoped-launch
+            # probe afterwards shells out to `systemctl --user show` to see
+            # whether the transient unit came up, and this patch intercepts
+            # that too — recording it would overwrite the spawn's cwd/env.
+            return FakeProc()
         captured_cmd.extend(cmd)
         captured_env.update(kwargs.get("env") or {})
         captured_cwd = kwargs.get("cwd")
@@ -79,7 +90,15 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert kb._default_spawn(task, str(workspace)) == 4242
     assert captured_cmd[:4] == ["/usr/bin/systemd-run", "--user", "--scope", "--quiet"]
     unit_index = captured_cmd.index("--unit")
-    assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
+    # Worker isolation (kanban.worker_isolation, default `auto`) wraps the
+    # argv in its own transient scope through the same
+    # `systemd-run --user --scope` mechanism, so on a managed gateway it is
+    # that scope — not a second restart-safe one — that takes the worker out
+    # of the gateway cgroup, and the unit carries the isolation naming.
+    # Wrapping twice would nest one transient scope inside another. The
+    # restart-safe guarantee itself is unchanged and still asserted below
+    # (scope prefix, memory bound, fail-closed cases).
+    assert captured_cmd[unit_index + 1] == "hermes-kanban-t_candidate_restart-r23.scope"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
     assert captured_cmd[separator + 1 : separator + 4] == ["hermes", "-p", "coder"]
@@ -125,6 +144,13 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
 ) -> None:
     workspace, task = worker_setup
     captured_cmd: list[str] = []
+
+    # Worker isolation off: with the default `auto` the dispatcher probes for
+    # a usable systemd-run on every host, standalone or managed, because it
+    # isolates workers regardless of gateway topology. Pinning `none` isolates
+    # the claim under test here — that a standalone dispatcher gets no
+    # RESTART-SAFE wrap — from the separate isolation decision.
+    monkeypatch.setattr(kb, "_resolve_worker_isolation", lambda *a, **k: "none")
 
     class FakeProc:
         pid = 4243

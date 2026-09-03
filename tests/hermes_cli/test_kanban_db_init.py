@@ -109,6 +109,37 @@ def test_legacy_text_pk_tables_rebuilt_to_integer_autoincrement(tmp_path, monkey
 
 
 
+def test_rebuild_keeps_task_runs_worker_scope(tmp_path, monkeypatch):
+    """Gate B finding G: a drifted legacy task_runs that already carries
+    ``worker_scope`` (the additive migration ran on it and at least one run
+    recorded its scope) must not lose the column or its history to the
+    drift rebuild. The rebuild spec has to match the CURRENT schema — a
+    spec written before the column existed recreated the table without
+    it, silently dropping scope history and leaving the column missing
+    until the next init re-added it empty."""
+    db_path = _setup_home(tmp_path, monkeypatch)
+    _make_legacy_db(db_path)
+
+    # The field state under test: additive pass added worker_scope to the
+    # still-drifted table and a run row recorded its scope.
+    raw = sqlite3.connect(str(db_path))
+    raw.execute("ALTER TABLE task_runs ADD COLUMN worker_scope TEXT")
+    raw.execute(
+        "UPDATE task_runs SET worker_scope = 'hermes-kanban-task-1-r1.scope'"
+    )
+    raw.commit()
+    raw.close()
+
+    with kb.connect(db_path) as conn:
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(task_runs)")]
+        assert "worker_scope" in cols
+        row = conn.execute(
+            "SELECT task_id, worker_scope FROM task_runs"
+        ).fetchone()
+        assert row["task_id"] == "task-1"
+        assert row["worker_scope"] == "hermes-kanban-task-1-r1.scope"
+
+
 def test_migration_is_idempotent(tmp_path, monkeypatch):
     """Re-opening an already-migrated DB is a no-op and leaves data intact."""
     db_path = _setup_home(tmp_path, monkeypatch)

@@ -335,7 +335,7 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
-# Kanban Review Dispatch
+# Kanban Review Dispatch & Worker Isolation
 # =============================================================================
 # First-class review tasks are dispatched automatically by default. The worker
 # is spawned with the bundled sdlc-review skill and can approve, request changes
@@ -343,6 +343,64 @@ model:
 # Disable this only when every review is performed manually from the dashboard.
 kanban:
   review_dispatch: true
+  # Worker isolation: run each kanban worker in its own transient systemd
+  # user scope (hermes-kanban-<task>-r<run_id>.scope — the run suffix keeps
+  # a respawn from colliding with a lingering scope from the previous
+  # attempt) instead of inside the gateway's cgroup/process group. Workers
+  # then cannot OOM-throttle or be killed with the gateway, their memory is
+  # bounded per worker (MemoryMax + MemorySwapMax), and a gateway restart
+  # re-adopts the still-running worker instead of marking its run crashed.
+  # The worker SELF-REGISTERS its pid + start-time fingerprint on first
+  # activity (the pid recorded at spawn is the systemd-run launcher's,
+  # which dies with the gateway), so liveness is never judged by the
+  # launcher and never fooled by PID reuse; until registration the run is
+  # "starting" and a run that never registers within its grace window is
+  # recorded as a spawn failure, not a crash.
+  # Every stop of a worker is a VERIFIED whole-scope stop: SIGTERM to
+  # every process in the unit's cgroup, escalation to SIGKILL, then death
+  # confirmed from the unit's cgroup.procs (cgroup truth, not systemctl's
+  # ActiveState — "unknown" or "deactivating" is NOT dead). A stop that
+  # cannot be confirmed never releases the task's claim: the run is
+  # marked "stopping" and the next dispatcher tick re-checks, so a wedged
+  # unit can never end up with a duplicate worker spawned beside it.
+  #   auto          scope when systemd-run --user --scope works on this
+  #                 host (Linux with a user systemd session), otherwise
+  #                 fall back to the classic unisolated spawn (macOS,
+  #                 containers). Default. A refused systemd-run launch
+  #                 also falls back to an unisolated spawn for that run,
+  #                 with a warning — but only after the half-created unit
+  #                 is verified cleaned up; if even that fails the spawn
+  #                 is recorded as spawn_failed instead of risking a
+  #                 second, unisolated worker beside it.
+  #   systemd-scope same, but strict: NEVER degrades. An unusable
+  #                 systemd (probe failure, or systemd-run vanishing
+  #                 between probe and launch) FAILS the spawn loudly
+  #                 (recorded as spawn_failed with the reason) instead of
+  #                 silently falling back — an operator who pinned strict
+  #                 chose "no worker" over "unisolated worker". Only
+  #                 auto may fall back.
+  #   none          never isolate — workers spawn and are killed exactly
+  #                 as before this feature existed. Rollback setting.
+  worker_isolation: auto
+  # Per-worker cgroup memory ceiling in MiB when isolation is active.
+  # BOTH MemoryMax and MemorySwapMax are set to this value. Default: the
+  # tighter of the gateway's own cgroup limit and half the host RAM,
+  # floored at 64 and capped at 4096. Explicit values are clamped to
+  # those same bounds; when no bound can be computed BOTH properties are
+  # omitted (never MemoryMax=0, which means "no limit").
+  # worker_memory_max_mb: 2048
+  # What happens to still-running scoped workers on a graceful gateway
+  # shutdown. Default false: workers keep running through the restart and
+  # the next gateway re-adopts them (claims rewritten, runs continue).
+  # Set true to stop every scoped worker this host still claims
+  # (verified whole-scope teardown, SIGTERM→SIGKILL) as the gateway
+  # exits, holding the dispatcher lock until the cleanup finishes or its
+  # budget expires — ONE ceiling (a base for the board scans plus each
+  # expected unit's own verified-stop deadline) covering the pre-scan,
+  # the stops, and the queued-stop drain; whatever is left (pending or
+  # in-flight units) is logged for the next gateway's re-adoption sweep.
+  # Crashes never stop workers either way — re-adoption covers them.
+  # worker_isolation_stop_on_shutdown: false
 
 # =============================================================================
 # Terminal Tool Configuration

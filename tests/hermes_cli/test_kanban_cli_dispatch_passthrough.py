@@ -23,10 +23,22 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
+    # Snapshot the purged modules and restore them at teardown: the
+    # re-import creates NEW module objects, and every module bound to the
+    # ORIGINALS (other test files' `import kanban_db`,
+    # gateway.kanban_watchers' `_kb`) would silently disagree with
+    # sys.modules afterwards — monkeypatches on one copy never reach the
+    # other, which poisoned later kanban tests in the same process.
+    saved = {
+        name: mod for name, mod in sys.modules.items()
+        if name.startswith("hermes_cli") or name.startswith("hermes_state")
+        or name == "hermes_constants"
+    }
     for mod in list(sys.modules.keys()):
         if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
             del sys.modules[mod]
     yield test_home
+    sys.modules.update(saved)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):

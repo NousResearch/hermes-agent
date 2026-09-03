@@ -1221,10 +1221,15 @@ def test_reclaim_task_resets_running_to_ready(kanban_home, monkeypatch):
 
         monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: state["alive"])
         conn.execute(
-            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=?, "
-            "worker_pid=? WHERE id=?",
-            (lock, future, 12345, t),
+            "UPDATE tasks SET status='running', claim_lock=?, claim_expires=? "
+            "WHERE id=?",
+            (lock, future, t),
         )
+        # A REAL pid with its recorded start fingerprint: the pass-8
+        # identity gate never signals a pid it cannot attribute, and the
+        # old bare 12345 (no fingerprint, no process) is exactly that
+        # unattributable case.
+        kb._set_worker_pid(conn, t, os.getpid())
         conn.execute(
             "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
             "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
